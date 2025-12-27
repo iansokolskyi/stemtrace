@@ -32,10 +32,11 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
               type="button"
               key={state.value ?? 'all'}
               onClick={() => onFiltersChange({ ...filters, state: state.value })}
-              className={`px-2 py-1 text-xs rounded transition-colors ${filters.state === state.value
+              className={`px-2 py-1 text-xs rounded transition-colors ${
+                filters.state === state.value
                   ? 'bg-slate-700 text-slate-100'
                   : 'bg-slate-800 text-slate-400 hover:bg-slate-750 hover:text-slate-300'
-                }`}
+              }`}
             >
               {state.label}
             </button>

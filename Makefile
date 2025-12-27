@@ -5,7 +5,7 @@ install:
 	uv sync --all-extras
 
 # Full verification suite - run after every change
-check: types lint test
+check: types lint test ui-check
 	@echo "✅ All checks passed"
 
 # Individual checks
@@ -62,9 +62,13 @@ ui-dev:
 ui-build:
 	cd $(FRONTEND_DIR) && npm run build
 
-# Lint, format, and type check frontend (Biome + tsc)
+# Lint and type check frontend (Biome + tsc)
 ui-check:
 	cd $(FRONTEND_DIR) && npm run check && npm run typecheck
+
+# Auto-fix frontend lint issues
+ui-fix:
+	cd $(FRONTEND_DIR) && npm run fix
 
 # =============================================================================
 # Versioning (bump-my-version)

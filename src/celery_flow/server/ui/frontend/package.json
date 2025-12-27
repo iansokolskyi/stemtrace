@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "biome lint --write .",
-    "format": "biome format --write .",
-    "check": "biome check --write .",
+    "lint": "biome lint .",
+    "format": "biome format .",
+    "check": "biome check .",
+    "fix": "biome check --write .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
