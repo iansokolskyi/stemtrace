@@ -27,14 +27,14 @@ def get_static_router() -> APIRouter | None:
         name="celery-flow-assets",
     )
 
-    @router.get("/")
+    @router.get("/", response_class=HTMLResponse)
     async def serve_index() -> HTMLResponse:
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
             return HTMLResponse("<h1>UI not built</h1>", status_code=503)
         return HTMLResponse(index_path.read_text())
 
-    @router.get("/{path:path}")
+    @router.get("/{path:path}", response_model=None)
     async def serve_spa(path: str) -> FileResponse | HTMLResponse:
         file_path = _FRONTEND_DIR / path
         if file_path.exists() and file_path.is_file():
