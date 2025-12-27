@@ -21,3 +21,9 @@ venv/
 
 # IDE
 .idea/
+
+# Frontend
+node_modules/
+src/celery_flow/server/ui/frontend/dist/
+src/celery_flow/server/ui/frontend/.tsr/
+src/celery_flow/server/ui/frontend/src/routeTree.gen.ts

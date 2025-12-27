@@ -1,0 +1,165 @@
+"""REST API endpoints for celery-flow."""
+
+from __future__ import annotations
+
+import contextlib
+from typing import TYPE_CHECKING, Annotated
+
+from fastapi import APIRouter, HTTPException, Query
+
+from celery_flow.server.api.schemas import (
+    ErrorResponse,
+    GraphListResponse,
+    GraphNodeResponse,
+    GraphResponse,
+    HealthResponse,
+    TaskDetailResponse,
+    TaskEventResponse,
+    TaskListResponse,
+    TaskNodeResponse,
+)
+
+if TYPE_CHECKING:
+    from celery_flow.core.events import TaskState
+    from celery_flow.core.graph import TaskNode
+    from celery_flow.server.consumer import AsyncEventConsumer
+    from celery_flow.server.store import GraphStore
+    from celery_flow.server.websocket import WebSocketManager
+
+
+def _node_to_response(node: TaskNode) -> TaskNodeResponse:
+    first_seen = node.events[0].timestamp if node.events else None
+    last_updated = node.events[-1].timestamp if node.events else None
+
+    duration_ms = None
+    if first_seen and last_updated and first_seen != last_updated:
+        duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+
+    return TaskNodeResponse(
+        task_id=node.task_id,
+        name=node.name,
+        state=node.state,
+        parent_id=node.parent_id,
+        children=node.children,
+        events=[TaskEventResponse.model_validate(e) for e in node.events],
+        first_seen=first_seen,
+        last_updated=last_updated,
+        duration_ms=duration_ms,
+    )
+
+
+def _node_to_graph_response(node: TaskNode) -> GraphNodeResponse:
+    return GraphNodeResponse(
+        task_id=node.task_id,
+        name=node.name,
+        state=node.state,
+        parent_id=node.parent_id,
+        children=node.children,
+    )
+
+
+def create_api_router(
+    store: GraphStore,
+    consumer: AsyncEventConsumer | None = None,
+    ws_manager: WebSocketManager | None = None,
+) -> APIRouter:
+    """Create REST API router with task and graph endpoints."""
+    router = APIRouter(prefix="/api", tags=["celery-flow"])
+
+    @router.get("/health", response_model=HealthResponse)
+    async def health() -> HealthResponse:
+        return HealthResponse(
+            status="ok",
+            consumer_running=consumer.is_running if consumer else False,
+            websocket_connections=ws_manager.connection_count if ws_manager else 0,
+            node_count=store.node_count,
+        )
+
+    @router.get(
+        "/tasks",
+        response_model=TaskListResponse,
+        responses={400: {"model": ErrorResponse}},
+    )
+    async def list_tasks(
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        state: Annotated[str | None, Query(description="Filter by task state")] = None,
+        name: Annotated[
+            str | None, Query(description="Filter by name substring")
+        ] = None,
+    ) -> TaskListResponse:
+        from celery_flow.core.events import TaskState as TS
+
+        task_state: TaskState | None = None
+        if state is not None:
+            with contextlib.suppress(ValueError):
+                task_state = TS(state)
+
+        nodes = store.get_nodes(
+            limit=limit,
+            offset=offset,
+            state=task_state,
+            name_contains=name,
+        )
+        return TaskListResponse(
+            tasks=[_node_to_response(n) for n in nodes],
+            total=store.node_count,
+            limit=limit,
+            offset=offset,
+        )
+
+    @router.get(
+        "/tasks/{task_id}",
+        response_model=TaskDetailResponse,
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_task(task_id: str) -> TaskDetailResponse:
+        node = store.get_node(task_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        children = store.get_children(task_id)
+        return TaskDetailResponse(
+            task=_node_to_response(node),
+            children=[_node_to_response(c) for c in children],
+        )
+
+    @router.get(
+        "/tasks/{task_id}/children",
+        response_model=list[TaskNodeResponse],
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_task_children(task_id: str) -> list[TaskNodeResponse]:
+        node = store.get_node(task_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        children = store.get_children(task_id)
+        return [_node_to_response(c) for c in children]
+
+    @router.get("/graphs", response_model=GraphListResponse)
+    async def list_graphs(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> GraphListResponse:
+        roots = store.get_root_nodes(limit=limit)
+        return GraphListResponse(
+            graphs=[_node_to_graph_response(r) for r in roots],
+            total=len(roots),
+        )
+
+    @router.get(
+        "/graphs/{root_id}",
+        response_model=GraphResponse,
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_graph(root_id: str) -> GraphResponse:
+        graph = store.get_graph_from_root(root_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
+
+        return GraphResponse(
+            root_id=root_id,
+            nodes={tid: _node_to_graph_response(n) for tid, n in graph.items()},
+        )
+
+    return router

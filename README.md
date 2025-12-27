@@ -139,7 +139,7 @@ celery-flow server \
 | Broker | URL Scheme | Status |
 |--------|------------|--------|
 | Redis | `redis://`, `rediss://` | ✅ Supported |
-| RabbitMQ | `amqp://`, `amqps://` | ✅ Supported |
+| RabbitMQ | `amqp://`, `amqps://` | 🚧 Planned |
 | Amazon SQS | `sqs://` | 🚧 Planned |
 
 ## 🐳 Docker
@@ -175,35 +175,14 @@ Mount celery-flow directly into your existing FastAPI application — no separat
 ### Basic Setup
 
 ```bash
-pip install celery-flow[fastapi]
+pip install celery-flow[server]
 ```
 
 ```python
 from fastapi import FastAPI
-from celery_flow.fastapi import create_router
+from celery_flow.server import CeleryFlowExtension
 
-app = FastAPI()
-
-# Mount celery-flow at /celery-flow
-app.include_router(
-    create_router(broker_url="redis://localhost:6379/0"),
-    prefix="/celery-flow",
-)
-```
-
-### With Embedded Consumer
-
-For development or simple deployments, run the event consumer as a background task:
-
-```python
-from fastapi import FastAPI
-from celery_flow.fastapi import CeleryFlowExtension
-
-flow = CeleryFlowExtension(
-    broker_url="redis://localhost:6379/0",
-    embedded_consumer=True,  # Run consumer in background
-)
-
+flow = CeleryFlowExtension(broker_url="redis://localhost:6379/0")
 app = FastAPI(lifespan=flow.lifespan)
 app.include_router(flow.router, prefix="/celery-flow")
 ```
@@ -214,31 +193,28 @@ Use your existing auth middleware:
 
 ```python
 from fastapi import Depends
-from celery_flow.fastapi import create_router
+from celery_flow.server import CeleryFlowExtension
 from your_app.auth import require_admin
 
-app.include_router(
-    create_router(
-        broker_url="redis://localhost:6379/0",
-        auth_dependency=Depends(require_admin),
-    ),
-    prefix="/celery-flow",
+flow = CeleryFlowExtension(
+    broker_url="redis://localhost:6379/0",
+    auth_dependency=Depends(require_admin),
 )
+app = FastAPI(lifespan=flow.lifespan)
+app.include_router(flow.router, prefix="/celery-flow")
 ```
 
-Or use built-in basic auth:
+Or use built-in auth helpers:
 
 ```python
-from celery_flow.fastapi import create_router
-from celery_flow.fastapi.auth import basic_auth
+from celery_flow.server import CeleryFlowExtension, require_basic_auth
 
-app.include_router(
-    create_router(
-        broker_url="redis://localhost:6379/0",
-        auth_dependency=basic_auth(users={"admin": "secret"}),
-    ),
-    prefix="/celery-flow",
+flow = CeleryFlowExtension(
+    broker_url="redis://localhost:6379/0",
+    auth_dependency=require_basic_auth("admin", "secret"),
 )
+app = FastAPI(lifespan=flow.lifespan)
+app.include_router(flow.router, prefix="/celery-flow")
 ```
 
 ### Deployment Options
@@ -250,12 +226,13 @@ app.include_router(
 
 ## 🗺️ Roadmap
 
-- [ ] Task lifecycle tracking via signals
-- [ ] Broker-agnostic event transport
-- [ ] FastAPI pluggable integration
-- [ ] React SPA dashboard
-- [ ] Task flow graph visualization
-- [ ] Execution timeline view
+- [x] Task lifecycle tracking via signals
+- [x] Broker-agnostic event transport (Redis Streams)
+- [x] FastAPI pluggable integration
+- [x] React SPA dashboard with real-time WebSocket updates
+- [x] Task flow graph visualization
+- [x] Execution timeline view
+- [ ] RabbitMQ transport
 - [ ] Trace ID correlation
 - [ ] OpenTelemetry export
 - [ ] Task duration heatmaps

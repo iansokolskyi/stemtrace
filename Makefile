@@ -1,4 +1,4 @@
-.PHONY: check types lint format test coverage clean
+.PHONY: check types lint format test coverage clean ui-install ui-dev ui-build
 
 # Full verification suite - run after every change
 check: types lint test
@@ -40,4 +40,25 @@ coverage:
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# =============================================================================
+# Frontend (React UI)
+# =============================================================================
+FRONTEND_DIR := src/celery_flow/server/ui/frontend
+
+# Install frontend dependencies
+ui-install:
+	cd $(FRONTEND_DIR) && npm install
+
+# Run frontend dev server (with HMR)
+ui-dev:
+	cd $(FRONTEND_DIR) && npm run dev
+
+# Build frontend for production
+ui-build:
+	cd $(FRONTEND_DIR) && npm run build
+
+# Lint, format, and type check frontend (Biome + tsc)
+ui-check:
+	cd $(FRONTEND_DIR) && npm run check && npm run typecheck
 
