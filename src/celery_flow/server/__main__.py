@@ -35,11 +35,23 @@ def server(
         typer.Option("--reload", help="Enable auto-reload (development)"),
     ] = False,
 ) -> None:
-    """Start the celery-flow web server."""
+    """Start the celery-flow web server with embedded consumer."""
+    import uvicorn
+    from fastapi import FastAPI
+
+    from celery_flow.server.fastapi.extension import CeleryFlowExtension
+
     typer.echo(f"Starting celery-flow server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
-    # TODO: Implement actual server startup with uvicorn
-    _ = reload
+
+    extension = CeleryFlowExtension(broker_url=broker_url)
+    fastapi_app = FastAPI(
+        title="celery-flow",
+        lifespan=extension.lifespan,
+    )
+    fastapi_app.include_router(extension.router)
+
+    uvicorn.run(fastapi_app, host=host, port=port, reload=reload)
 
 
 @app.command()
@@ -53,11 +65,48 @@ def consume(
             help="Broker URL for consuming events",
         ),
     ],
+    prefix: Annotated[
+        str,
+        typer.Option("--prefix", help="Stream key prefix"),
+    ] = "celery_flow",
+    ttl: Annotated[
+        int,
+        typer.Option("--ttl", help="Event TTL in seconds"),
+    ] = 86400,
 ) -> None:
-    """Run the event consumer (standalone mode)."""
-    typer.echo("Starting celery-flow consumer")
+    """Run the event consumer standalone (for external processing)."""
+    import signal
+    import sys
+
+    from celery_flow.server.consumer import EventConsumer
+    from celery_flow.server.store import GraphStore
+
+    typer.echo("Starting celery-flow consumer (standalone mode)")
     typer.echo(f"Broker: {broker_url}")
-    # TODO: Implement actual consumer
+
+    store = GraphStore()
+    consumer = EventConsumer(broker_url, store, prefix=prefix, ttl=ttl)
+
+    def handle_signal(_signum: int, _frame: object) -> None:
+        typer.echo("\nShutting down consumer...")
+        consumer.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    consumer.start()
+    typer.echo("Consumer running. Press Ctrl+C to stop.")
+
+    # Block until stopped
+    try:
+        signal.pause()
+    except AttributeError:
+        # Windows doesn't have signal.pause
+        import time
+
+        while consumer.is_running:
+            time.sleep(1)
 
 
 @app.command()
