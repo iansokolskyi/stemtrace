@@ -49,8 +49,8 @@ def require_api_key(api_key: str, *, header_name: str = "X-API-Key") -> Any:
     """Create dependency requiring API key in header."""
     key_header = APIKeyHeader(name=header_name, auto_error=False)
 
-    def _verify(
-        provided_key: Annotated[str | None, Depends(key_header)],
+    async def _verify(
+        provided_key: str | None = Depends(key_header),
     ) -> str:
         if provided_key is None:
             raise HTTPException(
