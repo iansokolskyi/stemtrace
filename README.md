@@ -14,7 +14,7 @@
 
 > **Flower answers "what exists". celery-flow answers "what happened".**
 
-celery-flow visualizes Celery task execution flows, helping you debug complex workflows by showing task graphs, timelines, retries, and parent-child relationships.
+`celery-flow` visualizes Celery task execution flows, helping you debug complex workflows by showing task graphs, timelines, retries, and parent-child relationships.
 
 ## ✨ Features
 
@@ -64,12 +64,12 @@ Open [http://localhost:8000](http://localhost:8000) and watch your task flows co
 celery-flow is designed as two decoupled components:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Your Application                         │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │ Celery Worker│    │ Celery Worker│    │ Celery Worker│       │
-│  │  + celery_flow│   │  + celery_flow│   │  + celery_flow│      │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘       │
+┌──────────────────────────────────────────────────────────────────┐
+│                        Your Application                          │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐        │
+│  │ Celery Worker│    │ Celery Worker│    │ Celery Worker│        │
+│  │ + celery_flow│    │ + celery_flow│    │ + celery_flow│        │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘        │
 │         │                   │                   │                │
 │         └───────────────────┼───────────────────┘                │
 │                             │ events                             │
