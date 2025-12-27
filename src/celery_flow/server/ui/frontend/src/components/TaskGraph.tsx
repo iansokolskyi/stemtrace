@@ -15,8 +15,8 @@ import {
 } from '@xyflow/react'
 import { useCallback, useMemo } from 'react'
 import '@xyflow/react/dist/style.css'
-import type { GraphNode } from '@/api/client'
 import { Link } from '@tanstack/react-router'
+import type { GraphNode } from '@/api/client'
 
 interface TaskGraphProps {
   nodes: Record<string, GraphNode>

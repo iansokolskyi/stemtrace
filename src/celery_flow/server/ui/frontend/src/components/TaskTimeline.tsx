@@ -2,8 +2,8 @@
  * Timeline/Gantt view of task execution.
  */
 
-import { useTasks } from '@/api/queries'
 import { clsx } from 'clsx'
+import { useTasks } from '@/api/queries'
 
 interface TaskTimelineProps {
   filters: {

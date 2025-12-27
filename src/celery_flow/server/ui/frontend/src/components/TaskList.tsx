@@ -2,8 +2,8 @@
  * Task list component with pagination.
  */
 
-import { useTasks } from '@/api/queries'
 import { Link } from '@tanstack/react-router'
+import { useTasks } from '@/api/queries'
 import { TaskStateBadge } from './TaskStateBadge'
 
 interface TaskListProps {

@@ -23,7 +23,8 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.0",
+    "@biomejs/biome": "^2.3.10",
+    "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/router-cli": "^1.144.0",
     "@tanstack/router-devtools": "^1.82.0",
     "@tanstack/router-plugin": "^1.79.0",
@@ -31,9 +32,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^5.1.2",
-    "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.15",
+    "tailwindcss": "^4.1.18",
     "typescript": "~5.9.3",
     "vite": "^7.3.0"
   }

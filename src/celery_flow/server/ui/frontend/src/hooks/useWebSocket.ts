@@ -2,9 +2,9 @@
  * WebSocket hook for real-time task updates.
  */
 
-import type { TaskEvent } from '@/api/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { TaskEvent } from '@/api/client'
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 

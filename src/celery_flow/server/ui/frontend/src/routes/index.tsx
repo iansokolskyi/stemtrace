@@ -1,8 +1,8 @@
+import { createFileRoute } from '@tanstack/react-router'
+import { useState } from 'react'
 import { Filters } from '@/components/Filters'
 import { TaskList } from '@/components/TaskList'
 import { TaskTimeline } from '@/components/TaskTimeline'
-import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
 
 export const Route = createFileRoute('/')({
   component: TasksPage,

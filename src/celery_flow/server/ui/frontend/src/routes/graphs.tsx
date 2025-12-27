@@ -1,6 +1,6 @@
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useGraphs } from '@/api/queries'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
-import { Link, createFileRoute } from '@tanstack/react-router'
 
 export const Route = createFileRoute('/graphs')({
   component: GraphsPage,

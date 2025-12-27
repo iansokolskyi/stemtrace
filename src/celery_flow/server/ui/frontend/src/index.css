@@ -1,60 +1,57 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  :root {
-    --color-pending: #6b7280;
-    --color-received: #6b7280;
-    --color-started: #3b82f6;
-    --color-success: #22c55e;
-    --color-failure: #ef4444;
-    --color-retry: #f59e0b;
-    --color-revoked: #8b5cf6;
-    --color-rejected: #dc2626;
-  }
+@theme {
+  --font-sans: "JetBrains Mono", ui-monospace, monospace;
 
-  body {
-    @apply antialiased;
-  }
+  /* Task state colors */
+  --color-pending: #6b7280;
+  --color-received: #6b7280;
+  --color-started: #3b82f6;
+  --color-success: #22c55e;
+  --color-failure: #ef4444;
+  --color-retry: #f59e0b;
+  --color-revoked: #8b5cf6;
+  --color-rejected: #dc2626;
 }
 
-@layer components {
-  .task-state-badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
-  }
+body {
+  @apply antialiased;
+}
 
-  .task-state-pending {
-    @apply bg-gray-500/20 text-gray-400;
-  }
+.task-state-badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+}
 
-  .task-state-received {
-    @apply bg-gray-500/20 text-gray-400;
-  }
+.task-state-pending {
+  @apply bg-gray-500/20 text-gray-400;
+}
 
-  .task-state-started {
-    @apply bg-blue-500/20 text-blue-400;
-  }
+.task-state-received {
+  @apply bg-gray-500/20 text-gray-400;
+}
 
-  .task-state-success {
-    @apply bg-green-500/20 text-green-400;
-  }
+.task-state-started {
+  @apply bg-blue-500/20 text-blue-400;
+}
 
-  .task-state-failure {
-    @apply bg-red-500/20 text-red-400;
-  }
+.task-state-success {
+  @apply bg-green-500/20 text-green-400;
+}
 
-  .task-state-retry {
-    @apply bg-amber-500/20 text-amber-400;
-  }
+.task-state-failure {
+  @apply bg-red-500/20 text-red-400;
+}
 
-  .task-state-revoked {
-    @apply bg-purple-500/20 text-purple-400;
-  }
+.task-state-retry {
+  @apply bg-amber-500/20 text-amber-400;
+}
 
-  .task-state-rejected {
-    @apply bg-red-600/20 text-red-500;
-  }
+.task-state-revoked {
+  @apply bg-purple-500/20 text-purple-400;
+}
+
+.task-state-rejected {
+  @apply bg-red-600/20 text-red-500;
 }
 
 /* React Flow customization */
