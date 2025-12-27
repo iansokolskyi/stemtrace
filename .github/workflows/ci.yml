@@ -139,9 +139,6 @@ jobs:
         run: npm ci
         working-directory: src/celery_flow/server/ui/frontend
 
-      - name: Install build tools
-        run: uv tool install build twine
-
       - name: Build package
         run: uvx --from build pyproject-build
 
