@@ -116,10 +116,6 @@ pytest --cov=celery_flow --cov-report=term-missing
    - Link related issues
    - Wait for CI to pass
 
-## Architecture Guidelines
-
-See `.cursor/rules/architecture.mdc` for detailed architecture rules.
-
 ### Key Principles
 
 - **core/** - Pure Python, no external dependencies
