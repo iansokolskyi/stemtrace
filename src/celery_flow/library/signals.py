@@ -1,6 +1,7 @@
 """Celery signal handlers for task lifecycle events."""
 
 import logging
+import threading
 import traceback as tb_module
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 _transport: EventTransport | None = None
 # Track task IDs that have received PENDING to avoid duplicates from retries
 _pending_emitted: set[str] = set()
+_pending_emitted_lock = threading.RLock()
 
 
 def _publish_event(event: TaskEvent) -> None:
@@ -312,10 +314,11 @@ def _on_task_sent(
         return
 
     # Skip if we've already emitted PENDING for this task (handles retry re-queues)
-    if task_id in _pending_emitted:
-        return
-
-    _pending_emitted.add(task_id)
+    # Use lock to make check-then-add atomic and prevent duplicates from concurrent threads
+    with _pending_emitted_lock:
+        if task_id in _pending_emitted:
+            return
+        _pending_emitted.add(task_id)
 
     task_name = task or sender or "unknown"
 
