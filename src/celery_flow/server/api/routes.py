@@ -13,10 +13,12 @@ from celery_flow.server.api.schemas import (
     GraphNodeResponse,
     GraphResponse,
     HealthResponse,
+    RegisteredTaskResponse,
     TaskDetailResponse,
     TaskEventResponse,
     TaskListResponse,
     TaskNodeResponse,
+    TaskRegistryResponse,
 )
 
 if TYPE_CHECKING:
@@ -107,6 +109,38 @@ def create_api_router(
             limit=limit,
             offset=offset,
         )
+
+    @router.get(
+        "/tasks/registry",
+        response_model=TaskRegistryResponse,
+    )
+    async def get_task_registry(
+        query: Annotated[
+            str | None, Query(description="Filter by task name substring")
+        ] = None,
+    ) -> TaskRegistryResponse:
+        """List all discovered task definitions."""
+        unique_names = store.get_unique_task_names()
+
+        tasks: list[RegisteredTaskResponse] = []
+        for name in sorted(unique_names):
+            if query and query.lower() not in name.lower():
+                continue
+
+            parts = name.rsplit(".", 1)
+            module = parts[0] if len(parts) > 1 else None
+
+            tasks.append(
+                RegisteredTaskResponse(
+                    name=name,
+                    module=module,
+                    signature=None,
+                    docstring=None,
+                    bound=False,
+                )
+            )
+
+        return TaskRegistryResponse(tasks=tasks, total=len(tasks))
 
     @router.get(
         "/tasks/{task_id}",

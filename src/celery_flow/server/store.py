@@ -126,6 +126,11 @@ class GraphStore:
         with self._lock:
             return len(self._graph.nodes)
 
+    def get_unique_task_names(self) -> set[str]:
+        """Get all unique task names seen in events."""
+        with self._lock:
+            return {node.name for node in self._graph.nodes.values()}
+
     def _maybe_evict(self) -> None:
         """Evict oldest 10% when over capacity. Call with lock held."""
         if len(self._graph.nodes) <= self._max_nodes:
