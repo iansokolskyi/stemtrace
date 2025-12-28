@@ -231,7 +231,7 @@ def run_demo(demo_name: str) -> None:
         "workflow": lambda: workflow_example.delay(),
         "retry": lambda: fetch_api_data.delay(
             "https://api.example.com/data",
-            api_key="sk-secret-key-12345",
+            api_key="sk-secret-key-12345",  # gitleaks:allow - demo credential
         ),
         "scrub": lambda: process_user_data.delay(
             user_id=42,

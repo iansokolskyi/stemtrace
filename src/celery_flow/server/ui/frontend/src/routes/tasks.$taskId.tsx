@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
@@ -245,7 +245,7 @@ function sortEventsByTime(events: TaskEvent[]): TaskEvent[] {
 
 function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const segments = buildSegments(events)
+  const segments = useMemo(() => buildSegments(events), [events])
 
   if (segments.length === 0) return null
 

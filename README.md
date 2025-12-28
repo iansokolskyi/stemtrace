@@ -68,7 +68,7 @@ See [Deployment Options](#️-deployment-options) for FastAPI integration and pr
 
 celery-flow is designed as two decoupled components:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Your Application                          │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐        │

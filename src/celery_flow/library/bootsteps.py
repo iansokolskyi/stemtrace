@@ -41,10 +41,11 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 
     def __init__(
         self,
-        consumer: Consumer,  # noqa: ARG002
-        **kwargs: Any,  # noqa: ARG002
+        consumer: Consumer,
+        **kwargs: Any,
     ) -> None:
         """Initialize the bootstep."""
+        super().__init__(consumer, **kwargs)
         self._original_strategy: dict[str, Any] = {}
 
     def start(self, consumer: Consumer) -> None:
