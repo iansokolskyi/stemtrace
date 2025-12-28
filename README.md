@@ -140,7 +140,6 @@ By default, celery-flow scrubs common sensitive keys from task arguments:
 - Session: `cookie`, `session`, `csrf`
 
 Scrubbed values appear as `[Filtered]` in the UI.
-
 ### Environment Variables
 
 | Variable | Description | Default |
@@ -225,7 +224,6 @@ celery-flow consume
 # Terminal 2: Run API server (separate process, shares state via broker)
 celery-flow server
 ```
-
 ### Option 2: FastAPI Embedded
 
 Mount celery-flow directly into your existing FastAPI application:
