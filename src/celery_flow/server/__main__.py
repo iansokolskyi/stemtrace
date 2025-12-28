@@ -19,9 +19,9 @@ def server(
             "--broker-url",
             "-b",
             envvar="CELERY_FLOW_BROKER_URL",
-            help="Broker URL for consuming events",
+            help="Broker URL (default: redis://localhost:6379/0)",
         ),
-    ],
+    ] = "redis://localhost:6379/0",
     host: Annotated[
         str,
         typer.Option("--host", "-h", help="Host to bind to"),
@@ -44,12 +44,22 @@ def server(
     typer.echo(f"Starting celery-flow server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
 
-    extension = CeleryFlowExtension(broker_url=broker_url)
+    from celery_flow.server.ui.static import get_static_router
+
+    # Create extension without UI (we'll serve UI at root separately)
+    extension = CeleryFlowExtension(broker_url=broker_url, serve_ui=False)
     fastapi_app = FastAPI(
         title="celery-flow",
         lifespan=extension.lifespan,
     )
-    fastapi_app.include_router(extension.router)
+
+    # API and WebSocket at /celery-flow (frontend expects this path)
+    fastapi_app.include_router(extension.router, prefix="/celery-flow")
+
+    # UI at root for standalone CLI
+    ui_router = get_static_router()
+    if ui_router is not None:
+        fastapi_app.include_router(ui_router)
 
     uvicorn.run(fastapi_app, host=host, port=port, reload=reload)
 
@@ -62,9 +72,9 @@ def consume(
             "--broker-url",
             "-b",
             envvar="CELERY_FLOW_BROKER_URL",
-            help="Broker URL for consuming events",
+            help="Broker URL (default: redis://localhost:6379/0)",
         ),
-    ],
+    ] = "redis://localhost:6379/0",
     prefix: Annotated[
         str,
         typer.Option("--prefix", help="Stream key prefix"),
