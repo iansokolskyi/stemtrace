@@ -31,7 +31,7 @@ function GraphsPage() {
           {data.graphs.map((graph) => (
             <Link
               key={graph.task_id}
-              to="/graphs/$rootId"
+              to="/graph/$rootId"
               params={{ rootId: graph.task_id }}
               className="bg-slate-900 rounded-xl border border-slate-800 p-6 hover:border-slate-700 transition-colors"
             >

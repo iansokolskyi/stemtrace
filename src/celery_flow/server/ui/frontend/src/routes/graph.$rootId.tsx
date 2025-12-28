@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useGraph } from '@/api/queries'
 import { TaskGraph } from '@/components/TaskGraph'
 
-export const Route = createFileRoute('/graphs/$rootId')({
+export const Route = createFileRoute('/graph/$rootId')({
   component: GraphDetailPage,
 })
 

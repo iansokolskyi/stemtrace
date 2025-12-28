@@ -67,11 +67,13 @@ class TestInit:
             transport_url="memory://",
             prefix="custom_prefix",
             ttl=3600,
-            redact_args=False,
+            capture_args=False,
+            scrub_sensitive_data=False,
         )
 
         config = get_config()
         assert config is not None
         assert config.prefix == "custom_prefix"
         assert config.ttl == 3600
-        assert config.redact_args is False
+        assert config.capture_args is False
+        assert config.scrub_sensitive_data is False

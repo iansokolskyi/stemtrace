@@ -15,6 +15,25 @@ export interface TaskEvent {
   root_id: string | null
   trace_id: string | null
   retries: number
+  // Enhanced event data
+  args: unknown[] | null
+  kwargs: Record<string, unknown> | null
+  result: unknown | null
+  exception: string | null
+  traceback: string | null
+}
+
+export interface RegisteredTask {
+  name: string
+  signature: string | null
+  docstring: string | null
+  module: string | null
+  bound: boolean
+}
+
+export interface TaskRegistryResponse {
+  tasks: RegisteredTask[]
+  total: number
 }
 
 export interface TaskNode {
@@ -107,5 +126,14 @@ export async function fetchGraph(rootId: string): Promise<GraphResponse> {
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE}/health`)
   if (!response.ok) throw new Error('Failed to fetch health')
+  return response.json()
+}
+
+export async function fetchTaskRegistry(query?: string): Promise<TaskRegistryResponse> {
+  const url = query
+    ? `${API_BASE}/tasks/registry?query=${encodeURIComponent(query)}`
+    : `${API_BASE}/tasks/registry`
+  const response = await fetch(url)
+  if (!response.ok) throw new Error('Failed to fetch task registry')
   return response.json()
 }

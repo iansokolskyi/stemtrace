@@ -1,26 +1,14 @@
-/**
- * Timeline/Gantt view of task execution.
- */
-
+import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
+import type { TaskNode } from '@/api/client'
 import { useTasks } from '@/api/queries'
+import { formatDuration, stateColors, TERMINAL_STATES, TimelineBar } from './TimelineBar'
 
 interface TaskTimelineProps {
   filters: {
     state: string | undefined
     name: string
   }
-}
-
-const stateColors: Record<string, string> = {
-  PENDING: 'bg-gray-500',
-  RECEIVED: 'bg-gray-500',
-  STARTED: 'bg-blue-500',
-  SUCCESS: 'bg-green-500',
-  FAILURE: 'bg-red-500',
-  RETRY: 'bg-amber-500',
-  REVOKED: 'bg-purple-500',
-  REJECTED: 'bg-red-600',
 }
 
 export function TaskTimeline({ filters }: TaskTimelineProps) {
@@ -47,7 +35,6 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
     )
   }
 
-  // Calculate time range
   const tasks = data.tasks.filter((t) => t.first_seen && t.last_updated)
   if (tasks.length === 0) {
     return <div className="text-center py-12 text-slate-400">No timing data available</div>
@@ -63,63 +50,70 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
 
   return (
     <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 overflow-x-auto">
-      {/* Time axis */}
       <div className="flex justify-between text-xs text-slate-500 mb-4 pl-48">
         <span>{formatTime(new Date(minTime))}</span>
         <span>{formatTime(new Date(minTime + range / 2))}</span>
         <span>{formatTime(new Date(maxTime))}</span>
       </div>
 
-      {/* Task bars */}
       <div className="space-y-2">
-        {tasks.map((task) => {
-          const start = new Date(task.first_seen!).getTime()
-          const end = new Date(task.last_updated!).getTime()
-          const left = ((start - minTime) / range) * 100
-          const width = Math.max(((end - start) / range) * 100, 1)
-
-          return (
-            <div key={task.task_id} className="flex items-center gap-4 h-8">
-              {/* Task name */}
-              <div className="w-44 truncate text-sm text-slate-300" title={task.name}>
-                {task.name.split('.').pop()}
-              </div>
-
-              {/* Timeline bar */}
-              <div className="flex-1 relative h-6 bg-slate-800/50 rounded">
-                <div
-                  className={clsx(
-                    'absolute h-full rounded transition-all',
-                    stateColors[task.state] ?? 'bg-gray-500',
-                  )}
-                  style={{
-                    left: `${left}%`,
-                    width: `${width}%`,
-                    minWidth: '4px',
-                  }}
-                  title={`${task.duration_ms ?? 0}ms`}
-                />
-              </div>
-
-              {/* Duration */}
-              <div className="w-16 text-right text-xs text-slate-500 font-mono">
-                {task.duration_ms !== null ? `${task.duration_ms}ms` : '-'}
-              </div>
-            </div>
-          )
-        })}
+        {tasks.map((task) => (
+          <TaskTimelineRow key={task.task_id} task={task} minTime={minTime} range={range} />
+        ))}
       </div>
 
-      {/* Legend */}
-      <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400">
-        {Object.entries(stateColors)
-          .slice(0, 5)
-          .map(([state, color]) => (
-            <div key={state} className="flex items-center gap-1.5">
-              <div className={clsx('w-3 h-3 rounded', color)} />
-              <span>{state}</span>
-            </div>
-          ))}
+      <div className="flex flex-wrap gap-4 mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400">
+        {Object.entries(stateColors).map(([state, color]) => (
+          <div key={state} className="flex items-center gap-1.5">
+            <div
+              className={clsx('h-3 rounded', color, TERMINAL_STATES.has(state) ? 'w-2' : 'w-3')}
+            />
+            <span>{state}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+interface TaskTimelineRowProps {
+  task: TaskNode
+  minTime: number
+  range: number
+}
+
+function TaskTimelineRow({ task, minTime, range }: TaskTimelineRowProps) {
+  const taskStart = task.first_seen ? new Date(task.first_seen).getTime() : minTime
+  const taskStartPct = ((taskStart - minTime) / range) * 100
+  const wouldOverflow = taskStartPct > 85
+
+  return (
+    <div className="flex items-center gap-4 h-8 group">
+      <Link
+        to="/tasks/$taskId"
+        params={{ taskId: task.task_id }}
+        className="w-44 truncate text-sm text-slate-300 hover:text-emerald-400 transition-colors"
+        title={task.name}
+      >
+        {task.name.split('.').pop()}
+      </Link>
+
+      <div className="flex-1 relative h-6">
+        <div className="absolute inset-0 bg-slate-800/50 rounded" />
+        <div
+          className="absolute h-full"
+          style={
+            wouldOverflow
+              ? { right: 0, minWidth: '80px', maxWidth: '200px' }
+              : { left: `${taskStartPct}%`, minWidth: '80px', maxWidth: '200px' }
+          }
+        >
+          <TimelineBar events={task.events} height="sm" />
+        </div>
+      </div>
+
+      <div className="w-20 text-right text-xs text-slate-500 font-mono">
+        {task.duration_ms !== null ? formatDuration(task.duration_ms) : '-'}
       </div>
     </div>
   )
@@ -138,7 +132,7 @@ function TimelineSkeleton() {
           <div key={i} className="flex items-center gap-4 h-8">
             <div className="w-44 h-4 bg-slate-800 rounded" />
             <div className="flex-1 h-6 bg-slate-800 rounded" />
-            <div className="w-16 h-4 bg-slate-800 rounded" />
+            <div className="w-20 h-4 bg-slate-800 rounded" />
           </div>
         ))}
       </div>

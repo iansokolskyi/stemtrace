@@ -1,6 +1,7 @@
 """API response schemas for REST endpoints."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -8,7 +9,7 @@ from celery_flow.core.events import TaskState
 
 
 class TaskEventResponse(BaseModel):
-    """Single task event."""
+    """Single task event with full details."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -20,6 +21,13 @@ class TaskEventResponse(BaseModel):
     root_id: str | None = None
     trace_id: str | None = None
     retries: int = 0
+
+    # Enhanced event data
+    args: list[Any] | None = None
+    kwargs: dict[str, Any] | None = None
+    result: Any | None = None
+    exception: str | None = None
+    traceback: str | None = None
 
 
 class TaskNodeResponse(BaseModel):
@@ -92,3 +100,23 @@ class ErrorResponse(BaseModel):
 
     detail: str
     error_code: str | None = None
+
+
+# Task Registry schemas
+
+
+class RegisteredTaskResponse(BaseModel):
+    """A registered Celery task definition."""
+
+    name: str
+    signature: str | None = None
+    docstring: str | None = None
+    module: str | None = None
+    bound: bool = False
+
+
+class TaskRegistryResponse(BaseModel):
+    """List of all registered tasks."""
+
+    tasks: list[RegisteredTaskResponse]
+    total: int

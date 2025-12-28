@@ -6,12 +6,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from celery_flow.core.events import TaskState
+from celery_flow.library.config import CeleryFlowConfig, set_config
 from celery_flow.library.signals import (
     _on_task_failure,
     _on_task_postrun,
     _on_task_prerun,
     _on_task_retry,
     _on_task_revoked,
+    _on_task_sent,
     connect_signals,
     disconnect_signals,
 )
@@ -26,7 +28,15 @@ def clean_transport() -> None:
 
 
 @pytest.fixture
-def transport() -> MemoryTransport:
+def config() -> CeleryFlowConfig:
+    """Set up default config for tests."""
+    cfg = CeleryFlowConfig(transport_url="memory://")
+    set_config(cfg)
+    return cfg
+
+
+@pytest.fixture
+def transport(config: CeleryFlowConfig) -> MemoryTransport:
     """Create and connect a MemoryTransport."""
     transport = MemoryTransport()
     connect_signals(transport)
@@ -129,6 +139,41 @@ class TestTaskPrerun:
         assert event.parent_id is None
         assert event.root_id is None
 
+    def test_captures_args_and_kwargs(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_prerun captures args and kwargs."""
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=("arg1", 42),
+            kwargs={"key": "value", "count": 10},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.args == ["arg1", 42]
+        assert event.kwargs == {"key": "value", "count": 10}
+
+    def test_scrubs_sensitive_kwargs(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_prerun scrubs sensitive data in kwargs."""
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=(),
+            kwargs={"username": "alice", "password": "secret123"},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.kwargs is not None
+        assert event.kwargs["username"] == "alice"
+        assert event.kwargs["password"] == "[Filtered]"
+
     def test_captures_parent_and_root(
         self,
         transport: MemoryTransport,
@@ -186,6 +231,24 @@ class TestTaskPostrun:
         assert len(MemoryTransport.events) == 1
         event = MemoryTransport.events[0]
         assert event.state == TaskState.SUCCESS
+
+    def test_captures_result(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_postrun captures the return value."""
+        _on_task_postrun(
+            task_id="task-123",
+            task=mock_task,
+            args=(),
+            kwargs={},
+            retval={"sum": 42, "count": 3},
+            state="SUCCESS",
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.result == {"sum": 42, "count": 3}
 
     def test_ignores_failure_state(
         self,
@@ -248,6 +311,27 @@ class TestTaskFailure:
         assert event.task_id == "task-123"
         assert event.state == TaskState.FAILURE
 
+    def test_captures_exception_message(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_failure captures the exception message."""
+        exception = ConnectionError("Connection refused")
+
+        _on_task_failure(
+            task_id="task-123",
+            exception=exception,
+            args=(),
+            kwargs={},
+            traceback=None,
+            einfo=None,
+            sender=mock_task,
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.exception == "ConnectionError: Connection refused"
+
 
 class TestTaskRetry:
     """Tests for task_retry signal handler."""
@@ -274,7 +358,53 @@ class TestTaskRetry:
         assert len(MemoryTransport.events) == 1
         event = MemoryTransport.events[0]
         assert event.state == TaskState.RETRY
-        assert event.retries == 2  # Incremented for new retry
+        assert event.retries == 1  # Same as the attempt that failed
+
+    def test_captures_exception_reason(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_retry captures exception when reason is an exception."""
+        request = MagicMock()
+        request.id = "task-123"
+        request.parent_id = None
+        request.root_id = None
+        request.retries = 0
+
+        reason = TimeoutError("Request timed out")
+
+        _on_task_retry(
+            sender=mock_task,
+            request=request,
+            reason=reason,
+            einfo=None,
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.exception == "TimeoutError: Request timed out"
+
+    def test_captures_string_reason(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_retry captures string reason."""
+        request = MagicMock()
+        request.id = "task-123"
+        request.parent_id = None
+        request.root_id = None
+        request.retries = 0
+
+        _on_task_retry(
+            sender=mock_task,
+            request=request,
+            reason="Max retries exceeded",
+            einfo=None,
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.exception == "Max retries exceeded"
 
 
 class TestTaskRevoked:
@@ -303,6 +433,95 @@ class TestTaskRevoked:
         assert len(MemoryTransport.events) == 1
         event = MemoryTransport.events[0]
         assert event.state == TaskState.REVOKED
+
+
+class TestTaskSent:
+    """Tests for task_sent signal handler (PENDING state)."""
+
+    def test_emits_pending_event(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_sent emits PENDING event."""
+        _on_task_sent(
+            sender="tests.sample_task",
+            task_id="task-123",
+            task="tests.sample_task",
+            args=(),
+            kwargs={},
+        )
+
+        assert len(MemoryTransport.events) == 1
+        event = MemoryTransport.events[0]
+        assert event.task_id == "task-123"
+        assert event.name == "tests.sample_task"
+        assert event.state == TaskState.PENDING
+
+    def test_captures_args_and_kwargs(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_sent captures args and kwargs."""
+        _on_task_sent(
+            sender="tests.sample_task",
+            task_id="task-123",
+            task="tests.sample_task",
+            args=("hello", 42),
+            kwargs={"key": "value"},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.args == ["hello", 42]
+        assert event.kwargs == {"key": "value"}
+
+    def test_scrubs_sensitive_kwargs(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_sent scrubs sensitive data in kwargs."""
+        _on_task_sent(
+            sender="tests.sample_task",
+            task_id="task-123",
+            task="tests.sample_task",
+            args=(),
+            kwargs={"password": "secret123", "username": "alice"},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.kwargs is not None
+        assert event.kwargs["password"] == "[Filtered]"
+        assert event.kwargs["username"] == "alice"
+
+    def test_handles_missing_task_id(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_sent ignores calls without task_id."""
+        _on_task_sent(
+            sender="tests.sample_task",
+            task_id=None,
+            task="tests.sample_task",
+            args=(),
+            kwargs={},
+        )
+
+        assert len(MemoryTransport.events) == 0
+
+    def test_uses_sender_as_fallback_name(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_sent uses sender if task is None."""
+        _on_task_sent(
+            sender="tests.fallback_task",
+            task_id="task-123",
+            task=None,
+            args=(),
+            kwargs={},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.name == "tests.fallback_task"
 
 
 class TestFireAndForget:

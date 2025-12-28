@@ -2,18 +2,36 @@
 """Example: Celery application with celery-flow instrumentation.
 
 This example shows how to instrument a Celery application to emit
-task events for visualization.
+task events for visualization, including:
+- Task arguments and results capture
+- Sensitive data scrubbing (passwords, API keys, etc.)
+- Exception and traceback capture for retries/failures
 
 Usage:
     # Install dependencies
     pip install celery-flow[redis]
-    
+
+    # Start Redis
+    docker run -d -p 6379:6379 redis:alpine
+
     # Start worker
     celery -A examples.celery_app worker --loglevel=info
-    
-    # Run some tasks
-    python -c "from examples.celery_app import *; workflow_example.delay()"
+
+    # Start celery-flow server (in another terminal)
+    celery-flow server
+
+    # Run demo tasks
+    python examples/celery_app.py workflow  # Complex workflow
+    python examples/celery_app.py retry     # Retry with exceptions
+    python examples/celery_app.py scrub     # Sensitive data scrubbing
+    python examples/celery_app.py fail      # Permanent failure
 """
+
+from __future__ import annotations
+
+import random
+import sys
+from typing import Any
 
 from celery import Celery, chain, group
 
@@ -30,22 +48,33 @@ app = Celery(
 init(app)
 
 
-# Example tasks
-@app.task(bind=True)
+# =============================================================================
+# Basic Tasks
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.add")
 def add(self, x: int, y: int) -> int:
     """Simple addition task."""
     return x + y
 
 
-@app.task(bind=True)
+@app.task(bind=True, name="examples.celery_app.multiply")
 def multiply(self, x: int, y: int) -> int:
     """Simple multiplication task."""
     return x * y
 
 
-@app.task(bind=True)
+@app.task(bind=True, name="examples.celery_app.process_data")
 def process_data(self, data: list[int]) -> dict[str, int]:
-    """Process a list of numbers."""
+    """Process a list of numbers.
+
+    Args:
+        data: List of integers to process.
+
+    Returns:
+        Dictionary with sum, count, and average.
+    """
     return {
         "sum": sum(data),
         "count": len(data),
@@ -53,7 +82,7 @@ def process_data(self, data: list[int]) -> dict[str, int]:
     }
 
 
-@app.task(bind=True)
+@app.task(bind=True, name="examples.celery_app.aggregate_results")
 def aggregate_results(self, results: list[dict[str, int]]) -> dict[str, int]:
     """Aggregate multiple results."""
     total = sum(r.get("sum", 0) for r in results)
@@ -61,7 +90,12 @@ def aggregate_results(self, results: list[dict[str, int]]) -> dict[str, int]:
     return {"total": total, "count": count}
 
 
-@app.task(bind=True)
+# =============================================================================
+# Workflow Demo
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.workflow_example")
 def workflow_example(self) -> str:
     """Run a complex workflow to demonstrate task graphs.
 
@@ -70,7 +104,6 @@ def workflow_example(self) -> str:
     - A chain of sequential tasks
     - Nested child tasks
     """
-    # Create a workflow: parallel processing then aggregation
     workflow = chain(
         group(
             process_data.s([1, 2, 3]),
@@ -84,19 +117,143 @@ def workflow_example(self) -> str:
     return f"Started workflow: {result.id}"
 
 
-@app.task(bind=True, max_retries=3)
+# =============================================================================
+# Retry Demo - Shows exception capture on retry
+# =============================================================================
+
+
+@app.task(
+    bind=True,
+    name="examples.celery_app.fetch_api_data",
+    max_retries=3,
+    autoretry_for=(ConnectionError,),
+    retry_backoff=True,
+    retry_backoff_max=10,
+)
+def fetch_api_data(self, url: str, api_key: str) -> dict[str, Any]:
+    """Fetch data from external API.
+
+    Demonstrates:
+    - Sensitive data scrubbing (api_key -> [Filtered])
+    - Real exception on retry (ConnectionError)
+    - Result capture on success
+
+    Args:
+        url: API endpoint URL.
+        api_key: API authentication key (will be scrubbed in UI).
+
+    Returns:
+        Mock API response data.
+    """
+    # Simulate random connection failures (70% chance)
+    if random.random() < 0.7:  # noqa: S311
+        raise ConnectionError(f"Failed to connect to {url}")
+
+    return {"data": [1, 2, 3], "source": url, "status": "success"}
+
+
+# =============================================================================
+# Sensitive Data Scrubbing Demo
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.process_user_data")
+def process_user_data(
+    self,
+    user_id: int,
+    email: str,
+    password: str,
+    credit_card: str,
+) -> dict[str, str]:
+    """Process user registration.
+
+    Demonstrates sensitive data scrubbing - password and credit_card
+    will appear as [Filtered] in the celery-flow UI.
+
+    Args:
+        user_id: User identifier.
+        email: User email (not sensitive).
+        password: User password (SENSITIVE - will be scrubbed).
+        credit_card: Payment info (SENSITIVE - will be scrubbed).
+
+    Returns:
+        Registration status.
+    """
+    # In real code, you'd hash the password and process payment
+    return {
+        "user_id": str(user_id),
+        "email": email,
+        "status": "created",
+    }
+
+
+# =============================================================================
+# Failure Demo - Shows exception and traceback capture
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.always_fails", max_retries=1)
+def always_fails(self, message: str) -> None:
+    """A task that always fails.
+
+    Demonstrates FAILURE state with full traceback visible in the UI.
+
+    Args:
+        message: Error message to include.
+
+    Raises:
+        ValueError: Always raised to demonstrate failure capture.
+    """
+    raise ValueError(f"Intentional failure: {message}")
+
+
+# =============================================================================
+# Legacy flaky task (kept for backwards compatibility)
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.flaky_task", max_retries=3)
 def flaky_task(self) -> str:
     """A task that might fail and retry."""
-    import random
-
     if random.random() < 0.5:  # noqa: S311
         raise self.retry(countdown=1)
     return "Success!"
 
 
-if __name__ == "__main__":
-    # Run a sample workflow
-    print("Starting workflow...")  # noqa: T201
-    result = workflow_example.delay()
-    print(f"Workflow started: {result.id}")  # noqa: T201
+# =============================================================================
+# Demo Runner
+# =============================================================================
 
+
+def run_demo(demo_name: str) -> None:
+    """Run a specific demo by name."""
+    demos = {
+        "workflow": lambda: workflow_example.delay(),
+        "retry": lambda: fetch_api_data.delay(
+            "https://api.example.com/data",
+            api_key="sk-secret-key-12345",
+        ),
+        "scrub": lambda: process_user_data.delay(
+            user_id=42,
+            email="alice@example.com",
+            password="hunter2",
+            credit_card="4111-1111-1111-1111",
+        ),
+        "fail": lambda: always_fails.delay("testing failure state"),
+        "add": lambda: add.delay(2, 3),
+        "multiply": lambda: multiply.delay(4, 5),
+    }
+
+    if demo_name not in demos:
+        print(f"Unknown demo: {demo_name}")  # noqa: T201
+        print(f"Available demos: {', '.join(demos.keys())}")  # noqa: T201
+        sys.exit(1)
+
+    result = demos[demo_name]()
+    print(f"Started '{demo_name}' demo: {result.id}")  # noqa: T201
+    print("View at: http://localhost:8000/celery-flow/")  # noqa: T201
+
+
+if __name__ == "__main__":
+    demo = sys.argv[1] if len(sys.argv) > 1 else "workflow"
+    run_demo(demo)

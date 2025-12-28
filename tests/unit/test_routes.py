@@ -298,3 +298,74 @@ class TestTaskNodeResponse:
         data = response.json()
 
         assert len(data["task"]["events"]) == 3
+
+
+class TestTaskRegistryEndpoint:
+    """Tests for the task registry endpoint."""
+
+    def test_registry_empty(self, client: TestClient) -> None:
+        """Empty store returns empty registry."""
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["tasks"] == []
+        assert data["total"] == 0
+
+    def test_registry_returns_unique_tasks(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry returns unique task names from events."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.add"))
+        store.add_event(make_event.create("task-2", name="myapp.tasks.multiply"))
+        store.add_event(
+            make_event.create("task-3", name="myapp.tasks.add")
+        )  # Duplicate
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        assert data["total"] == 2
+        names = [t["name"] for t in data["tasks"]]
+        assert "myapp.tasks.add" in names
+        assert "myapp.tasks.multiply" in names
+
+    def test_registry_extracts_module(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry extracts module from task name."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.process_data"))
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        assert data["tasks"][0]["module"] == "myapp.tasks"
+
+    def test_registry_filter_by_query(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry filters tasks by query string."""
+        store.add_event(make_event.create("task-1", name="myapp.tasks.add"))
+        store.add_event(make_event.create("task-2", name="myapp.tasks.multiply"))
+        store.add_event(make_event.create("task-3", name="otherapp.tasks.process"))
+
+        response = client.get("/api/tasks/registry?query=myapp")
+        data = response.json()
+
+        assert data["total"] == 2
+        for task in data["tasks"]:
+            assert "myapp" in task["name"]
+
+    def test_registry_sorted_alphabetically(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry returns tasks sorted alphabetically."""
+        store.add_event(make_event.create("task-1", name="z_task"))
+        store.add_event(make_event.create("task-2", name="a_task"))
+        store.add_event(make_event.create("task-3", name="m_task"))
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        names = [t["name"] for t in data["tasks"]]
+        assert names == ["a_task", "m_task", "z_task"]

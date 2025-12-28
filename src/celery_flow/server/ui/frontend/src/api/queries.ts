@@ -8,12 +8,14 @@ import {
   fetchGraphs,
   fetchHealth,
   fetchTask,
+  fetchTaskRegistry,
   fetchTasks,
   type GraphListResponse,
   type GraphResponse,
   type HealthResponse,
   type TaskDetailResponse,
   type TaskListResponse,
+  type TaskRegistryResponse,
 } from './client'
 
 export function useTasks(params?: {
@@ -58,5 +60,13 @@ export function useHealth() {
     queryKey: ['health'],
     queryFn: fetchHealth,
     refetchInterval: 10000,
+  })
+}
+
+export function useTaskRegistry(query?: string) {
+  return useQuery<TaskRegistryResponse>({
+    queryKey: ['taskRegistry', query],
+    queryFn: () => fetchTaskRegistry(query),
+    refetchInterval: 30000, // Refresh every 30 seconds
   })
 }

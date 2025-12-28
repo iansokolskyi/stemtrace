@@ -20,7 +20,9 @@ class TestCeleryFlowConfig:
         assert config.transport_url == "redis://localhost:6379/0"
         assert config.prefix == "celery_flow"
         assert config.ttl == 86400
-        assert config.redact_args is True
+        assert config.capture_args is True
+        assert config.capture_result is True
+        assert config.scrub_sensitive_data is True
 
     def test_create_with_all_fields(self) -> None:
         """Config can be created with all custom values."""
@@ -28,13 +30,17 @@ class TestCeleryFlowConfig:
             transport_url="redis://custom:6379/1",
             prefix="myapp_flow",
             ttl=3600,
-            redact_args=False,
+            capture_args=False,
+            capture_result=False,
+            scrub_sensitive_data=False,
         )
 
         assert config.transport_url == "redis://custom:6379/1"
         assert config.prefix == "myapp_flow"
         assert config.ttl == 3600
-        assert config.redact_args is False
+        assert config.capture_args is False
+        assert config.capture_result is False
+        assert config.scrub_sensitive_data is False
 
     def test_config_is_frozen(self) -> None:
         """Config is immutable after creation."""

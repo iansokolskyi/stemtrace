@@ -42,6 +42,12 @@ function RootLayout() {
               >
                 Graphs
               </Link>
+              <Link
+                to="/registry"
+                className="text-sm text-slate-400 hover:text-slate-100 transition-colors [&.active]:text-slate-100"
+              >
+                Registry
+              </Link>
             </nav>
 
             {/* Status indicator */}
