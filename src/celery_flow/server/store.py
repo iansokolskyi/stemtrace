@@ -9,6 +9,28 @@ from typing import TYPE_CHECKING
 
 from celery_flow.core.graph import NodeType, TaskGraph, TaskNode
 
+
+def _ensure_tz_aware(dt: datetime) -> datetime:
+    """Ensure datetime is timezone-aware (assume UTC if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _ensure_end_of_day(dt: datetime) -> datetime:
+    """Ensure to_date is end of day and timezone-aware.
+
+    When a date-only value (YYYY-MM-DD) is parsed, it becomes midnight.
+    For to_date filtering, we want end of day to include the full day.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    # If time is midnight (date-only input), set to end of day
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return dt
+
+
 # Fallback for nodes with no events (synthetic nodes)
 _MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -27,6 +49,24 @@ def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
                 child_timestamps.append(child.events[-1].timestamp)
         if child_timestamps:
             return max(child_timestamps)
+
+    return _MIN_DATETIME
+
+
+def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
+    """Get the first timestamp for a node (including children for synthetic nodes)."""
+    if node.events:
+        return node.events[0].timestamp
+
+    # For synthetic nodes (GROUP/CHORD), use the earliest child timestamp
+    if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
+        child_timestamps: list[datetime] = []
+        for child_id in node.children:
+            child = graph.get_node(child_id)
+            if child and child.events:
+                child_timestamps.append(child.events[0].timestamp)
+        if child_timestamps:
+            return min(child_timestamps)
 
     return _MIN_DATETIME
 
@@ -69,8 +109,14 @@ class GraphStore:
         offset: int = 0,
         state: TaskState | None = None,
         name_contains: str | None = None,
-    ) -> list[TaskNode]:
-        """Get nodes with optional filtering, most recent first."""
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> tuple[list[TaskNode], int]:
+        """Get nodes with optional filtering, most recent first.
+
+        Returns:
+            Tuple of (filtered nodes, total count matching filters).
+        """
         with self._lock:
             nodes = list(self._graph.nodes.values())
 
@@ -79,27 +125,63 @@ class GraphStore:
         if name_contains is not None:
             name_lower = name_contains.lower()
             nodes = [n for n in nodes if name_lower in n.name.lower()]
+        if from_date is not None:
+            from_dt = _ensure_tz_aware(from_date)
+            nodes = [n for n in nodes if n.events and n.events[-1].timestamp >= from_dt]
+        if to_date is not None:
+            to_dt = _ensure_end_of_day(to_date)
+            nodes = [n for n in nodes if n.events and n.events[0].timestamp <= to_dt]
 
         nodes.sort(
             key=lambda n: n.events[-1].timestamp if n.events else _MIN_DATETIME,
             reverse=True,
         )
-        return nodes[offset : offset + limit]
+        total = len(nodes)
+        return nodes[offset : offset + limit], total
 
-    def get_root_nodes(self, limit: int = 50) -> list[TaskNode]:
-        """Get root nodes (no parent), most recent first."""
+    def get_root_nodes(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> tuple[list[TaskNode], int]:
+        """Get root nodes (no parent), most recent first.
+
+        Returns:
+            Tuple of (filtered root nodes, total count matching filters).
+        """
         with self._lock:
             root_nodes = [
                 self._graph.nodes[rid]
                 for rid in self._graph.root_ids
                 if rid in self._graph.nodes
             ]
+
+            # Date filtering - use child timestamps for synthetic nodes
+            if from_date is not None:
+                from_dt = _ensure_tz_aware(from_date)
+                root_nodes = [
+                    n
+                    for n in root_nodes
+                    if _get_node_timestamp(n, self._graph) >= from_dt
+                ]
+            if to_date is not None:
+                to_dt = _ensure_end_of_day(to_date)
+                root_nodes = [
+                    n
+                    for n in root_nodes
+                    if _get_first_timestamp(n, self._graph) <= to_dt
+                ]
+
             # Sort while holding lock since we need access to graph for children
             root_nodes.sort(
                 key=lambda n: _get_node_timestamp(n, self._graph),
                 reverse=True,
             )
-        return root_nodes[:limit]
+            total = len(root_nodes)
+        return root_nodes[offset : offset + limit], total
 
     def get_children(self, task_id: str) -> list[TaskNode]:
         """Get child nodes of a task."""

@@ -1,23 +1,34 @@
 /**
- * Task list component with pagination.
+ * Task list component with infinite scroll.
  */
 
 import { Link } from '@tanstack/react-router'
-import { useTasks } from '@/api/queries'
+import { useTasksInfinite } from '@/api/queries'
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { TaskStateBadge } from './TaskStateBadge'
 
 interface TaskListProps {
   filters: {
     state: string | undefined
     name: string
+    from_date?: string
+    to_date?: string
   }
 }
 
 export function TaskList({ filters }: TaskListProps) {
-  const { data, isLoading, error } = useTasks({
-    state: filters.state,
-    name: filters.name || undefined,
-    limit: 50,
+  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
+    useTasksInfinite({
+      state: filters.state,
+      name: filters.name || undefined,
+      from_date: filters.from_date,
+      to_date: filters.to_date,
+    })
+
+  const { lastElementRef } = useInfiniteScroll({
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
   })
 
   if (isLoading) {
@@ -32,42 +43,52 @@ export function TaskList({ filters }: TaskListProps) {
     )
   }
 
-  if (!data?.tasks.length) {
+  const allTasks = data?.pages.flatMap((page) => page.tasks) ?? []
+  const total = data?.pages[0]?.total ?? 0
+
+  if (!allTasks.length) {
     return <EmptyState />
   }
 
   return (
     <div className="space-y-2">
-      {data.tasks.map((task) => (
-        <Link
-          key={task.task_id}
-          to="/tasks/$taskId"
-          params={{ taskId: task.task_id }}
-          className="flex items-center justify-between p-4 bg-slate-900 rounded-lg border border-slate-800 hover:border-slate-700 transition-colors"
-        >
-          <div className="flex items-center gap-4 min-w-0">
-            <TaskStateBadge state={task.state} />
-            <div className="min-w-0">
-              <p className="text-slate-200 truncate">{task.name}</p>
-              <p className="text-xs text-slate-500 font-mono">{task.task_id.slice(0, 8)}...</p>
+      {allTasks.map((task, index) => {
+        const isLast = index === allTasks.length - 1
+        return (
+          <Link
+            key={task.task_id}
+            ref={isLast ? lastElementRef : undefined}
+            to="/tasks/$taskId"
+            params={{ taskId: task.task_id }}
+            className="flex items-center justify-between p-4 bg-slate-900 rounded-lg border border-slate-800 hover:border-slate-700 transition-colors"
+          >
+            <div className="flex items-center gap-4 min-w-0">
+              <TaskStateBadge state={task.state} />
+              <div className="min-w-0">
+                <p className="text-slate-200 truncate">{task.name}</p>
+                <p className="text-xs text-slate-500 font-mono">{task.task_id.slice(0, 8)}...</p>
+              </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-6 text-sm text-slate-400">
-            {task.duration_ms !== null && <span className="font-mono">{task.duration_ms}ms</span>}
-            {task.children.length > 0 && (
-              <span className="text-xs bg-slate-800 px-2 py-0.5 rounded">
-                {task.children.length} children
-              </span>
-            )}
-            <span className="text-xs">{formatRelativeTime(task.last_updated)}</span>
-          </div>
-        </Link>
-      ))}
+            <div className="flex items-center gap-6 text-sm text-slate-400">
+              {task.duration_ms !== null && <span className="font-mono">{task.duration_ms}ms</span>}
+              {task.children.length > 0 && (
+                <span className="text-xs bg-slate-800 px-2 py-0.5 rounded">
+                  {task.children.length} children
+                </span>
+              )}
+              <span className="text-xs">{formatRelativeTime(task.last_updated)}</span>
+            </div>
+          </Link>
+        )
+      })}
+
+      {/* Loading indicator */}
+      {isFetchingNextPage && <LoadingMore />}
 
       {/* Pagination info */}
       <div className="text-center text-sm text-slate-500 pt-4">
-        Showing {data.tasks.length} of {data.total} tasks
+        Showing {allTasks.length} of {total} tasks
       </div>
     </div>
   )
@@ -93,6 +114,37 @@ function EmptyState() {
       <p className="text-sm text-slate-500 mt-1">
         Try adjusting your filters or run some Celery tasks
       </p>
+    </div>
+  )
+}
+
+function LoadingMore() {
+  return (
+    <div className="flex justify-center py-4">
+      <div className="flex items-center gap-2 text-sm text-slate-400">
+        <svg
+          className="animate-spin h-4 w-4"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          />
+        </svg>
+        Loading more...
+      </div>
     </div>
   )
 }

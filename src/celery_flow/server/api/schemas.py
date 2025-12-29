@@ -91,10 +91,12 @@ class GraphResponse(BaseModel):
 
 
 class GraphListResponse(BaseModel):
-    """List of root graphs."""
+    """Paginated list of root graphs."""
 
     graphs: list[GraphNodeResponse]
     total: int
+    limit: int
+    offset: int
 
 
 class HealthResponse(BaseModel):

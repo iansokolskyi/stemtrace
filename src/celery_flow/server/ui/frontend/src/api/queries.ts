@@ -5,9 +5,11 @@
  * When WS is connected, real-time updates come via WS invalidation.
  */
 
-import { useQuery } from '@tanstack/react-query'
+import { type InfiniteData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
 import {
+  type FetchGraphsParams,
+  type FetchTasksParams,
   fetchGraph,
   fetchGraphs,
   fetchHealth,
@@ -24,19 +26,42 @@ import {
 
 // Polling interval when WebSocket is disconnected
 const POLL_INTERVAL = 5000
+const PAGE_SIZE = 50
 
-export function useTasks(params?: {
-  limit?: number
-  offset?: number
-  state?: string
-  name?: string
-}) {
+export function useTasks(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<TaskListResponse>({
     queryKey: ['tasks', params],
-    queryFn: () => fetchTasks(params),
+    queryFn: () => fetchTasks({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
+    refetchInterval: isConnected ? false : POLL_INTERVAL,
+  })
+}
+
+export function useTasksInfinite(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
+  const { isConnected } = useWebSocketContext()
+
+  return useInfiniteQuery<
+    TaskListResponse,
+    Error,
+    InfiniteData<TaskListResponse>,
+    unknown[],
+    number
+  >({
+    queryKey: ['tasks-infinite', params],
+    queryFn: ({ pageParam }) =>
+      fetchTasks({
+        ...params,
+        limit: PAGE_SIZE,
+        offset: pageParam,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit
+      return nextOffset < lastPage.total ? nextOffset : undefined
+    },
+    // Only poll first page when WS is disconnected
     refetchInterval: isConnected ? false : POLL_INTERVAL,
   })
 }
@@ -53,13 +78,40 @@ export function useTask(taskId: string) {
   })
 }
 
-export function useGraphs(limit?: number) {
+export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<GraphListResponse>({
-    queryKey: ['graphs', limit],
-    queryFn: () => fetchGraphs(limit),
+    queryKey: ['graphs', params],
+    queryFn: () => fetchGraphs({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
+    refetchInterval: isConnected ? false : POLL_INTERVAL,
+  })
+}
+
+export function useGraphsInfinite(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) {
+  const { isConnected } = useWebSocketContext()
+
+  return useInfiniteQuery<
+    GraphListResponse,
+    Error,
+    InfiniteData<GraphListResponse>,
+    unknown[],
+    number
+  >({
+    queryKey: ['graphs-infinite', params],
+    queryFn: ({ pageParam }) =>
+      fetchGraphs({
+        ...params,
+        limit: PAGE_SIZE,
+        offset: pageParam,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit
+      return nextOffset < lastPage.total ? nextOffset : undefined
+    },
+    // Only poll first page when WS is disconnected
     refetchInterval: isConnected ? false : POLL_INTERVAL,
   })
 }

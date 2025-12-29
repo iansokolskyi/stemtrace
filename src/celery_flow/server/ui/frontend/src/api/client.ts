@@ -88,6 +88,8 @@ export interface GraphResponse {
 export interface GraphListResponse {
   graphs: GraphNode[]
   total: number
+  limit: number
+  offset: number
 }
 
 export interface HealthResponse {
@@ -97,18 +99,31 @@ export interface HealthResponse {
   node_count: number
 }
 
-// API functions
-export async function fetchTasks(params?: {
+export interface FetchTasksParams {
   limit?: number
   offset?: number
   state?: string
   name?: string
-}): Promise<TaskListResponse> {
+  from_date?: string
+  to_date?: string
+}
+
+export interface FetchGraphsParams {
+  limit?: number
+  offset?: number
+  from_date?: string
+  to_date?: string
+}
+
+// API functions
+export async function fetchTasks(params?: FetchTasksParams): Promise<TaskListResponse> {
   const searchParams = new URLSearchParams()
   if (params?.limit) searchParams.set('limit', params.limit.toString())
   if (params?.offset) searchParams.set('offset', params.offset.toString())
   if (params?.state) searchParams.set('state', params.state)
   if (params?.name) searchParams.set('name', params.name)
+  if (params?.from_date) searchParams.set('from_date', params.from_date)
+  if (params?.to_date) searchParams.set('to_date', params.to_date)
 
   const url = `${API_BASE}/tasks${searchParams.toString() ? `?${searchParams}` : ''}`
   const response = await fetch(url)
@@ -122,8 +137,14 @@ export async function fetchTask(taskId: string): Promise<TaskDetailResponse> {
   return response.json()
 }
 
-export async function fetchGraphs(limit?: number): Promise<GraphListResponse> {
-  const url = limit ? `${API_BASE}/graphs?limit=${limit}` : `${API_BASE}/graphs`
+export async function fetchGraphs(params?: FetchGraphsParams): Promise<GraphListResponse> {
+  const searchParams = new URLSearchParams()
+  if (params?.limit) searchParams.set('limit', params.limit.toString())
+  if (params?.offset) searchParams.set('offset', params.offset.toString())
+  if (params?.from_date) searchParams.set('from_date', params.from_date)
+  if (params?.to_date) searchParams.set('to_date', params.to_date)
+
+  const url = `${API_BASE}/graphs${searchParams.toString() ? `?${searchParams}` : ''}`
   const response = await fetch(url)
   if (!response.ok) throw new Error('Failed to fetch graphs')
   return response.json()

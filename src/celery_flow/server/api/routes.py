@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime  # noqa: TC003 (FastAPI needs this at runtime)
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, HTTPException, Query
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 from celery_flow.server.api.schemas import (
     ErrorResponse,
@@ -126,8 +124,14 @@ def create_api_router(
         name: Annotated[
             str | None, Query(description="Filter by name substring")
         ] = None,
+        from_date: Annotated[
+            datetime | None, Query(description="Filter by start date (ISO format)")
+        ] = None,
+        to_date: Annotated[
+            datetime | None, Query(description="Filter by end date (ISO format)")
+        ] = None,
     ) -> TaskListResponse:
-        """List tasks with optional filtering by state and name."""
+        """List tasks with optional filtering by state, name, and date range."""
         from celery_flow.core.events import TaskState as TS
 
         task_state: TaskState | None = None
@@ -135,15 +139,17 @@ def create_api_router(
             with contextlib.suppress(ValueError):
                 task_state = TS(state)
 
-        nodes = store.get_nodes(
+        nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
             state=task_state,
             name_contains=name,
+            from_date=from_date,
+            to_date=to_date,
         )
         return TaskListResponse(
             tasks=[_node_to_response(n) for n in nodes],
-            total=store.node_count,
+            total=total,
             limit=limit,
             offset=offset,
         )
@@ -214,9 +220,21 @@ def create_api_router(
     @router.get("/graphs", response_model=GraphListResponse)
     async def list_graphs(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        from_date: Annotated[
+            datetime | None, Query(description="Filter by start date (ISO format)")
+        ] = None,
+        to_date: Annotated[
+            datetime | None, Query(description="Filter by end date (ISO format)")
+        ] = None,
     ) -> GraphListResponse:
-        """List task execution graphs (root tasks)."""
-        roots = store.get_root_nodes(limit=limit)
+        """List task execution graphs (root tasks) with pagination and date filtering."""
+        roots, total = store.get_root_nodes(
+            limit=limit,
+            offset=offset,
+            from_date=from_date,
+            to_date=to_date,
+        )
         # Build nodes dict for synthetic node timing computation
         all_nodes: dict[str, TaskNode] = {}
         for root in roots:
@@ -225,7 +243,9 @@ def create_api_router(
                 all_nodes[child.task_id] = child
         return GraphListResponse(
             graphs=[_node_to_graph_response(r, all_nodes) for r in roots],
-            total=len(roots),
+            total=total,
+            limit=limit,
+            offset=offset,
         )
 
     @router.get(

@@ -8,6 +8,8 @@ interface TaskTimelineProps {
   filters: {
     state: string | undefined
     name: string
+    from_date?: string
+    to_date?: string
   }
 }
 
@@ -15,7 +17,8 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
   const { data, isLoading, error } = useTasks({
     state: filters.state,
     name: filters.name || undefined,
-    limit: 30,
+    from_date: filters.from_date,
+    to_date: filters.to_date,
   })
 
   if (isLoading) {

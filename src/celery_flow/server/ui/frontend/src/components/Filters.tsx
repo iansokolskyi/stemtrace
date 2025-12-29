@@ -1,13 +1,24 @@
 /**
- * Filter controls for task list.
+ * Filter controls for task list with date range picker.
  */
+
+import type { DateRange } from 'react-day-picker'
+import { formatDateParam, parseDateParam } from '@/utils/format'
+import { DateRangePicker } from './DateRangePicker'
 
 interface FiltersProps {
   filters: {
     state: string | undefined
     name: string
+    from_date?: string
+    to_date?: string
   }
-  onFiltersChange: (filters: { state: string | undefined; name: string }) => void
+  onFiltersChange: (filters: {
+    state: string | undefined
+    name: string
+    from_date?: string
+    to_date?: string
+  }) => void
 }
 
 const STATES = [
@@ -21,6 +32,24 @@ const STATES = [
 ]
 
 export function Filters({ filters, onFiltersChange }: FiltersProps) {
+  const dateRange: DateRange | undefined =
+    filters.from_date || filters.to_date
+      ? {
+          from: parseDateParam(filters.from_date),
+          to: parseDateParam(filters.to_date),
+        }
+      : undefined
+
+  const handleDateChange = (range: DateRange | undefined) => {
+    onFiltersChange({
+      ...filters,
+      from_date: formatDateParam(range?.from),
+      to_date: formatDateParam(range?.to),
+    })
+  }
+
+  const hasActiveFilters = filters.state || filters.name || filters.from_date || filters.to_date
+
   return (
     <div className="flex flex-wrap items-center gap-4 p-4 bg-slate-900/50 rounded-lg border border-slate-800">
       {/* State filter */}
@@ -44,6 +73,12 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
         </div>
       </div>
 
+      {/* Date range picker */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-slate-400">Date:</span>
+        <DateRangePicker value={dateRange} onChange={handleDateChange} />
+      </div>
+
       {/* Name search */}
       <div className="flex items-center gap-2 flex-1 min-w-[200px]">
         <label htmlFor="task-search" className="text-sm text-slate-400">
@@ -60,10 +95,17 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
       </div>
 
       {/* Clear filters */}
-      {(filters.state || filters.name) && (
+      {hasActiveFilters && (
         <button
           type="button"
-          onClick={() => onFiltersChange({ state: undefined, name: '' })}
+          onClick={() =>
+            onFiltersChange({
+              state: undefined,
+              name: '',
+              from_date: undefined,
+              to_date: undefined,
+            })
+          }
           className="text-xs text-slate-500 hover:text-slate-300"
         >
           Clear
