@@ -158,12 +158,12 @@ parallel_group() → add()     # When parent task spawns a group,
                  → add()     # the parent naturally visualizes the grouping
                  → add()
 
-group(a, b, c)  →   GROUP ─→ a     # Orphan groups (no parent task) get a
+group(a, b, c)  →   GROUP ─→ a     # Standalone groups (no parent task) get a
                          ├→ b     # synthetic GROUP node with dashed border
                          └→ c
 ```
 
-- **Smart grouping** — GROUP nodes only appear for orphan groups (no common parent)
+- **Smart grouping** — GROUP nodes only appear for standalone groups (no parent task)
 - **Timing** — Each node displays start time and duration directly in the graph
 - **Aggregate state** — GROUP shows running/success/failure based on member states
 
@@ -327,12 +327,12 @@ app.include_router(flow.router, prefix="/celery-flow")
 - [x] Task registry (browse all discovered tasks)
 - [x] PENDING/RECEIVED state capture
 - [x] E2E test suite (Docker API tests + Playwright browser tests)
-- [x] Canvas graph reconstruction (`group_id` capture, synthetic GROUP nodes)
+- [x] Canvas graph reconstruction (`group_id` capture, synthetic GROUP/CHORD nodes)
+- [x] Chord callback linking (CHORD node → callback edge)
 - [x] Timing display in graph nodes (start time, duration)
 
 ### Planned
 
-- [ ] CHORD node detection (callback linking)
 - [ ] Worker/queue tracking in events
 - [ ] Monitoring APIs (workers, stats, orphan detection)
 - [ ] UI reorganization (Dashboard, unified Executions, enhanced Registry)

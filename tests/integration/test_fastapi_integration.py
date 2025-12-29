@@ -538,10 +538,10 @@ class TestGraphEdgeData:
         assert "child-1" in parent_node["children"]
         assert "child-2" in parent_node["children"]
 
-    def test_orphan_group_is_root_with_children(self) -> None:
-        """Orphan GROUP (no parent) is a root node with children."""
+    def test_standalone_group_is_root_with_children(self) -> None:
+        """Standalone GROUP (no parent task) is a root node with children."""
         store = GraphStore()
-        group_id = "orphan-group"
+        group_id = "standalone-group"
 
         store.add_event(
             TaskEvent(

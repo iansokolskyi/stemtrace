@@ -186,7 +186,7 @@ class TestTaskGraphParentChild:
         assert "child-1" not in graph.root_ids
         assert "child-1" in graph.nodes["parent-1"].children
 
-    def test_child_before_parent_orphaned(self) -> None:
+    def test_child_before_parent_stays_unlinked(self) -> None:
         graph = TaskGraph()
         graph.add_event(
             TaskEvent(

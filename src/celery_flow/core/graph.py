@@ -105,7 +105,7 @@ class TaskGraph(BaseModel):
     def _track_group_member(self, task_id: str, group_id: str) -> None:
         """Track task as member of a group and create synthetic node if needed.
 
-        Only creates a synthetic GROUP node when grouped tasks are orphans.
+        Only creates a synthetic GROUP node when grouped tasks are standalone (no parent task).
         If tasks already share a common parent, that parent visualizes the group.
         Skips adding callback tasks (they're outside the group container).
         """
@@ -133,7 +133,7 @@ class TaskGraph(BaseModel):
         if task_id not in self._group_members[group_id]:
             self._group_members[group_id].append(task_id)
 
-        # Only create GROUP node for orphan groups (no common parent)
+        # Only create GROUP node for standalone groups (no parent task)
         group_node_id = f"group:{group_id}"
         members = self._group_members[group_id]
 
@@ -173,7 +173,7 @@ class TaskGraph(BaseModel):
         """Get common parent_id if all members share the same parent.
 
         Returns the parent_id if all members have the same parent,
-        or None if they have different parents or are orphans.
+        or None if they have different parents or are standalone.
         """
         parents: set[str | None] = set()
         for mid in member_ids:

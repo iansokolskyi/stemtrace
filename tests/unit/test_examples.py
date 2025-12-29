@@ -98,7 +98,7 @@ class TestCeleryAppExample:
         assert callable(run_demo)
 
     def test_demo_options_include_chord(self) -> None:
-        """Demo options include orphan-group and orphan-chord."""
+        """Demo options include standalone-group and standalone-chord."""
         from celery_app import run_demo
 
         # Check the docstring mentions expected demos

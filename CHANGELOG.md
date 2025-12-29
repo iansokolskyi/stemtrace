@@ -27,5 +27,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI commands**: `celery-flow server`, `celery-flow consume`
 - **Docker support**: Multi-stage Dockerfile, docker-compose.yml for local dev
 - **E2E test suite**: Docker API tests + Playwright browser tests
-- **Comprehensive test suite**: 270+ tests, 91% coverage
+- **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
