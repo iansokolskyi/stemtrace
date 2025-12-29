@@ -82,9 +82,9 @@ def _publish_event(event: TaskEvent) -> None:
         )
 
 
-def _get_scrub_config() -> tuple[
-    frozenset[str], frozenset[str] | None, int, bool, bool, bool
-]:
+def _get_scrub_config() -> (
+    tuple[frozenset[str], frozenset[str] | None, int, bool, bool, bool]
+):
     """Get scrubbing configuration.
 
     Returns:

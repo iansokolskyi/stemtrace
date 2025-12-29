@@ -19,5 +19,12 @@ repos:
       # Formatter
       - id: ruff-format
 
-# Note: mypy is run via `make check` with project dependencies installed.
-# Running mypy in pre-commit's isolated environment doesn't work for typed projects.
+  # Local hooks use project environment (uv) for proper dependency access
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy src/ --strict
+        language: system
+        types: [python]
+        pass_filenames: false

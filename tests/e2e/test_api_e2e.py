@@ -162,12 +162,12 @@ class TestWorkflowGraphs:
                 break
             time.sleep(0.5)
 
-        assert process_count >= 3, (
-            f"Expected 3+ process_item tasks, got {process_count}"
-        )
-        assert aggregate_count >= 1, (
-            f"Expected 1+ aggregate tasks, got {aggregate_count}"
-        )
+        assert (
+            process_count >= 3
+        ), f"Expected 3+ process_item tasks, got {process_count}"
+        assert (
+            aggregate_count >= 1
+        ), f"Expected 1+ aggregate tasks, got {aggregate_count}"
 
     def test_graphs_list_shows_root_tasks(self, api_client: httpx.Client) -> None:
         """Verify graphs endpoint lists root tasks."""
@@ -272,9 +272,9 @@ class TestWebSocketUpdates:
 
         # Should have received at least one event
         # (PENDING, RECEIVED, STARTED, SUCCESS)
-        assert len(task_events) >= 1, (
-            f"Expected events for {task_id}, got {len(ws_messages)} messages"
-        )
+        assert (
+            len(task_events) >= 1
+        ), f"Expected events for {task_id}, got {len(ws_messages)} messages"
 
 
 @pytest.mark.e2e
