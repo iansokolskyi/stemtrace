@@ -152,4 +152,3 @@ jobs:
       - name: Stop services
         if: always()
         run: docker compose -f docker-compose.e2e.yml down -v
-

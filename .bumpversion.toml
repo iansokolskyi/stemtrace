@@ -25,4 +25,3 @@ replace = '__version__ = "{new_version}"'
 filename = "src/celery_flow/server/ui/frontend/package.json"
 search = '"version": "{current_version}"'
 replace = '"version": "{new_version}"'
-

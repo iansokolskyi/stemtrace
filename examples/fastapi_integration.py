@@ -45,7 +45,9 @@ async def health() -> dict[str, str]:
     """Health check endpoint."""
     return {
         "status": "ok",
-        "celery_flow_consumer": "running" if flow.consumer and flow.consumer.is_running else "stopped",
+        "celery_flow_consumer": "running"
+        if flow.consumer and flow.consumer.is_running
+        else "stopped",
     }
 
 
@@ -53,4 +55,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

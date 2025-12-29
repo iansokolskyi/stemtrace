@@ -62,4 +62,3 @@ docs/_build/
 !src/celery_flow/server/ui/frontend/src/
 !src/celery_flow/server/ui/frontend/*.config.*
 !src/celery_flow/server/ui/frontend/*.json
-

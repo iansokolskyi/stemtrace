@@ -16,7 +16,7 @@ from celery_flow.server import CeleryFlowExtension, require_basic_auth
 # Configuration
 BROKER_URL = "redis://localhost:6379/0"
 AUTH_USERNAME = "admin"
-AUTH_PASSWORD = "secret"  # noqa: S105 - example only
+AUTH_PASSWORD = "secret"  # - example only
 
 # Create extension with authentication
 flow = CeleryFlowExtension(
@@ -43,4 +43,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

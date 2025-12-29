@@ -257,7 +257,9 @@ def run_demo(demo_name: str) -> None:
     demos = {
         "workflow": lambda: workflow_example.delay(),
         "group": lambda: parallel_group.delay(),
-        "standalone-group": lambda: group(add.s(1, 1), add.s(2, 2), add.s(3, 3)).apply_async(),
+        "standalone-group": lambda: group(
+            add.s(1, 1), add.s(2, 2), add.s(3, 3)
+        ).apply_async(),
         "standalone-chord": lambda: chord(
             group(add.s(10, 10), add.s(20, 20), add.s(30, 30)),
             aggregate_results.s(),
