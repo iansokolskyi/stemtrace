@@ -136,25 +136,31 @@ class TestWorkflowGraphs:
 
     def test_workflow_tasks_are_tracked(self, api_client: httpx.Client) -> None:
         """Submit a workflow and verify all tasks are tracked."""
+        import time
+
         # Create workflow: group of 3 process_item tasks -> aggregate
         workflow = create_workflow([1, 2, 3])
         workflow.apply_async()
 
-        # Give workflow time to complete
-        import time
+        # Poll for workflow completion (all 3 process_item + 1 aggregate)
+        timeout = 30
+        start = time.time()
+        process_count = 0
+        aggregate_count = 0
 
-        time.sleep(5)
+        while time.time() - start < timeout:
+            response = api_client.get("/tasks?limit=50")
+            assert response.status_code == 200
 
-        # Check that workflow tasks appear in tasks list
-        response = api_client.get("/tasks?limit=50")
-        assert response.status_code == 200
+            tasks = response.json()["tasks"]
+            task_names = [t["name"] for t in tasks]
 
-        tasks = response.json()["tasks"]
-        task_names = [t["name"] for t in tasks]
+            process_count = sum(1 for n in task_names if n == "e2e.process_item")
+            aggregate_count = sum(1 for n in task_names if n == "e2e.aggregate")
 
-        # Should have process_item and aggregate tasks
-        process_count = sum(1 for n in task_names if n == "e2e.process_item")
-        aggregate_count = sum(1 for n in task_names if n == "e2e.aggregate")
+            if process_count >= 3 and aggregate_count >= 1:
+                break
+            time.sleep(0.5)
 
         assert process_count >= 3, (
             f"Expected 3+ process_item tasks, got {process_count}"
@@ -210,35 +216,34 @@ class TestWebSocketUpdates:
     def ws_messages(self, ws_url: str) -> Generator[list[dict], None, None]:
         """Collect WebSocket messages in background."""
         import threading
+        import time
 
+        from websockets.exceptions import ConnectionClosed
         from websockets.sync.client import connect
 
         messages: list[dict] = []
         stop_event = threading.Event()
 
-        def collect_messages():
+        def collect_messages() -> None:
             try:
                 with connect(ws_url, close_timeout=1) as ws:
-                    ws.recv_streaming = False
                     while not stop_event.is_set():
                         try:
-                            ws.socket.settimeout(0.5)
-                            msg = ws.recv()
+                            msg = ws.recv(timeout=0.5)
                             if msg:
                                 messages.append(json.loads(msg))
                         except TimeoutError:
                             continue
-                        except Exception:
+                        except ConnectionClosed:
                             break
-            except Exception:
+            except OSError:
+                # Connection failed
                 pass
 
         thread = threading.Thread(target=collect_messages, daemon=True)
         thread.start()
 
         # Give WebSocket time to connect
-        import time
-
         time.sleep(0.5)
 
         yield messages
@@ -268,7 +273,7 @@ class TestWebSocketUpdates:
         # Should have received at least one event
         # (PENDING, RECEIVED, STARTED, SUCCESS)
         assert len(task_events) >= 1, (
-            f"Expected events for {task_id}, got: {ws_messages}"
+            f"Expected events for {task_id}, got {len(ws_messages)} messages"
         )
 
 

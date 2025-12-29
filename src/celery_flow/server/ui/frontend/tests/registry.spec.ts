@@ -28,8 +28,8 @@ test.describe('Registry Page', () => {
     const taskEntries = page.locator('[data-testid="task-name"], .task-name, code, li, tr')
 
     const count = await taskEntries.count()
-    // Should have at least one registered task after running E2E tasks
-    expect(count).toBeGreaterThanOrEqual(0)
+    // Verify page renders (count check is informational)
+    expect(typeof count).toBe('number')
   })
 
   test('has search functionality', async ({ page }) => {
@@ -44,7 +44,7 @@ test.describe('Registry Page', () => {
 
     if (isVisible) {
       await searchInput.fill('e2e')
-      await page.waitForTimeout(500)
+      await page.waitForLoadState('networkidle')
 
       // Results should filter (or show no results message)
       // This verifies search doesn't break the page
@@ -67,7 +67,7 @@ test.describe('Registry Page', () => {
 
     // Search for a known E2E task
     await searchInput.fill('add')
-    await page.waitForTimeout(500)
+    await page.waitForLoadState('networkidle')
 
     // Should show matching results or empty state
     const results = page.locator('code:has-text("add"), .task-name:has-text("add")')
@@ -77,7 +77,7 @@ test.describe('Registry Page', () => {
     const hasEmpty = (await emptyState.count()) > 0
 
     // Either found results or shows empty state - both valid
-    expect(hasResults || hasEmpty || true).toBeTruthy()
+    expect(hasResults || hasEmpty).toBeTruthy()
   })
 
   test('displays task count or statistics', async ({ page }) => {
@@ -89,8 +89,8 @@ test.describe('Registry Page', () => {
     )
 
     const count = await countIndicator.count()
-    // May or may not show counts
-    expect(count).toBeGreaterThanOrEqual(0)
+    // Verify page renders (count check is informational)
+    expect(typeof count).toBe('number')
   })
 })
 
@@ -110,9 +110,10 @@ test.describe('Registry - Task Details', () => {
     }
 
     await taskEntry.click()
-    await page.waitForTimeout(500)
+    await page.waitForLoadState('networkidle')
 
     // Should navigate or show filtered view
-    // Implementation-dependent behavior
+    // Verify page still functional after click
+    await expect(page.locator('body')).toBeVisible()
   })
 })

@@ -63,7 +63,8 @@ test.describe('Tasks Page', () => {
 
     // Should have at least one filter control
     const count = await filterControls.count()
-    expect(count).toBeGreaterThanOrEqual(0) // May not exist if no tasks
+    // Verify page renders (count check is informational)
+    expect(typeof count).toBe('number')
   })
 })
 
@@ -80,13 +81,12 @@ test.describe('Tasks Page - State Filtering', () => {
     const isVisible = await stateFilter.isVisible().catch(() => false)
 
     if (isVisible) {
-      // Select a state
-      await stateFilter.selectOption({ index: 1 }).catch(() => {
-        // May not have options or different structure
-      })
-
-      // URL should update with filter parameter
-      await page.waitForTimeout(500)
+      // Select a state if options exist
+      const options = await stateFilter.locator('option').count()
+      if (options > 1) {
+        await stateFilter.selectOption({ index: 1 })
+        await page.waitForLoadState('networkidle')
+      }
     }
   })
 })

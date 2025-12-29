@@ -46,11 +46,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - CELERY_FLOW_BROKER_URL=redis://redis:6379
+      - CELERY_FLOW_BROKER_URL=redis://redis:6379/0
     depends_on:
       redis:
         condition: service_healthy
-    command: [ "server", "--broker-url", "redis://redis:6379", "--host", "0.0.0.0", "--port", "8000" ]
+    command: [ "server", "--broker-url", "redis://redis:6379/0", "--host", "0.0.0.0", "--port", "8000" ]
     healthcheck:
       # API is at /celery-flow/api/health for CLI mode
       test: [ "CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/celery-flow/api/health').raise_for_status()" ]
