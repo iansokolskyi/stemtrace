@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from celery_flow.core.events import TaskEvent, TaskState
+from celery_flow.core.graph import NodeType
 from celery_flow.server.store import GraphStore
 
 
@@ -339,3 +340,215 @@ class TestGraphStoreEviction:
         assert store.get_node("task-5") is None
         # Newest should remain
         assert store.get_node("task-14") is not None
+
+
+class TestGraphStoreSyntheticNodes:
+    """Tests for synthetic GROUP/CHORD nodes in the store."""
+
+    def test_get_root_nodes_with_synthetic_group(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Synthetic GROUP nodes (no events) should not break sorting."""
+        group_id = "test-group-id"
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="myapp.add",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="myapp.add",
+                state=TaskState.SUCCESS,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+
+        # This triggers GROUP node creation
+        group_node = store.get_node(f"group:{group_id}")
+        assert group_node is not None
+        assert group_node.node_type == NodeType.GROUP
+        assert group_node.events == []  # Synthetic nodes have no events
+
+        # get_root_nodes should not raise TypeError when sorting
+        roots = store.get_root_nodes()
+        root_ids = [r.task_id for r in roots]
+        assert f"group:{group_id}" in root_ids
+
+    def test_get_nodes_with_synthetic_group(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """get_nodes should handle synthetic nodes with no events."""
+        group_id = "test-group-2"
+        store.add_event(
+            TaskEvent(
+                task_id="task-a",
+                name="myapp.mul",
+                state=TaskState.STARTED,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-b",
+                name="myapp.mul",
+                state=TaskState.STARTED,
+                timestamp=make_event._base_time,
+                group_id=group_id,
+            )
+        )
+
+        # Should not raise TypeError
+        nodes = store.get_nodes()
+        assert len(nodes) == 3  # 2 tasks + 1 synthetic group
+
+    def test_eviction_with_synthetic_nodes(self, make_event: type) -> None:
+        """Eviction sorting should handle synthetic nodes."""
+        store = GraphStore(max_nodes=10)
+        group_id = "eviction-group"
+
+        # Add grouped tasks
+        for idx in range(3):
+            store.add_event(
+                TaskEvent(
+                    task_id=f"grouped-{idx}",
+                    name="myapp.task",
+                    state=TaskState.SUCCESS,
+                    timestamp=make_event._base_time,
+                    group_id=group_id,
+                )
+            )
+
+        # Add more tasks to trigger eviction
+        for idx in range(10):
+            store.add_event(make_event.create(f"other-{idx}"))
+
+        # Should not raise during eviction
+        assert store.node_count <= 10
+
+    def test_synthetic_nodes_sorted_by_children_timestamps(
+        self, store: GraphStore
+    ) -> None:
+        """Synthetic nodes should sort by their children's most recent timestamp."""
+        base_time = datetime(2024, 1, 1, tzinfo=UTC)
+
+        # Create an old regular task (first)
+        store.add_event(
+            TaskEvent(
+                task_id="old-task",
+                name="old.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time,
+            )
+        )
+
+        # Create a group with OLD children
+        old_group_id = "old-group"
+        store.add_event(
+            TaskEvent(
+                task_id="old-member-1",
+                name="grouped.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(seconds=1),
+                group_id=old_group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="old-member-2",
+                name="grouped.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(seconds=2),
+                group_id=old_group_id,
+            )
+        )
+
+        # Create a group with NEW children (should appear first)
+        new_group_id = "new-group"
+        store.add_event(
+            TaskEvent(
+                task_id="new-member-1",
+                name="grouped.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(hours=1),
+                group_id=new_group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="new-member-2",
+                name="grouped.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(hours=1, seconds=10),
+                group_id=new_group_id,
+            )
+        )
+
+        roots = store.get_root_nodes()
+        root_ids = [r.task_id for r in roots]
+
+        # Most recent activity should be first (new-group)
+        assert root_ids[0] == f"group:{new_group_id}"
+        assert root_ids[1] == f"group:{old_group_id}"
+        assert root_ids[2] == "old-task"
+
+    def test_newly_updated_synthetic_node_appears_first(
+        self, store: GraphStore
+    ) -> None:
+        """When a group member gets updated, the group should move to the top."""
+        base_time = datetime(2024, 1, 1, tzinfo=UTC)
+
+        # Create a group
+        group_id = "my-group"
+        store.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="grouped.task",
+                state=TaskState.STARTED,
+                timestamp=base_time,
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="member-2",
+                name="grouped.task",
+                state=TaskState.STARTED,
+                timestamp=base_time + timedelta(seconds=1),
+                group_id=group_id,
+            )
+        )
+
+        # Create a regular task later (should initially be first)
+        store.add_event(
+            TaskEvent(
+                task_id="regular-task",
+                name="regular.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(hours=1),
+            )
+        )
+
+        roots = store.get_root_nodes()
+        assert roots[0].task_id == "regular-task"
+
+        # Now update a group member (much later)
+        store.add_event(
+            TaskEvent(
+                task_id="member-1",
+                name="grouped.task",
+                state=TaskState.SUCCESS,
+                timestamp=base_time + timedelta(hours=2),
+                group_id=group_id,
+            )
+        )
+
+        # Group should now be first
+        roots = store.get_root_nodes()
+        assert roots[0].task_id == f"group:{group_id}"

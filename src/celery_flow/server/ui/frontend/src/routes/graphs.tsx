@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useGraphs } from '@/api/queries'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
+import { formatDuration, formatTime } from '@/utils/format'
 
 export const Route = createFileRoute('/graphs')({
   component: GraphsPage,
@@ -11,7 +12,6 @@ function GraphsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-100">Task Graphs</h1>
         <p className="text-sm text-slate-500 mt-1">
@@ -19,7 +19,6 @@ function GraphsPage() {
         </p>
       </div>
 
-      {/* Graph list */}
       {isLoading ? (
         <GraphListSkeleton />
       ) : error ? (
@@ -28,26 +27,43 @@ function GraphsPage() {
         <EmptyState />
       ) : (
         <div className="grid gap-4">
-          {data.graphs.map((graph) => (
-            <Link
-              key={graph.task_id}
-              to="/graph/$rootId"
-              params={{ rootId: graph.task_id }}
-              className="bg-slate-900 rounded-xl border border-slate-800 p-6 hover:border-slate-700 transition-colors"
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="text-lg font-medium text-slate-100">{graph.name}</h3>
-                  <p className="text-sm text-slate-500 font-mono mt-1">{graph.task_id}</p>
-                </div>
-                <TaskStateBadge state={graph.state} />
-              </div>
+          {data.graphs.map((graph) => {
+            const startTime = formatTime(graph.first_seen)
+            const duration = formatDuration(graph.duration_ms)
 
-              <div className="flex items-center gap-4 mt-4 text-sm text-slate-400">
-                <span>{graph.children.length} child tasks</span>
-              </div>
-            </Link>
-          ))}
+            return (
+              <Link
+                key={graph.task_id}
+                to="/graph/$rootId"
+                params={{ rootId: graph.task_id }}
+                className="bg-slate-900 rounded-xl border border-slate-800 p-6 hover:border-slate-700 transition-colors"
+              >
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="text-lg font-medium text-slate-100">{graph.name}</h3>
+                    <p className="text-sm text-slate-500 font-mono mt-1">{graph.task_id}</p>
+                  </div>
+                  <TaskStateBadge state={graph.state} />
+                </div>
+
+                <div className="flex items-center gap-4 mt-4 text-sm text-slate-400">
+                  <span>{graph.children.length} child tasks</span>
+                  {startTime && (
+                    <>
+                      <span className="text-slate-600">·</span>
+                      <span>{startTime}</span>
+                    </>
+                  )}
+                  {duration && (
+                    <>
+                      <span className="text-slate-600">·</span>
+                      <span>{duration}</span>
+                    </>
+                  )}
+                </div>
+              </Link>
+            )
+          })}
         </div>
       )}
     </div>

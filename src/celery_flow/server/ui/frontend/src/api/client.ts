@@ -6,6 +6,8 @@
 export const API_BASE = import.meta.env.DEV ? '/api' : '/celery-flow/api'
 
 // Types matching backend schemas
+export type NodeType = 'TASK' | 'GROUP' | 'CHORD'
+
 export interface TaskEvent {
   task_id: string
   name: string
@@ -13,6 +15,7 @@ export interface TaskEvent {
   timestamp: string
   parent_id: string | null
   root_id: string | null
+  group_id: string | null
   trace_id: string | null
   retries: number
   // Enhanced event data
@@ -40,6 +43,9 @@ export interface TaskNode {
   task_id: string
   name: string
   state: string
+  node_type: NodeType
+  group_id: string | null
+  chord_id: string | null
   parent_id: string | null
   children: string[]
   events: TaskEvent[]
@@ -64,8 +70,14 @@ export interface GraphNode {
   task_id: string
   name: string
   state: string
+  node_type: NodeType
+  group_id: string | null
+  chord_id: string | null
   parent_id: string | null
   children: string[]
+  duration_ms: number | null
+  first_seen: string | null
+  last_updated: string | null
 }
 
 export interface GraphResponse {

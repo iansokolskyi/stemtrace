@@ -33,6 +33,9 @@ class TaskEvent(BaseModel):
         timestamp: When this event occurred.
         parent_id: ID of the parent task that spawned this one.
         root_id: ID of the root task in the workflow.
+        group_id: ID shared by tasks in the same group/chord.
+        chord_id: ID of the group for which this header task's chord will complete.
+        chord_callback_id: Task ID of the chord callback (only set on header tasks).
         trace_id: Optional distributed tracing ID.
         retries: Number of retry attempts so far.
         args: Positional arguments passed to the task (scrubbed).
@@ -50,6 +53,9 @@ class TaskEvent(BaseModel):
     timestamp: datetime
     parent_id: str | None = None
     root_id: str | None = None
+    group_id: str | None = None
+    chord_id: str | None = None
+    chord_callback_id: str | None = None
     trace_id: str | None = None
     retries: int = 0
 

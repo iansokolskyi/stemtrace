@@ -47,3 +47,9 @@ def set_config(config: CeleryFlowConfig) -> None:
     """Set the active configuration."""
     global _config
     _config = config
+
+
+def _reset_config() -> None:
+    """Reset configuration. For testing only."""
+    global _config
+    _config = None

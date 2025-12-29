@@ -4,9 +4,32 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from celery_flow.core.graph import TaskGraph, TaskNode
+from celery_flow.core.graph import NodeType, TaskGraph, TaskNode
+
+# Fallback for nodes with no events (synthetic nodes)
+_MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
+    """Get the most recent timestamp for a node (including children for synthetic nodes)."""
+    if node.events:
+        return node.events[-1].timestamp
+
+    # For synthetic nodes (GROUP/CHORD), use the latest child timestamp
+    if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
+        child_timestamps: list[datetime] = []
+        for child_id in node.children:
+            child = graph.get_node(child_id)
+            if child and child.events:
+                child_timestamps.append(child.events[-1].timestamp)
+        if child_timestamps:
+            return max(child_timestamps)
+
+    return _MIN_DATETIME
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -58,7 +81,7 @@ class GraphStore:
             nodes = [n for n in nodes if name_lower in n.name.lower()]
 
         nodes.sort(
-            key=lambda n: n.events[-1].timestamp if n.events else n.task_id,
+            key=lambda n: n.events[-1].timestamp if n.events else _MIN_DATETIME,
             reverse=True,
         )
         return nodes[offset : offset + limit]
@@ -71,11 +94,11 @@ class GraphStore:
                 for rid in self._graph.root_ids
                 if rid in self._graph.nodes
             ]
-
-        root_nodes.sort(
-            key=lambda n: n.events[-1].timestamp if n.events else n.task_id,
-            reverse=True,
-        )
+            # Sort while holding lock since we need access to graph for children
+            root_nodes.sort(
+                key=lambda n: _get_node_timestamp(n, self._graph),
+                reverse=True,
+            )
         return root_nodes[:limit]
 
     def get_children(self, task_id: str) -> list[TaskNode]:
@@ -139,7 +162,7 @@ class GraphStore:
 
         nodes_by_age = sorted(
             self._graph.nodes.values(),
-            key=lambda n: n.events[0].timestamp if n.events else n.task_id,
+            key=lambda n: n.events[0].timestamp if n.events else _MIN_DATETIME,
         )
 
         to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)

@@ -120,6 +120,7 @@ class TestRedisTransportIntegration:
             timestamp=datetime(2024, 6, 15, 12, 30, 45, tzinfo=UTC),
             parent_id="parent-456",
             root_id="root-789",
+            group_id="group-xyz",
             trace_id="trace-abc",
             retries=3,
         )
@@ -132,9 +133,38 @@ class TestRedisTransportIntegration:
             assert event.state == original.state
             assert event.parent_id == original.parent_id
             assert event.root_id == original.root_id
+            assert event.group_id == original.group_id
             assert event.trace_id == original.trace_id
             assert event.retries == original.retries
             break
+
+    def test_group_id_roundtrip(self, redis_transport: RedisTransport) -> None:
+        """group_id field is preserved through publish/consume."""
+        group_id = "test-group-abc-123"
+        events = [
+            TaskEvent(
+                task_id=f"group-task-{i}",
+                name="tests.group_member",
+                state=TaskState.SUCCESS,
+                timestamp=datetime.now(UTC),
+                group_id=group_id,
+            )
+            for i in range(3)
+        ]
+
+        for event in events:
+            redis_transport.publish(event)
+
+        consumed = []
+        for event in redis_transport.consume():
+            consumed.append(event)
+            if len(consumed) >= 3:
+                break
+
+        # All events should have the same group_id preserved
+        assert len(consumed) == 3
+        for event in consumed:
+            assert event.group_id == group_id
 
     def test_stream_key_uses_prefix(self, redis_transport: RedisTransport) -> None:
         """Stream key is based on configured prefix."""

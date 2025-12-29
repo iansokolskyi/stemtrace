@@ -4,8 +4,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from celery_flow import ConfigurationError, __version__, init
-from celery_flow.library.config import get_config
+import celery_flow
+from celery_flow import (
+    CeleryFlowConfig,
+    ConfigurationError,
+    __version__,
+    _reset,
+    get_config,
+    get_transport,
+    init,
+    is_initialized,
+)
 from celery_flow.library.signals import disconnect_signals
 from celery_flow.library.transports.memory import MemoryTransport
 
@@ -16,6 +25,7 @@ def cleanup() -> None:
     yield
     disconnect_signals()
     MemoryTransport.clear()
+    _reset()  # Reset module-level transport state
 
 
 def test_version() -> None:
@@ -77,3 +87,68 @@ class TestInit:
         assert config.ttl == 3600
         assert config.capture_args is False
         assert config.scrub_sensitive_data is False
+
+    def test_namespace_style_init(self) -> None:
+        """init() can be called via namespace (Sentry-style)."""
+        app = MagicMock()
+        app.conf.broker_url = "memory://"
+
+        # Sentry-style: celery_flow.init(app)
+        celery_flow.init(app)
+
+        assert celery_flow.is_initialized() is True
+        assert celery_flow.get_config() is not None
+
+
+class TestIntrospection:
+    """Tests for introspection functions."""
+
+    def test_is_initialized_false_before_init(self) -> None:
+        """is_initialized() returns False before init()."""
+        assert is_initialized() is False
+
+    def test_is_initialized_true_after_init(self) -> None:
+        """is_initialized() returns True after init()."""
+        app = MagicMock()
+        app.conf.broker_url = "memory://"
+
+        init(app)
+
+        assert is_initialized() is True
+
+    def test_get_config_none_before_init(self) -> None:
+        """get_config() returns None before init()."""
+        assert get_config() is None
+
+    def test_get_config_returns_config_after_init(self) -> None:
+        """get_config() returns CeleryFlowConfig after init()."""
+        app = MagicMock()
+
+        init(app, transport_url="memory://", prefix="test_prefix")
+
+        config = get_config()
+        assert config is not None
+        assert isinstance(config, CeleryFlowConfig)
+        assert config.prefix == "test_prefix"
+
+    def test_get_transport_none_before_init(self) -> None:
+        """get_transport() returns None before init()."""
+        assert get_transport() is None
+
+    def test_get_transport_returns_transport_after_init(self) -> None:
+        """get_transport() returns EventTransport after init()."""
+        app = MagicMock()
+
+        init(app, transport_url="memory://")
+
+        transport = get_transport()
+        assert transport is not None
+        # MemoryTransport is what we get for memory://
+        assert isinstance(transport, MemoryTransport)
+
+    def test_exports_in_all(self) -> None:
+        """New functions are exported in __all__."""
+        assert "is_initialized" in celery_flow.__all__
+        assert "get_config" in celery_flow.__all__
+        assert "get_transport" in celery_flow.__all__
+        assert "CeleryFlowConfig" in celery_flow.__all__

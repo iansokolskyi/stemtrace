@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 from celery_flow.server.api.schemas import (
     ErrorResponse,
     GraphListResponse,
@@ -41,6 +44,9 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
         task_id=node.task_id,
         name=node.name,
         state=node.state,
+        node_type=node.node_type,
+        group_id=node.group_id,
+        chord_id=node.chord_id,
         parent_id=node.parent_id,
         children=node.children,
         events=[TaskEventResponse.model_validate(e) for e in node.events],
@@ -50,13 +56,43 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     )
 
 
-def _node_to_graph_response(node: TaskNode) -> GraphNodeResponse:
+def _node_to_graph_response(
+    node: TaskNode,
+    all_nodes: dict[str, TaskNode] | None = None,
+) -> GraphNodeResponse:
+    first_seen = node.events[0].timestamp if node.events else None
+    last_updated = node.events[-1].timestamp if node.events else None
+
+    # For synthetic nodes (GROUP/CHORD), compute timing from children
+    if not node.events and node.children and all_nodes:
+        child_first_seen: list[datetime] = []
+        child_last_updated: list[datetime] = []
+        for child_id in node.children:
+            child = all_nodes.get(child_id)
+            if child and child.events:
+                child_first_seen.append(child.events[0].timestamp)
+                child_last_updated.append(child.events[-1].timestamp)
+        if child_first_seen:
+            first_seen = min(child_first_seen)
+        if child_last_updated:
+            last_updated = max(child_last_updated)
+
+    duration_ms = None
+    if first_seen and last_updated and first_seen != last_updated:
+        duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+
     return GraphNodeResponse(
         task_id=node.task_id,
         name=node.name,
         state=node.state,
+        node_type=node.node_type,
+        group_id=node.group_id,
+        chord_id=node.chord_id,
         parent_id=node.parent_id,
         children=node.children,
+        duration_ms=duration_ms,
+        first_seen=first_seen,
+        last_updated=last_updated,
     )
 
 
@@ -181,8 +217,14 @@ def create_api_router(
     ) -> GraphListResponse:
         """List task execution graphs (root tasks)."""
         roots = store.get_root_nodes(limit=limit)
+        # Build nodes dict for synthetic node timing computation
+        all_nodes: dict[str, TaskNode] = {}
+        for root in roots:
+            all_nodes[root.task_id] = root
+            for child in store.get_children(root.task_id):
+                all_nodes[child.task_id] = child
         return GraphListResponse(
-            graphs=[_node_to_graph_response(r) for r in roots],
+            graphs=[_node_to_graph_response(r, all_nodes) for r in roots],
             total=len(roots),
         )
 
@@ -199,7 +241,7 @@ def create_api_router(
 
         return GraphResponse(
             root_id=root_id,
-            nodes={tid: _node_to_graph_response(n) for tid, n in graph.items()},
+            nodes={tid: _node_to_graph_response(n, graph) for tid, n in graph.items()},
         )
 
     return router

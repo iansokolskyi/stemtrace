@@ -70,3 +70,34 @@ body {
 .react-flow__controls-button {
   @apply bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700;
 }
+
+/* Hide handles on header label nodes inside containers */
+.header-label-node .react-flow__handle {
+  display: none !important;
+}
+
+/* Hide handles on container nodes (GROUP/CHORD) - edges connect but handles hidden */
+.container-node .react-flow__handle {
+  opacity: 0 !important;
+  width: 8px;
+  height: 8px;
+}
+
+/* Hide left handles on container child nodes (only show right for edges) */
+.container-child .react-flow__handle-left,
+.container-child .react-flow__handle-top,
+.container-child .react-flow__handle-bottom {
+  display: none !important;
+}
+
+/* Make right handle on container children subtle */
+.container-child .react-flow__handle-right {
+  width: 6px;
+  height: 6px;
+  opacity: 0.5;
+}
+
+/* Allow task nodes to expand based on content, but not container nodes */
+.react-flow__node-default:not(.container-node) {
+  width: auto !important;
+}

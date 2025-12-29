@@ -36,6 +36,38 @@ _pending_emitted: set[str] = set()
 _pending_emitted_lock = threading.RLock()
 
 
+def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
+    """Extract chord group_id and callback task_id from chord attribute.
+
+    Celery's task.request.chord on HEADER tasks contains:
+    - The chord callback signature with options.group_id and options.task_id
+
+    Returns:
+        Tuple of (chord_group_id, callback_task_id)
+    """
+    if chord_attr is None:
+        return None, None
+
+    group_id: str | None = None
+    callback_id: str | None = None
+
+    # Celery Signature object
+    if hasattr(chord_attr, "options"):
+        opts = chord_attr.options
+        if isinstance(opts, dict):
+            group_id = opts.get("group_id") or opts.get("group")
+            callback_id = opts.get("task_id")
+
+    # Dict-like (Celery chord dict: {'task': ..., 'options': {'group_id': ..., 'task_id': ...}})
+    elif isinstance(chord_attr, dict):
+        opts = chord_attr.get("options", {})
+        if isinstance(opts, dict):
+            group_id = opts.get("group_id") or opts.get("group")
+            callback_id = opts.get("task_id")
+
+    return group_id, callback_id
+
+
 def _publish_event(event: TaskEvent) -> None:
     """Publish event via transport. Fire-and-forget: logs errors, never raises."""
     if _transport is None:
@@ -161,6 +193,9 @@ def _on_task_prerun(
     kwargs: dict[str, Any],
     **_: Any,
 ) -> None:
+    chord_id, chord_callback_id = _extract_chord_info(
+        getattr(task.request, "chord", None)
+    )
     _publish_event(
         TaskEvent(
             task_id=task_id,
@@ -169,6 +204,9 @@ def _on_task_prerun(
             timestamp=datetime.now(timezone.utc),
             parent_id=getattr(task.request, "parent_id", None),
             root_id=getattr(task.request, "root_id", None),
+            group_id=getattr(task.request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
             retries=task.request.retries or 0,
             args=_scrub_and_serialize_args(args),
             kwargs=_scrub_and_serialize_kwargs(kwargs),
@@ -192,6 +230,9 @@ def _on_task_postrun(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
+    chord_id, chord_callback_id = _extract_chord_info(
+        getattr(task.request, "chord", None)
+    )
     _publish_event(
         TaskEvent(
             task_id=task_id,
@@ -200,6 +241,9 @@ def _on_task_postrun(
             timestamp=datetime.now(timezone.utc),
             parent_id=getattr(task.request, "parent_id", None),
             root_id=getattr(task.request, "root_id", None),
+            group_id=getattr(task.request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
             retries=task.request.retries or 0,
             result=_scrub_and_serialize_result(retval),
         )
@@ -221,6 +265,9 @@ def _on_task_failure(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
+    chord_id, chord_callback_id = _extract_chord_info(
+        getattr(sender.request, "chord", None)
+    )
     _publish_event(
         TaskEvent(
             task_id=task_id,
@@ -229,6 +276,9 @@ def _on_task_failure(
             timestamp=datetime.now(timezone.utc),
             parent_id=getattr(sender.request, "parent_id", None),
             root_id=getattr(sender.request, "root_id", None),
+            group_id=getattr(sender.request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
             retries=sender.request.retries or 0,
             exception=_format_exception(exception),
             traceback=_format_traceback(einfo),
@@ -250,6 +300,7 @@ def _on_task_retry(
     elif reason is not None:
         exc_message = str(reason)
 
+    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     # Use current retry count (not +1) so RETRY groups with the STARTED that failed
     # Timeline: STARTED(0) → RETRY(0) → STARTED(1) → RETRY(1) → ...
     _publish_event(
@@ -260,6 +311,9 @@ def _on_task_retry(
             timestamp=datetime.now(timezone.utc),
             parent_id=getattr(request, "parent_id", None),
             root_id=getattr(request, "root_id", None),
+            group_id=getattr(request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
             retries=request.retries or 0,
             exception=exc_message,
             traceback=_format_traceback(einfo),
@@ -276,6 +330,7 @@ def _on_task_revoked(
     **_: Any,
 ) -> None:
     del terminated, signum, expired
+    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     _publish_event(
         TaskEvent(
             task_id=request.id,
@@ -284,6 +339,9 @@ def _on_task_revoked(
             timestamp=datetime.now(timezone.utc),
             parent_id=getattr(request, "parent_id", None),
             root_id=getattr(request, "root_id", None),
+            group_id=getattr(request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
             retries=getattr(request, "retries", 0) or 0,
         )
     )
@@ -322,12 +380,16 @@ def _on_task_sent(
 
     task_name = task or sender or "unknown"
 
+    # Extract group_id from headers if available
+    group_id = headers.get("group") if headers else None
+
     _publish_event(
         TaskEvent(
             task_id=task_id,
             name=task_name,
             state=TaskState.PENDING,
             timestamp=datetime.now(timezone.utc),
+            group_id=group_id,
             args=_scrub_and_serialize_args(args) if args else None,
             kwargs=_scrub_and_serialize_kwargs(kwargs) if kwargs else None,
         )

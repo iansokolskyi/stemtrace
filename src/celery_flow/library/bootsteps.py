@@ -100,6 +100,8 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         task_id: str | None = None
         parent_id: str | None = None
         root_id: str | None = None
+        group_id: str | None = None
+        chord_id: str | None = None
         retries: int = 0
 
         if isinstance(body, (list, tuple)) and len(body) >= 3:
@@ -109,12 +111,16 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 task_id = embed.get("id")
                 parent_id = embed.get("parent_id")
                 root_id = embed.get("root_id")
+                group_id = embed.get("group")
+                chord_id = embed.get("chord")
                 retries = embed.get("retries", 0) or 0
         elif isinstance(body, dict):
             # New format: {'task': ..., 'id': ..., ...}
             task_id = body.get("id")
             parent_id = body.get("parent_id")
             root_id = body.get("root_id")
+            group_id = body.get("group")
+            chord_id = body.get("chord")
             retries = body.get("retries", 0) or 0
 
         # Fallback to message headers/properties
@@ -124,6 +130,8 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 task_id = headers.get("id")
             parent_id = parent_id or headers.get("parent_id")
             root_id = root_id or headers.get("root_id")
+            group_id = group_id or headers.get("group")
+            chord_id = chord_id or headers.get("chord")
             if retries == 0:
                 retries = headers.get("retries", 0) or 0
 
@@ -144,6 +152,8 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 root_id=root_id,
+                group_id=group_id,
+                chord_id=chord_id,
             )
         )
         logger.debug("Emitted RECEIVED for task %s", task_id)

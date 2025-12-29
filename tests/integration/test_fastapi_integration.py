@@ -212,3 +212,369 @@ class TestCeleryFlowExtension:
         response = client.get("/api/tasks/direct-event")
         assert response.status_code == 200
         assert response.json()["task"]["name"] == "tests.direct"
+
+
+class TestSyntheticGroupNodes:
+    """Integration tests for synthetic GROUP node creation and API exposure."""
+
+    def test_group_node_in_graph_response(self) -> None:
+        """Synthetic GROUP node appears in graph response."""
+        store = GraphStore()
+        group_id = "test-group-abc"
+
+        # Add two tasks with the same group_id
+        store.add_event(
+            TaskEvent(
+                task_id="task-a",
+                name="tests.group_member",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, 0, 0, 1, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-b",
+                name="tests.group_member",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, 0, 0, 2, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        # The GROUP node should be a root
+        response = client.get("/api/graphs")
+        assert response.status_code == 200
+        graphs = response.json()["graphs"]
+        group_node = next(
+            (g for g in graphs if g["task_id"] == f"group:{group_id}"), None
+        )
+        assert group_node is not None
+        assert group_node["node_type"] == "GROUP"
+        assert group_node["name"] == "group"
+
+    def test_group_node_includes_children(self) -> None:
+        """GROUP node children are included in graph detail."""
+        store = GraphStore()
+        group_id = "test-group-xyz"
+
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="tests.t1",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="tests.t2",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        # Get the full graph from the GROUP node
+        response = client.get(f"/api/graphs/group:{group_id}")
+        assert response.status_code == 200
+        graph = response.json()
+        assert graph["root_id"] == f"group:{group_id}"
+
+        group_node = graph["nodes"][f"group:{group_id}"]
+        assert "task-1" in group_node["children"]
+        assert "task-2" in group_node["children"]
+
+    def test_task_response_includes_node_type(self) -> None:
+        """Task response includes node_type field."""
+        store = GraphStore()
+        store.add_event(
+            TaskEvent(
+                task_id="test-task",
+                name="tests.sample",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/test-task")
+        assert response.status_code == 200
+        task = response.json()["task"]
+        assert task["node_type"] == "TASK"
+
+    def test_task_response_includes_group_id(self) -> None:
+        """Task response includes group_id field."""
+        store = GraphStore()
+        store.add_event(
+            TaskEvent(
+                task_id="grouped-task",
+                name="tests.grouped",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id="my-group-id",
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/grouped-task")
+        assert response.status_code == 200
+        task = response.json()["task"]
+        assert task["group_id"] == "my-group-id"
+
+
+class TestGraphEdgeData:
+    """Tests that verify parent-child relationships required for edge rendering.
+
+    These tests ensure the API returns correct data structures that the frontend
+    uses to generate graph edges. Regression tests for edge visibility issues.
+    """
+
+    def test_parent_has_child_in_children_list(self) -> None:
+        """Parent node's children list includes child task IDs."""
+        store = GraphStore()
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.parent",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child-1",
+                name="tests.child",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                parent_id="parent",
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/graphs/parent")
+        assert response.status_code == 200
+        graph = response.json()
+
+        parent_node = graph["nodes"]["parent"]
+        assert "child-1" in parent_node["children"]
+
+    def test_parent_to_group_edge_data(self) -> None:
+        """When parent spawns a group, GROUP node is in parent's children list.
+
+        Regression test: Previously GROUP nodes under a parent were missing edges
+        because the GROUP wasn't in parent's children list.
+        """
+        store = GraphStore()
+        group_id = "test-group"
+
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.parent",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child-1",
+                name="tests.add",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                parent_id="parent",
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child-2",
+                name="tests.add",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                parent_id="parent",
+                group_id=group_id,
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/graphs/parent")
+        assert response.status_code == 200
+        graph = response.json()
+
+        # Parent should have GROUP as child (not individual tasks)
+        parent_node = graph["nodes"]["parent"]
+        group_node_id = f"group:{group_id}"
+        assert group_node_id in parent_node["children"]
+        assert "child-1" not in parent_node["children"]
+        assert "child-2" not in parent_node["children"]
+
+        # GROUP should have individual tasks as children
+        group_node = graph["nodes"][group_node_id]
+        assert "child-1" in group_node["children"]
+        assert "child-2" in group_node["children"]
+
+    def test_chord_callback_edge_data(self) -> None:
+        """CHORD node includes callback in children for edge rendering."""
+        store = GraphStore()
+        group_id = "chord-header-group"
+        callback_id = "callback-task"
+
+        # Header tasks
+        store.add_event(
+            TaskEvent(
+                task_id="header-1",
+                name="tests.add",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+                chord_id=group_id,
+                chord_callback_id=callback_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="header-2",
+                name="tests.add",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+                chord_id=group_id,
+                chord_callback_id=callback_id,
+            )
+        )
+        # Callback task
+        store.add_event(
+            TaskEvent(
+                task_id=callback_id,
+                name="tests.aggregate",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        chord_node_id = f"group:{group_id}"
+        response = client.get(f"/api/graphs/{chord_node_id}")
+        assert response.status_code == 200
+        graph = response.json()
+
+        chord_node = graph["nodes"][chord_node_id]
+        # CHORD should be upgraded from GROUP
+        assert chord_node["node_type"] == "CHORD"
+        # Header tasks should be children
+        assert "header-1" in chord_node["children"]
+        assert "header-2" in chord_node["children"]
+        # Callback should also be in children (for edge rendering)
+        assert callback_id in chord_node["children"]
+
+    def test_multiple_children_all_in_children_list(self) -> None:
+        """Parent with multiple independent children has all in children list."""
+        store = GraphStore()
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.parent",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+        for i in range(3):
+            store.add_event(
+                TaskEvent(
+                    task_id=f"child-{i}",
+                    name="tests.child",
+                    state=TaskState.SUCCESS,
+                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    parent_id="parent",
+                )
+            )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/graphs/parent")
+        assert response.status_code == 200
+        graph = response.json()
+
+        parent_node = graph["nodes"]["parent"]
+        # All 3 children should be in parent's children list
+        assert len(parent_node["children"]) == 3
+        assert "child-0" in parent_node["children"]
+        assert "child-1" in parent_node["children"]
+        assert "child-2" in parent_node["children"]
+
+    def test_orphan_group_is_root_with_children(self) -> None:
+        """Orphan GROUP (no parent) is a root node with children."""
+        store = GraphStore()
+        group_id = "orphan-group"
+
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="tests.t1",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="task-2",
+                name="tests.t2",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                group_id=group_id,
+            )
+        )
+
+        router = create_router(store=store)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        group_node_id = f"group:{group_id}"
+        response = client.get(f"/api/graphs/{group_node_id}")
+        assert response.status_code == 200
+        graph = response.json()
+
+        # GROUP is the root
+        assert graph["root_id"] == group_node_id
+
+        group_node = graph["nodes"][group_node_id]
+        assert "task-1" in group_node["children"]
+        assert "task-2" in group_node["children"]

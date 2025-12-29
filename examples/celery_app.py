@@ -6,6 +6,7 @@ task events for visualization, including:
 - Task arguments and results capture
 - Sensitive data scrubbing (passwords, API keys, etc.)
 - Exception and traceback capture for retries/failures
+- Group/chord visualization with synthetic GROUP nodes
 
 Usage:
     # Install dependencies
@@ -21,7 +22,8 @@ Usage:
     celery-flow server
 
     # Run demo tasks
-    python examples/celery_app.py workflow  # Complex workflow
+    python examples/celery_app.py workflow  # Complex workflow (chain + group)
+    python examples/celery_app.py group     # Parallel group (synthetic GROUP node)
     python examples/celery_app.py retry     # Retry with exceptions
     python examples/celery_app.py scrub     # Sensitive data scrubbing
     python examples/celery_app.py fail      # Permanent failure
@@ -33,9 +35,9 @@ import random
 import sys
 from typing import Any
 
-from celery import Celery, chain, group
+from celery import Celery, chain, chord, group
 
-from celery_flow import init
+import celery_flow
 
 # Create Celery app
 app = Celery(
@@ -45,7 +47,7 @@ app = Celery(
 )
 
 # Initialize celery-flow tracking
-init(app)
+celery_flow.init(app)
 
 
 # =============================================================================
@@ -83,10 +85,18 @@ def process_data(self, data: list[int]) -> dict[str, int]:
 
 
 @app.task(bind=True, name="examples.celery_app.aggregate_results")
-def aggregate_results(self, results: list[dict[str, int]]) -> dict[str, int]:
-    """Aggregate multiple results."""
-    total = sum(r.get("sum", 0) for r in results)
-    count = sum(r.get("count", 0) for r in results)
+def aggregate_results(self, results: list[int | dict[str, int]]) -> dict[str, int]:
+    """Aggregate multiple results.
+
+    Handles both int results (from add tasks) and dict results (from process_data).
+    """
+    total = 0
+    count = len(results)
+    for r in results:
+        if isinstance(r, dict):
+            total += r.get("sum", 0)
+        else:
+            total += r
     return {"total": total, "count": count}
 
 
@@ -118,6 +128,23 @@ def workflow_example(self) -> str:
 
 
 # =============================================================================
+# Group Demo - Shows synthetic GROUP node visualization
+# =============================================================================
+
+
+@app.task(bind=True, name="examples.celery_app.parallel_group")
+def parallel_group(self) -> str:
+    """Run a group of parallel tasks.
+
+    Creates a synthetic GROUP node in the graph with 3 child add tasks.
+    Tasks sharing a group_id are automatically grouped under a single
+    visual parent with aggregate state.
+    """
+    result = group(add.s(1, 2), add.s(3, 4), add.s(5, 6)).apply_async()
+    return f"Started parallel group: {result.id}"
+
+
+# =============================================================================
 # Retry Demo - Shows exception capture on retry
 # =============================================================================
 
@@ -146,7 +173,7 @@ def fetch_api_data(self, url: str, api_key: str) -> dict[str, Any]:
         Mock API response data.
     """
     # Simulate random connection failures (70% chance)
-    if random.random() < 0.7:  # noqa: S311
+    if random.random() < 0.7:
         raise ConnectionError(f"Failed to connect to {url}")
 
     return {"data": [1, 2, 3], "source": url, "status": "success"}
@@ -215,7 +242,7 @@ def always_fails(self, message: str) -> None:
 @app.task(bind=True, name="examples.celery_app.flaky_task", max_retries=3)
 def flaky_task(self) -> str:
     """A task that might fail and retry."""
-    if random.random() < 0.5:  # noqa: S311
+    if random.random() < 0.5:
         raise self.retry(countdown=1)
     return "Success!"
 
@@ -229,6 +256,12 @@ def run_demo(demo_name: str) -> None:
     """Run a specific demo by name."""
     demos = {
         "workflow": lambda: workflow_example.delay(),
+        "group": lambda: parallel_group.delay(),
+        "orphan-group": lambda: group(add.s(1, 1), add.s(2, 2), add.s(3, 3)).apply_async(),
+        "orphan-chord": lambda: chord(
+            group(add.s(10, 10), add.s(20, 20), add.s(30, 30)),
+            aggregate_results.s(),
+        ).apply_async(),
         "retry": lambda: fetch_api_data.delay(
             "https://api.example.com/data",
             api_key="sk-secret-key-12345",  # gitleaks:allow - demo credential
@@ -245,13 +278,13 @@ def run_demo(demo_name: str) -> None:
     }
 
     if demo_name not in demos:
-        print(f"Unknown demo: {demo_name}")  # noqa: T201
-        print(f"Available demos: {', '.join(demos.keys())}")  # noqa: T201
+        print(f"Unknown demo: {demo_name}")
+        print(f"Available demos: {', '.join(demos.keys())}")
         sys.exit(1)
 
     result = demos[demo_name]()
-    print(f"Started '{demo_name}' demo: {result.id}")  # noqa: T201
-    print("View at: http://localhost:8000/celery-flow/")  # noqa: T201
+    print(f"Started '{demo_name}' demo: {result.id}")
+    print("View at: http://localhost:8000/celery-flow/")
 
 
 if __name__ == "__main__":

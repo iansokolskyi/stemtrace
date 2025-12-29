@@ -11,7 +11,7 @@ import time
 
 from celery import Celery, chain, group
 
-from celery_flow import init
+import celery_flow
 
 # Create Celery app with Redis broker
 # Use port 16379 for E2E tests (Docker exposes Redis on alternate port)
@@ -33,7 +33,7 @@ app.conf.update(
 )
 
 # Initialize celery-flow tracking
-init(app)
+celery_flow.init(app)
 
 
 # =============================================================================

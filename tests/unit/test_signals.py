@@ -8,6 +8,7 @@ import pytest
 from celery_flow.core.events import TaskState
 from celery_flow.library.config import CeleryFlowConfig, set_config
 from celery_flow.library.signals import (
+    _extract_chord_info,
     _on_task_failure,
     _on_task_postrun,
     _on_task_prerun,
@@ -51,6 +52,8 @@ def mock_task() -> MagicMock:
     task.request.id = "task-123"
     task.request.parent_id = None
     task.request.root_id = None
+    task.request.group = None
+    task.request.chord = None
     task.request.retries = 0
     return task
 
@@ -63,6 +66,8 @@ def mock_task_with_parent() -> MagicMock:
     task.request.id = "task-456"
     task.request.parent_id = "task-123"
     task.request.root_id = "task-001"
+    task.request.group = None
+    task.request.chord = None
     task.request.retries = 0
     return task
 
@@ -80,6 +85,8 @@ class TestConnectDisconnect:
         task.name = "tests.task"
         task.request.parent_id = None
         task.request.root_id = None
+        task.request.group = None
+        task.request.chord = None
         task.request.retries = 0
 
         _on_task_prerun(
@@ -102,6 +109,8 @@ class TestConnectDisconnect:
         task.name = "tests.task"
         task.request.parent_id = None
         task.request.root_id = None
+        task.request.group = None
+        task.request.chord = None
         task.request.retries = 0
 
         _on_task_prerun(
@@ -346,6 +355,8 @@ class TestTaskRetry:
         request.id = "task-123"
         request.parent_id = None
         request.root_id = None
+        request.group = None
+        request.chord = None
         request.retries = 1
 
         _on_task_retry(
@@ -370,6 +381,8 @@ class TestTaskRetry:
         request.id = "task-123"
         request.parent_id = None
         request.root_id = None
+        request.group = None
+        request.chord = None
         request.retries = 0
 
         reason = TimeoutError("Request timed out")
@@ -394,6 +407,8 @@ class TestTaskRetry:
         request.id = "task-123"
         request.parent_id = None
         request.root_id = None
+        request.group = None
+        request.chord = None
         request.retries = 0
 
         _on_task_retry(
@@ -420,6 +435,8 @@ class TestTaskRevoked:
         request.id = "task-123"
         request.parent_id = None
         request.root_id = None
+        request.group = None
+        request.chord = None
         request.retries = 0
 
         _on_task_revoked(
@@ -548,3 +565,128 @@ class TestFireAndForget:
 
         # Error should be logged
         assert "Failed to publish event" in caplog.text
+
+
+class TestExtractChordInfo:
+    """Tests for _extract_chord_info helper function.
+
+    This function parses Celery's chord attribute to extract:
+    - group_id: The ID shared by header tasks
+    - callback_id: The task ID of the callback task
+    """
+
+    def test_none_input_returns_none(self) -> None:
+        """None chord attribute returns (None, None)."""
+        group_id, callback_id = _extract_chord_info(None)
+        assert group_id is None
+        assert callback_id is None
+
+    def test_dict_with_options(self) -> None:
+        """Dict chord attribute with options dict is parsed correctly."""
+        chord_dict = {
+            "options": {
+                "group_id": "group-abc-123",
+                "task_id": "callback-task-456",
+            }
+        }
+        group_id, callback_id = _extract_chord_info(chord_dict)
+        assert group_id == "group-abc-123"
+        assert callback_id == "callback-task-456"
+
+    def test_dict_with_group_key_fallback(self) -> None:
+        """Dict with 'group' key in options (alternative key name)."""
+        chord_dict = {
+            "options": {
+                "group": "group-abc-123",
+                "task_id": "callback-task-456",
+            }
+        }
+        group_id, callback_id = _extract_chord_info(chord_dict)
+        assert group_id == "group-abc-123"
+        assert callback_id == "callback-task-456"
+
+    def test_signature_object_with_options(self) -> None:
+        """Celery Signature object with options attribute is parsed correctly."""
+        mock_signature = MagicMock()
+        mock_signature.options = {
+            "group_id": "group-xyz-789",
+            "task_id": "callback-task-abc",
+        }
+
+        group_id, callback_id = _extract_chord_info(mock_signature)
+        assert group_id == "group-xyz-789"
+        assert callback_id == "callback-task-abc"
+
+    def test_empty_options_dict(self) -> None:
+        """Empty options dict returns (None, None)."""
+        chord_dict: dict[str, dict[str, str]] = {"options": {}}
+        group_id, callback_id = _extract_chord_info(chord_dict)
+        assert group_id is None
+        assert callback_id is None
+
+    def test_missing_options_key(self) -> None:
+        """Dict without options key returns (None, None)."""
+        chord_dict: dict[str, str] = {"task": "some.task"}
+        group_id, callback_id = _extract_chord_info(chord_dict)
+        assert group_id is None
+        assert callback_id is None
+
+    def test_options_not_dict(self) -> None:
+        """Non-dict options value returns (None, None)."""
+        chord_dict = {"options": "not-a-dict"}
+        group_id, callback_id = _extract_chord_info(chord_dict)
+        assert group_id is None
+        assert callback_id is None
+
+
+class TestChordIdCapture:
+    """Tests for chord_id and chord_callback_id capture in signal handlers."""
+
+    def test_prerun_captures_chord_info(
+        self,
+        transport: MemoryTransport,
+    ) -> None:
+        """task_prerun captures chord_id and chord_callback_id from task.request.chord."""
+        task = MagicMock()
+        task.name = "tests.header_task"
+        task.request.id = "header-task-1"
+        task.request.parent_id = None
+        task.request.root_id = None
+        task.request.group = "chord-group-id"
+        task.request.chord = {
+            "options": {
+                "group_id": "chord-group-id",
+                "task_id": "callback-task-id",
+            }
+        }
+        task.request.retries = 0
+
+        _on_task_prerun(
+            task_id="header-task-1",
+            task=task,
+            args=(),
+            kwargs={},
+        )
+
+        assert len(MemoryTransport.events) == 1
+        event = MemoryTransport.events[0]
+        assert event.group_id == "chord-group-id"
+        assert event.chord_id == "chord-group-id"
+        assert event.chord_callback_id == "callback-task-id"
+
+    def test_prerun_without_chord(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+    ) -> None:
+        """task_prerun without chord info has None for chord fields."""
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=(),
+            kwargs={},
+        )
+
+        event = MemoryTransport.events[0]
+        assert event.chord_id is None
+        assert event.chord_callback_id is None

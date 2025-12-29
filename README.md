@@ -19,11 +19,13 @@
 ## ✨ Features
 
 - **Task Flow Graphs** — Visualize parent → child chains, groups, and chords as DAGs
+- **Canvas Awareness** — Synthetic GROUP nodes for `group()` and `chord()` visualization
 - **Execution Timeline** — See queued → received → started → retried → finished states
 - **Full Lifecycle Capture** — PENDING, RECEIVED, STARTED, RETRY, SUCCESS, FAILURE states
 - **Arguments & Results** — View task inputs and outputs with sensitive data scrubbing
 - **Exception Capture** — Full traceback visibility on retries and failures
 - **Task Registry** — Browse all discovered task definitions
+- **Timing Visibility** — Start time and duration shown directly in graph nodes
 - **Correlation Tracking** — Trace requests across multiple tasks via `trace_id`
 - **Retry Visibility** — Know exactly which retries happened and why
 - **Zero Infrastructure** — Uses your existing broker; no database required
@@ -44,12 +46,12 @@ pip install celery-flow
 
 ```python
 from celery import Celery
-from celery_flow import init
+import celery_flow
 
 app = Celery("myapp", broker="redis://localhost:6379/0")
 
 # One line to enable flow tracking
-init(app)
+celery_flow.init(app)
 ```
 
 ### 3. Run the visualizer
@@ -112,9 +114,9 @@ celery-flow is designed as two decoupled components:
 ### Library Options
 
 ```python
-from celery_flow import init
+import celery_flow
 
-init(
+celery_flow.init(
     app,
     # Optional: override broker URL (defaults to Celery's broker_url)
     transport_url="redis://localhost:6379/0",
@@ -130,6 +132,11 @@ init(
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),    # Never scrub these keys
 )
+
+# Introspection (after init)
+celery_flow.is_initialized()   # -> True
+celery_flow.get_config()       # -> CeleryFlowConfig
+celery_flow.get_transport()    # -> EventTransport (for testing)
 ```
 
 #### Sensitive Data Scrubbing
@@ -141,6 +148,33 @@ By default, celery-flow scrubs common sensitive keys from task arguments:
 - Session: `cookie`, `session`, `csrf`
 
 Scrubbed values appear as `[Filtered]` in the UI.
+
+### Canvas Graph Visualization
+
+celery-flow automatically detects and visualizes Celery canvas constructs:
+
+```text
+parallel_group() → add()     # When parent task spawns a group, 
+                 → add()     # the parent naturally visualizes the grouping
+                 → add()
+
+group(a, b, c)  →   GROUP ─→ a     # Orphan groups (no parent task) get a
+                         ├→ b     # synthetic GROUP node with dashed border
+                         └→ c
+```
+
+- **Smart grouping** — GROUP nodes only appear for orphan groups (no common parent)
+- **Timing** — Each node displays start time and duration directly in the graph
+- **Aggregate state** — GROUP shows running/success/failure based on member states
+
+When a parent task spawns a group, the parent serves as the visual group:
+
+```python
+@app.task
+def my_workflow():
+    # The 3 add tasks will be visualized as children of my_workflow
+    group(task_a.s(), task_b.s(), task_c.s()).apply_async()
+```
 
 ### Environment Variables
 
@@ -293,9 +327,12 @@ app.include_router(flow.router, prefix="/celery-flow")
 - [x] Task registry (browse all discovered tasks)
 - [x] PENDING/RECEIVED state capture
 - [x] E2E test suite (Docker API tests + Playwright browser tests)
+- [x] Canvas graph reconstruction (`group_id` capture, synthetic GROUP nodes)
+- [x] Timing display in graph nodes (start time, duration)
 
 ### Planned
 
+- [ ] CHORD node detection (callback linking)
 - [ ] Worker/queue tracking in events
 - [ ] Monitoring APIs (workers, stats, orphan detection)
 - [ ] UI reorganization (Dashboard, unified Executions, enhanced Registry)

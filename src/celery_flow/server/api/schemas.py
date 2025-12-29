@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from celery_flow.core.events import TaskState
+from celery_flow.core.graph import NodeType
 
 
 class TaskEventResponse(BaseModel):
@@ -19,6 +20,7 @@ class TaskEventResponse(BaseModel):
     timestamp: datetime
     parent_id: str | None = None
     root_id: str | None = None
+    group_id: str | None = None
     trace_id: str | None = None
     retries: int = 0
 
@@ -38,6 +40,9 @@ class TaskNodeResponse(BaseModel):
     task_id: str
     name: str
     state: TaskState
+    node_type: NodeType = NodeType.TASK
+    group_id: str | None = None
+    chord_id: str | None = None
     parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
     events: list[TaskEventResponse] = Field(default_factory=list)
@@ -68,8 +73,14 @@ class GraphNodeResponse(BaseModel):
     task_id: str
     name: str
     state: TaskState
+    node_type: NodeType = NodeType.TASK
+    group_id: str | None = None
+    chord_id: str | None = None
     parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
+    duration_ms: int | None = None
+    first_seen: datetime | None = None
+    last_updated: datetime | None = None
 
 
 class GraphResponse(BaseModel):
