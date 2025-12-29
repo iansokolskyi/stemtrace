@@ -22,14 +22,6 @@ repos:
   # Local hooks use project environment (uv) for proper dependency access
   - repo: local
     hooks:
-      # Re-stage files after auto-fixes so commit proceeds on retry
-      - id: restage
-        name: restage fixed files
-        entry: git add -u
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: mypy
         name: mypy
         entry: uv run mypy src/ --strict
