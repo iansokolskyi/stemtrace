@@ -185,7 +185,9 @@ test.describe('Graph Edges', () => {
     // React Flow renders edges as SVG groups with accessible names "Edge from X to Y"
     // Try multiple detection methods
     const edgesByClass = page.locator('.react-flow__edge')
-    const edgesByAccessibleName = page.locator('[aria-label*="Edge from"], g[aria-label*="Edge from"]')
+    const edgesByAccessibleName = page.locator(
+      '[aria-label*="Edge from"], g[aria-label*="Edge from"]',
+    )
     // Also check for SVG paths in the edges layer
     const edgePathsInSvg = page.locator('.react-flow__edges path, svg g path').first()
 
@@ -341,8 +343,14 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
     const groupLabel = page.getByText('GROUP')
     const chordLabel = page.getByText('CHORD')
 
-    const hasGroupLabel = await groupLabel.first().isVisible().catch(() => false)
-    const hasChordLabel = await chordLabel.first().isVisible().catch(() => false)
+    const hasGroupLabel = await groupLabel
+      .first()
+      .isVisible()
+      .catch(() => false)
+    const hasChordLabel = await chordLabel
+      .first()
+      .isVisible()
+      .catch(() => false)
 
     // If we're on a graph with containers, at least one label should be present
     // If there are no container graphs, this test just verifies the selectors work
@@ -458,7 +466,10 @@ test.describe('Edge Visibility Regression Tests', () => {
 
     // Check if this graph contains a CHORD container
     const chordLabel = page.locator('.header-label-node:has-text("CHORD")')
-    const hasChord = await chordLabel.first().isVisible().catch(() => false)
+    const hasChord = await chordLabel
+      .first()
+      .isVisible()
+      .catch(() => false)
 
     if (!hasChord) {
       // Skip if no chord in this graph - informational test

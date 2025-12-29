@@ -122,11 +122,11 @@ celery_flow.init(
     transport_url="redis://localhost:6379/0",
     prefix="celery_flow",                   # Key/queue prefix
     ttl=86400,                              # Event TTL in seconds (default: 24h)
-    
+
     # Data capture (all enabled by default)
     capture_args=True,                      # Capture task args/kwargs
     capture_result=True,                    # Capture return values
-    
+
     # Sensitive data scrubbing (Sentry-style)
     scrub_sensitive_data=True,              # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
@@ -154,7 +154,7 @@ Scrubbed values appear as `[Filtered]` in the UI.
 celery-flow automatically detects and visualizes Celery canvas constructs:
 
 ```text
-parallel_group() → add()     # When parent task spawns a group, 
+parallel_group() → add()     # When parent task spawns a group,
                  → add()     # the parent naturally visualizes the grouping
                  → add()
 
@@ -364,4 +364,3 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 **celery-flow** is not affiliated with the Celery project. Celery is a trademark of Ask Solem.
-

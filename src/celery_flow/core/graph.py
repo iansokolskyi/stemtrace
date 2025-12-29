@@ -326,10 +326,7 @@ class TaskGraph(BaseModel):
         is waiting for this task as its callback.
         """
         for node in self.nodes.values():
-            if (
-                node.node_type == NodeType.CHORD
-                and node.chord_callback_id == task_id
-            ):
+            if node.node_type == NodeType.CHORD and node.chord_callback_id == task_id:
                 callback_node = self.nodes.get(task_id)
                 if callback_node:
                     # Link callback to CHORD

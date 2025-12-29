@@ -15,4 +15,3 @@ export function formatTime(timestamp: string | null): string {
     hour12: false,
   })
 }
-
