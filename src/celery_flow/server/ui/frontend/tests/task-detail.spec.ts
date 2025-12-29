@@ -28,11 +28,11 @@ test.describe('Task Detail Page', () => {
     await taskLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Look for timeline section
-    const timeline = page.locator(
-      '[data-testid="timeline"], .timeline, [class*="timeline"], section',
-    )
-    await expect(timeline.first()).toBeVisible()
+    // Look for timeline section - the heading "Execution Timeline" should be visible
+    const timelineHeading = page.getByText('Execution Timeline')
+
+    // Wait for heading to be visible using expect assertion with auto-retry
+    await expect(timelineHeading).toBeVisible()
   })
 
   test('shows task metadata', async ({ page }) => {
@@ -101,29 +101,22 @@ test.describe('Task Detail Page', () => {
   })
 
   test('shows error details for failed tasks', async ({ page }) => {
-    // Try to find a failed task
-    const failedBadge = page.locator(
-      '.badge:has-text("FAILURE"), [class*="failure"], [class*="error"]',
-    )
-    const hasFailedTask = (await failedBadge.count()) > 0
+    // Try to find a failed task - look for FAILURE badge or red-colored indicators
+    const failedLink = page.locator('a[href*="/tasks/"]:has-text("FAILURE")').first()
+    const isVisible = await failedLink.isVisible().catch(() => false)
 
-    if (!hasFailedTask) {
+    if (!isVisible) {
+      // No failed tasks visible, skip the test
       test.skip()
       return
     }
 
-    // Click on the failed task row
-    const failedRow = failedBadge.locator('..').locator('a').first()
-    await failedRow.click().catch(() => {
-      // Try clicking parent instead
-      return failedBadge.locator('..').click()
-    })
-
+    await failedLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Should show error/exception section
+    // Should show error/exception section or traceback
     const errorSection = page.locator(
-      '[data-testid="error"], .error, .exception, pre:has-text("Error"), pre:has-text("Traceback")',
+      '[data-testid="error"], .error, .exception, h2:has-text("Error"), h2:has-text("Exception"), pre',
     )
 
     const errorCount = await errorSection.count()

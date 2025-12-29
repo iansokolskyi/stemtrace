@@ -83,10 +83,8 @@ test.describe('Registry Page', () => {
   test('displays task count or statistics', async ({ page }) => {
     await page.waitForLoadState('networkidle')
 
-    // Look for count indicator
-    const countIndicator = page.locator(
-      '[data-testid="task-count"], .count, .badge, span:has-text(/\\d+/)',
-    )
+    // Look for count indicator (badges, count elements, or any numeric indicator)
+    const countIndicator = page.locator('[data-testid="task-count"], .count, .badge')
 
     const count = await countIndicator.count()
     // Verify page renders (count check is informational)
