@@ -34,6 +34,7 @@ dependencies = [
     "fastapi>=0.100.0",
     "typer>=0.9.0",
     "uvicorn[standard]>=0.20.0",
+    "httpx>=0.24.0",  # Required for healthchecks in Docker
 ]
 
 [project.optional-dependencies]
@@ -53,7 +54,6 @@ dev = [
     "types-redis>=4.0.0",
     "hatchling>=1.20.0",  # For build hook IDE support
     "bump-my-version>=0.28.0",
-    "httpx>=0.24.0",  # For FastAPI TestClient
     "websockets>=12.0",  # For WebSocket E2E tests
 ]
 
