@@ -48,6 +48,18 @@ class TaskGraph(BaseModel):
         node.events.append(event)
         node.state = event.state
 
+        # Update parent_id if we didn't have it before (PENDING lacks parent_id)
+        if node.parent_id is None and event.parent_id is not None:
+            node.parent_id = event.parent_id
+            # Remove from root_ids since it has a parent now
+            if event.task_id in self.root_ids:
+                self.root_ids.remove(event.task_id)
+            # Link to parent if parent exists
+            if event.parent_id in self.nodes:
+                parent = self.nodes[event.parent_id]
+                if event.task_id not in parent.children:
+                    parent.children.append(event.task_id)
+
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""
         return self.nodes.get(task_id)
