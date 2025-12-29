@@ -19,6 +19,9 @@
       },
       "a11y": {
         "noStaticElementInteractions": "off"
+      },
+      "complexity": {
+        "noImportantStyles": "off"
       }
     }
   },
