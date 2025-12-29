@@ -1,11 +1,11 @@
 # Dockerfile for E2E test worker
-# Runs Celery worker with test tasks and celery-flow integration
+# Runs Celery worker with test tasks and stemtrace integration
 
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install celery-flow from source (without build hook - just the Python code)
+# Install stemtrace from source (without build hook - just the Python code)
 # First install dependencies
 RUN pip install --no-cache-dir \
     celery>=5.0.0 \
@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir \
     typing_extensions>=4.0.0 \
     fastapi>=0.100.0
 
-# Copy the celery_flow package source
-COPY src/celery_flow/ /app/celery_flow/
+# Copy the stemtrace package source
+COPY src/stemtrace/ /app/stemtrace/
 
 # Make it importable as a package
 ENV PYTHONPATH=/app

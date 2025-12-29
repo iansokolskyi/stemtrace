@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from celery_flow.server.ui.static import get_static_router, is_ui_available
+from stemtrace.server.ui.static import get_static_router, is_ui_available
 
 
 class TestStaticRouter:
@@ -15,7 +15,7 @@ class TestStaticRouter:
     def test_get_static_router_returns_none_when_missing(self, tmp_path: Path) -> None:
         """Returns None if dist/ doesn't exist."""
         with patch(
-            "celery_flow.server.ui.static._FRONTEND_DIR", tmp_path / "nonexistent"
+            "stemtrace.server.ui.static._FRONTEND_DIR", tmp_path / "nonexistent"
         ):
             router = get_static_router()
             assert router is None
@@ -28,7 +28,7 @@ class TestStaticRouter:
         assets_dir.mkdir()
         (dist_dir / "index.html").write_text("<html><body>Test</body></html>")
 
-        with patch("celery_flow.server.ui.static._FRONTEND_DIR", dist_dir):
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
             router = get_static_router()
             assert router is not None
 
@@ -40,7 +40,7 @@ class TestStaticRouter:
         assets_dir.mkdir()
         (dist_dir / "index.html").write_text("<html><body>Hello</body></html>")
 
-        with patch("celery_flow.server.ui.static._FRONTEND_DIR", dist_dir):
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
             router = get_static_router()
             assert router is not None
 
@@ -60,7 +60,7 @@ class TestStaticRouter:
         assets_dir.mkdir()
         (dist_dir / "index.html").write_text("<html><body>SPA</body></html>")
 
-        with patch("celery_flow.server.ui.static._FRONTEND_DIR", dist_dir):
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
             router = get_static_router()
             assert router is not None
 
@@ -82,7 +82,7 @@ class TestStaticRouter:
         (dist_dir / "index.html").write_text("<html></html>")
         (dist_dir / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
 
-        with patch("celery_flow.server.ui.static._FRONTEND_DIR", dist_dir):
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
             router = get_static_router()
             assert router is not None
 
@@ -100,7 +100,7 @@ class TestIsUiAvailable:
     def test_returns_false_when_missing(self, tmp_path: Path) -> None:
         """Returns False if index.html doesn't exist."""
         with patch(
-            "celery_flow.server.ui.static._FRONTEND_DIR", tmp_path / "nonexistent"
+            "stemtrace.server.ui.static._FRONTEND_DIR", tmp_path / "nonexistent"
         ):
             assert is_ui_available() is False
 
@@ -110,5 +110,5 @@ class TestIsUiAvailable:
         dist_dir.mkdir()
         (dist_dir / "index.html").write_text("<html></html>")
 
-        with patch("celery_flow.server.ui.static._FRONTEND_DIR", dist_dir):
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
             assert is_ui_available() is True

@@ -1,20 +1,20 @@
-# celery-flow 🌊
+# stemtrace 🌿
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://badge.fury.io/py/celery-flow.svg)](https://badge.fury.io/py/celery-flow)
-[![Python](https://img.shields.io/pypi/pyversions/celery-flow.svg)](https://pypi.org/project/celery-flow/)
-[![CI](https://github.com/iansokolskyi/celery-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/celery-flow/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/iansokolskyi/celery-flow/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/celery-flow)
+[![PyPI version](https://badge.fury.io/py/stemtrace.svg)](https://badge.fury.io/py/stemtrace)
+[![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
+[![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
 ---
 
-> **Flower answers "what exists". celery-flow answers "what happened".**
+> **Flower answers "what exists". stemtrace answers "what happened".**
 
-`celery-flow` models Celery as a graph of executions derived from events. Visualize task flows, timelines, retries, and parent-child relationships — using your existing broker with zero new infrastructure.
+`stemtrace` models Celery as a graph of executions derived from events. Visualize task flows, timelines, retries, and parent-child relationships — using your existing broker with zero new infrastructure.
 
 ## ✨ Features
 
@@ -39,43 +39,43 @@
 ### 1. Install
 
 ```bash
-pip install celery-flow
+pip install stemtrace
 ```
 
 ### 2. Instrument your Celery app
 
 ```python
 from celery import Celery
-import celery_flow
+import stemtrace
 
 app = Celery("myapp", broker="redis://localhost:6379/0")
 
 # One line to enable flow tracking
-celery_flow.init(app)
+stemtrace.init(app)
 ```
 
 ### 3. Run the visualizer
 
 ```bash
-celery-flow server
+stemtrace server
 ```
 
 Open [http://localhost:8000](http://localhost:8000) and watch your task flows come alive.
 
-> By default, connects to `redis://localhost:6379/0`. Override with `--broker-url` or `CELERY_FLOW_BROKER_URL` env var.
+> By default, connects to `redis://localhost:6379/0`. Override with `--broker-url` or `STEMTRACE_BROKER_URL` env var.
 
 See [Deployment Options](#️-deployment-options) for FastAPI integration and production setups.
 
 ## 📦 Architecture
 
-celery-flow is designed as two decoupled components:
+stemtrace is designed as two decoupled components:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Your Application                          │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐        │
 │  │ Celery Worker│    │ Celery Worker│    │ Celery Worker│        │
-│  │ + celery_flow│    │ + celery_flow│    │ + celery_flow│        │
+│  │ + stemtrace  │    │ + stemtrace  │    │ + stemtrace  │        │
 │  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘        │
 │         │                   │                   │                │
 │         └───────────────────┼───────────────────┘                │
@@ -89,7 +89,7 @@ celery-flow is designed as two decoupled components:
                               │
                               ▼
                     ┌───────────────────┐
-                    │  celery-flow      │
+                    │    stemtrace      │
                     │  server (viewer)  │
                     │  ┌─────────────┐  │
                     │  │   Web UI    │  │
@@ -97,13 +97,13 @@ celery-flow is designed as two decoupled components:
                     └───────────────────┘
 ```
 
-### Library (`celery-flow`)
+### Library (`stemtrace`)
 - Hooks into Celery signals
 - Captures task lifecycle events
 - Sends normalized events to the broker
 - **Zero overhead in critical path** — fire-and-forget writes
 
-### Server (`celery-flow server`)
+### Server (`stemtrace server`)
 - Reads events from the broker
 - Builds task graphs
 - Serves the web UI
@@ -114,34 +114,34 @@ celery-flow is designed as two decoupled components:
 ### Library Options
 
 ```python
-import celery_flow
+import stemtrace
 
-celery_flow.init(
+stemtrace.init(
     app,
     # Optional: override broker URL (defaults to Celery's broker_url)
     transport_url="redis://localhost:6379/0",
-    prefix="celery_flow",                   # Key/queue prefix
-    ttl=86400,                              # Event TTL in seconds (default: 24h)
+    prefix="stemtrace",                        # Key/queue prefix
+    ttl=86400,                                 # Event TTL in seconds (default: 24h)
 
     # Data capture (all enabled by default)
-    capture_args=True,                      # Capture task args/kwargs
-    capture_result=True,                    # Capture return values
+    capture_args=True,                         # Capture task args/kwargs
+    capture_result=True,                       # Capture return values
 
     # Sensitive data scrubbing (Sentry-style)
-    scrub_sensitive_data=True,              # Scrub passwords, API keys, etc.
+    scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
-    safe_keys=frozenset({"public_key"}),    # Never scrub these keys
+    safe_keys=frozenset({"public_key"}),       # Never scrub these keys
 )
 
 # Introspection (after init)
-celery_flow.is_initialized()   # -> True
-celery_flow.get_config()       # -> CeleryFlowConfig
-celery_flow.get_transport()    # -> EventTransport (for testing)
+stemtrace.is_initialized()   # -> True
+stemtrace.get_config()       # -> StemtraceConfig
+stemtrace.get_transport()    # -> EventTransport (for testing)
 ```
 
 #### Sensitive Data Scrubbing
 
-By default, celery-flow scrubs common sensitive keys from task arguments:
+By default, stemtrace scrubs common sensitive keys from task arguments:
 - Passwords: `password`, `passwd`, `pwd`, `secret`
 - API keys: `api_key`, `apikey`, `token`, `bearer`, `authorization`
 - Financial: `credit_card`, `cvv`, `ssn`
@@ -151,7 +151,7 @@ Scrubbed values appear as `[Filtered]` in the UI.
 
 ### Canvas Graph Visualization
 
-celery-flow automatically detects and visualizes Celery canvas constructs:
+stemtrace automatically detects and visualizes Celery canvas constructs:
 
 ```text
 # Parent-spawned group: GROUP is child of parent
@@ -187,9 +187,9 @@ batch_processor
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CELERY_FLOW_BROKER_URL` | Broker connection URL | Auto-detect from Celery |
-| `CELERY_FLOW_TTL` | Event TTL in seconds | `86400` |
-| `CELERY_FLOW_PREFIX` | Key/queue prefix | `celery_flow` |
+| `STEMTRACE_BROKER_URL` | Broker connection URL | Auto-detect from Celery |
+| `STEMTRACE_TTL` | Event TTL in seconds | `86400` |
+| `STEMTRACE_PREFIX` | Key/queue prefix | `stemtrace` |
 
 ### Supported Brokers
 
@@ -204,44 +204,44 @@ batch_processor
 ```bash
 # With Redis
 docker run -p 8000:8000 \
-    -e CELERY_FLOW_BROKER_URL=redis://host.docker.internal:6379/0 \
-    ghcr.io/celery-flow/server
+    -e STEMTRACE_BROKER_URL=redis://host.docker.internal:6379/0 \
+    ghcr.io/stemtrace/server
 
 # With RabbitMQ
 docker run -p 8000:8000 \
-    -e CELERY_FLOW_BROKER_URL=amqp://guest:guest@host.docker.internal:5672/ \
-    ghcr.io/celery-flow/server
+    -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672/ \
+    ghcr.io/stemtrace/server
 ```
 
 Or with Docker Compose:
 
 ```yaml
 services:
-  celery-flow:
-    image: ghcr.io/celery-flow/server
+  stemtrace:
+    image: ghcr.io/stemtrace/server
     ports:
       - "8000:8000"
     environment:
-      - CELERY_FLOW_BROKER_URL=redis://redis:6379/0
+      - STEMTRACE_BROKER_URL=redis://redis:6379/0
 ```
 
 ## 🖥️ Deployment Options
 
-celery-flow offers two deployment modes depending on your needs:
+stemtrace offers two deployment modes depending on your needs:
 
 | Mode | Best For | Command |
 |------|----------|---------|
-| **Standalone Server** | Dedicated monitoring, simple setup | `celery-flow server` |
-| **FastAPI Embedded** | Single-app deployment, existing FastAPI apps | `CeleryFlowExtension` |
+| **Standalone Server** | Dedicated monitoring, simple setup | `stemtrace server` |
+| **FastAPI Embedded** | Single-app deployment, existing FastAPI apps | `StemtraceExtension` |
 
 ### Option 1: Standalone Server (Recommended)
 
-The simplest way to run celery-flow — a dedicated monitoring service:
+The simplest way to run stemtrace — a dedicated monitoring service:
 
 ```bash
-pip install celery-flow
+pip install stemtrace
 
-celery-flow server
+stemtrace server
 ```
 
 Open [http://localhost:8000](http://localhost:8000) to view the dashboard.
@@ -249,7 +249,7 @@ Open [http://localhost:8000](http://localhost:8000) to view the dashboard.
 #### Server Options
 
 ```bash
-celery-flow server \
+stemtrace server \
     --broker-url redis://myredis:6379/0 \
     --host 0.0.0.0 \
     --port 8000 \
@@ -262,25 +262,25 @@ For high-throughput environments, run the consumer separately from the web serve
 
 ```bash
 # Terminal 1: Run consumer (processes events)
-celery-flow consume
+stemtrace consume
 
 # Terminal 2: Run API server (separate process, shares state via broker)
-celery-flow server
+stemtrace server
 ```
 ### Option 2: FastAPI Embedded
 
-Mount celery-flow directly into your existing FastAPI application:
+Mount stemtrace directly into your existing FastAPI application:
 
 ```python
 from fastapi import FastAPI
-from celery_flow.server import CeleryFlowExtension
+from stemtrace.server import StemtraceExtension
 
-flow = CeleryFlowExtension(broker_url="redis://localhost:6379/0")
+flow = StemtraceExtension(broker_url="redis://localhost:6379/0")
 app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/celery-flow")
+app.include_router(flow.router, prefix="/stemtrace")
 ```
 
-Access the dashboard at `/celery-flow/` within your app.
+Access the dashboard at `/stemtrace/` within your app.
 
 #### With Custom Authentication
 
@@ -288,28 +288,28 @@ Use your existing auth middleware:
 
 ```python
 from fastapi import Depends
-from celery_flow.server import CeleryFlowExtension
+from stemtrace.server import StemtraceExtension
 from your_app.auth import require_admin
 
-flow = CeleryFlowExtension(
+flow = StemtraceExtension(
     broker_url="redis://localhost:6379/0",
     auth_dependency=Depends(require_admin),
 )
 app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/celery-flow")
+app.include_router(flow.router, prefix="/stemtrace")
 ```
 
 Or use built-in auth helpers:
 
 ```python
-from celery_flow.server import CeleryFlowExtension, require_basic_auth
+from stemtrace.server import StemtraceExtension, require_basic_auth
 
-flow = CeleryFlowExtension(
+flow = StemtraceExtension(
     broker_url="redis://localhost:6379/0",
     auth_dependency=require_basic_auth("admin", "secret"),
 )
 app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/celery-flow")
+app.include_router(flow.router, prefix="/stemtrace")
 ```
 
 #### Embedded Consumer Modes
@@ -317,7 +317,7 @@ app.include_router(flow.router, prefix="/celery-flow")
 | Mode | Use Case | Setup |
 |------|----------|-------|
 | Embedded | Development, simple apps | Default — consumer runs in FastAPI process |
-| External | Production, high scale | Run `celery-flow consume` separately |
+| External | Production, high scale | Run `stemtrace consume` separately |
 
 ## 🗺️ Roadmap
 
@@ -354,8 +354,8 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 
 ```bash
 # Clone the repo
-git clone https://github.com/iansokolskyi/celery-flow.git
-cd celery-flow
+git clone https://github.com/iansokolskyi/stemtrace.git
+cd stemtrace
 
 # Install dependencies (requires uv)
 uv sync --all-extras
@@ -370,4 +370,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-**celery-flow** is not affiliated with the Celery project. Celery is a trademark of Ask Solem.
+**stemtrace** is not affiliated with the Celery project. Celery is a trademark of Ask Solem.

@@ -1,4 +1,4 @@
-"""E2E tests for celery-flow API.
+"""E2E tests for stemtrace API.
 
 These tests verify the full flow:
 - Celery task submission

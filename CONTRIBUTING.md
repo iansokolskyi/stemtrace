@@ -1,4 +1,4 @@
-# Contributing to celery-flow
+# Contributing to stemtrace
 
 Thank you for your interest in contributing! This guide will help you get started.
 
@@ -15,8 +15,8 @@ Thank you for your interest in contributing! This guide will help you get starte
 
 ```bash
 # Clone the repo
-git clone https://github.com/iansokolskyi/celery-flow.git
-cd celery-flow
+git clone https://github.com/iansokolskyi/stemtrace.git
+cd stemtrace
 
 # Install dependencies (creates venv automatically)
 uv sync --all-extras
@@ -76,7 +76,7 @@ uv run pytest tests/unit/
 uv run pytest
 
 # With coverage
-uv run pytest --cov=celery_flow --cov-report=term-missing
+uv run pytest --cov=stemtrace --cov-report=term-missing
 ```
 
 **Coverage requirement:** 80% minimum

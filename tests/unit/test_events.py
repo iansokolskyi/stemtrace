@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from celery_flow.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState
 
 
 class TestTaskState:

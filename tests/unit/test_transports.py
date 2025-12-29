@@ -6,11 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.core.exceptions import UnsupportedBrokerError
-from celery_flow.library.transports import get_transport
-from celery_flow.library.transports.memory import MemoryTransport
-from celery_flow.library.transports.redis import RedisTransport
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.exceptions import UnsupportedBrokerError
+from stemtrace.library.transports import get_transport
+from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.library.transports.redis import RedisTransport
 
 
 @pytest.fixture

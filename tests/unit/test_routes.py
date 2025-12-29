@@ -7,9 +7,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.server.api.routes import create_api_router
-from celery_flow.server.store import GraphStore
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.store import GraphStore
 
 
 @pytest.fixture

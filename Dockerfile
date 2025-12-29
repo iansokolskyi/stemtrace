@@ -1,14 +1,14 @@
-# celery-flow server Dockerfile
+# stemtrace server Dockerfile
 # Multi-stage build for smaller production image
 
 # Stage 1: Build frontend
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
-COPY src/celery_flow/server/ui/frontend/package*.json ./
+COPY src/stemtrace/server/ui/frontend/package*.json ./
 RUN npm ci
 
-COPY src/celery_flow/server/ui/frontend/ ./
+COPY src/stemtrace/server/ui/frontend/ ./
 RUN npm run build
 
 # Stage 2: Build Python package
@@ -24,7 +24,7 @@ COPY pyproject.toml README.md LICENSE build_ui.py ./
 COPY src/ src/
 
 # Copy pre-built frontend
-COPY --from=frontend-builder /app/frontend/dist/ src/celery_flow/server/ui/frontend/dist/
+COPY --from=frontend-builder /app/frontend/dist/ src/stemtrace/server/ui/frontend/dist/
 
 # Build wheel
 RUN hatch build -t wheel
@@ -39,20 +39,20 @@ COPY --from=builder /app/dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
 # Create non-root user
-RUN useradd -m -u 1000 celeryflow
-USER celeryflow
+RUN useradd -m -u 1000 stemtrace
+USER stemtrace
 
 # Default environment
-ENV CELERY_FLOW_BROKER_URL=""
+ENV STEMTRACE_BROKER_URL=""
 ENV HOST="0.0.0.0"
 ENV PORT="8000"
 
 EXPOSE 8000
 
-# Health check (CLI server mounts API at /celery-flow prefix)
+# Health check (CLI server mounts API at /stemtrace prefix)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/celery-flow/api/health').raise_for_status()"
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/stemtrace/api/health').raise_for_status()"
 
 # Default command: run server
-ENTRYPOINT ["celery-flow"]
+ENTRYPOINT ["stemtrace"]
 CMD ["server", "--host", "0.0.0.0", "--port", "8000"]

@@ -14,13 +14,13 @@ replace = 'version = "{new_version}"'
 
 # Python __version__ in package __init__.py
 [[tool.bumpversion.files]]
-filename = "src/celery_flow/__init__.py"
+filename = "src/stemtrace/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
 
 # Frontend package.json version
 [[tool.bumpversion.files]]
-filename = "src/celery_flow/server/ui/frontend/package.json"
+filename = "src/stemtrace/server/ui/frontend/package.json"
 search = '"version": "{current_version}"'
 replace = '"version": "{new_version}"'
 

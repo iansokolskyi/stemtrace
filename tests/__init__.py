@@ -1,1 +1,1 @@
-"""celery-flow tests."""
+"""stemtrace tests."""

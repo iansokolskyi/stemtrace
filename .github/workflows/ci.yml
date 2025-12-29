@@ -76,7 +76,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run tests
-        run: uv run pytest --cov=celery_flow --cov-report=xml --cov-fail-under=80
+        run: uv run pytest --cov=stemtrace --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
@@ -90,7 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src/celery_flow/server/ui/frontend
+        working-directory: src/stemtrace/server/ui/frontend
     steps:
       - uses: actions/checkout@v6
 
@@ -99,7 +99,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: src/celery_flow/server/ui/frontend/package-lock.json
+          cache-dependency-path: src/stemtrace/server/ui/frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -131,11 +131,11 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: src/celery_flow/server/ui/frontend/package-lock.json
+          cache-dependency-path: src/stemtrace/server/ui/frontend/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
-        working-directory: src/celery_flow/server/ui/frontend
+        working-directory: src/stemtrace/server/ui/frontend
 
       - name: Build package
         run: uvx --from build pyproject-build

@@ -1,4 +1,4 @@
-# Docker Compose for celery-flow E2E testing
+# Docker Compose for stemtrace E2E testing
 #
 # Usage:
 #   docker compose -f docker-compose.e2e.yml up -d --wait  # Start services
@@ -7,7 +7,7 @@
 # Services:
 #   - redis: Message broker
 #   - worker: Celery worker running E2E test tasks
-#   - server: celery-flow server with UI and API
+#   - server: stemtrace server with UI and API
 
 services:
   redis:
@@ -46,14 +46,14 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - CELERY_FLOW_BROKER_URL=redis://redis:6379/0
+      - STEMTRACE_BROKER_URL=redis://redis:6379/0
     depends_on:
       redis:
         condition: service_healthy
     command: [ "server", "--broker-url", "redis://redis:6379/0", "--host", "0.0.0.0", "--port", "8000" ]
     healthcheck:
-      # API is at /celery-flow/api/health for CLI mode
-      test: [ "CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/celery-flow/api/health').raise_for_status()" ]
+      # API is at /stemtrace/api/health for CLI mode
+      test: [ "CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/stemtrace/api/health').raise_for_status()" ]
       interval: 5s
       timeout: 10s
       retries: 10

@@ -5,7 +5,7 @@ import base64
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from celery_flow.server.fastapi.auth import no_auth, require_api_key, require_basic_auth
+from stemtrace.server.fastapi.auth import no_auth, require_api_key, require_basic_auth
 
 
 def _create_app_with_auth(auth_dependency: object) -> FastAPI:

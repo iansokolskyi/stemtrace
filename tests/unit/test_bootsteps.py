@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.library.bootsteps import (
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.bootsteps import (
     ReceivedEventStep,
     _set_publisher,
     register_bootsteps,

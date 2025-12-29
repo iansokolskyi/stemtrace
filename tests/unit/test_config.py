@@ -1,24 +1,24 @@
-"""Tests for CeleryFlowConfig."""
+"""Tests for StemtraceConfig."""
 
 import pytest
 from pydantic import ValidationError
 
-from celery_flow.library.config import (
-    CeleryFlowConfig,
+from stemtrace.library.config import (
+    StemtraceConfig,
     get_config,
     set_config,
 )
 
 
-class TestCeleryFlowConfig:
-    """Tests for CeleryFlowConfig model."""
+class TestStemtraceConfig:
+    """Tests for StemtraceConfig model."""
 
     def test_create_with_required_fields(self) -> None:
         """Config can be created with just transport_url."""
-        config = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
+        config = StemtraceConfig(transport_url="redis://localhost:6379/0")
 
         assert config.transport_url == "redis://localhost:6379/0"
-        assert config.prefix == "celery_flow"
+        assert config.prefix == "stemtrace"
         assert config.ttl == 86400
         assert config.capture_args is True
         assert config.capture_result is True
@@ -26,7 +26,7 @@ class TestCeleryFlowConfig:
 
     def test_create_with_all_fields(self) -> None:
         """Config can be created with all custom values."""
-        config = CeleryFlowConfig(
+        config = StemtraceConfig(
             transport_url="redis://custom:6379/1",
             prefix="myapp_flow",
             ttl=3600,
@@ -44,7 +44,7 @@ class TestCeleryFlowConfig:
 
     def test_config_is_frozen(self) -> None:
         """Config is immutable after creation."""
-        config = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
+        config = StemtraceConfig(transport_url="redis://localhost:6379/0")
 
         with pytest.raises(ValidationError):
             config.transport_url = "redis://other:6379/0"  # type: ignore[misc]
@@ -52,18 +52,18 @@ class TestCeleryFlowConfig:
     def test_missing_transport_url_raises(self) -> None:
         """Config requires transport_url."""
         with pytest.raises(ValidationError):
-            CeleryFlowConfig()  # type: ignore[call-arg]
+            StemtraceConfig()  # type: ignore[call-arg]
 
     def test_config_equality(self) -> None:
         """Two configs with same values are equal."""
-        config1 = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
-        config2 = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
+        config1 = StemtraceConfig(transport_url="redis://localhost:6379/0")
+        config2 = StemtraceConfig(transport_url="redis://localhost:6379/0")
 
         assert config1 == config2
 
     def test_config_hashable(self) -> None:
         """Frozen config can be used in sets/dicts."""
-        config = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
+        config = StemtraceConfig(transport_url="redis://localhost:6379/0")
         config_set = {config}
 
         assert config in config_set
@@ -80,7 +80,7 @@ class TestConfigModule:
 
     def test_set_and_get_config(self) -> None:
         """set_config stores config that get_config retrieves."""
-        config = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
+        config = StemtraceConfig(transport_url="redis://localhost:6379/0")
         set_config(config)
 
         retrieved = get_config()
@@ -89,8 +89,8 @@ class TestConfigModule:
 
     def test_set_config_replaces_previous(self) -> None:
         """set_config overwrites any previous config."""
-        config1 = CeleryFlowConfig(transport_url="redis://localhost:6379/0")
-        config2 = CeleryFlowConfig(transport_url="redis://other:6379/0")
+        config1 = StemtraceConfig(transport_url="redis://localhost:6379/0")
+        config2 = StemtraceConfig(transport_url="redis://other:6379/0")
 
         set_config(config1)
         set_config(config2)

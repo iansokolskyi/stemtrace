@@ -1,4 +1,4 @@
-# Docker Compose for celery-flow development and demo
+# Docker Compose for stemtrace development and demo
 #
 # Usage:
 #   docker compose up -d              # Start all services
@@ -29,7 +29,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - CELERY_FLOW_BROKER_URL=redis://redis:6379
+      - STEMTRACE_BROKER_URL=redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
@@ -40,7 +40,7 @@ services:
   #     context: .
   #     dockerfile: Dockerfile
   #   environment:
-  #     - CELERY_FLOW_BROKER_URL=redis://redis:6379
+  #     - STEMTRACE_BROKER_URL=redis://redis:6379
   #   depends_on:
   #     redis:
   #       condition: service_healthy

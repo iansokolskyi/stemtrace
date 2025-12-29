@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from celery_flow.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState
 
 
 @pytest.fixture

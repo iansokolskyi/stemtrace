@@ -4,10 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import celery_flow
-from celery_flow import (
-    CeleryFlowConfig,
+import stemtrace
+from stemtrace import (
     ConfigurationError,
+    StemtraceConfig,
     __version__,
     _reset,
     get_config,
@@ -15,8 +15,8 @@ from celery_flow import (
     init,
     is_initialized,
 )
-from celery_flow.library.signals import disconnect_signals
-from celery_flow.library.transports.memory import MemoryTransport
+from stemtrace.library.signals import disconnect_signals
+from stemtrace.library.transports.memory import MemoryTransport
 
 
 @pytest.fixture(autouse=True)
@@ -93,11 +93,11 @@ class TestInit:
         app = MagicMock()
         app.conf.broker_url = "memory://"
 
-        # Sentry-style: celery_flow.init(app)
-        celery_flow.init(app)
+        # Sentry-style: stemtrace.init(app)
+        stemtrace.init(app)
 
-        assert celery_flow.is_initialized() is True
-        assert celery_flow.get_config() is not None
+        assert stemtrace.is_initialized() is True
+        assert stemtrace.get_config() is not None
 
 
 class TestIntrospection:
@@ -121,14 +121,14 @@ class TestIntrospection:
         assert get_config() is None
 
     def test_get_config_returns_config_after_init(self) -> None:
-        """get_config() returns CeleryFlowConfig after init()."""
+        """get_config() returns StemtraceConfig after init()."""
         app = MagicMock()
 
         init(app, transport_url="memory://", prefix="test_prefix")
 
         config = get_config()
         assert config is not None
-        assert isinstance(config, CeleryFlowConfig)
+        assert isinstance(config, StemtraceConfig)
         assert config.prefix == "test_prefix"
 
     def test_get_transport_none_before_init(self) -> None:
@@ -148,7 +148,7 @@ class TestIntrospection:
 
     def test_exports_in_all(self) -> None:
         """New functions are exported in __all__."""
-        assert "is_initialized" in celery_flow.__all__
-        assert "get_config" in celery_flow.__all__
-        assert "get_transport" in celery_flow.__all__
-        assert "CeleryFlowConfig" in celery_flow.__all__
+        assert "is_initialized" in stemtrace.__all__
+        assert "get_config" in stemtrace.__all__
+        assert "get_transport" in stemtrace.__all__
+        assert "StemtraceConfig" in stemtrace.__all__

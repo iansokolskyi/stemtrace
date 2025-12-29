@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.server.consumer import AsyncEventConsumer, EventConsumer
-from celery_flow.server.store import GraphStore
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
+from stemtrace.server.store import GraphStore
 
 
 class FakeTransport:
@@ -68,7 +68,7 @@ class TestEventConsumer:
     def test_start_stops_gracefully(self, store: GraphStore) -> None:
         fake = FakeTransport()
 
-        with patch("celery_flow.server.consumer.get_transport", return_value=fake):
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             consumer = EventConsumer("memory://", store)
             consumer.start()
 
@@ -83,7 +83,7 @@ class TestEventConsumer:
     def test_start_idempotent(self, store: GraphStore) -> None:
         fake = FakeTransport()
 
-        with patch("celery_flow.server.consumer.get_transport", return_value=fake):
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             consumer = EventConsumer("memory://", store)
             consumer.start()
             consumer.start()  # Second start should be no-op
@@ -103,7 +103,7 @@ class TestEventConsumer:
     ) -> None:
         fake = FakeTransport(sample_events.copy())
 
-        with patch("celery_flow.server.consumer.get_transport", return_value=fake):
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             consumer = EventConsumer("memory://", store)
             consumer.start()
 
@@ -118,7 +118,7 @@ class TestEventConsumer:
     def test_config_passed_to_transport(self, store: GraphStore) -> None:
         mock_get_transport = MagicMock(return_value=FakeTransport())
 
-        with patch("celery_flow.server.consumer.get_transport", mock_get_transport):
+        with patch("stemtrace.server.consumer.get_transport", mock_get_transport):
             consumer = EventConsumer(
                 "redis://localhost:6379",
                 store,
@@ -147,7 +147,7 @@ class TestAsyncEventConsumer:
     async def test_async_context_manager(self, store: GraphStore) -> None:
         fake = FakeTransport()
 
-        with patch("celery_flow.server.consumer.get_transport", return_value=fake):
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             async with AsyncEventConsumer("memory://", store) as consumer:
                 assert consumer.is_running
                 fake.stop()
@@ -157,7 +157,7 @@ class TestAsyncEventConsumer:
     def test_manual_start_stop(self, store: GraphStore) -> None:
         fake = FakeTransport()
 
-        with patch("celery_flow.server.consumer.get_transport", return_value=fake):
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             consumer = AsyncEventConsumer("memory://", store)
             consumer.start()
             assert consumer.is_running

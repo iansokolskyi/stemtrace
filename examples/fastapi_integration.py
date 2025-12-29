@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""Example: Integrate celery-flow into your FastAPI application.
+"""Example: Integrate stemtrace into your FastAPI application.
 
-This example shows how to mount celery-flow as a router in your existing
+This example shows how to mount stemtrace as a router in your existing
 FastAPI app, with an embedded consumer for development.
 
 Usage:
-    pip install celery-flow[server]
+    pip install stemtrace[server]
     uvicorn examples.fastapi_integration:app --reload
 """
 
 from fastapi import FastAPI
 
-from celery_flow.server import CeleryFlowExtension
+from stemtrace.server import StemtraceExtension
 
 # Configuration
 BROKER_URL = "redis://localhost:6379/0"
 
-# Create the celery-flow extension
-flow = CeleryFlowExtension(
+# Create the stemtrace extension
+flow = StemtraceExtension(
     broker_url=BROKER_URL,
     embedded_consumer=True,  # Run consumer in background
     serve_ui=True,  # Serve the React UI
 )
 
-# Create FastAPI app with celery-flow lifespan
+# Create FastAPI app with stemtrace lifespan
 app = FastAPI(
-    title="My App with celery-flow",
+    title="My App with stemtrace",
     lifespan=flow.lifespan,
 )
 
-# Mount celery-flow router
-app.include_router(flow.router, prefix="/celery-flow")
+# Mount stemtrace router
+app.include_router(flow.router, prefix="/stemtrace")
 
 
 # Your own routes
 @app.get("/")
 async def root() -> dict[str, str]:
-    """Redirect to celery-flow UI."""
-    return {"message": "Welcome! Visit /celery-flow for task monitoring."}
+    """Redirect to stemtrace UI."""
+    return {"message": "Welcome! Visit /stemtrace for task monitoring."}
 
 
 @app.get("/health")
@@ -45,7 +45,7 @@ async def health() -> dict[str, str]:
     """Health check endpoint."""
     return {
         "status": "ok",
-        "celery_flow_consumer": "running"
+        "stemtrace_consumer": "running"
         if flow.consumer and flow.consumer.is_running
         else "stopped",
     }

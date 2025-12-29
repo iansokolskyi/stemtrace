@@ -1,6 +1,6 @@
 """End-to-end tests - full system with Docker.
 
-E2E tests require running services (Redis, Celery worker, celery-flow server).
+E2E tests require running services (Redis, Celery worker, stemtrace server).
 Use docker-compose.e2e.yml to start the test environment.
 
 Run E2E tests:

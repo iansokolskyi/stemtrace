@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from celery_flow.core.events import TaskState
-from celery_flow.library.config import CeleryFlowConfig, set_config
-from celery_flow.library.signals import (
+from stemtrace.core.events import TaskState
+from stemtrace.library.config import StemtraceConfig, set_config
+from stemtrace.library.signals import (
     _extract_chord_info,
     _on_task_failure,
     _on_task_postrun,
@@ -18,7 +18,7 @@ from celery_flow.library.signals import (
     connect_signals,
     disconnect_signals,
 )
-from celery_flow.library.transports.memory import MemoryTransport
+from stemtrace.library.transports.memory import MemoryTransport
 
 
 @pytest.fixture(autouse=True)
@@ -29,15 +29,15 @@ def clean_transport() -> None:
 
 
 @pytest.fixture
-def config() -> CeleryFlowConfig:
+def config() -> StemtraceConfig:
     """Set up default config for tests."""
-    cfg = CeleryFlowConfig(transport_url="memory://")
+    cfg = StemtraceConfig(transport_url="memory://")
     set_config(cfg)
     return cfg
 
 
 @pytest.fixture
-def transport(config: CeleryFlowConfig) -> MemoryTransport:
+def transport(config: StemtraceConfig) -> MemoryTransport:
     """Create and connect a MemoryTransport."""
     transport = MemoryTransport()
     connect_signals(transport)

@@ -2,7 +2,7 @@
 
 import pytest
 
-from celery_flow.library.scrubbing import (
+from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     FILTERED,
     _is_sensitive_key,

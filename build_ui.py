@@ -17,7 +17,7 @@ class CustomBuildHook(BuildHookInterface):
     def initialize(self, _version: str, _build_data: dict[str, Any]) -> None:
         """Run npm install and build for the frontend."""
         frontend_dir = (
-            Path(self.root) / "src" / "celery_flow" / "server" / "ui" / "frontend"
+            Path(self.root) / "src" / "stemtrace" / "server" / "ui" / "frontend"
         )
         dist_dir = frontend_dir / "dist"
 

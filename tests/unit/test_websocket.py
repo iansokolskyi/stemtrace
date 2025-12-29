@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.server.websocket import WebSocketManager
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.websocket import WebSocketManager
 
 
 @pytest.fixture

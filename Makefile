@@ -1,4 +1,4 @@
-.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major release
 
 # Install all dependencies
 install:
@@ -22,7 +22,7 @@ missing = []; \
   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
   and not (n.name.startswith('_') and not n.name.startswith('__')) \
   and not ast.get_docstring(n)]) \
-for py in Path('src/celery_flow').rglob('*.py') if '__pycache__' not in str(py)]; \
+for py in Path('src/stemtrace').rglob('*.py') if '__pycache__' not in str(py)]; \
 [print(m) for m in missing]; \
 exit(1) if missing else print('✓ All public APIs have docstrings') \
 "
@@ -36,7 +36,7 @@ format:
 	uv run ruff check --fix src/ tests/
 
 test:
-	uv run pytest --cov=celery_flow --cov-report=term-missing --cov-fail-under=80
+	uv run pytest --cov=stemtrace --cov-report=term-missing --cov-fail-under=80
 
 # Run tests without coverage (faster iteration)
 test-fast:
@@ -52,7 +52,7 @@ test-integration:
 
 # Show coverage report
 coverage:
-	uv run pytest --cov=celery_flow --cov-report=html
+	uv run pytest --cov=stemtrace --cov-report=html
 	@echo "Open htmlcov/index.html to view coverage report"
 
 # Clean build artifacts
@@ -63,7 +63,7 @@ clean:
 # =============================================================================
 # Frontend (React UI)
 # =============================================================================
-FRONTEND_DIR := src/celery_flow/server/ui/frontend
+FRONTEND_DIR := src/stemtrace/server/ui/frontend
 
 # Install frontend dependencies
 ui-install:
@@ -107,12 +107,7 @@ release-check:
 	@echo ""
 	@echo "✅ Ready to release!"
 	@echo ""
-	@echo "Release workflow (fully automated):"
-	@echo "  1. git checkout -b release/vX.Y.Z"
-	@echo "  2. make bump-patch (or bump-minor/bump-major)"
-	@echo "  3. git push -u origin release/vX.Y.Z"
-	@echo "  4. gh pr create --title 'chore: release vX.Y.Z'"
-	@echo "  5. Merge PR → auto-tags → auto-releases to PyPI + Docker"
+	@echo "Next: make release"
 
 # =============================================================================
 # Versioning (bump-my-version)
@@ -131,7 +126,7 @@ bump-patch:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
+	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
@@ -139,7 +134,7 @@ bump-minor:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
+	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
@@ -147,7 +142,20 @@ bump-major:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git push -u origin HEAD && gh pr create --title 'chore: release v$$NEW_VER'"
+	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
+
+# Tag and push to trigger release workflow
+release:
+	@VERSION=$$(uv run bump-my-version show current_version); \
+	TAG="v$$VERSION"; \
+	echo "Tagging $$TAG..."; \
+	git tag -a "$$TAG" -m "Release $$TAG"; \
+	echo "Pushing to origin..."; \
+	git push origin main; \
+	git push origin "$$TAG"; \
+	echo ""; \
+	echo "✅ Released $$TAG"; \
+	echo "   → GitHub Actions will publish to PyPI and Docker"
 
 # =============================================================================
 # E2E Testing
@@ -157,7 +165,7 @@ bump-major:
 e2e-up:
 	docker compose -f docker-compose.e2e.yml up -d --wait
 	@echo "Waiting for services..."
-	@timeout 60 bash -c 'until curl -sf http://localhost:8000/celery-flow/api/health -o /dev/null; do sleep 2; done' || true
+	@timeout 60 bash -c 'until curl -sf http://localhost:8000/stemtrace/api/health -o /dev/null; do sleep 2; done' || true
 	@echo "✅ E2E environment ready at http://localhost:8000"
 
 # Stop E2E test environment

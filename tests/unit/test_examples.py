@@ -4,7 +4,7 @@ These tests ensure that the examples in the examples/ directory:
 1. Can be imported without errors
 2. Have properly configured Celery apps
 3. Define expected tasks
-4. Work with celery-flow instrumentation
+4. Work with stemtrace instrumentation
 
 This helps catch regressions before shipping to users.
 """
@@ -125,8 +125,8 @@ class TestFastAPIIntegrationExample:
 
         assert app is not None
 
-    def test_celery_flow_extension_defined(self) -> None:
-        """CeleryFlowExtension is properly initialized."""
+    def test_stemtrace_extension_defined(self) -> None:
+        """StemtraceExtension is properly initialized."""
         from fastapi_integration import flow
 
         assert flow is not None
@@ -160,7 +160,7 @@ class TestWithAuthExample:
         assert len(AUTH_PASSWORD) > 0
 
     def test_extension_has_auth_dependency(self) -> None:
-        """CeleryFlowExtension is configured with auth dependency."""
+        """StemtraceExtension is configured with auth dependency."""
         from with_auth import flow
 
         # The extension should have been created with auth_dependency
@@ -176,12 +176,12 @@ class TestExamplesConsistency:
 
         assert "redis" in (celery_app_app.conf.broker_url or "")
 
-    def test_celery_flow_initialization(self) -> None:
-        """Examples that use celery-flow should initialize it properly."""
-        # The celery_app.py initializes via celery_flow.init()
+    def test_stemtrace_initialization(self) -> None:
+        """Examples that use stemtrace should initialize it properly."""
+        # The celery_app.py initializes via stemtrace.init()
         from celery_app import app
 
-        # celery-flow should be initialized (check for signal handlers)
+        # stemtrace should be initialized (check for signal handlers)
         # This is implicit - if import works and app is configured, it's good
         assert app is not None
 

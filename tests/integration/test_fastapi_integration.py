@@ -8,12 +8,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.server.fastapi.auth import require_api_key, require_basic_auth
-from celery_flow.server.fastapi.extension import CeleryFlowExtension
-from celery_flow.server.fastapi.router import create_router
-from celery_flow.server.store import GraphStore
-from celery_flow.server.websocket import WebSocketManager
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.fastapi.auth import require_api_key, require_basic_auth
+from stemtrace.server.fastapi.extension import StemtraceExtension
+from stemtrace.server.fastapi.router import create_router
+from stemtrace.server.store import GraphStore
+from stemtrace.server.websocket import WebSocketManager
 
 
 class TestCreateRouter:
@@ -89,12 +89,12 @@ class TestWebSocketEndpoint:
             assert ws_manager.connection_count == 0
 
 
-class TestCeleryFlowExtension:
-    """Tests for CeleryFlowExtension lifecycle."""
+class TestStemtraceExtension:
+    """Tests for StemtraceExtension lifecycle."""
 
     def test_extension_creates_components(self) -> None:
         """Extension creates store, ws_manager, and optionally consumer."""
-        ext = CeleryFlowExtension(
+        ext = StemtraceExtension(
             broker_url="memory://",
             embedded_consumer=True,
         )
@@ -105,7 +105,7 @@ class TestCeleryFlowExtension:
 
     def test_extension_without_consumer(self) -> None:
         """Extension can run without embedded consumer."""
-        ext = CeleryFlowExtension(
+        ext = StemtraceExtension(
             broker_url="memory://",
             embedded_consumer=False,
         )
@@ -114,7 +114,7 @@ class TestCeleryFlowExtension:
 
     def test_extension_router_includes_api(self) -> None:
         """Extension router includes API endpoints."""
-        ext = CeleryFlowExtension(broker_url="memory://", serve_ui=False)
+        ext = StemtraceExtension(broker_url="memory://", serve_ui=False)
 
         app = FastAPI()
         app.include_router(ext.router, prefix="/flow")
@@ -125,7 +125,7 @@ class TestCeleryFlowExtension:
 
     def test_extension_with_auth(self) -> None:
         """Extension applies auth to routes."""
-        ext = CeleryFlowExtension(
+        ext = StemtraceExtension(
             broker_url="memory://",
             serve_ui=False,
             auth_dependency=require_basic_auth("admin", "pass"),
@@ -146,7 +146,7 @@ class TestCeleryFlowExtension:
     @pytest.mark.asyncio
     async def test_extension_lifespan(self) -> None:
         """Extension lifespan starts/stops ws_manager broadcast loop."""
-        ext = CeleryFlowExtension(
+        ext = StemtraceExtension(
             broker_url="memory://",
             embedded_consumer=False,  # Don't test consumer here (blocks)
             serve_ui=False,
@@ -167,7 +167,7 @@ class TestCeleryFlowExtension:
     @pytest.mark.asyncio
     async def test_extension_compose_lifespan(self) -> None:
         """Extension can compose with another lifespan."""
-        ext = CeleryFlowExtension(broker_url="memory://", embedded_consumer=False)
+        ext = StemtraceExtension(broker_url="memory://", embedded_consumer=False)
 
         other_started = False
         other_stopped = False
@@ -189,7 +189,7 @@ class TestCeleryFlowExtension:
 
     def test_extension_store_receives_events(self) -> None:
         """Events added to store are accessible via API."""
-        ext = CeleryFlowExtension(
+        ext = StemtraceExtension(
             broker_url="memory://",
             embedded_consumer=False,
             serve_ui=False,

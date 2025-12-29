@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from celery_flow.core.events import TaskEvent, TaskState
-from celery_flow.core.graph import NodeType
-from celery_flow.server.store import GraphStore
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import NodeType
+from stemtrace.server.store import GraphStore
 
 
 @pytest.fixture

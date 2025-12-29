@@ -1,6 +1,6 @@
 """E2E test fixtures.
 
-Provides fixtures for interacting with the celery-flow server and Celery tasks
+Provides fixtures for interacting with the stemtrace server and Celery tasks
 running in Docker containers.
 
 Prerequisites:
@@ -34,11 +34,11 @@ from tests.e2e.tasks import (
 
 # Server URL - defaults to Docker Compose setup
 SERVER_URL = os.environ.get("CELERY_FLOW_SERVER_URL", "http://localhost:8000")
-# CLI serves API at /celery-flow prefix
-API_URL = f"{SERVER_URL}/celery-flow/api"
+# CLI serves API at /stemtrace prefix
+API_URL = f"{SERVER_URL}/stemtrace/api"
 WS_URL = (
     SERVER_URL.replace("http://", "ws://").replace("https://", "wss://")
-    + "/celery-flow/ws"
+    + "/stemtrace/ws"
 )
 
 
@@ -50,7 +50,7 @@ def celery_app():
 
 @pytest.fixture(scope="session")
 def api_client() -> Generator[httpx.Client, None, None]:
-    """Create an HTTP client for the celery-flow API."""
+    """Create an HTTP client for the stemtrace API."""
     with httpx.Client(base_url=API_URL, timeout=30.0) as client:
         yield client
 
@@ -91,7 +91,7 @@ def check_services_running(api_client: httpx.Client) -> None:
             time.sleep(retry_delay)
 
     pytest.skip(
-        f"celery-flow server not available at {API_URL}. "
+        f"stemtrace server not available at {API_URL}. "
         "Run: docker compose -f docker-compose.e2e.yml up -d --wait"
     )
 

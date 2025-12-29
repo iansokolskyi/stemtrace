@@ -1,27 +1,27 @@
 """Tests for exception classes."""
 
-from celery_flow.core.exceptions import (
-    CeleryFlowError,
+from stemtrace.core.exceptions import (
     ConfigurationError,
+    StemtraceError,
     TransportError,
     UnsupportedBrokerError,
 )
 
 
-def test_celery_flow_error_base() -> None:
-    err = CeleryFlowError("test error")
+def test_stemtrace_error_base() -> None:
+    err = StemtraceError("test error")
     assert str(err) == "test error"
     assert isinstance(err, Exception)
 
 
 def test_configuration_error_inherits() -> None:
     err = ConfigurationError("bad config")
-    assert isinstance(err, CeleryFlowError)
+    assert isinstance(err, StemtraceError)
 
 
 def test_transport_error_inherits() -> None:
     err = TransportError("connection failed")
-    assert isinstance(err, CeleryFlowError)
+    assert isinstance(err, StemtraceError)
 
 
 def test_unsupported_broker_error() -> None:

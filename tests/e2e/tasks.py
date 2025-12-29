@@ -11,7 +11,7 @@ import time
 
 from celery import Celery, chain, group
 
-import celery_flow
+import stemtrace
 
 # Create Celery app with Redis broker
 # Use port 16379 for E2E tests (Docker exposes Redis on alternate port)
@@ -32,8 +32,8 @@ app.conf.update(
     task_send_sent_event=True,
 )
 
-# Initialize celery-flow tracking
-celery_flow.init(app)
+# Initialize stemtrace tracking
+stemtrace.init(app)
 
 
 # =============================================================================

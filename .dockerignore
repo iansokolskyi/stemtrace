@@ -58,7 +58,7 @@ docs/_build/
 .context/
 
 # Keep these (they're built in Dockerfile)
-!src/celery_flow/server/ui/frontend/package*.json
-!src/celery_flow/server/ui/frontend/src/
-!src/celery_flow/server/ui/frontend/*.config.*
-!src/celery_flow/server/ui/frontend/*.json
+!src/stemtrace/server/ui/frontend/package*.json
+!src/stemtrace/server/ui/frontend/src/
+!src/stemtrace/server/ui/frontend/*.config.*
+!src/stemtrace/server/ui/frontend/*.json

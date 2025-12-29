@@ -8,7 +8,7 @@ updates:
       prefix: "chore(deps)"
 
   - package-ecosystem: npm
-    directory: /src/celery_flow/server/ui/frontend
+    directory: /src/stemtrace/server/ui/frontend
     schedule:
       interval: weekly
     commit-message:

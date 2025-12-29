@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: Celery application with celery-flow instrumentation.
+"""Example: Celery application with stemtrace instrumentation.
 
 This example shows how to instrument a Celery application to emit
 task events for visualization, including:
@@ -10,7 +10,7 @@ task events for visualization, including:
 
 Usage:
     # Install dependencies
-    pip install celery-flow[redis]
+    pip install stemtrace[redis]
 
     # Start Redis
     docker run -d -p 6379:6379 redis:alpine
@@ -18,8 +18,8 @@ Usage:
     # Start worker
     celery -A examples.celery_app worker --loglevel=info
 
-    # Start celery-flow server (in another terminal)
-    celery-flow server
+    # Start stemtrace server (in another terminal)
+    stemtrace server
 
     # Run demo tasks
     python examples/celery_app.py workflow  # Complex workflow (chain + group)
@@ -37,7 +37,7 @@ from typing import Any
 
 from celery import Celery, chain, chord, group
 
-import celery_flow
+import stemtrace
 
 # Create Celery app
 app = Celery(
@@ -46,8 +46,8 @@ app = Celery(
     backend="redis://localhost:6379/1",
 )
 
-# Initialize celery-flow tracking
-celery_flow.init(app)
+# Initialize stemtrace tracking
+stemtrace.init(app)
 
 
 # =============================================================================
@@ -194,7 +194,7 @@ def process_user_data(
     """Process user registration.
 
     Demonstrates sensitive data scrubbing - password and credit_card
-    will appear as [Filtered] in the celery-flow UI.
+    will appear as [Filtered] in the stemtrace UI.
 
     Args:
         user_id: User identifier.
@@ -285,7 +285,7 @@ def run_demo(demo_name: str) -> None:
 
     result = demos[demo_name]()
     print(f"Started '{demo_name}' demo: {result.id}")
-    print("View at: http://localhost:8000/celery-flow/")
+    print("View at: http://localhost:8000/stemtrace/")
 
 
 if __name__ == "__main__":
