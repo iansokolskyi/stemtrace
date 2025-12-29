@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2024-12-27
+## [0.1.0] - 2025-12-27
 
 ### Added
 - **Core domain models**: `TaskEvent`, `TaskState`, `TaskNode`, `TaskGraph`
@@ -26,5 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **React UI**: Task list, graph visualization (react-flow), timeline view
 - **CLI commands**: `celery-flow server`, `celery-flow consume`
 - **Docker support**: Multi-stage Dockerfile, docker-compose.yml for local dev
-- **Comprehensive test suite**: 198 tests, 94% coverage
+- **E2E test suite**: Docker API tests + Playwright browser tests
+- **Comprehensive test suite**: 270+ tests, 91% coverage
 

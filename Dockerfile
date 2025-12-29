@@ -20,7 +20,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir hatch
 
 # Copy source
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE build_ui.py ./
 COPY src/ src/
 
 # Copy pre-built frontend
@@ -49,9 +49,9 @@ ENV PORT="8000"
 
 EXPOSE 8000
 
-# Health check
+# Health check (CLI server mounts API at /celery-flow prefix)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/health').raise_for_status()"
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/celery-flow/api/health').raise_for_status()"
 
 # Default command: run server
 ENTRYPOINT ["celery-flow"]

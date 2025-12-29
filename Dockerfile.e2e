@@ -1,0 +1,27 @@
+# Dockerfile for E2E test worker
+# Runs Celery worker with test tasks and celery-flow integration
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install celery-flow from source (without build hook - just the Python code)
+# First install dependencies
+RUN pip install --no-cache-dir \
+    celery>=5.0.0 \
+    pydantic>=2.0.0 \
+    redis>=4.0.0 \
+    typing_extensions>=4.0.0 \
+    fastapi>=0.100.0
+
+# Copy the celery_flow package source
+COPY src/celery_flow/ /app/celery_flow/
+
+# Make it importable as a package
+ENV PYTHONPATH=/app
+
+# Copy test tasks (they'll also be mounted as volume for live changes)
+COPY tests/e2e/ /app/tests/e2e/
+
+# Default command - note the task events flag to help debug
+CMD ["celery", "-A", "tests.e2e.tasks", "worker", "--loglevel=info", "-E"]

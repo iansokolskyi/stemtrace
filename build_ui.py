@@ -17,9 +17,15 @@ class CustomBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
         """Run npm install and build for the frontend."""
         frontend_dir = Path(self.root) / "src" / "celery_flow" / "server" / "ui" / "frontend"
+        dist_dir = frontend_dir / "dist"
 
         if not frontend_dir.exists():
             self.app.display_warning(f"Frontend directory not found: {frontend_dir}")
+            return
+
+        # Skip if dist already exists (e.g., in Docker multi-stage build)
+        if dist_dir.exists() and (dist_dir / "index.html").exists():
+            self.app.display_info("Frontend dist already exists, skipping build")
             return
 
         package_json = frontend_dir / "package.json"

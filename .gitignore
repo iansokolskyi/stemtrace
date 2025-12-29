@@ -28,3 +28,8 @@ src/celery_flow/server/ui/frontend/dist/
 src/celery_flow/server/ui/frontend/.tsr/
 src/celery_flow/server/ui/frontend/src/routeTree.gen.ts
 .tanstack/
+
+# Playwright
+src/celery_flow/server/ui/frontend/playwright-report/
+src/celery_flow/server/ui/frontend/test-results/
+src/celery_flow/server/ui/frontend/playwright/.cache/

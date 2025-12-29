@@ -214,6 +214,47 @@ class TestTaskGraphParentChild:
         assert "child-1" in graph.nodes["parent-1"].children
         assert "child-2" in graph.nodes["parent-1"].children
 
+    def test_late_parent_id_from_later_event(self) -> None:
+        """Test that parent_id is updated from later events (e.g., STARTED after PENDING)."""
+        graph = TaskGraph()
+        # Parent task
+        graph.add_event(
+            TaskEvent(
+                task_id="parent-1",
+                name="myapp.tasks.main",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+            )
+        )
+        # Child's PENDING event (from task_sent) lacks parent_id
+        graph.add_event(
+            TaskEvent(
+                task_id="child-1",
+                name="myapp.tasks.subtask",
+                state=TaskState.PENDING,
+                timestamp=datetime.now(UTC),
+                parent_id=None,  # task_sent doesn't know parent
+            )
+        )
+        # Initially child appears as root
+        assert "child-1" in graph.root_ids
+        assert graph.nodes["child-1"].parent_id is None
+
+        # Child's STARTED event (from worker) has parent_id
+        graph.add_event(
+            TaskEvent(
+                task_id="child-1",
+                name="myapp.tasks.subtask",
+                state=TaskState.STARTED,
+                timestamp=datetime.now(UTC),
+                parent_id="parent-1",  # Worker has this info
+            )
+        )
+        # Now child should be linked to parent
+        assert "child-1" not in graph.root_ids
+        assert graph.nodes["child-1"].parent_id == "parent-1"
+        assert "child-1" in graph.nodes["parent-1"].children
+
 
 class TestTaskGraphNesting:
     def test_three_level_nesting(self) -> None:

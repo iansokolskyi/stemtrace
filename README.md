@@ -292,10 +292,7 @@ app.include_router(flow.router, prefix="/celery-flow")
 - [x] Exception and traceback capture
 - [x] Task registry (browse all discovered tasks)
 - [x] PENDING/RECEIVED state capture
-
-### Pre-Release
-
-- [ ] E2E test suite (Docker + Playwright)
+- [x] E2E test suite (Docker API tests + Playwright browser tests)
 
 ### Planned
 

@@ -1,4 +1,4 @@
-.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright
 
 # Install all dependencies
 install:
@@ -107,3 +107,34 @@ bump-minor:
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
 	uv run bump-my-version bump major
+
+# =============================================================================
+# E2E Testing
+# =============================================================================
+
+# Start E2E test environment
+e2e-up:
+	docker compose -f docker-compose.e2e.yml up -d --wait
+	@echo "Waiting for services..."
+	@timeout 60 bash -c 'until curl -sf http://localhost:8000/celery-flow/api/health -o /dev/null; do sleep 2; done' || true
+	@echo "✅ E2E environment ready at http://localhost:8000"
+
+# Stop E2E test environment
+e2e-down:
+	docker compose -f docker-compose.e2e.yml down -v
+
+# Run API E2E tests (requires e2e-up first)
+e2e-api:
+	uv run pytest tests/e2e/ -m e2e -v
+
+# Run Playwright E2E tests (requires e2e-up first)
+e2e-playwright:
+	cd $(FRONTEND_DIR) && npm test
+
+# Run all E2E tests (ensures cleanup on failure)
+e2e:
+	$(MAKE) e2e-up
+	$(MAKE) e2e-api && $(MAKE) e2e-playwright; \
+	status=$$?; \
+	$(MAKE) e2e-down; \
+	exit $$status
