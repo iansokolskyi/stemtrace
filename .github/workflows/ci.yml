@@ -76,7 +76,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run tests
-        run: uv run pytest --cov=stemtrace --cov-report=xml --cov-fail-under=80
+        run: uv run pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
