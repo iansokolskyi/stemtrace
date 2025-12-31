@@ -1,15 +1,23 @@
 import { expect, test } from '@playwright/test'
 
+import { setupMockApi } from './fixtures/mock-api'
+import { createFailedTask, createSuccessTask } from './fixtures/mock-data'
+
 /**
  * Tests for the Tasks page.
  *
- * Prerequisites:
- *   docker compose -f docker-compose.e2e.yml up -d --wait
- *   # Submit some tasks to populate the UI
+ * These tests use mocked API responses, no Docker required.
+ * Run with E2E_MODE=real for integration testing against Docker.
  */
+
+const isRealMode = process.env.E2E_MODE === 'real'
 
 test.describe('Tasks Page', () => {
   test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      // Set up mock API with default data
+      await setupMockApi(page)
+    }
     await page.goto('/')
   })
 
@@ -70,6 +78,9 @@ test.describe('Tasks Page', () => {
 
 test.describe('Tasks Page - State Filtering', () => {
   test('can filter by state', async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
     await page.goto('/')
     await page.waitForLoadState('networkidle')
 
@@ -88,5 +99,56 @@ test.describe('Tasks Page - State Filtering', () => {
         await page.waitForLoadState('networkidle')
       }
     }
+  })
+})
+
+test.describe('Tasks Page - Mock Scenarios', () => {
+  // These tests only run in mock mode
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('shows empty state when no tasks', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    expect(mockApi.tasks.length).toBe(0)
+
+    await page.goto('/')
+    await page.waitForLoadState('networkidle')
+
+    // Page should load without errors even with no data
+    await expect(page.locator('main')).toBeVisible()
+  })
+
+  test('shows specific task in list', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const testTask = createSuccessTask('test.my_custom_task', 42)
+    mockApi.addTask(testTask)
+
+    await page.goto('/')
+    await page.waitForLoadState('networkidle')
+
+    // Should show our custom task
+    const taskName = page.getByText('test.my_custom_task')
+    await expect(taskName).toBeVisible()
+  })
+
+  test('shows failed task with error indicator', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const failedTask = createFailedTask(
+      'test.failing_task',
+      'ValueError: Something went wrong',
+      'Traceback...',
+    )
+    mockApi.addTask(failedTask)
+
+    await page.goto('/')
+    await page.waitForLoadState('networkidle')
+
+    // Should show the failed task
+    const taskName = page.getByText('test.failing_task')
+    await expect(taskName).toBeVisible()
+
+    // Should show FAILURE state badge (use locator to find badge near task)
+    // The badge has class 'task-state-badge' and contains FAILURE text
+    const failureBadge = page.locator('.task-state-badge:has-text("FAILURE")')
+    await expect(failureBadge).toBeVisible()
   })
 })

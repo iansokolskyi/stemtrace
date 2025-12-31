@@ -1,12 +1,16 @@
 import { expect, test } from '@playwright/test'
 
+import { setupMockApi } from './fixtures/mock-api'
+import { createGroup, createWorkflowWithGroup } from './fixtures/mock-data'
+
 /**
  * Tests for the Graphs page.
  *
- * Prerequisites:
- *   docker compose -f docker-compose.e2e.yml up -d --wait
- *   # Submit workflow tasks to create graphs
+ * These tests use mocked API responses, no Docker required.
+ * Run with E2E_MODE=real for integration testing against Docker.
  */
+
+const isRealMode = process.env.E2E_MODE === 'real'
 
 /**
  * Helper to navigate to first available graph
@@ -27,10 +31,13 @@ async function navigateToFirstGraph(page: import('@playwright/test').Page): Prom
 
 test.describe('Graphs Page', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/graphs')
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
   })
 
   test('displays graphs list', async ({ page }) => {
+    await page.goto('/graphs')
     await page.waitForLoadState('networkidle')
 
     // Page should load without errors
@@ -39,6 +46,7 @@ test.describe('Graphs Page', () => {
   })
 
   test('shows graph entries when workflows exist', async ({ page }) => {
+    await page.goto('/graphs')
     await page.waitForLoadState('networkidle')
 
     // Look for graph entries
@@ -52,6 +60,7 @@ test.describe('Graphs Page', () => {
   })
 
   test('can navigate to graph detail', async ({ page }) => {
+    await page.goto('/graphs')
     await page.waitForLoadState('networkidle')
 
     const graphLink = page.locator('a[href*="/graph/"]').first()
@@ -68,6 +77,12 @@ test.describe('Graphs Page', () => {
 })
 
 test.describe('Graph Detail Page', () => {
+  test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
+  })
+
   test('renders graph visualization', async ({ page }) => {
     // First go to graphs list
     await page.goto('/graphs')
@@ -175,6 +190,12 @@ test.describe('Graph Detail Page', () => {
 })
 
 test.describe('Graph Edges', () => {
+  test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
+  })
+
   test('edges are rendered in the graph', async ({ page }) => {
     const hasGraph = await navigateToFirstGraph(page)
     if (!hasGraph) {
@@ -283,6 +304,12 @@ test.describe('Graph Edges', () => {
 })
 
 test.describe('Container Nodes (GROUP/CHORD)', () => {
+  test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
+  })
+
   test('container nodes are rendered with dashed borders', async ({ page }) => {
     const hasGraph = await navigateToFirstGraph(page)
     if (!hasGraph) {
@@ -362,6 +389,12 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
 })
 
 test.describe('Edge Visibility Regression Tests', () => {
+  test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
+  })
+
   /**
    * Regression test: When a graph has both a parent task AND a GROUP/CHORD container,
    * there MUST be an edge connecting them. This catches the bug where container nodes
@@ -481,5 +514,80 @@ test.describe('Edge Visibility Regression Tests', () => {
     const edges = page.locator('.react-flow__edge')
     const edgeCount = await edges.count()
     expect(edgeCount).toBeGreaterThanOrEqual(3)
+  })
+})
+
+test.describe('Graph Page - Mock Scenarios', () => {
+  // These tests only run in mock mode
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('renders group with 3 members', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const groupTasks = createGroup(3, { withCallback: false })
+    mockApi.addTasks(groupTasks)
+
+    await page.goto('/graphs')
+    await page.waitForLoadState('networkidle')
+
+    // Should show the group in the list
+    const graphLink = page.locator('a[href*="/graph/"]').first()
+    await expect(graphLink).toBeVisible()
+
+    await graphLink.click()
+    await page.waitForLoadState('networkidle')
+
+    // Should have 5 nodes: 1 GROUP container + 1 header label + 3 members
+    // (React Flow renders the container header as a separate node)
+    const nodes = page.locator('.react-flow__node')
+    const nodeCount = await nodes.count()
+    expect(nodeCount).toBe(5)
+  })
+
+  test('renders workflow with parent spawning group', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const workflowTasks = createWorkflowWithGroup(2)
+    mockApi.addTasks(workflowTasks)
+
+    await page.goto('/graphs')
+    await page.waitForLoadState('networkidle')
+
+    // Find the batch_processor graph
+    const graphLink = page.getByText('tasks.batch_processor').first()
+    await expect(graphLink).toBeVisible()
+
+    await graphLink.click()
+    await page.waitForLoadState('networkidle')
+
+    // Should have nodes: 1 parent + 1 GROUP container + 1 header label + 2 members = 5 nodes
+    const nodes = page.locator('.react-flow__node')
+    const nodeCount = await nodes.count()
+    expect(nodeCount).toBe(5)
+
+    // Should have edges connecting parent to group
+    const edges = page.locator('.react-flow__edge')
+    const edgeCount = await edges.count()
+    expect(edgeCount).toBeGreaterThan(0)
+  })
+
+  test('renders chord with callback', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const chordTasks = createGroup(3, { withCallback: true })
+    mockApi.addTasks(chordTasks)
+
+    await page.goto('/graphs')
+    await page.waitForLoadState('networkidle')
+
+    const graphLink = page.locator('a[href*="/graph/"]').first()
+    await graphLink.click()
+    await page.waitForLoadState('networkidle')
+
+    // Should have 5 nodes: 1 CHORD + 3 members + 1 callback
+    const nodes = page.locator('.react-flow__node')
+    const nodeCount = await nodes.count()
+    expect(nodeCount).toBe(5)
+
+    // CHORD label should be visible
+    const chordText = page.getByText('CHORD')
+    await expect(chordText.first()).toBeVisible()
   })
 })

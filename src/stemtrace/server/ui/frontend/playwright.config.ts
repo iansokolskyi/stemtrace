@@ -3,13 +3,32 @@ import { defineConfig, devices } from '@playwright/test'
 /**
  * Playwright configuration for stemtrace UI E2E tests.
  *
- * Run tests:
- *   npx playwright test
- *   npx playwright test --ui  # Interactive mode
+ * Two modes:
+ *   1. Mock mode (default): Tests run with mocked API responses
+ *      - No Docker required
+ *      - Tests control their own data
+ *      - Fast and isolated
+ *      - Uses Vite dev server on port 5173
  *
- * Prerequisites:
- *   docker compose -f docker-compose.e2e.yml up -d --wait
+ *   2. Real mode: Tests run against real Docker services
+ *      - Requires: docker compose -f docker-compose.e2e.yml up -d --wait
+ *      - Tests actual integration
+ *      - Set E2E_MODE=real to enable
+ *
+ * Run tests:
+ *   npm test                    # Mock mode (default)
+ *   E2E_MODE=real npm test      # Real mode (requires Docker)
+ *   npx playwright test --ui    # Interactive mode
  */
+
+const isRealMode = process.env.E2E_MODE === 'real'
+
+// In mock mode, use Vite dev server (5173)
+// In real mode, use Docker server (8000 or custom)
+const baseURL = isRealMode
+  ? process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8000'
+  : 'http://localhost:5173'
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
@@ -19,7 +38,7 @@ export default defineConfig({
   reporter: [['html', { open: 'never' }], ['list']],
 
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8000',
+    baseURL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -31,10 +50,14 @@ export default defineConfig({
     },
   ],
 
-  // Don't start a web server - we expect docker-compose to be running
-  // webServer: {
-  //   command: 'docker compose -f docker-compose.e2e.yml up',
-  //   url: 'http://localhost:8000/api/health',
-  //   reuseExistingServer: true,
-  // },
+  // In mock mode, start Vite dev server
+  // In real mode, we expect Docker services to be running
+  webServer: isRealMode
+    ? undefined
+    : {
+        command: 'npm run dev',
+        url: 'http://localhost:5173',
+        reuseExistingServer: !process.env.CI,
+        timeout: 30000,
+      },
 })
