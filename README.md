@@ -12,27 +12,29 @@
 
 ---
 
-> **Flower answers "what exists". stemtrace answers "what happened".**
+> **Flower shows you what exists. Stemtrace shows you what happened.**
 
-`stemtrace` models Celery as a graph of executions derived from events. Visualize task flows, timelines, retries, and parent-child relationships — using your existing broker with zero new infrastructure.
+Ever stared at a failed Celery task wondering "what called this?" or "why did it retry 5 times?"
+
+Stemtrace captures your task executions as a graph — visualize parent→child flows, see retry chains, track groups and chords, all without adding any new infrastructure. Just your existing Redis broker.
 
 ## ✨ Features
 
-- **Task Flow Graphs** — Visualize parent → child chains, groups, and chords as DAGs
-- **Canvas Awareness** — Synthetic GROUP nodes for `group()` and `chord()` visualization
-- **Execution Timeline** — See queued → received → started → retried → finished states
-- **Full Lifecycle Capture** — PENDING, RECEIVED, STARTED, RETRY, SUCCESS, FAILURE states
-- **Arguments & Results** — View task inputs and outputs with sensitive data scrubbing
-- **Exception Capture** — Full traceback visibility on retries and failures
-- **Task Registry** — Browse all discovered task definitions
-- **Timing Visibility** — Start time and duration shown directly in graph nodes
-- **Correlation Tracking** — Trace requests across multiple tasks via `trace_id`
-- **Retry Visibility** — Know exactly which retries happened and why
-- **Zero Infrastructure** — Uses your existing broker; no database required
-- **Broker-Agnostic** — Works with Redis, RabbitMQ, and other Celery brokers
-- **FastAPI Pluggable** — Mount directly into your existing FastAPI app
-- **Zero Config** — Auto-detects your Celery broker configuration
+**See What Happened**
+- **Task Flow Graphs** — Visualize chains, groups, and chords as interactive DAGs
+- **Execution Timeline** — Track queued → started → retried → finished states
+- **Arguments & Results** — Inspect inputs, outputs, and exceptions
+- **Retry Chains** — Understand exactly when and why retries happened
+
+**Canvas Support**
+- **Groups & Chords** — Automatic visualization of `group()` and `chord()` patterns
+- **Parent-Child Tracking** — See which task spawned which
+
+**Production Ready**
+- **Zero Infrastructure** — Uses your existing Redis broker, no database needed
+- **Sensitive Data Scrubbing** — Passwords and API keys filtered automatically
 - **Read-Only** — Safe for production; never modifies your task queue
+- **FastAPI Integration** — Mount into your existing app with one line
 
 ## 🚀 Quick Start
 
@@ -54,17 +56,30 @@ app = Celery("myapp", broker="redis://localhost:6379/0")
 stemtrace.init(app)
 ```
 
-### 3. Run the visualizer
+### 3. View the dashboard
+
+**Option A: Standalone server** (new container/process)
 
 ```bash
 stemtrace server
 ```
 
-Open [http://localhost:8000](http://localhost:8000) and watch your task flows come alive.
+Open [http://localhost:8000](http://localhost:8000).
 
-> By default, connects to `redis://localhost:6379/0`. Override with `--broker-url` or `STEMTRACE_BROKER_URL` env var.
+**Option B: Embed in your FastAPI app** (no extra container)
 
-See [Deployment Options](#️-deployment-options) for FastAPI integration and production setups.
+```python
+from fastapi import FastAPI
+from stemtrace.server import StemtraceExtension
+
+flow = StemtraceExtension(broker_url="redis://localhost:6379/0")
+app = FastAPI(lifespan=flow.lifespan)
+app.include_router(flow.router, prefix="/stemtrace")
+```
+
+Access at `/stemtrace/` in your existing app — no new services to deploy.
+
+See [Deployment Options](#️-deployment-options) for auth, scaling, and more.
 
 ## 📦 Architecture
 
@@ -132,6 +147,9 @@ stemtrace.init(
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
 )
+
+# Configuration also available via StemtraceConfig model:
+# - max_data_size: Maximum serialized data size (default: 10KB)
 
 # Introspection (after init)
 stemtrace.is_initialized()   # -> True
@@ -202,15 +220,9 @@ batch_processor
 ## 🐳 Docker
 
 ```bash
-# With Redis
 docker run -p 8000:8000 \
     -e STEMTRACE_BROKER_URL=redis://host.docker.internal:6379/0 \
-    ghcr.io/stemtrace/server
-
-# With RabbitMQ
-docker run -p 8000:8000 \
-    -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672/ \
-    ghcr.io/stemtrace/server
+    ghcr.io/iansokolskyi/stemtrace
 ```
 
 Or with Docker Compose:
@@ -218,7 +230,7 @@ Or with Docker Compose:
 ```yaml
 services:
   stemtrace:
-    image: ghcr.io/stemtrace/server
+    image: ghcr.io/iansokolskyi/stemtrace
     ports:
       - "8000:8000"
     environment:
@@ -275,7 +287,15 @@ Mount stemtrace directly into your existing FastAPI application:
 from fastapi import FastAPI
 from stemtrace.server import StemtraceExtension
 
-flow = StemtraceExtension(broker_url="redis://localhost:6379/0")
+flow = StemtraceExtension(
+    broker_url="redis://localhost:6379/0",
+    # Optional configuration:
+    # embedded_consumer=True,  # Run consumer in FastAPI process (default)
+    # serve_ui=True,           # Serve React UI (default)
+    # prefix="stemtrace",      # Redis key prefix
+    # ttl=86400,               # Event TTL in seconds
+    # max_nodes=10000,         # Max nodes to keep in memory
+)
 app = FastAPI(lifespan=flow.lifespan)
 app.include_router(flow.router, prefix="/stemtrace")
 ```
@@ -321,53 +341,40 @@ app.include_router(flow.router, prefix="/stemtrace")
 
 ## 🗺️ Roadmap
 
-### Completed
+### What's Working Now
 
-- [x] Task lifecycle tracking via signals
-- [x] Broker-agnostic event transport (Redis Streams)
-- [x] FastAPI pluggable integration
-- [x] React SPA dashboard with real-time WebSocket updates
-- [x] Task flow graph visualization
-- [x] Execution timeline view
-- [x] Task args/kwargs capture with sensitive data scrubbing
-- [x] Exception and traceback capture
-- [x] Task registry (browse all discovered tasks)
-- [x] PENDING/RECEIVED state capture
-- [x] E2E test suite (Docker API tests + Playwright browser tests)
-- [x] Canvas graph reconstruction (`group_id` capture, synthetic GROUP/CHORD nodes)
-- [x] Chord callback linking (CHORD node → callback edge)
-- [x] Timing display in graph nodes (start time, duration)
+- ✅ **Task flow graphs** — Visualize chains, groups, and chords as DAGs
+- ✅ **Full lifecycle tracking** — PENDING → RECEIVED → STARTED → SUCCESS/FAILURE
+- ✅ **Canvas awareness** — Automatic GROUP/CHORD node visualization
+- ✅ **Arguments & results** — View inputs, outputs, and exceptions
+- ✅ **Sensitive data scrubbing** — Passwords and API keys filtered automatically
+- ✅ **Real-time updates** — WebSocket-powered live dashboard
+- ✅ **FastAPI integration** — Mount into your existing app
+- ✅ **Task registry** — Browse all discovered task definitions
 
-### Planned
+### Coming Soon
 
-- [ ] Worker/queue tracking in events
-- [ ] Monitoring APIs (workers, stats, orphan detection)
-- [ ] UI reorganization (Dashboard, unified Executions, enhanced Registry)
-- [ ] RabbitMQ transport
-- [ ] OpenTelemetry export
-- [ ] Webhook event export
-- [ ] JSON export API
+- 🔜 **RabbitMQ support** — Use your existing RabbitMQ broker
+- 🔜 **Worker monitoring** — See which worker processed each task
+- 🔜 **Anomaly detection** — Spot stuck, orphaned, or failed tasks
+- 🔜 **Dashboard with stats** — Success rates, durations, failure trends
+- 🔜 **OpenTelemetry export** — Send traces to Jaeger, Tempo, Datadog
+- 🔜 **Webhook notifications** — Push events to your systems
+- 🔜 **Data export** — Download execution history as JSON
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) first.
+Contributions, bug reports, and feature requests are welcome! This is a community project — if stemtrace helps you debug Celery, consider helping make it better.
+
+See our [Contributing Guide](CONTRIBUTING.md) to get started.
 
 ```bash
-# Clone the repo
 git clone https://github.com/iansokolskyi/stemtrace.git
 cd stemtrace
-
-# Install dependencies (requires uv)
-uv sync --all-extras
-
-# Run checks
-make check
+uv sync --all-extras  # Install dependencies
+make check            # Run tests
 ```
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-**stemtrace** is not affiliated with the Celery project. Celery is a trademark of Ask Solem.
+MIT — use it however you like.
