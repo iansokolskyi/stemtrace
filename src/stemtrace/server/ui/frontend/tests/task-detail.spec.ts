@@ -1,15 +1,22 @@
 import { expect, test } from '@playwright/test'
 
+import { setupMockApi } from './fixtures/mock-api'
+import { createFailedTask, createSuccessTask } from './fixtures/mock-data'
+
 /**
  * Tests for the Task Detail page.
  *
- * Prerequisites:
- *   docker compose -f docker-compose.e2e.yml up -d --wait
- *   # Submit some tasks to populate the UI
+ * These tests use mocked API responses, no Docker required.
+ * Run with E2E_MODE=real for integration testing against Docker.
  */
+
+const isRealMode = process.env.E2E_MODE === 'real'
 
 test.describe('Task Detail Page', () => {
   test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
     // Start from tasks list
     await page.goto('/')
     await page.waitForLoadState('networkidle')
@@ -143,5 +150,72 @@ test.describe('Task Detail Page', () => {
 
     await backLink.click()
     await expect(page).toHaveURL(/\/$|\/tasks$/)
+  })
+})
+
+test.describe('Task Detail - Mock Scenarios', () => {
+  // These tests only run in mock mode
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('shows specific task details', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.my_task', { answer: 42 })
+    mockApi.addTask(task)
+
+    // Navigate directly to the task detail page
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    // Should show the task name
+    const taskName = page.getByText('test.my_task')
+    await expect(taskName.first()).toBeVisible()
+
+    // Should show SUCCESS state
+    const successBadge = page.getByText('SUCCESS')
+    await expect(successBadge.first()).toBeVisible()
+  })
+
+  test('shows error details for failed task', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const failedTask = createFailedTask(
+      'test.broken_task',
+      'RuntimeError: Something broke',
+      'Traceback (most recent call last):\n  File "main.py", line 10\nRuntimeError: Something broke',
+    )
+    mockApi.addTask(failedTask)
+
+    // Navigate directly to the failed task
+    await page.goto(`/tasks/${failedTask.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    // Should show FAILURE state
+    const failureBadge = page.getByText('FAILURE')
+    await expect(failureBadge.first()).toBeVisible()
+
+    // Should show error message somewhere
+    const errorText = page.getByText('RuntimeError')
+    await expect(errorText.first()).toBeVisible()
+  })
+
+  test('shows timeline with all events', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.timeline_task', 'done')
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    // Should show Execution Timeline heading
+    const timelineHeading = page.getByText('Execution Timeline')
+    await expect(timelineHeading).toBeVisible()
+
+    // Should show PENDING, STARTED, SUCCESS events
+    const pendingEvent = page.getByText('PENDING')
+    const startedEvent = page.getByText('STARTED')
+    const successEvent = page.getByText('SUCCESS')
+
+    await expect(pendingEvent.first()).toBeVisible()
+    await expect(startedEvent.first()).toBeVisible()
+    await expect(successEvent.first()).toBeVisible()
   })
 })

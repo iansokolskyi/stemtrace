@@ -1,15 +1,21 @@
 import { expect, test } from '@playwright/test'
 
+import { setupMockApi } from './fixtures/mock-api'
+
 /**
  * Tests for the Registry page.
  *
- * Prerequisites:
- *   docker compose -f docker-compose.e2e.yml up -d --wait
- *   # Submit some tasks to populate the registry
+ * These tests use mocked API responses, no Docker required.
+ * Run with E2E_MODE=real for integration testing against Docker.
  */
+
+const isRealMode = process.env.E2E_MODE === 'real'
 
 test.describe('Registry Page', () => {
   test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
     await page.goto('/registry')
   })
 
@@ -43,7 +49,7 @@ test.describe('Registry Page', () => {
     const isVisible = await searchInput.isVisible().catch(() => false)
 
     if (isVisible) {
-      await searchInput.fill('e2e')
+      await searchInput.fill('add')
       await page.waitForLoadState('networkidle')
 
       // Results should filter (or show no results message)
@@ -65,7 +71,7 @@ test.describe('Registry Page', () => {
       return
     }
 
-    // Search for a known E2E task
+    // Search for a known task
     await searchInput.fill('add')
     await page.waitForLoadState('networkidle')
 
@@ -93,6 +99,12 @@ test.describe('Registry Page', () => {
 })
 
 test.describe('Registry - Task Details', () => {
+  test.beforeEach(async ({ page }) => {
+    if (!isRealMode) {
+      await setupMockApi(page)
+    }
+  })
+
   test('can click task to see executions', async ({ page }) => {
     await page.goto('/registry')
     await page.waitForLoadState('networkidle')
@@ -113,5 +125,25 @@ test.describe('Registry - Task Details', () => {
     // Should navigate or show filtered view
     // Verify page still functional after click
     await expect(page.locator('body')).toBeVisible()
+  })
+})
+
+test.describe('Registry - Mock Scenarios', () => {
+  // These tests only run in mock mode
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('shows all registered tasks from mock data', async ({ page }) => {
+    await setupMockApi(page)
+    await page.goto('/registry')
+    await page.waitForLoadState('networkidle')
+
+    // Registry UI shows short names (after last dot), not full task names
+    // So 'tasks.add' displays as 'add'
+    const addTask = page.getByRole('heading', { name: 'add', level: 3 })
+    await expect(addTask).toBeVisible()
+
+    // Should show multiply (short name from 'tasks.multiply')
+    const multiplyTask = page.getByRole('heading', { name: 'multiply', level: 3 })
+    await expect(multiplyTask).toBeVisible()
   })
 })

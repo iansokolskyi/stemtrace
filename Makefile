@@ -161,7 +161,12 @@ release:
 # E2E Testing
 # =============================================================================
 
-# Start E2E test environment
+# Run Playwright E2E tests in mock mode (no Docker required)
+# This is the default and recommended way to run E2E tests locally
+e2e-mock:
+	cd $(FRONTEND_DIR) && npm test
+
+# Start E2E test environment (Docker)
 e2e-up:
 	docker compose -f docker-compose.e2e.yml up -d --wait
 	@echo "Waiting for services..."
@@ -176,14 +181,17 @@ e2e-down:
 e2e-api:
 	uv run pytest tests/e2e/ -m e2e -v
 
-# Run Playwright E2E tests (requires e2e-up first)
-e2e-playwright:
-	cd $(FRONTEND_DIR) && npm test
+# Run Playwright E2E tests against real Docker backend
+e2e-playwright-real:
+	cd $(FRONTEND_DIR) && E2E_MODE=real PLAYWRIGHT_BASE_URL=http://localhost:8000 npm test
 
-# Run all E2E tests (ensures cleanup on failure)
+# Run all E2E tests against Docker (full integration)
 e2e:
 	$(MAKE) e2e-up
-	$(MAKE) e2e-api && $(MAKE) e2e-playwright; \
+	$(MAKE) e2e-api && $(MAKE) e2e-playwright-real; \
 	status=$$?; \
 	$(MAKE) e2e-down; \
 	exit $$status
+
+# Quick E2E alias (mock mode, no Docker)
+e2e-quick: e2e-mock
