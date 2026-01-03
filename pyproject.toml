@@ -8,6 +8,9 @@ requires-python = ">=3.10"
 authors = [
     { name = "Ian Sokolskyi", email = "iansokolskyi@gmail.com" },
 ]
+maintainers = [
+    { name = "Ian Sokolskyi", email = "iansokolskyi@gmail.com" },
+]
 keywords = ["celery", "task", "queue", "visualization", "monitoring", "workflow"]
 classifiers = [
     "Development Status :: 3 - Alpha",
