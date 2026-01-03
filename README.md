@@ -2,7 +2,6 @@
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![Release](https://img.shields.io/badge/release-v0.2.1-darklime)](https://github.com/iansokolskyi/stemtrace/releases/tag/v0.2.1)
 [![PyPI version](https://img.shields.io/badge/pypi-v0.2.1-darklime)](https://pypi.org/project/stemtrace)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
