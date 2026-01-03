@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskState(str, Enum):
@@ -25,6 +25,30 @@ class WorkerEventType(str, Enum):
 
     WORKER_READY = "worker_ready"
     WORKER_SHUTDOWN = "worker_shutdown"
+
+
+class RegisteredTaskDefinition(BaseModel):
+    """Celery task definition metadata captured from workers.
+
+    This data is collected from a running worker's task registry and is used
+    to enrich the task registry API (`/api/tasks/registry`) with human-friendly
+    information like docstrings and signatures.
+
+    Attributes:
+        name: Fully qualified task name (e.g., "myapp.tasks.add").
+        module: Python module where the task implementation lives.
+        signature: Human-readable call signature (best-effort).
+        docstring: Task documentation (best-effort).
+        bound: Whether the task is bound (`bind=True`) and receives `self`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    module: str | None = None
+    signature: str | None = None
+    docstring: str | None = None
+    bound: bool = False
 
 
 class TaskEvent(BaseModel):
@@ -95,11 +119,13 @@ class WorkerEvent(BaseModel):
     hostname: str
     pid: int
     timestamp: datetime
-    registered_tasks: list[str] = []
+    registered_tasks: list[str] = Field(default_factory=list)
+    task_definitions: dict[str, RegisteredTaskDefinition] = Field(default_factory=dict)
     shutdown_time: datetime | None = None
 
 
 __all__ = [
+    "RegisteredTaskDefinition",
     "TaskEvent",
     "TaskState",
     "WorkerEvent",

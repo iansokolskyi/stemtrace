@@ -310,16 +310,25 @@ def create_api_router(
             if status and task_status.value != status:
                 continue
 
+            definition = (
+                worker_registry.get_task_definition(name) if worker_registry else None
+            )
+
             parts = name.rsplit(".", 1)
-            module = parts[0] if len(parts) > 1 else None
+            fallback_module = parts[0] if len(parts) > 1 else None
+            module = (
+                definition.module
+                if definition and definition.module
+                else fallback_module
+            )
 
             tasks.append(
                 RegisteredTaskResponse(
                     name=name,
                     module=module,
-                    signature=None,
-                    docstring=None,
-                    bound=False,
+                    signature=definition.signature if definition else None,
+                    docstring=definition.docstring if definition else None,
+                    bound=definition.bound if definition else False,
                     execution_count=execution_count,
                     registered_by=registered_by,
                     last_run=last_run,

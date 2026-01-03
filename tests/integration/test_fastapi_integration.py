@@ -8,12 +8,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.fastapi.auth import require_api_key, require_basic_auth
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
-from stemtrace.server.store import GraphStore
+from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.websocket import WebSocketManager
 
 
@@ -621,8 +621,6 @@ class TestWorkersEndpoint:
 
     def test_workers_empty_registry(self) -> None:
         """Empty registry returns empty list."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         router = create_router(store=store, worker_registry=worker_registry)
@@ -639,8 +637,6 @@ class TestWorkersEndpoint:
 
     def test_workers_returns_registered_worker(self) -> None:
         """Registered worker appears in response."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
@@ -665,8 +661,6 @@ class TestWorkersEndpoint:
 
     def test_workers_by_hostname(self) -> None:
         """Filter workers by hostname."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
@@ -686,8 +680,6 @@ class TestWorkersEndpoint:
 
     def test_workers_shutdown_status(self) -> None:
         """Shutdown worker has offline status."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
@@ -712,8 +704,6 @@ class TestRegistryWithWorkers:
 
     def test_registry_shows_registered_by(self) -> None:
         """Tasks show which workers registered them."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
@@ -735,10 +725,54 @@ class TestRegistryWithWorkers:
         # Both workers should be listed (deduplicated and sorted)
         assert sorted(add_task["registered_by"]) == ["worker-1", "worker-2"]
 
+    def test_registry_includes_task_metadata(self) -> None:
+        """Registry includes docstring/signature/bound when provided by workers."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        task_name = "tasks.add"
+        worker_registry.register_worker(
+            "worker-1",
+            12345,
+            [task_name],
+            task_definitions={
+                task_name: RegisteredTaskDefinition(
+                    name=task_name,
+                    module="tasks",
+                    signature="(x, y)",
+                    docstring="Add two numbers.",
+                    bound=True,
+                )
+            },
+        )
+
+        # Ensure the task is also observed (so it appears in the union set even if workers differ).
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name=task_name,
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            )
+        )
+
+        router = create_router(store=store, worker_registry=worker_registry)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+        data = response.json()
+
+        add_task = next(t for t in data["tasks"] if t["name"] == task_name)
+        assert add_task["module"] == "tasks"
+        assert add_task["signature"] == "(x, y)"
+        assert add_task["docstring"] == "Add two numbers."
+        assert add_task["bound"] is True
+
     def test_registry_no_duplicate_hostnames(self) -> None:
         """Same hostname from multiple restarts appears only once."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         worker_registry = WorkerRegistry()
         # Same hostname, different PIDs (simulating restarts)
@@ -760,8 +794,6 @@ class TestRegistryWithWorkers:
 
     def test_registry_never_run_status_filter(self) -> None:
         """status=never_run shows only registered but never executed tasks."""
-        from stemtrace.server.store import WorkerRegistry
-
         store = GraphStore()
         # Add an executed task (not registered) - status: not_registered
         store.add_event(
