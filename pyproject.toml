@@ -9,6 +9,10 @@ authors = [
     { name = "Ian Sokolskyi" },
     { name = "Ian Sokolskyi", email = "iansokolskyi@gmail.com" },
 ]
+maintainers = [
+    { name = "Ian Sokolskyi" },
+    { name = "Ian Sokolskyi", email = "iansokolskyi@gmail.com" },
+]
 keywords = ["celery", "task", "queue", "visualization", "monitoring", "workflow"]
 classifiers = [
     "Development Status :: 3 - Alpha",
