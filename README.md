@@ -32,19 +32,57 @@ Stemtrace captures your task executions as a graph — visualize parent→child 
 - **Groups & Chords** — Automatic visualization of `group()` and `chord()` patterns
 - **Parent-Child Tracking** — See which task spawned which
 
+**Worker Monitoring & Registry**
+- **Workers page** — See which workers are online/offline and what tasks they have registered
+- **Registry status badges** — Quickly spot tasks that are active, never run, or not registered by any current worker
+
 **Production Ready**
 - **Zero Infrastructure** — Uses your existing Redis broker, no database needed
 - **Sensitive Data Scrubbing** — Passwords and API keys filtered automatically
 - **Read-Only** — Safe for production; never modifies your task queue
 - **FastAPI Integration** — Mount into your existing app with one line
 
+## 🔎 What you’ll see in the dashboard
+
+### Task details (timing, inputs/outputs, errors)
+
+- **What you’ll see**: Per-task execution timing (including how long it spent in each state), parameters (args/kwargs), return value, and the full event history.
+- **Why it helps**: Quickly answer “what happened?” for a single task: slow queueing vs slow execution, which retry succeeded, and (on failures) the exception + traceback for debugging.
+
+<p align="center">
+  <img src="docs/screenshots/task_details.png" width="900" alt="Task detail view showing parameters, result, and timeline" />
+</p>
+
+### Flow graphs (chains, groups, chords)
+
+- **What you’ll see**: An interactive DAG of your workflow with parent→child edges, plus clear GROUP/CHORD containers for Celery canvas patterns.
+- **Why it helps**: Understand fan-out/fan-in at a glance (especially chords), spot which branch failed, and debug “why didn’t my callback run?” without grepping logs.
+
+<p align="center">
+  <img src="docs/screenshots/workflow.png" width="900" alt="Chord visualization in the workflow graph" />
+</p>
+
+### Task registry (registration status + warnings)
+
+- **What you’ll see**: A registry of tasks with status badges like **Active**, **Never Run**, and **Not Registered** plus “registered by …” worker info.
+- **Why it helps**: Catch misconfigurations where tasks get stuck in **PENDING** because no current worker has the task registered (common in multi-repo or deploy drift scenarios).
+
+<p align="center">
+  <img src="docs/screenshots/unregistered.png" width="900" alt="Task registry showing not-registered warning and status badges" />
+</p>
+
 ## 🚀 Quick Start
 
 ### 1. Install
 
 ```bash
+# Using pip
 pip install stemtrace
+
+# Using uv
+uv add stemtrace
 ```
+
 
 ### 2. Instrument your Celery app
 
@@ -170,7 +208,7 @@ Scrubbed values appear as `[Filtered]` in the UI.
 
 ### Canvas Graph Visualization
 
-stemtrace automatically detects and visualizes Celery canvas constructs:
+`stemtrace` automatically detects and visualizes Celery canvas constructs:
 
 ```text
 # Parent-spawned group: GROUP is child of parent
@@ -237,7 +275,7 @@ services:
 
 ## 🖥️ Deployment Options
 
-stemtrace offers two deployment modes depending on your needs:
+`stemtrace` offers two deployment modes depending on your needs:
 
 | Mode | Best For | Command |
 |------|----------|---------|
@@ -345,12 +383,12 @@ stemtrace.init_app(
 - ✅ **Sensitive data scrubbing** — Passwords and API keys filtered automatically
 - ✅ **Real-time updates** — WebSocket-powered live dashboard
 - ✅ **FastAPI integration** — Mount into your existing app
-- ✅ **Task registry** — Browse all discovered task definitions
+- ✅ **Workers page** — Monitor online/offline workers and their registered tasks
+- ✅ **Task registry** — Browse discovered + registered tasks with clear status badges
 
 ### Coming Soon
 
 - 🔜 **RabbitMQ support** — Use your existing RabbitMQ broker
-- 🔜 **Worker monitoring** — See which worker processed each task
 - 🔜 **Anomaly detection** — Spot stuck, orphaned, or failed tasks
 - 🔜 **Dashboard with stats** — Success rates, durations, failure trends
 - 🔜 **OpenTelemetry export** — Send traces to Jaeger, Tempo, Datadog
@@ -366,7 +404,7 @@ See our [Contributing Guide](CONTRIBUTING.md) to get started.
 ```bash
 git clone https://github.com/iansokolskyi/stemtrace.git
 cd stemtrace
-uv sync --all-extras  # Install dependencies
+uv sync --extra dev   # Install dependencies
 make check            # Run tests
 ```
 
