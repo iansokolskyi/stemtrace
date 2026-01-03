@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] - 2025-12-31
 
-## [0.1.1] - 2025-12-31
-
 ### Added
 - Python 3.14 support in CI and project classifiers
 - Mock-based E2E testing mode (no Docker required for local dev)
@@ -28,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Core domain models**: `TaskEvent`, `TaskState`, `TaskNode`, `TaskGraph`
 - **Protocol definitions**: `EventTransport`, `TaskRepository`, `AsyncEventConsumer`
 - **Event transports**: Redis Streams (`RedisTransport`), in-memory (`MemoryTransport`)
-- **Celery signal integration**: Automatic event capture via `stemtrace.init(app)`
+- **Celery signal integration**: Automatic event capture via `stemtrace.init_worker(app)`
 - **Server components**:
   - `GraphStore` — Thread-safe in-memory graph storage with LRU eviction
   - `EventConsumer` / `AsyncEventConsumer` — Background event processing

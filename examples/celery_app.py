@@ -27,6 +27,7 @@ Usage:
     python examples/celery_app.py retry     # Retry with exceptions
     python examples/celery_app.py scrub     # Sensitive data scrubbing
     python examples/celery_app.py fail      # Permanent failure
+    python examples/celery_app.py not-registered-task  # Unregistered task (will fail)
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ app = Celery(
 )
 
 # Initialize stemtrace tracking
-stemtrace.init(app)
+stemtrace.init_worker(app)
 
 
 # =============================================================================
@@ -274,6 +275,11 @@ def run_demo(demo_name: str) -> None:
             credit_card="4111-1111-1111-1111",
         ),
         "fail": lambda: always_fails.delay("testing failure state"),
+        "not-registered": lambda: app.send_task(
+            "examples.celery_app.non_existent_task",
+            args=["test", 123],
+            kwargs={"foo": "bar"},
+        ),
         "add": lambda: add.delay(2, 3),
         "multiply": lambda: multiply.delay(4, 5),
     }

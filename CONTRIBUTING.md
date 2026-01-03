@@ -132,7 +132,7 @@ uv lock --upgrade
 ### Code Quality
 
 - Google-style docstrings on all public APIs
-- Immutable dataclasses with `frozen=True, slots=True`
+- Pydantic models: immutable with `model_config = ConfigDict(frozen=True)`, mutable with `validate_assignment=True`
 - Fire-and-forget pattern for publishers (never block)
 - Fakes over mocks in tests
 

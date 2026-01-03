@@ -125,17 +125,14 @@ class TestFastAPIIntegrationExample:
 
         assert app is not None
 
-    def test_stemtrace_extension_defined(self) -> None:
-        """StemtraceExtension is properly initialized."""
-        from fastapi_integration import flow
+    def test_stemtrace_routes_mounted(self) -> None:
+        """Stemtrace routes are mounted on the FastAPI app."""
+        from fastapi_integration import app
 
-        assert flow is not None
-
-    def test_extension_has_router(self) -> None:
-        """Extension provides a router for mounting."""
-        from fastapi_integration import flow
-
-        assert flow.router is not None
+        # Check that stemtrace routes are mounted
+        routes = [route.path for route in app.routes]
+        assert "/stemtrace" in routes
+        assert any("/stemtrace/" in route for route in routes)
 
 
 class TestWithAuthExample:
@@ -159,12 +156,20 @@ class TestWithAuthExample:
         assert len(AUTH_USERNAME) > 0
         assert len(AUTH_PASSWORD) > 0
 
-    def test_extension_has_auth_dependency(self) -> None:
-        """StemtraceExtension is configured with auth dependency."""
-        from with_auth import flow
+    def test_auth_routes_mounted(self) -> None:
+        """Stemtrace routes are mounted with auth protection."""
+        import importlib
 
-        # The extension should have been created with auth_dependency
-        assert flow is not None
+        # Force reload to get fresh module state
+        if "with_auth" in sys.modules:
+            importlib.reload(sys.modules["with_auth"])
+
+        from with_auth import app
+
+        # Check that stemtrace routes are mounted
+        routes = [route.path for route in app.routes]
+        assert "/stemtrace" in routes
+        assert any("/stemtrace/" in route for route in routes)
 
 
 class TestExamplesConsistency:
@@ -178,7 +183,7 @@ class TestExamplesConsistency:
 
     def test_stemtrace_initialization(self) -> None:
         """Examples that use stemtrace should initialize it properly."""
-        # The celery_app.py initializes via stemtrace.init()
+        # The celery_app.py initializes via stemtrace.init_worker()
         from celery_app import app
 
         # stemtrace should be initialized (check for signal handlers)

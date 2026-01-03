@@ -11,26 +11,23 @@ Usage:
 
 from fastapi import FastAPI
 
-from stemtrace.server import StemtraceExtension
+import stemtrace
 
 # Configuration
 BROKER_URL = "redis://localhost:6379/0"
 
-# Create the stemtrace extension
-flow = StemtraceExtension(
+# Create FastAPI app
+app = FastAPI(
+    title="My App with stemtrace",
+)
+
+# Initialize stemtrace in one line (convenience API)
+stemtrace.init_app(
+    app,
     broker_url=BROKER_URL,
     embedded_consumer=True,  # Run consumer in background
     serve_ui=True,  # Serve the React UI
 )
-
-# Create FastAPI app with stemtrace lifespan
-app = FastAPI(
-    title="My App with stemtrace",
-    lifespan=flow.lifespan,
-)
-
-# Mount stemtrace router
-app.include_router(flow.router, prefix="/stemtrace")
 
 
 # Your own routes
@@ -43,12 +40,15 @@ async def root() -> dict[str, str]:
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Health check endpoint."""
-    return {
-        "status": "ok",
-        "stemtrace_consumer": "running"
-        if flow.consumer and flow.consumer.is_running
-        else "stopped",
-    }
+    # Note: With convenience API, you don't have access to the extension instance
+    # Use StemtraceExtension directly if you need programmatic access:
+    #
+    # from stemtrace import StemtraceExtension
+    # flow = StemtraceExtension(broker_url=...)
+    # flow.init_app(app)
+    # return {"status": flow.consumer.is_running}
+    #
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

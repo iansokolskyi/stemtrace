@@ -2,7 +2,7 @@
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://badge.fury.io/py/stemtrace.svg)](https://badge.fury.io/py/stemtrace)
+[![PyPI version](https://img.shields.io/pypi/v/stemtrace)](https://pypi.org/project/stemtrace/)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
@@ -16,7 +16,9 @@
 
 Ever stared at a failed Celery task wondering "what called this?" or "why did it retry 5 times?"
 
-Stemtrace captures your task executions as a graph — visualize parent→child flows, see retry chains, track groups and chords, all without adding any new infrastructure. Just your existing Redis broker.
+Stemtrace captures your task executions as a graph — visualize parent→child flows, see retry chains, track groups and chords, all without adding any new infrastructure.
+
+**Today stemtrace supports Redis** for event transport (via Redis Streams). **RabbitMQ support is planned.**
 
 ## ✨ Features
 
@@ -52,8 +54,10 @@ import stemtrace
 
 app = Celery("myapp", broker="redis://localhost:6379/0")
 
-# One line to enable flow tracking
-stemtrace.init(app)
+# One line to enable event capture.
+# Tip: put this in the module where you define your Celery app so it's imported by
+# both Celery workers and any code that calls app.send_task()/delay().
+stemtrace.init_worker(app)
 ```
 
 ### 3. View the dashboard
@@ -70,11 +74,11 @@ Open [http://localhost:8000](http://localhost:8000).
 
 ```python
 from fastapi import FastAPI
-from stemtrace.server import StemtraceExtension
+import stemtrace
 
-flow = StemtraceExtension(broker_url="redis://localhost:6379/0")
-app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/stemtrace")
+app = FastAPI(lifespan=my_lifespan)  # Your existing app
+
+stemtrace.init_app(app, broker_url="redis://localhost:6379/0")
 ```
 
 Access at `/stemtrace/` in your existing app — no new services to deploy.
@@ -131,7 +135,7 @@ stemtrace is designed as two decoupled components:
 ```python
 import stemtrace
 
-stemtrace.init(
+stemtrace.init_worker(
     app,
     # Optional: override broker URL (defaults to Celery's broker_url)
     transport_url="redis://localhost:6379/0",
@@ -147,9 +151,6 @@ stemtrace.init(
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
 )
-
-# Configuration also available via StemtraceConfig model:
-# - max_data_size: Maximum serialized data size (default: 10KB)
 
 # Introspection (after init)
 stemtrace.is_initialized()   # -> True
@@ -205,9 +206,7 @@ batch_processor
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STEMTRACE_BROKER_URL` | Broker connection URL | Auto-detect from Celery |
-| `STEMTRACE_TTL` | Event TTL in seconds | `86400` |
-| `STEMTRACE_PREFIX` | Key/queue prefix | `stemtrace` |
+| `STEMTRACE_BROKER_URL` | Broker URL for `stemtrace server` / `stemtrace consume` and `stemtrace.init_app()` | `redis://localhost:6379/0` |
 
 ### Supported Brokers
 
@@ -215,7 +214,6 @@ batch_processor
 |--------|------------|--------|
 | Redis | `redis://`, `rediss://` | ✅ Supported |
 | RabbitMQ | `amqp://`, `amqps://` | 🚧 Planned |
-| Amazon SQS | `sqs://` | 🚧 Planned |
 
 ## 🐳 Docker
 
@@ -244,7 +242,7 @@ stemtrace offers two deployment modes depending on your needs:
 | Mode | Best For | Command |
 |------|----------|---------|
 | **Standalone Server** | Dedicated monitoring, simple setup | `stemtrace server` |
-| **FastAPI Embedded** | Single-app deployment, existing FastAPI apps | `StemtraceExtension` |
+| **FastAPI Embedded** | Single-app deployment, existing FastAPI apps | `stemtrace.init_app(...)` |
 
 ### Option 1: Standalone Server (Recommended)
 
@@ -270,66 +268,63 @@ stemtrace server \
 
 #### High-Scale Production Setup
 
-For high-throughput environments, run the consumer separately from the web server:
-
-```bash
-# Terminal 1: Run consumer (processes events)
-stemtrace consume
-
-# Terminal 2: Run API server (separate process, shares state via broker)
-stemtrace server
-```
+Note: `stemtrace server` includes an embedded consumer today (single-process). A multi-process deployment mode is planned.
 ### Option 2: FastAPI Embedded
 
 Mount stemtrace directly into your existing FastAPI application:
 
 ```python
 from fastapi import FastAPI
-from stemtrace.server import StemtraceExtension
+import stemtrace
 
-flow = StemtraceExtension(
-    broker_url="redis://localhost:6379/0",
-    # Optional configuration:
-    # embedded_consumer=True,  # Run consumer in FastAPI process (default)
-    # serve_ui=True,           # Serve React UI (default)
-    # prefix="stemtrace",      # Redis key prefix
-    # ttl=86400,               # Event TTL in seconds
-    # max_nodes=10000,         # Max nodes to keep in memory
-)
-app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/stemtrace")
+app = FastAPI(lifespan=my_lifespan)  # Your existing app with lifespan
+
+stemtrace.init_app(app, broker_url="redis://localhost:6379/0")  # Wraps lifespan, adds /stemtrace routes
 ```
 
-Access the dashboard at `/stemtrace/` within your app.
+That's it. `init_app()` automatically:
+- Wraps your existing lifespan (Sentry, DB connections, etc. keep working)
+- Mounts the dashboard at `/stemtrace/`
+- Starts the event consumer
+
+#### Configuration Options
+
+```python
+import stemtrace
+
+# Returns the underlying StemtraceExtension if you need it (optional).
+extension = stemtrace.init_app(
+    app,
+    broker_url="redis://localhost:6379/0",
+    prefix="/stemtrace",        # Mount path AND event stream prefix (normalized)
+    ttl=86400,                  # Event TTL in seconds
+    max_nodes=10000,            # Max nodes in memory
+    embedded_consumer=True,     # Run consumer in FastAPI process
+    serve_ui=True,              # Serve React dashboard
+    auth_dependency=None,       # Optional auth (see below)
+)
+```
 
 #### With Custom Authentication
 
-Use your existing auth middleware:
-
 ```python
 from fastapi import Depends
-from stemtrace.server import StemtraceExtension
+import stemtrace
 from your_app.auth import require_admin
 
-flow = StemtraceExtension(
-    broker_url="redis://localhost:6379/0",
-    auth_dependency=Depends(require_admin),
-)
-app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/stemtrace")
+stemtrace.init_app(app, broker_url="redis://localhost:6379/0", auth_dependency=Depends(require_admin))
 ```
 
 Or use built-in auth helpers:
 
 ```python
-from stemtrace.server import StemtraceExtension, require_basic_auth
+import stemtrace
 
-flow = StemtraceExtension(
+stemtrace.init_app(
+    app,
     broker_url="redis://localhost:6379/0",
-    auth_dependency=require_basic_auth("admin", "secret"),
+    auth_dependency=stemtrace.require_basic_auth("admin", "secret"),
 )
-app = FastAPI(lifespan=flow.lifespan)
-app.include_router(flow.router, prefix="/stemtrace")
 ```
 
 #### Embedded Consumer Modes
@@ -337,7 +332,7 @@ app.include_router(flow.router, prefix="/stemtrace")
 | Mode | Use Case | Setup |
 |------|----------|-------|
 | Embedded | Development, simple apps | Default — consumer runs in FastAPI process |
-| External | Production, high scale | Run `stemtrace consume` separately |
+| External | Production, high scale | Planned |
 
 ## 🗺️ Roadmap
 
