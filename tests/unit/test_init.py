@@ -1,5 +1,7 @@
 """Tests for public API."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +24,7 @@ from stemtrace.library.transports.memory import MemoryTransport
 
 
 @pytest.fixture(autouse=True)
-def cleanup() -> None:
+def cleanup() -> object:
     """Clean up after each test."""
     yield
     disconnect_signals()
@@ -31,8 +33,12 @@ def cleanup() -> None:
 
 
 def test_version() -> None:
-    """Version is set."""
-    assert __version__ == "0.2.0"
+    """Version is set and matches installed package metadata."""
+    try:
+        installed = package_version("stemtrace")
+    except PackageNotFoundError as exc:
+        raise AssertionError("stemtrace package metadata not available") from exc
+    assert __version__ == installed
 
 
 class TestInit:
