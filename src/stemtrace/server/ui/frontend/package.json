@@ -33,7 +33,7 @@
     "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/router-cli": "^1.145.2",
     "@tanstack/router-devtools": "^1.82.0",
-    "@tanstack/router-plugin": "^1.79.0",
+    "@tanstack/router-plugin": "^1.145.2",
     "@types/node": "^25.0.3",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
