@@ -24,6 +24,14 @@ filename = "src/stemtrace/server/ui/frontend/package.json"
 search = '"version": "{current_version}"'
 replace = '"version": "{new_version}"'
 
+# uv.lock - keep workspace lockfile in sync (uv stores the local project version)
+[[tool.bumpversion.files]]
+filename = "uv.lock"
+search = """name = "stemtrace"
+version = "{current_version}"""
+replace = """name = "stemtrace"
+version = "{new_version}"""
+
 # CHANGELOG.md - insert new version header
 [[tool.bumpversion.files]]
 filename = "CHANGELOG.md"

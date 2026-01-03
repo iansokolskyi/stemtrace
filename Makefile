@@ -126,7 +126,7 @@ bump-patch:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
+	echo "Next: make release"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
@@ -134,7 +134,7 @@ bump-minor:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
+	echo "Next: make release"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
@@ -142,7 +142,7 @@ bump-major:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: git add -A && git commit -m 'chore: release v$$NEW_VER' && make release"
+	echo "Next: make release"
 
 # Tag and push to trigger release workflow
 release:
