@@ -31,3 +31,9 @@ search = "## [Unreleased]"
 replace = """## [Unreleased]
 
 ## [{new_version}] - {now:%Y-%m-%d}"""
+
+# README.md - keep Release badge in sync with version (avoid cached badge drift)
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "[![Release](https://img.shields.io/badge/release-v{current_version}-darklime)](https://github.com/iansokolskyi/stemtrace/releases/tag/v{current_version})"
+replace = "[![Release](https://img.shields.io/badge/release-v{new_version}-darklime)](https://github.com/iansokolskyi/stemtrace/releases/tag/v{new_version})"
