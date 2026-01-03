@@ -19,7 +19,7 @@ git clone https://github.com/iansokolskyi/stemtrace.git
 cd stemtrace
 
 # Install dependencies (creates venv automatically)
-uv sync --all-extras
+uv sync --extra dev
 
 # Install pre-commit hooks
 uv run pre-commit install
