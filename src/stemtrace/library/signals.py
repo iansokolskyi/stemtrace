@@ -1,5 +1,6 @@
 """Celery signal handlers for task lifecycle events."""
 
+import inspect
 import logging
 import threading
 import traceback as tb_module
@@ -17,7 +18,7 @@ from celery.signals import (
     worker_shutdown,
 )
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.ports import EventTransport
 from stemtrace.library.config import get_config
 from stemtrace.library.scrubbing import (
@@ -36,6 +37,9 @@ _transport: EventTransport | None = None
 # Track task IDs that have received PENDING to avoid duplicates from retries
 _pending_emitted: set[str] = set()
 _pending_emitted_lock = threading.RLock()
+
+# Guard against overly-large docstrings bloating broker events.
+_MAX_DOCSTRING_CHARS = 4000
 
 
 def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
@@ -495,6 +499,74 @@ def _extract_registered_tasks(sender: Any) -> list[str]:
     return task_names
 
 
+def _extract_task_definitions(sender: Any) -> dict[str, RegisteredTaskDefinition]:
+    """Extract task metadata (docstring/signature/module/bound) from Celery app.
+
+    This runs on the worker in response to `worker_ready`, so we have access to
+    the actual Task objects. The server generally does not import user task code,
+    so this is the authoritative source for registry metadata.
+
+    Args:
+        sender: Worker instance (WorkController) from worker_ready signal.
+
+    Returns:
+        Mapping of task name to RegisteredTaskDefinition.
+    """
+    definitions: dict[str, RegisteredTaskDefinition] = {}
+
+    app = getattr(sender, "app", None)
+    if app is None:
+        return definitions
+
+    tasks_registry = getattr(app, "tasks", None)
+    if tasks_registry is None:
+        return definitions
+
+    # tasks_registry is dict-like: {name: Task}
+    for name, task_obj in getattr(tasks_registry, "items", lambda: [])():
+        if not isinstance(name, str) or name.startswith("celery."):
+            continue
+        if task_obj is None:
+            continue
+
+        run_callable = getattr(task_obj, "run", None)
+        module: str | None = None
+        docstring: str | None = None
+        signature: str | None = None
+
+        # Best-effort: prefer module/docstring from the task implementation (run).
+        if run_callable is not None:
+            module = getattr(run_callable, "__module__", None)
+            docstring = inspect.getdoc(run_callable)
+            try:
+                signature = str(inspect.signature(run_callable))
+            except (TypeError, ValueError):
+                signature = None
+
+        # Fall back to task object/module if needed.
+        if module is None:
+            module = getattr(task_obj, "__module__", None)
+
+        # Bound tasks are declared via @app.task(bind=True). Celery exposes this
+        # on the Task instance as `bind`. Only treat an actual bool as authoritative
+        # to avoid MagicMock truthiness in tests.
+        bind_attr = getattr(task_obj, "bind", None)
+        bound = bind_attr if isinstance(bind_attr, bool) else False
+
+        if docstring is not None and len(docstring) > _MAX_DOCSTRING_CHARS:
+            docstring = docstring[:_MAX_DOCSTRING_CHARS] + "\n\n[truncated]"
+
+        definitions[name] = RegisteredTaskDefinition(
+            name=name,
+            module=module,
+            signature=signature,
+            docstring=docstring,
+            bound=bound,
+        )
+
+    return definitions
+
+
 def on_worker_ready(sender: Any, **_: Any) -> None:
     """Handle worker_ready signal - publish worker registration event.
 
@@ -509,6 +581,7 @@ def on_worker_ready(sender: Any, **_: Any) -> None:
     try:
         hostname, pid = _get_hostname_and_pid(sender)
         registered_tasks = _extract_registered_tasks(sender)
+        task_definitions = _extract_task_definitions(sender)
 
         # Publish worker lifecycle event using the global transport
         # This goes to the same stream as task events for unified consumption
@@ -520,6 +593,7 @@ def on_worker_ready(sender: Any, **_: Any) -> None:
             pid=pid,
             timestamp=datetime.now(timezone.utc),
             registered_tasks=registered_tasks,
+            task_definitions=task_definitions,
         )
 
         if _transport is not None:

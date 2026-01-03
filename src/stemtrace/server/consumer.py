@@ -141,6 +141,7 @@ class EventConsumer:
                 hostname=event.hostname,
                 pid=event.pid,
                 tasks=event.registered_tasks,
+                task_definitions=event.task_definitions,
                 event_timestamp=event.timestamp,
             )
             logger.info(

@@ -7,9 +7,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.store import GraphStore
+from stemtrace.server.store import GraphStore, WorkerRegistry
 
 
 @pytest.fixture
@@ -431,8 +431,6 @@ class TestTaskRegistryWithWorkers:
         self, store: GraphStore, make_event: type
     ) -> None:
         """Task with executions AND registered by worker has 'active' status."""
-        from stemtrace.server.store import WorkerRegistry
-
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
             hostname="worker-1",
@@ -457,10 +455,46 @@ class TestTaskRegistryWithWorkers:
         assert task["status"] == "active"
         assert "worker-1" in task["registered_by"]
 
+    def test_registry_includes_task_metadata_from_worker_registry(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        """Registry includes docstring/signature/bound when provided by workers."""
+        worker_registry = WorkerRegistry()
+        task_name = "myapp.tasks.process"
+        worker_registry.register_worker(
+            hostname="worker-1",
+            pid=12345,
+            tasks=[task_name],
+            task_definitions={
+                task_name: RegisteredTaskDefinition(
+                    name=task_name,
+                    module="myapp.tasks",
+                    signature="(x, y)",
+                    docstring="Process data.",
+                    bound=True,
+                )
+            },
+        )
+
+        # Add execution so task is visible in registry
+        store.add_event(make_event.create("task-1", name=task_name))
+
+        app = FastAPI()
+        router = create_api_router(store, worker_registry=worker_registry)
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        data = response.json()
+
+        task = next(t for t in data["tasks"] if t["name"] == task_name)
+        assert task["module"] == "myapp.tasks"
+        assert task["signature"] == "(x, y)"
+        assert task["docstring"] == "Process data."
+        assert task["bound"] is True
+
     def test_registry_never_run_status_with_worker(self, store: GraphStore) -> None:
         """Task registered by worker but never executed has 'never_run' status."""
-        from stemtrace.server.store import WorkerRegistry
-
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
             hostname="worker-1",
@@ -488,8 +522,6 @@ class TestTaskRegistryWithWorkers:
         self, store: GraphStore, make_event: type
     ) -> None:
         """Filter to show only never_run tasks."""
-        from stemtrace.server.store import WorkerRegistry
-
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
             hostname="worker-1",
@@ -514,8 +546,6 @@ class TestTaskRegistryWithWorkers:
 
     def test_registry_mixed_statuses(self, store: GraphStore, make_event: type) -> None:
         """Registry shows all three status types correctly."""
-        from stemtrace.server.store import WorkerRegistry
-
         worker_registry = WorkerRegistry()
         worker_registry.register_worker(
             hostname="worker-1",

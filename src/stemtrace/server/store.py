@@ -13,7 +13,7 @@ from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 
 if TYPE_CHECKING:
-    from stemtrace.core.events import TaskEvent
+    from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent
 
 
 class WorkerInfo(BaseModel):
@@ -104,6 +104,7 @@ class WorkerRegistry:
     def __init__(self) -> None:
         """Initialize empty worker registry."""
         self._workers: dict[str, WorkerInfo] = {}
+        self._task_definitions_by_name: dict[str, RegisteredTaskDefinition] = {}
         self._lock = threading.RLock()
 
     def register_worker(
@@ -111,6 +112,7 @@ class WorkerRegistry:
         hostname: str,
         pid: int,
         tasks: list[str],
+        task_definitions: dict[str, RegisteredTaskDefinition] | None = None,
         event_timestamp: datetime | None = None,
     ) -> None:
         """Register a worker with its task list.
@@ -121,6 +123,9 @@ class WorkerRegistry:
             hostname: Worker hostname.
             pid: Worker process ID.
             tasks: List of registered task names.
+            task_definitions: Optional mapping of task name to task definition
+                metadata (docstring/signature/module/bound). When provided, this
+                is used to enrich `/api/tasks/registry`.
             event_timestamp: When the worker event occurred. Used for last_seen
                 to properly handle historical events from Redis replay.
         """
@@ -133,6 +138,10 @@ class WorkerRegistry:
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
             timestamp = event_timestamp or datetime.now(timezone.utc)
+
+            # Update global task definitions map (best-effort, last-writer-wins).
+            if task_definitions:
+                self._task_definitions_by_name.update(task_definitions)
 
             # If worker already exists, update it (restart scenario)
             if worker_id in self._workers:
@@ -150,6 +159,18 @@ class WorkerRegistry:
                     last_seen=timestamp,
                     status=WorkerStatus.ONLINE,
                 )
+
+    def get_task_definition(self, name: str) -> RegisteredTaskDefinition | None:
+        """Get task definition metadata by task name.
+
+        Args:
+            name: Fully qualified task name.
+
+        Returns:
+            RegisteredTaskDefinition if known, otherwise None.
+        """
+        with self._lock:
+            return self._task_definitions_by_name.get(name)
 
     def mark_shutdown(self, hostname: str, pid: int) -> None:
         """Mark a worker as offline (shutdown).
