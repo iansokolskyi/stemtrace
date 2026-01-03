@@ -165,6 +165,53 @@ class TestReceivedEventStep:
         # Should not raise
         wrapped(message, body, MagicMock(), MagicMock(), MagicMock())
 
+    def test_skips_received_for_retries(self) -> None:
+        """Retries should not emit RECEIVED (they already have RETRY + STARTED events)."""
+        events: list[TaskEvent] = []
+
+        def mock_publish(event: TaskEvent) -> None:
+            events.append(event)
+
+        _set_publisher(mock_publish)
+
+        mock_consumer = MagicMock()
+        mock_consumer.strategies = {"test_task": MagicMock()}
+
+        step = ReceivedEventStep(mock_consumer)
+        step.start(mock_consumer)
+
+        wrapped = mock_consumer.strategies["test_task"]
+        body = {"id": "task-123", "retries": 1}
+        message = MagicMock()
+        message.headers = {}
+
+        wrapped(message, body, MagicMock(), MagicMock(), MagicMock())
+        assert events == []
+
+    def test_wrap_strategy_suppresses_emit_errors(self) -> None:
+        """Errors during RECEIVED emission should be suppressed, and strategy still runs."""
+
+        def broken_publish(event: TaskEvent) -> None:
+            raise RuntimeError("publish failed")
+
+        _set_publisher(broken_publish)
+
+        mock_consumer = MagicMock()
+        original_strategy = MagicMock(return_value="ok")
+        mock_consumer.strategies = {"test_task": original_strategy}
+
+        step = ReceivedEventStep(mock_consumer)
+        step.start(mock_consumer)
+
+        wrapped = mock_consumer.strategies["test_task"]
+        body = {"id": "task-123"}
+        message = MagicMock()
+        message.headers = {}
+
+        result = wrapped(message, body, MagicMock(), MagicMock(), MagicMock())
+        assert result == "ok"
+        original_strategy.assert_called_once()
+
 
 class TestRegisterBootsteps:
     """Tests for register_bootsteps function."""

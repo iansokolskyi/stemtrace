@@ -496,3 +496,48 @@ class TestRedisTransport:
             break
 
         mock_client.xread.assert_called_once()
+
+    def test_parse_event_raises_for_unknown_payload(
+        self, transport: RedisTransport
+    ) -> None:
+        """_parse_event should raise when payload lacks both event_type and task_id."""
+        with pytest.raises(ValueError):
+            transport._parse_event('{"unexpected": "value"}')
+
+    def test_consume_skips_empty_reads_and_logs_parse_errors(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+        caplog: Any,
+    ) -> None:
+        """consume() should continue on empty reads and skip invalid JSON payloads."""
+        serialized = sample_event.model_dump_json().encode()
+        call_count = 0
+
+        def xread_side_effect(*args: Any, **kwargs: Any) -> list[Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return []
+            if call_count == 2:
+                return [
+                    (
+                        b"test:events",
+                        [(b"1234567890-0", {b"data": b"not-json"})],
+                    )
+                ]
+            return [
+                (
+                    b"test:events",
+                    [(b"1234567890-1", {b"data": serialized})],
+                )
+            ]
+
+        mock_client.xread.side_effect = xread_side_effect
+
+        for _event in transport.consume():
+            break
+
+        assert call_count == 3
+        assert "Failed to parse event from Redis stream" in caplog.text

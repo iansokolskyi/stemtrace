@@ -56,6 +56,40 @@ class TestStaticRouter:
             assert response.status_code == 200
             assert "Hello" in response.text
 
+    def test_serve_index_returns_503_when_index_missing(self, tmp_path: Path) -> None:
+        """If dist exists but index.html is missing, / should return 503."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "assets").mkdir()
+
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
+            router = get_static_router()
+            assert router is not None
+
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
+
+            response = client.get("/")
+            assert response.status_code == 503
+
+    def test_serve_spa_returns_404_when_index_missing(self, tmp_path: Path) -> None:
+        """If index.html is missing, SPA fallback should return 404 for unknown paths."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "assets").mkdir()
+
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
+            router = get_static_router()
+            assert router is not None
+
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
+
+            response = client.get("/some/spa/route")
+            assert response.status_code == 404
+
     def test_serve_spa_fallback(self, tmp_path: Path) -> None:
         """SPA routes fall back to index.html."""
         dist_dir = tmp_path / "dist"

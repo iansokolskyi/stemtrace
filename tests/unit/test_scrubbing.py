@@ -159,6 +159,15 @@ class TestScrubArgs:
         """Empty args returns empty list."""
         assert scrub_args(()) == []
 
+    def test_scrubs_tuple_values(self) -> None:
+        """Tuples inside args are scrubbed recursively and preserved as tuples."""
+        args = (("a", {"password": "secret"}),)
+        result = scrub_args(args)
+
+        assert isinstance(result[0], tuple)
+        assert result[0][0] == "a"
+        assert result[0][1]["password"] == FILTERED
+
 
 class TestSafeSerialize:
     """Tests for safe_serialize function."""
@@ -204,6 +213,33 @@ class TestSafeSerialize:
         value = {"small": "data"}
         result = safe_serialize(value, max_size=10240)
         assert result == {"small": "data"}
+
+    def test_falls_back_to_string_when_default_str_raises(self) -> None:
+        """If json.dumps triggers ValueError, safe_serialize should fall back to str()."""
+
+        class BadStr:
+            def __str__(self) -> str:
+                raise ValueError("boom")
+
+            def __repr__(self) -> str:
+                return "<BadStr>"
+
+        result = safe_serialize([BadStr()])
+        assert isinstance(result, str)
+
+    def test_truncates_string_fallback_when_too_large(self) -> None:
+        """If string fallback exceeds max_size, it should be truncated."""
+
+        class BadStr:
+            def __str__(self) -> str:
+                raise ValueError("boom")
+
+            def __repr__(self) -> str:
+                return "<BadStr>"
+
+        result = safe_serialize([BadStr()], max_size=5)
+        assert isinstance(result, str)
+        assert "Truncated" in result
 
 
 class TestDefaultSensitiveKeys:

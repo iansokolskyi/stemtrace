@@ -5,8 +5,10 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api.websocket import create_websocket_router
 from stemtrace.server.websocket import WebSocketManager
 
 
@@ -185,3 +187,25 @@ class TestWebSocketManagerListen:
 
         # Listen should return when connection closes (exception suppressed)
         await ws_manager.listen(ws)
+
+
+class TestApiWebSocketRouter:
+    @pytest.mark.asyncio
+    async def test_websocket_router_disconnect_is_handled_and_disconnect_called(
+        self,
+    ) -> None:
+        """WebSocketDisconnect should be swallowed and disconnect() must run in finally."""
+        ws_manager = MagicMock()
+        ws_manager.connect = AsyncMock()
+        ws_manager.listen = AsyncMock(side_effect=WebSocketDisconnect())
+        ws_manager.disconnect = MagicMock()
+
+        router = create_websocket_router(ws_manager)
+        route = next(r for r in router.routes if getattr(r, "path", None) == "/ws")
+
+        websocket = MagicMock()
+        await route.endpoint(websocket)
+
+        ws_manager.connect.assert_awaited_once_with(websocket)
+        ws_manager.listen.assert_awaited_once_with(websocket)
+        ws_manager.disconnect.assert_called_once_with(websocket)

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType
+from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
@@ -979,6 +979,39 @@ class TestWorkerRegistry:
         assert worker.pid == 54321
         assert worker.status == WorkerStatus.ONLINE  # Should still be online
 
+    def test_register_same_worker_id_updates_in_place(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Re-registering the same hostname+pid should update that worker entry."""
+        ts1 = datetime(2024, 1, 1, tzinfo=UTC)
+        ts2 = datetime(2024, 1, 1, 0, 0, 10, tzinfo=UTC)
+
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["task.a"],
+            event_timestamp=ts1,
+        )
+        registry.register_worker(
+            hostname="worker-1.example.com",
+            pid=12345,
+            tasks=["task.b"],
+            event_timestamp=ts2,
+        )
+
+        worker = registry.get_worker("worker-1.example.com", 12345)
+        assert worker is not None
+        assert worker.registered_tasks == ["task.b"]
+        assert worker.last_seen == ts2
+        assert worker.status == WorkerStatus.ONLINE
+
+    def test_mark_online_noops_when_worker_missing(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """mark_online should return cleanly if the worker isn't registered."""
+        registry.mark_online("missing.example.com", 12345)
+        assert registry.get_all_workers() == []
+
     def test_get_nonexistent_worker(self, registry: WorkerRegistry) -> None:
         """Getting a nonexistent worker returns None."""
         worker = registry.get_worker("nonexistent.example.com", 99999)
@@ -1306,3 +1339,200 @@ class TestGraphStoreLastExecutionTime:
         assert result_a is not None
         assert result_b is not None
         assert result_a > result_b  # task_a had a later execution
+
+
+class TestGraphStoreRootNodesSyntheticDateFiltering:
+    def test_get_root_nodes_to_date_filters_synthetic_by_earliest_child_timestamp(
+        self, store: GraphStore
+    ) -> None:
+        """Synthetic GROUP roots should be filtered by the earliest child timestamp."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        group_id = "date-filter-group"
+
+        # Two grouped tasks that both start on Jan 2 (so Jan 1 filter should exclude the group)
+        store.add_event(
+            TaskEvent(
+                task_id="m1",
+                name="myapp.tasks.member",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(days=1, hours=10),
+                group_id=group_id,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="m2",
+                name="myapp.tasks.member",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(days=1, hours=12),
+                group_id=group_id,
+            )
+        )
+
+        group_node_id = f"group:{group_id}"
+        roots, _ = store.get_root_nodes()
+        assert group_node_id in [r.task_id for r in roots]
+
+        jan1_midnight = datetime(2024, 1, 1, 0, 0, 0)
+        roots, total = store.get_root_nodes(to_date=jan1_midnight)
+        assert total == 0
+        assert roots == []
+
+    def test_get_root_nodes_handles_synthetic_with_missing_children(
+        self, store: GraphStore
+    ) -> None:
+        """Synthetic nodes with missing children should not break sorting or filtering."""
+        group_id = "bad"
+        group_node_id = f"group:{group_id}"
+
+        with store._lock:
+            store._graph.nodes[group_node_id] = TaskNode(
+                task_id=group_node_id,
+                name="group",
+                state=TaskState.PENDING,
+                node_type=NodeType.GROUP,
+                group_id=group_id,
+                children=["missing-child"],
+            )
+            store._graph.root_ids.append(group_node_id)
+
+        roots, total = store.get_root_nodes()
+        assert total == 1
+        assert roots[0].task_id == group_node_id
+
+        roots, total = store.get_root_nodes(to_date=datetime(2024, 1, 1, 0, 0, 0))
+        assert total == 1
+        assert roots[0].task_id == group_node_id
+
+
+class TestGraphStoreGetGraphFromRootEdgeCases:
+    def test_get_graph_from_root_skips_missing_nodes_and_prevents_cycles(
+        self, store: GraphStore
+    ) -> None:
+        """get_graph_from_root should ignore missing children and avoid infinite loops."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        store.add_event(
+            TaskEvent(
+                task_id="root",
+                name="root.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="root",
+            )
+        )
+
+        root_node = store.get_node("root")
+        assert root_node is not None
+        root_node.children.append("ghost")
+        root_node.children.append("root")
+
+        graph = store.get_graph_from_root("root")
+        assert "root" in graph
+        assert "child" in graph
+        assert "ghost" not in graph
+
+
+class TestGraphStoreEvictionParentCleanup:
+    def test_eviction_removes_evicted_child_from_parent_children(self) -> None:
+        """When a child is evicted, it should be removed from its parent's children list."""
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        store.add_event(
+            TaskEvent(
+                task_id="oldest",
+                name="oldest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="parent.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=10),
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="parent",
+            )
+        )
+
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" in parent_node.children
+
+        store.add_event(
+            TaskEvent(
+                task_id="newest",
+                name="newest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=20),
+            )
+        )
+
+        assert store.get_node("child") is None
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" not in parent_node.children
+
+    def test_eviction_does_not_require_child_in_parent_children(self) -> None:
+        """Eviction should handle nodes with parent_id that were never linked as children."""
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        # Child arrives first referencing a missing parent => no backlinking occurs.
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="child.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=1),
+                parent_id="parent",
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="parent.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=10),
+            )
+        )
+
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert "child" not in parent_node.children
+
+        store.add_event(
+            TaskEvent(
+                task_id="oldest",
+                name="oldest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base,
+            )
+        )
+        store.add_event(
+            TaskEvent(
+                task_id="newest",
+                name="newest.task",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=20),
+            )
+        )
+
+        assert store.get_node("child") is None

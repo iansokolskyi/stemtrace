@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
 
 import stemtrace
 from stemtrace import (
@@ -12,6 +13,7 @@ from stemtrace import (
     _reset,
     get_config,
     get_transport,
+    init_app,
     init_worker,
     is_initialized,
 )
@@ -97,6 +99,18 @@ class TestInit:
 
         assert stemtrace.is_initialized() is True
         assert stemtrace.get_config() is not None
+
+    def test_init_app_raises_without_broker_url_and_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """init_app() should require broker_url or STEMTRACE_BROKER_URL."""
+        monkeypatch.delenv("STEMTRACE_BROKER_URL", raising=False)
+        app = FastAPI()
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            init_app(app, broker_url=None, embedded_consumer=False, serve_ui=False)
+
+        assert "No broker URL available" in str(exc_info.value)
 
 
 class TestIntrospection:
