@@ -15,7 +15,7 @@ import stemtrace
 # Configuration
 BROKER_URL = "redis://localhost:6379/0"
 LOGIN_USERNAME = "admin"
-LOGIN_PASSWORD = "secret"  # example only
+LOGIN_PASSWORD = "secret"  # NOSONAR - example credential for local demo only
 LOGIN_SECRET = "change-me"  # recommended for production
 
 app = FastAPI(title="stemtrace with Login")

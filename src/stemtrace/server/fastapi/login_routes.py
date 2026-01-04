@@ -93,10 +93,10 @@ def create_login_router(
             request.query_params.get("next"), default=default_next_path
         )
         action_path = str(request.url_for("stemtrace_login_submit"))
-        html = _login_page_html(
+        rendered_html = _login_page_html(
             action_path=action_path, error=error, next_path=next_path
         )
-        return HTMLResponse(html, status_code=200)
+        return HTMLResponse(rendered_html, status_code=200)
 
     @router.post("/login", include_in_schema=False, name="stemtrace_login_submit")
     async def login_submit(request: Request) -> RedirectResponse:

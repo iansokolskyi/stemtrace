@@ -100,11 +100,7 @@ def verify_session(
     if _SESSION_SEPARATOR not in cookie_value:
         return None
 
-    parts = cookie_value.split(_SESSION_SEPARATOR, 1)
-    if len(parts) != 2:
-        return None
-
-    payload_b64, sig_b64 = parts
+    payload_b64, sig_b64 = cookie_value.split(_SESSION_SEPARATOR, 1)
     try:
         payload_bytes = _b64url_decode(payload_b64)
         provided_sig = _b64url_decode(sig_b64)

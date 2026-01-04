@@ -20,7 +20,7 @@ class TestFormLoginProtection:
             embedded_consumer=False,
             serve_ui=False,
             login_username="admin",
-            login_password="secret",
+            login_password="secret",  # NOSONAR - test credential only
             login_secret="test-secret",
         )
 
@@ -53,7 +53,11 @@ class TestFormLoginProtection:
             # Login should set cookie and redirect to next
             resp = client.post(
                 "/stemtrace/login",
-                data={"username": "admin", "password": "secret", "next": "/stemtrace/"},
+                data={
+                    "username": "admin",
+                    "password": "secret",
+                    "next": "/stemtrace/",
+                },  # NOSONAR - test credential only
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -68,3 +72,72 @@ class TestFormLoginProtection:
             with client.websocket_connect("/stemtrace/ws"):
                 assert ext.ws_manager.connection_count == 1
             assert ext.ws_manager.connection_count == 0
+
+    def test_invalid_credentials_redirects_to_login_with_error(self) -> None:
+        """Invalid credentials redirect back to the login page with an error."""
+        app = FastAPI()
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",  # NOSONAR - test credential only
+            login_secret="test-secret",
+        )
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/stemtrace/login",
+                data={
+                    "username": "admin",
+                    "password": "wrong",
+                    "next": "/stemtrace/",
+                },  # NOSONAR - test credential only
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"].startswith(
+                "http://testserver/stemtrace/login?"
+            )
+
+            page = client.get(resp.headers["location"])
+            assert page.status_code == 200
+            assert "Invalid username or password" in page.text
+
+    def test_logout_clears_cookie_and_restricts_access_again(self) -> None:
+        """Logout clears the session cookie and access becomes restricted again."""
+        app = FastAPI()
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",  # NOSONAR - test credential only
+            login_secret="test-secret",
+        )
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/stemtrace/login",
+                data={
+                    "username": "admin",
+                    "password": "secret",
+                    "next": "/stemtrace/",
+                },  # NOSONAR - test credential only
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+
+            ok = client.get("/stemtrace/api/health")
+            assert ok.status_code == 200
+
+            logout = client.post("/stemtrace/logout", follow_redirects=False)
+            assert logout.status_code == 303
+            assert logout.headers["location"].startswith(
+                "http://testserver/stemtrace/login"
+            )
+
+            forbidden = client.get("/stemtrace/api/health", follow_redirects=False)
+            assert forbidden.status_code == 401
