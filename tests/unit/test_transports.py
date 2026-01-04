@@ -1,5 +1,7 @@
 """Tests for transport implementations."""
 
+import logging
+import socket
 import sys
 import types
 from datetime import UTC, datetime
@@ -757,6 +759,235 @@ class TestRabbitMQTransport:
 
         assert isinstance(received, TaskEvent)
         assert received.task_id == "consume-1"
+
+    def test_declare_exchange_and_queue_uses_queue_arguments(
+        self, monkeypatch: Any
+    ) -> None:
+        """_declare_exchange_and_queue declares durable exchange + queue with TTL args."""
+        fake_kombu = types.ModuleType("kombu")
+
+        declared: dict[str, Any] = {}
+
+        class FakeChannel:
+            pass
+
+        class Connection:
+            def __init__(self, url: str, **_: Any) -> None:
+                self.url = url
+                self._channel = FakeChannel()
+
+            def __enter__(self) -> "Connection":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                del exc_type, exc, tb
+
+            def channel(self) -> FakeChannel:
+                return self._channel
+
+        class Exchange:
+            def __init__(self, name: str, *, type: str, durable: bool) -> None:
+                declared["exchange_name"] = name
+                declared["exchange_type"] = type
+                declared["exchange_durable"] = durable
+
+            def maybe_bind(self, channel: FakeChannel) -> None:
+                del channel
+
+            def declare(self) -> None:
+                declared["exchange_declared"] = True
+
+        class Queue:
+            def __init__(
+                self,
+                *,
+                name: str,
+                exchange: Exchange,
+                routing_key: str,
+                durable: bool,
+                queue_arguments: dict[str, Any],
+            ) -> None:
+                declared["queue_name"] = name
+                declared["queue_routing_key"] = routing_key
+                declared["queue_durable"] = durable
+                declared["queue_arguments"] = dict(queue_arguments)
+                del exchange
+
+            def maybe_bind(self, channel: FakeChannel) -> None:
+                del channel
+
+            def declare(self) -> None:
+                declared["queue_declared"] = True
+
+        fake_kombu.Connection = Connection
+        fake_kombu.Exchange = Exchange
+        fake_kombu.Queue = Queue
+
+        monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
+
+        # Stable consumer id for deterministic names.
+        monkeypatch.setattr(socket, "gethostname", lambda: "host-1")
+
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport._declare_exchange_and_queue()
+
+        assert declared["exchange_name"] == "test.events"
+        assert declared["exchange_type"] == "fanout"
+        assert declared["exchange_durable"] is True
+        assert declared["exchange_declared"] is True
+
+        assert declared["queue_name"] == "test.events.host-1"
+        assert declared["queue_routing_key"] == ""
+        assert declared["queue_durable"] is True
+        assert declared["queue_declared"] is True
+        assert declared["queue_arguments"]["x-message-ttl"] == 60 * 1000
+        assert declared["queue_arguments"]["x-expires"] > 60 * 1000
+
+    def test_consume_rejects_malformed_message_and_continues(
+        self, caplog: Any, monkeypatch: Any
+    ) -> None:
+        """consume() rejects malformed messages and still yields subsequent valid ones."""
+        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+
+        fake_kombu = types.ModuleType("kombu")
+        fake_kombu_messaging = types.ModuleType("kombu.messaging")
+
+        seen: dict[str, Any] = {}
+
+        class FakeMessage:
+            def __init__(self, *, reject_raises: bool) -> None:
+                self.acked = False
+                self.rejected = False
+                self._reject_raises = reject_raises
+
+            def ack(self) -> None:
+                self.acked = True
+
+            def reject(self, *, requeue: bool) -> None:
+                del requeue
+                self.rejected = True
+                if self._reject_raises:
+                    raise RuntimeError("reject failed")
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.callbacks: list[Any] = []
+
+        class Connection:
+            def __init__(self, url: str, **_: Any) -> None:
+                self.url = url
+                self._channel = FakeChannel()
+                self._drain_count = 0
+
+            def __enter__(self) -> "Connection":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                del exc_type, exc, tb
+
+            def channel(self) -> FakeChannel:
+                return self._channel
+
+            def drain_events(self, *, timeout: int) -> None:
+                del timeout
+                self._drain_count += 1
+
+                if self._drain_count == 1:
+                    # Malformed payload triggers reject path.
+                    body = {"unexpected": "value"}
+                    seen["invalid_msg"] = FakeMessage(reject_raises=True)
+                    for cb in self._channel.callbacks:
+                        cb(body, seen["invalid_msg"])
+                    return
+
+                if self._drain_count == 2:
+                    body = TaskEvent(
+                        task_id="consume-2",
+                        name="tests.consume",
+                        state=TaskState.RECEIVED,
+                        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    ).model_dump(mode="json")
+                    seen["valid_msg"] = FakeMessage(reject_raises=False)
+                    for cb in self._channel.callbacks:
+                        cb(body, seen["valid_msg"])
+                    return
+
+                raise TimeoutError
+
+        class Exchange:
+            def __init__(self, name: str, *, type: str, durable: bool) -> None:
+                self.name = name
+                del type, durable
+
+            def maybe_bind(self, channel: FakeChannel) -> None:
+                del channel
+
+            def declare(self) -> None:
+                return None
+
+        class Queue:
+            def __init__(
+                self,
+                *,
+                name: str,
+                exchange: Exchange,
+                routing_key: str,
+                durable: bool,
+                queue_arguments: dict[str, Any],
+            ) -> None:
+                self.name = name
+                del exchange, routing_key, durable, queue_arguments
+
+            def maybe_bind(self, channel: FakeChannel) -> None:
+                del channel
+
+            def declare(self) -> None:
+                return None
+
+        class Consumer:
+            def __init__(
+                self,
+                channel: FakeChannel,
+                *,
+                queues: list[Queue],
+                callbacks: list[Any],
+                accept: list[str],
+            ) -> None:
+                del queues, accept
+                self._channel = channel
+                self._callbacks = callbacks
+
+            def __enter__(self) -> "Consumer":
+                self._channel.callbacks = self._callbacks
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                del exc_type, exc, tb
+                self._channel.callbacks = []
+
+        fake_kombu.Connection = Connection
+        fake_kombu.Exchange = Exchange
+        fake_kombu.Queue = Queue
+        fake_kombu_messaging.Consumer = Consumer
+
+        monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
+        monkeypatch.setitem(sys.modules, "kombu.messaging", fake_kombu_messaging)
+
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert isinstance(received, TaskEvent)
+        assert received.task_id == "consume-2"
+        assert seen["invalid_msg"].rejected is True
+        assert seen["valid_msg"].acked is True
+        assert "Failed to parse event from RabbitMQ queue" in caplog.text
+        assert "Failed to reject malformed RabbitMQ message" in caplog.text
 
     def test_ttl_property(self) -> None:
         """ttl property returns the configured TTL."""
