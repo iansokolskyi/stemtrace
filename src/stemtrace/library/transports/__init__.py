@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 _SCHEME_ALIASES: dict[str, str] = {
     "rediss": "redis",
     "amqps": "amqp",
+    "pyamqp": "amqp",
 }
 
 
@@ -25,6 +26,10 @@ def get_transport(
         from stemtrace.library.transports.redis import RedisTransport
 
         return RedisTransport.from_url(url, prefix=prefix, ttl=ttl)
+    elif scheme == "amqp":
+        from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+
+        return RabbitMQTransport.from_url(url, prefix=prefix, ttl=ttl)
     elif scheme == "memory":
         from stemtrace.library.transports.memory import MemoryTransport
 

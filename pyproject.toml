@@ -109,6 +109,14 @@ ignore_missing_imports = true
 module = "typer.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "kombu.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "amqp.*"
+ignore_missing_imports = true
+
 # =============================================================================
 # ruff
 # =============================================================================

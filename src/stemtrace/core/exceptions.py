@@ -21,5 +21,5 @@ class UnsupportedBrokerError(ConfigurationError):
         self.scheme = scheme
         super().__init__(
             f"Unsupported broker scheme: '{scheme}'. "
-            f"Supported: redis, rediss, amqp, amqps, memory"
+            f"Supported: redis, rediss, amqp, amqps, pyamqp, memory"
         )
