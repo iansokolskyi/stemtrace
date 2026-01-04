@@ -99,18 +99,14 @@ def _sanitize_derived_prefix(prefix: str) -> str:
     Returns:
         A safe prefix (e.g. "/stemtrace", "/api/monitoring") or "" for root/invalid.
     """
-    normalized = prefix.strip()
+    normalized = prefix.strip().rstrip("/")
     if normalized in ("", "/"):
         return ""
 
-    # Remove trailing slash but keep leading slash semantics.
-    normalized = normalized.rstrip("/")
     if not normalized.startswith("/"):
         return ""
 
     segments = [s for s in normalized.split("/") if s]
-    if not segments:
-        return ""
 
     if any(seg in (".", "..") for seg in segments):
         return ""

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hmac
 import time
+from hashlib import sha256
+from http.cookies import SimpleCookie
+from typing import Any
 
 from stemtrace.server.fastapi.form_auth import (
     FormAuthConfig,
@@ -41,6 +46,17 @@ class TestVerifySession:
         assert decoded is not None
         assert decoded["u"] == "admin"
 
+    def test_verify_session_returns_none_when_payload_is_not_json(self) -> None:
+        payload_bytes = b"not-json"
+
+        sig = hmac.new(b"secret", payload_bytes, sha256).digest()
+        cookie = (
+            base64.urlsafe_b64encode(payload_bytes).decode("ascii").rstrip("=")
+            + "."
+            + base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+        )
+        assert verify_session(cookie, secret="secret") is None
+
 
 class TestParseCookieHeader:
     def test_parse_cookie_header_returns_empty_dict_for_none(self) -> None:
@@ -52,8 +68,16 @@ class TestParseCookieHeader:
         assert cookies["b"] == "two"
 
     def test_parse_cookie_header_returns_empty_dict_for_invalid_cookie(self) -> None:
-        # SimpleCookie is fairly permissive; still, ensure we never raise.
-        assert parse_cookie_header("\x00\x00") == {}
+        assert parse_cookie_header("not-a-cookie") == {}
+
+    def test_parse_cookie_header_returns_empty_dict_when_load_raises(
+        self, monkeypatch: Any
+    ) -> None:
+        def _boom(self: object, raw: str) -> None:
+            raise ValueError("boom")
+
+        monkeypatch.setattr(SimpleCookie, "load", _boom)
+        assert parse_cookie_header("a=1") == {}
 
 
 class TestIsAuthenticatedCookie:
@@ -64,7 +88,7 @@ class TestIsAuthenticatedCookie:
         )
 
     def test_is_authenticated_cookie_false_for_wrong_user(self) -> None:
-        cfg = FormAuthConfig(username="admin", password="pw", secret="secret")
+        cfg = FormAuthConfig("admin", "pw", "secret")
         cookie = cfg.create_session_cookie_value()
         assert (
             is_authenticated_cookie(
@@ -74,7 +98,7 @@ class TestIsAuthenticatedCookie:
         )
 
     def test_is_authenticated_cookie_true_for_expected_user(self) -> None:
-        cfg = FormAuthConfig(username="admin", password="pw", secret="secret")
+        cfg = FormAuthConfig("admin", "pw", "secret")
         cookie = cfg.create_session_cookie_value()
         assert (
             is_authenticated_cookie(
@@ -82,3 +106,30 @@ class TestIsAuthenticatedCookie:
             )
             is True
         )
+
+    def test_is_authenticated_cookie_false_when_username_is_not_string(self) -> None:
+        payload = {"u": 123, "exp": int(time.time()) + 60}
+        cookie = sign_session(payload, "secret")
+        assert (
+            is_authenticated_cookie(cookie, secret="secret", expected_username="admin")
+            is False
+        )
+
+
+class TestVerifySessionEdgeCases:
+    def test_verify_session_returns_none_for_non_dict_payload(self) -> None:
+        # Valid signature but payload isn't a dict.
+        payload_bytes = b'["not-a-dict"]'
+
+        sig = hmac.new(b"secret", payload_bytes, sha256).digest()
+        cookie = (
+            base64.urlsafe_b64encode(payload_bytes).decode("ascii").rstrip("=")
+            + "."
+            + base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+        )
+        assert verify_session(cookie, secret="secret") is None
+
+    def test_verify_session_returns_none_for_non_int_exp(self) -> None:
+        payload = {"u": "admin", "exp": "not-int"}
+        cookie = sign_session(payload, "secret")
+        assert verify_session(cookie, secret="secret") is None

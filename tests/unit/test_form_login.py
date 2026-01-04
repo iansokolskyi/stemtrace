@@ -141,3 +141,29 @@ class TestFormLoginProtection:
 
             forbidden = client.get("/stemtrace/api/health", follow_redirects=False)
             assert forbidden.status_code == 401
+
+    def test_redirect_preserves_query_string_in_next(self) -> None:
+        """Unauthenticated redirect encodes the full path + query into next."""
+        app = FastAPI()
+
+        @app.get("/healthz")
+        async def healthz() -> dict[str, str]:
+            return {"ok": "true"}
+
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",  # NOSONAR - test credential only
+            login_secret="test-secret",
+        )
+
+        with TestClient(app) as client:
+            passthrough = client.get("/healthz")
+            assert passthrough.status_code == 200
+
+            resp = client.get("/stemtrace/?foo=bar", follow_redirects=False)
+            assert resp.status_code == 303
+            assert "%3Ffoo%3Dbar" in resp.headers["location"]

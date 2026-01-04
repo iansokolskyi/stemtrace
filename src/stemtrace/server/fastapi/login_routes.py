@@ -107,7 +107,9 @@ def create_login_router(
         form: dict[str, list[str]] = urllib.parse.parse_qs(body, keep_blank_values=True)
 
         username = (form.get("username") or [""])[0]
-        password = (form.get("password") or [""])[0]
+        password = (form.get("password") or [""])[
+            0
+        ]  # NOSONAR - form field name, not a hard-coded credential
         next_values = form.get("next")
         next_path = next_values[0] if next_values else None
 
