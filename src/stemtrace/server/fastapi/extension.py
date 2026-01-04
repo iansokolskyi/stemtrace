@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
     from fastapi import APIRouter, FastAPI
 
+    from stemtrace.server.fastapi.form_auth import FormAuthConfig
+
     LifespanNone = Callable[[Any], AbstractAsyncContextManager[None, bool | None]]
     LifespanState = Callable[
         [Any],
@@ -64,6 +66,7 @@ class StemtraceExtension:
         ttl: int = 86400,
         max_nodes: int = 10000,
         auth_dependency: Any = None,
+        form_auth_config: FormAuthConfig | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -77,12 +80,14 @@ class StemtraceExtension:
             ttl: Event retention window in seconds (transport-specific).
             max_nodes: Maximum number of nodes to keep in memory.
             auth_dependency: Optional FastAPI dependency applied to all routes for authentication.
+            form_auth_config: Optional cookie-session configuration used to protect WebSocket.
         """
         self._broker_url = broker_url
         self._transport_url = transport_url or broker_url
         self._serve_ui = serve_ui
         self._prefix = self._normalize_prefix(prefix)
         self._auth_dependency = auth_dependency
+        self._form_auth_config = form_auth_config
 
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()
@@ -135,10 +140,13 @@ class StemtraceExtension:
             worker_registry=self._worker_registry,
             broker_url=self._broker_url,
             auth_dependency=self._auth_dependency,
+            form_auth_config=self._form_auth_config,
         )
 
         if self._serve_ui:
-            ui_router = get_static_router()
+            ui_router = get_static_router(
+                show_logout=self._form_auth_config is not None
+            )
             if ui_router is not None:
                 router.include_router(ui_router)
 

@@ -13,6 +13,7 @@ from stemtrace.server.websocket import WebSocketManager
 
 if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
+    from stemtrace.server.fastapi.form_auth import FormAuthConfig
 
 
 def create_router(
@@ -22,6 +23,7 @@ def create_router(
     worker_registry: WorkerRegistry | None = None,
     broker_url: str | None = None,
     auth_dependency: Any = None,
+    form_auth_config: FormAuthConfig | None = None,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension."""
     if store is None:
@@ -39,7 +41,7 @@ def create_router(
         worker_registry,
         broker_url=broker_url,
     )
-    ws_router = create_websocket_router(ws_manager)
+    ws_router = create_websocket_router(ws_manager, form_auth_config=form_auth_config)
 
     dependencies: list[Any] = []
     if auth_dependency is not None:

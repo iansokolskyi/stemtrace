@@ -182,10 +182,19 @@ class TestInit:
                 ttl: int = 86400,
                 max_nodes: int = 10000,
                 auth_dependency: object = None,
+                form_auth_config: object = None,
             ) -> None:
                 captured["broker_url"] = broker_url
                 captured["transport_url"] = transport_url
-                del embedded_consumer, serve_ui, prefix, ttl, max_nodes, auth_dependency
+                del (
+                    embedded_consumer,
+                    serve_ui,
+                    prefix,
+                    ttl,
+                    max_nodes,
+                    auth_dependency,
+                    form_auth_config,
+                )
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
                 del prefix

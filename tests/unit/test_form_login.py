@@ -1,0 +1,70 @@
+"""Unit tests for built-in form login protection."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+import stemtrace
+
+
+class TestFormLoginProtection:
+    def test_protects_ui_api_assets_and_websocket(self) -> None:
+        """Unauthenticated requests are redirected/401, and login enables access."""
+        app = FastAPI()
+        ext = stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",
+            login_secret="test-secret",
+        )
+
+        with TestClient(app) as client:
+            # UI routes: redirect to login
+            resp = client.get("/stemtrace/", follow_redirects=False)
+            assert resp.status_code == 303
+            assert resp.headers["location"].startswith("/stemtrace/login?next=")
+
+            # Login page is accessible
+            resp = client.get("/stemtrace/login")
+            assert resp.status_code == 200
+            assert "Sign in" in resp.text
+
+            # API is 401 (no redirect)
+            resp = client.get("/stemtrace/api/health", follow_redirects=False)
+            assert resp.status_code == 401
+
+            # Assets are 401 when unauthenticated
+            resp = client.get("/stemtrace/assets/index.js", follow_redirects=False)
+            assert resp.status_code == 401
+
+            # WebSocket is closed when unauthenticated
+            with (
+                pytest.raises(WebSocketDisconnect),
+                client.websocket_connect("/stemtrace/ws") as ws,
+            ):
+                ws.receive_text()
+
+            # Login should set cookie and redirect to next
+            resp = client.post(
+                "/stemtrace/login",
+                data={"username": "admin", "password": "secret", "next": "/stemtrace/"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/stemtrace/"
+
+            # API now accessible
+            resp = client.get("/stemtrace/api/health")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "ok"
+
+            # WebSocket now connects and is tracked by ws_manager
+            with client.websocket_connect("/stemtrace/ws"):
+                assert ext.ws_manager.connection_count == 1
+            assert ext.ws_manager.connection_count == 0

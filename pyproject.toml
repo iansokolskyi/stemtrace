@@ -76,6 +76,7 @@ build-backend = "hatchling.build"
 packages = ["src/stemtrace"]
 artifacts = [
     "src/stemtrace/server/ui/frontend/dist/**",
+    "src/stemtrace/server/ui/templates/**",
 ]
 
 [tool.hatch.build.targets.wheel.hooks.custom]

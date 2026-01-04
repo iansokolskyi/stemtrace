@@ -16,6 +16,9 @@ Usage:
 """
 
 import os
+import secrets
+import urllib.parse
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -33,6 +36,8 @@ from stemtrace.server.fastapi import (
     require_api_key,
     require_basic_auth,
 )
+from stemtrace.server.fastapi.form_auth import FormAuthConfig, is_authenticated_cookie
+from stemtrace.server.fastapi.login_routes import create_login_router
 
 if TYPE_CHECKING:
     from celery import Celery
@@ -141,6 +146,10 @@ def init_app(
     embedded_consumer: bool = True,
     serve_ui: bool = True,
     auth_dependency: Any = None,
+    login_username: str | None = None,
+    login_password: str | None = None,
+    login_secret: str | None = None,
+    login_ttl_seconds: int = 86400,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -156,6 +165,12 @@ def init_app(
         embedded_consumer: Run event consumer in FastAPI process (default: True).
         serve_ui: Serve React dashboard (default: True).
         auth_dependency: Optional FastAPI dependency for authentication.
+        login_username: Enable built-in form login if set (single allowed username).
+        login_password: Enable built-in form login if set (password for login_username).
+        login_secret: Secret used to sign session cookies. If not provided, uses
+            STEMTRACE_LOGIN_SECRET env var. If still missing, a random secret is
+            generated (sessions invalidated on app restart).
+        login_ttl_seconds: Session TTL in seconds (default: 24 hours).
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -174,6 +189,34 @@ def init_app(
     if transport_url is None:
         transport_url = os.getenv("STEMTRACE_TRANSPORT_URL") or broker_url
 
+    mount_prefix = f"/{prefix.strip('/')}"
+
+    # Optional built-in form login (cookie-based session).
+    # This is UI-first: the cookie is automatically sent by the browser on UI/API/WS.
+    form_auth_config: FormAuthConfig | None = None
+    effective_login_username = login_username or os.getenv("STEMTRACE_LOGIN_USERNAME")
+    effective_login_password = login_password or os.getenv("STEMTRACE_LOGIN_PASSWORD")
+    if effective_login_username and effective_login_password:
+        effective_secret = (
+            login_secret
+            or os.getenv("STEMTRACE_LOGIN_SECRET")
+            or secrets.token_urlsafe(32)
+        )
+        form_auth_config = FormAuthConfig(
+            username=effective_login_username,
+            password=effective_login_password,
+            secret=effective_secret,
+            ttl_seconds=login_ttl_seconds,
+            cookie_name="stemtrace_session",
+            cookie_path=mount_prefix,
+        )
+
+        _install_stemtrace_form_auth(
+            fastapi_app,
+            mount_prefix=mount_prefix,
+            form_auth_config=form_auth_config,
+        )
+
     extension = StemtraceExtension(
         broker_url=broker_url,
         transport_url=transport_url,
@@ -183,10 +226,69 @@ def init_app(
         ttl=ttl,
         max_nodes=max_nodes,
         auth_dependency=auth_dependency,
+        form_auth_config=form_auth_config,
     )
     extension.init_app(fastapi_app, prefix=prefix)
 
     return extension
+
+
+def _install_stemtrace_form_auth(
+    app: "FastAPI",
+    *,
+    mount_prefix: str,
+    form_auth_config: FormAuthConfig,
+) -> None:
+    """Install form-login routes and HTTP middleware for stemtrace mount.
+
+    The login router must be added before stemtrace UI's SPA catch-all route,
+    otherwise `/login` would be handled by the SPA fallback.
+    """
+    from fastapi import Request
+    from fastapi.responses import JSONResponse, RedirectResponse
+    from starlette.responses import Response
+
+    login_router = create_login_router(
+        form_auth_config,
+        default_next_path=f"{mount_prefix}/",
+    )
+    app.include_router(login_router, prefix=mount_prefix)
+
+    login_path = f"{mount_prefix}/login"
+    logout_path = f"{mount_prefix}/logout"
+
+    @app.middleware("http")
+    async def _stemtrace_form_auth_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        path = request.url.path
+        if not path.startswith(mount_prefix):
+            return await call_next(request)
+
+        # Allow login/logout without auth.
+        if path in (login_path, logout_path):
+            return await call_next(request)
+
+        cookie_value = request.cookies.get(form_auth_config.cookie_name)
+        if is_authenticated_cookie(
+            cookie_value,
+            secret=form_auth_config.secret,
+            expected_username=form_auth_config.username,
+        ):
+            return await call_next(request)
+
+        # Not authenticated.
+        if path.startswith(f"{mount_prefix}/api"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        if path.startswith(f"{mount_prefix}/assets"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+
+        next_target = path
+        if request.url.query:
+            next_target = f"{path}?{request.url.query}"
+        next_qs = urllib.parse.urlencode({"next": next_target})
+        return RedirectResponse(url=f"{login_path}?{next_qs}", status_code=303)
 
 
 def _reset() -> None:
