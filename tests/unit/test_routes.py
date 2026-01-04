@@ -1,5 +1,6 @@
 """Tests for REST API routes."""
 
+import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
@@ -676,6 +677,10 @@ class TestWorkersAndRegistryOnDemandInspect:
 class TestGetInspector:
     """Tests for _get_inspector() construction safety."""
 
+    def test_get_inspector_returns_none_when_broker_url_missing(self) -> None:
+        """_get_inspector returns None when broker_url is not provided."""
+        assert routes._get_inspector(None) is None
+
     def test_get_inspector_passes_broker_by_keyword(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -708,3 +713,212 @@ class TestGetInspector:
         kwargs = created["kwargs"]
         assert isinstance(kwargs, dict)
         assert kwargs.get("broker") == broker_url
+
+    def test_get_inspector_falls_back_when_timeout_unsupported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If Inspect(timeout=...) is not supported, fall back to Inspect()."""
+
+        calls: list[object] = []
+
+        class _StubControl:
+            def inspect(self, **kwargs: object) -> object:
+                calls.append(kwargs)
+                if "timeout" in kwargs:
+                    raise TypeError("timeout not supported")
+                return object()
+
+        class _StubCelery:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                self._control = _StubControl()
+
+            @property
+            def control(self) -> _StubControl:
+                return self._control
+
+        monkeypatch.setattr(routes, "Celery", _StubCelery)
+
+        inspector = routes._get_inspector("amqp://guest:guest@localhost:5672//")
+        assert inspector is not None
+        # First try uses timeout, second try is without args
+        assert calls == [{"timeout": 0.5}, {}]
+
+    def test_get_inspector_returns_none_when_constructor_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_get_inspector should never raise."""
+
+        class _BoomCelery:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(routes, "Celery", _BoomCelery)
+
+        assert routes._get_inspector("redis://localhost:6379/0") is None
+
+
+class TestInspectRefreshBranches:
+    """Targeted tests for inspect refresh edge cases (coverage on new code)."""
+
+    def test_refresh_worker_registry_ping_fallback_returns_when_ping_empty(
+        self,
+    ) -> None:
+        """If stats is unavailable and ping() returns nothing, refresh is a no-op."""
+        worker_registry = WorkerRegistry()
+
+        class _Inspect:
+            def stats(self) -> None:
+                return None
+
+            def registered(self) -> None:
+                return None
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+        assert worker_registry.get_all_workers() == []
+
+    def test_refresh_worker_registry_keeps_existing_tasks_when_registered_unavailable(
+        self,
+    ) -> None:
+        """If registered() fails, we keep the existing task list for that worker."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["myapp.tasks.process"])
+
+        class _Inspect:
+            def stats(self) -> dict[str, object]:
+                return {"celery@worker-1": {"pid": 1111}}
+
+            def registered(self) -> None:
+                return None
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        workers = worker_registry.get_all_workers()
+        assert len(workers) == 1
+        assert workers[0].hostname == "worker-1"
+        assert workers[0].registered_tasks == ["myapp.tasks.process"]
+
+    def test_refresh_worker_registry_marks_missing_workers_offline(self) -> None:
+        """Workers not present in stats responders are marked offline."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("worker-1", 1111, ["a"])
+        worker_registry.register_worker("worker-2", 2222, ["b"])
+
+        class _Inspect:
+            def stats(self) -> dict[str, object]:
+                return {"celery@worker-1": {"pid": 1111}}
+
+            def registered(self) -> dict[str, object]:
+                return {"celery@worker-1": ["a"]}
+
+            def ping(self) -> None:
+                return None
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect())  # type: ignore[arg-type]
+
+        status_by_host = {
+            w.hostname: w.status for w in worker_registry.get_all_workers()
+        }
+        assert status_by_host["worker-1"] == "online"
+        assert status_by_host["worker-2"] == "offline"
+
+
+class TestInspectRateLimiting:
+    """Tests for rate limiting and early-return branches in API refresh."""
+
+    def test_workers_endpoint_refresh_is_rate_limited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Back-to-back requests should not stampede inspect."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        calls = {"n": 0}
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+
+        def _fake_get_inspector(_url: str, **_: object) -> _FakeInspect:
+            calls["n"] += 1
+            return fake
+
+        monkeypatch.setattr(routes, "_get_inspector", _fake_get_inspector)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        r1 = client.get("/api/workers")
+        r2 = client.get("/api/workers")
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert calls["n"] == 1
+
+    def test_workers_endpoint_refresh_skips_when_lock_is_held(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the refresh lock is held by another request, a second request shouldn't block."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        calls = {"n": 0}
+        entered = threading.Event()
+        release = threading.Event()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+
+        def _blocking_get_inspector(_url: str, **_: object) -> _FakeInspect:
+            calls["n"] += 1
+            entered.set()
+            # Hold the refresh lock long enough for a second request to arrive.
+            release.wait(timeout=2.0)
+            return fake
+
+        monkeypatch.setattr(routes, "_get_inspector", _blocking_get_inspector)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+
+        results: dict[str, object] = {}
+
+        def _req1() -> None:
+            client = TestClient(app)
+            results["r1"] = client.get("/api/workers")
+
+        t1 = threading.Thread(target=_req1)
+        t1.start()
+
+        assert entered.wait(timeout=2.0) is True
+
+        # Second request should see the lock is held and return without blocking.
+        client2 = TestClient(app)
+        r2 = client2.get("/api/workers")
+
+        release.set()
+        t1.join(timeout=2.0)
+
+        assert r2.status_code == 200
+        assert calls["n"] == 1
