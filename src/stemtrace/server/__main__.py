@@ -43,35 +43,135 @@ def server(
         bool,
         typer.Option("--reload", help="Enable auto-reload (development)"),
     ] = False,
+    login_username: Annotated[
+        str | None,
+        typer.Option(
+            "--login-username",
+            envvar="STEMTRACE_LOGIN_USERNAME",
+            help="Enable form login: allowed username (requires --login-password).",
+        ),
+    ] = None,
+    login_password: Annotated[
+        str | None,
+        typer.Option(
+            "--login-password",
+            envvar="STEMTRACE_LOGIN_PASSWORD",
+            help="Enable form login: password for --login-username.",
+        ),
+    ] = None,
+    login_secret: Annotated[
+        str | None,
+        typer.Option(
+            "--login-secret",
+            envvar="STEMTRACE_LOGIN_SECRET",
+            help="Secret used to sign session cookies (recommended for production).",
+        ),
+    ] = None,
+    login_ttl: Annotated[
+        int,
+        typer.Option(
+            "--login-ttl",
+            envvar="STEMTRACE_LOGIN_TTL_SECONDS",
+            help="Login session TTL in seconds.",
+        ),
+    ] = 86400,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
+    import secrets
+    import urllib.parse
+    from collections.abc import Awaitable, Callable
+
     import uvicorn
-    from fastapi import FastAPI
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse, RedirectResponse
+    from starlette.responses import Response
 
     from stemtrace.server.fastapi.extension import StemtraceExtension
+    from stemtrace.server.fastapi.form_auth import (
+        FormAuthConfig,
+        is_authenticated_cookie,
+    )
+    from stemtrace.server.fastapi.login_routes import create_login_router
+    from stemtrace.server.ui.static import get_static_router_with_base
 
     typer.echo(f"Starting stemtrace server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
     typer.echo(f"Transport: {transport_url or broker_url}")
 
-    from stemtrace.server.ui.static import get_static_router_with_base
+    form_auth_config: FormAuthConfig | None = None
+    if (login_username is None) != (login_password is None):
+        raise typer.BadParameter(
+            "Both --login-username and --login-password must be provided to enable login."
+        )
+    if login_username and login_password:
+        # Cookie must cover both UI at '/' and API at '/stemtrace'.
+        form_auth_config = FormAuthConfig(
+            username=login_username,
+            password=login_password,
+            secret=login_secret or secrets.token_urlsafe(32),
+            ttl_seconds=login_ttl,
+            cookie_name="stemtrace_session",
+            cookie_path="/",
+        )
 
     # Create extension without UI (we'll serve UI at root separately)
     extension = StemtraceExtension(
         broker_url=broker_url,
         transport_url=transport_url,
         serve_ui=False,
+        form_auth_config=form_auth_config,
     )
     fastapi_app = FastAPI(
         title="stemtrace",
         lifespan=extension.lifespan,
     )
 
+    if form_auth_config is not None:
+        # Login routes must be registered before the UI SPA catch-all.
+        login_router = create_login_router(form_auth_config, default_next_path="/")
+        fastapi_app.include_router(login_router)
+
+        login_path = "/login"
+        logout_path = "/logout"
+
+        @fastapi_app.middleware("http")
+        async def _form_auth_middleware(
+            request: Request,
+            call_next: Callable[[Request], Awaitable[Response]],
+        ) -> Response:
+            path = request.url.path
+            if path in (login_path, logout_path):
+                return await call_next(request)
+
+            cookie_value = request.cookies.get(form_auth_config.cookie_name)
+            if is_authenticated_cookie(
+                cookie_value,
+                secret=form_auth_config.secret,
+                expected_username=form_auth_config.username,
+            ):
+                return await call_next(request)
+
+            if path.startswith("/stemtrace/api") or path.startswith("/assets"):
+                return JSONResponse(
+                    {"detail": "Authentication required"},
+                    status_code=401,
+                )
+
+            next_target = path
+            if request.url.query:
+                next_target = f"{path}?{request.url.query}"
+            next_qs = urllib.parse.urlencode({"next": next_target})
+            return RedirectResponse(url=f"/login?{next_qs}", status_code=303)
+
     # API and WebSocket at /stemtrace (frontend expects this path)
     fastapi_app.include_router(extension.router, prefix="/stemtrace")
 
     # UI at root with explicit base path pointing to API
-    ui_router = get_static_router_with_base("/stemtrace")
+    ui_router = get_static_router_with_base(
+        "/stemtrace",
+        show_logout=form_auth_config is not None,
+        logout_path="/logout",
+    )
     if ui_router is not None:
         fastapi_app.include_router(ui_router)
 

@@ -59,3 +59,16 @@ class TestRewriteHtmlForPrefix:
         prefix = "/stemtrace"
         rewritten = _rewrite_html_for_prefix(html, prefix, rewrite_assets=False)
         assert f"window.__STEMTRACE_BASE__={json.dumps(prefix)};" in rewritten
+
+    def test_injects_logout_when_enabled(self) -> None:
+        """Logout injection emits a fixed-position POST form wired to logout_path."""
+        html = "<html><head></head><body>OK</body></html>"
+        rewritten = _rewrite_html_for_prefix(
+            html,
+            "/stemtrace",
+            rewrite_assets=False,
+            show_logout=True,
+            logout_path="/logout",
+        )
+        assert 'window.__STEMTRACE_LOGOUT_PATH__="/logout";' in rewritten
+        assert "stemtrace-logout" in rewritten
