@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -573,3 +574,137 @@ class TestTaskRegistryWithWorkers:
         assert status_map["myapp.tasks.active_task"] == "active"
         assert status_map["myapp.tasks.orphan_task"] == "not_registered"
         assert status_map["myapp.tasks.never_run_task"] == "never_run"
+
+
+class _FakeInspect:
+    """Celery Inspect stub that returns predictable worker/task state."""
+
+    def __init__(
+        self,
+        *,
+        ping_result: dict[str, object] | None,
+        stats_result: dict[str, object] | None,
+        registered_result: dict[str, object] | None,
+    ) -> None:
+        self._ping_result = ping_result
+        self._stats_result = stats_result
+        self._registered_result = registered_result
+
+    def ping(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._ping_result
+
+    def stats(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._stats_result
+
+    def registered(self, timeout: float | None = None) -> dict[str, object] | None:
+        del timeout
+        return self._registered_result
+
+
+class TestWorkersAndRegistryOnDemandInspect:
+    """Tests for on-demand inspect refresh behavior (order-independent)."""
+
+    def test_workers_endpoint_discovers_workers_from_inspect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Workers list is populated via inspect even if registry starts empty."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={
+                "celery@worker-1": ["myapp.tasks.process", "celery.backend_cleanup"]
+            },
+        )
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: fake)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="amqp://guest:guest@localhost:5672//",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        worker = data["workers"][0]
+        assert worker["hostname"] == "worker-1"
+        assert worker["pid"] == 1111
+        assert worker["status"] == "online"
+        assert worker["registered_tasks"] == ["myapp.tasks.process"]
+
+    def test_registry_endpoint_includes_never_run_tasks_from_inspect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Registry shows tasks from inspect even without any executed tasks."""
+        store = GraphStore()
+        worker_registry = WorkerRegistry()
+
+        fake = _FakeInspect(
+            ping_result={"celery@worker-1": {"ok": "pong"}},
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result={"celery@worker-1": ["myapp.tasks.process"]},
+        )
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: fake)
+
+        app = FastAPI()
+        router = create_api_router(
+            store,
+            worker_registry=worker_registry,
+            broker_url="redis://localhost:6379/0",
+        )
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.get("/api/tasks/registry")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        task = data["tasks"][0]
+        assert task["name"] == "myapp.tasks.process"
+        assert task["status"] == "never_run"
+
+
+class TestGetInspector:
+    """Tests for _get_inspector() construction safety."""
+
+    def test_get_inspector_passes_broker_by_keyword(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_get_inspector must not pass broker_url as Celery loader arg."""
+
+        created: dict[str, object] = {}
+
+        class _StubControl:
+            def inspect(self) -> object:
+                created["inspect_called"] = True
+                return object()
+
+        class _StubCelery:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                created["args"] = args
+                created["kwargs"] = kwargs
+                self._control = _StubControl()
+
+            @property
+            def control(self) -> _StubControl:
+                return self._control
+
+        monkeypatch.setattr(routes, "Celery", _StubCelery)
+
+        broker_url = "amqp://guest:guest@localhost:5672//"
+        inspector = routes._get_inspector(broker_url)
+        assert inspector is not None
+        assert created.get("inspect_called") is True
+
+        kwargs = created["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs.get("broker") == broker_url

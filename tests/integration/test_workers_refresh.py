@@ -60,7 +60,7 @@ class TestWorkersRefresh:
                 "worker-2": {"ok": "pong"},
             }
         )
-        monkeypatch.setattr(routes, "_get_inspector", lambda _url: fake)
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: fake)
 
         router = create_router(
             store=store,

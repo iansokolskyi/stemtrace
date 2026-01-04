@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime  # noqa: TC003  # FastAPI evaluates annotations at runtime
+import logging
+import threading
+import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
@@ -34,6 +37,8 @@ if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.store import GraphStore, WorkerRegistry
     from stemtrace.server.websocket import WebSocketManager
+
+logger = logging.getLogger(__name__)
 
 
 def _node_to_response(node: TaskNode) -> TaskNodeResponse:
@@ -121,52 +126,134 @@ def _node_to_graph_response(
 
 def _get_inspector(
     broker_url: str | None,
+    *,
+    timeout_seconds: float = 0.5,
 ) -> Inspect | None:
     """Get Celery inspector for on-demand worker status.
 
     Args:
         broker_url: Broker URL to create minimal Celery app.
+        timeout_seconds: Timeout for Celery inspect broadcasts.
 
     Returns:
         Inspect instance, or None if broker_url not provided.
     """
     if broker_url is None:
         return None
-    # Create minimal Celery app for inspection only
-    app = Celery("stemtrace", "inspect")
-    app.conf.broker_url = broker_url
-    return app.control.inspect()
+    # IMPORTANT: Celery's constructor signature is positional-heavy and has
+    # changed across versions. Always pass `broker` by keyword to avoid
+    # accidentally treating this as `loader=...` (which can import stdlib
+    # modules like `inspect` and crash during app finalization).
+    try:
+        app = Celery("stemtrace", broker=broker_url)
+        with contextlib.suppress(TypeError):
+            return app.control.inspect(timeout=timeout_seconds)
+        return app.control.inspect()
+    except Exception:
+        logger.debug("Failed to create Celery inspector", exc_info=True)
+        return None
 
 
-def _refresh_worker_status(
+def _refresh_worker_registry_from_inspect(
     worker_registry: WorkerRegistry,
     inspector: Inspect,
 ) -> None:
-    """Update worker status based on Celery inspect results.
+    """Refresh worker registry from Celery inspect (best-effort).
+
+    This supports "late join" scenarios where the server missed worker_ready
+    events (e.g., RabbitMQ fanout with no bound queue at worker startup).
+
+    The refresh is intentionally best-effort and must never raise.
 
     Args:
-        worker_registry: Worker registry to update.
+        worker_registry: Worker registry to populate/update.
         inspector: Celery inspector to query.
     """
-    active = inspector.ping()
-    if not active:
+    # Attempt to discover workers and their registered tasks.
+    # We need PID to register a worker. `stats()` typically includes it.
+    stats: dict[str, object] | None = None
+    registered: dict[str, object] | None = None
+
+    with contextlib.suppress(Exception):
+        stats = inspector.stats()
+
+    with contextlib.suppress(Exception):
+        registered = inspector.registered()
+
+    # Fallback: if stats is unavailable, at least refresh online status via ping().
+    # This keeps the Workers tab responsive even for minimal Celery setups.
+    if not stats:
+        active: dict[str, object] | None = None
+        with contextlib.suppress(Exception):
+            active = inspector.ping()
+        if not active:
+            return
+        active_hostnames = {
+            worker_key.split("@")[1] if "@" in worker_key else worker_key
+            for worker_key in active
+        }
+
+        for worker in worker_registry.get_all_workers():
+            if worker.hostname in active_hostnames:
+                worker_registry.mark_online(worker.hostname, worker.pid)
         return
 
-    # Extract active hostnames from Celery response
-    # Celery format: "worker1@hostname" or "hostname"
-    active_hostnames = set()
-    for worker_key in active:
-        # Celery format: "worker1@hostname" or "hostname"
-        hostname = worker_key.split("@")[1] if "@" in worker_key else worker_key
-        active_hostnames.add(hostname)
+    # Treat stats responders as active workers and update online/offline state.
+    active_hostnames = {
+        worker_key.split("@")[1] if "@" in worker_key else worker_key
+        for worker_key in stats
+    }
 
-    # Update registry: mark workers ONLINE if active in Celery.
-    # Note: Never mutate WorkerInfo objects returned from get_all_workers() since
-    # that bypasses WorkerRegistry locking and can race with the consumer thread.
-    workers = worker_registry.get_all_workers()
-    for worker in workers:
-        if worker.hostname in active_hostnames:
-            worker_registry.mark_online(worker.hostname, worker.pid)
+    # If we got a non-empty stats response, mark known workers offline if they
+    # didn't respond. This makes the Workers view accurate even without events.
+    for worker in worker_registry.get_all_workers():
+        if worker.hostname not in active_hostnames:
+            worker_registry.mark_shutdown(worker.hostname, worker.pid)
+
+    now = datetime.now(timezone.utc)
+
+    def _hostname_from_key(worker_key: str) -> str:
+        return worker_key.split("@")[1] if "@" in worker_key else worker_key
+
+    def _pid_from_stats(payload: object) -> int | None:
+        # Celery stats payload is a dict-like with "pid".
+        if not isinstance(payload, dict):
+            return None
+        pid = payload.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            return pid
+        return None
+
+    def _tasks_for_worker(worker_key: str) -> list[str] | None:
+        # If the registered() call failed, don't wipe any existing task lists.
+        if not registered or not isinstance(registered, dict):
+            return None
+        tasks_obj = registered.get(worker_key)
+        if not isinstance(tasks_obj, list):
+            return []
+        tasks: list[str] = []
+        for t in tasks_obj:
+            if isinstance(t, str) and not t.startswith("celery."):
+                tasks.append(t)
+        return tasks
+
+    # Prefer canonical worker keys from stats (they include the pid).
+    for worker_key, payload in stats.items():
+        hostname = _hostname_from_key(worker_key)
+        pid = _pid_from_stats(payload)
+        if pid is None:
+            continue
+
+        tasks = _tasks_for_worker(worker_key)
+        if tasks is None:
+            tasks = worker_registry.get_registered_tasks(hostname, pid)
+        worker_registry.register_worker(
+            hostname=hostname,
+            pid=pid,
+            tasks=tasks,
+            task_definitions=None,
+            event_timestamp=now,
+        )
 
 
 def create_api_router(
@@ -189,6 +276,45 @@ def create_api_router(
         Configured API router.
     """
     router = APIRouter(prefix="/api", tags=["stemtrace"])
+
+    # Avoid stampeding Celery inspect on page loads where the UI requests both
+    # workers + registry in quick succession. This cache is per-router instance.
+    inspect_refresh_lock = threading.Lock()
+    last_inspect_refresh: float = 0.0
+    inspect_refresh_min_interval_seconds = 2.0
+    inspect_timeout_seconds = 0.5
+
+    def _maybe_refresh_worker_registry_from_inspect() -> None:
+        """Refresh the worker registry from Celery inspect with rate limiting."""
+        nonlocal last_inspect_refresh
+
+        if worker_registry is None or broker_url is None:
+            return
+
+        now = time.monotonic()
+        if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
+            return
+
+        # Only allow one refresh at a time, and don't block requests waiting for
+        # an in-progress refresh.
+        if not inspect_refresh_lock.acquire(blocking=False):
+            return
+        try:
+            now = time.monotonic()
+            if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
+                return
+
+            inspector = _get_inspector(
+                broker_url, timeout_seconds=inspect_timeout_seconds
+            )
+            if inspector is None:
+                return
+
+            with contextlib.suppress(Exception):
+                _refresh_worker_registry_from_inspect(worker_registry, inspector)
+                last_inspect_refresh = time.monotonic()
+        finally:
+            inspect_refresh_lock.release()
 
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -259,6 +385,12 @@ def create_api_router(
                 description="Filter by status: 'active', 'never_run', 'not_registered'"
             ),
         ] = None,
+        refresh: Annotated[
+            bool,
+            Query(
+                description="Refresh worker registry from Celery inspect (best-effort)"
+            ),
+        ] = True,
     ) -> TaskRegistryResponse:
         """List all discovered task definitions with optional filtering.
 
@@ -267,6 +399,9 @@ def create_api_router(
         - never_run: Registered by workers but never executed
         - not_registered: Executed but no worker has it registered
         """
+        if refresh and worker_registry is not None:
+            _maybe_refresh_worker_registry_from_inspect()
+
         # Get all observed task names (from executions)
         observed_names = store.get_unique_task_names()
 
@@ -429,7 +564,7 @@ def create_api_router(
     async def list_workers(
         refresh: Annotated[
             bool, Query(description="Refresh worker status from Celery")
-        ] = False,
+        ] = True,
     ) -> WorkerListResponse:
         """List all registered workers, optionally refreshing from Celery.
 
@@ -441,9 +576,7 @@ def create_api_router(
 
         # On-demand worker status refresh using Celery inspect
         if refresh:
-            inspector = _get_inspector(broker_url)
-            if inspector is not None:
-                _refresh_worker_status(worker_registry, inspector)
+            _maybe_refresh_worker_registry_from_inspect()
 
         workers = worker_registry.get_all_workers()
         return WorkerListResponse(
