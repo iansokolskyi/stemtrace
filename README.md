@@ -18,7 +18,7 @@ Ever stared at a failed Celery task wondering "what called this?" or "why did it
 
 Stemtrace captures your task executions as a graph — visualize parent→child flows, see retry chains, track groups and chords, all without adding any new infrastructure.
 
-**Today stemtrace supports Redis** for event transport (via Redis Streams). **RabbitMQ support is planned.**
+**stemtrace supports Redis and RabbitMQ** for event transport.
 
 ## ✨ Features
 
@@ -37,7 +37,7 @@ Stemtrace captures your task executions as a graph — visualize parent→child 
 - **Registry status badges** — Quickly spot tasks that are active, never run, or not registered by any current worker
 
 **Production Ready**
-- **Zero Infrastructure** — Uses your existing Redis broker, no database needed
+- **Zero Infrastructure** — Uses your existing broker (Redis or RabbitMQ), no database needed
 - **Sensitive Data Scrubbing** — Passwords and API keys filtered automatically
 - **Read-Only** — Safe for production; never modifies your task queue
 - **FastAPI Integration** — Mount into your existing app with one line
@@ -108,6 +108,14 @@ stemtrace server
 
 Open [http://localhost:8000](http://localhost:8000).
 
+Tip: make sure the server is pointed at the same broker as your workers:
+
+```bash
+stemtrace server --broker-url redis://localhost:6379/0
+# or:
+stemtrace server --broker-url amqp://guest:guest@localhost:5672//
+```
+
 **Option B: Embed in your FastAPI app** (no extra container)
 
 ```python
@@ -121,7 +129,7 @@ stemtrace.init_app(app, broker_url="redis://localhost:6379/0")
 
 Access at `/stemtrace/` in your existing app — no new services to deploy.
 
-See [Deployment Options](#️-deployment-options) for auth, scaling, and more.
+See [Deployment Options](#deployment-options) for auth, scaling, and more.
 
 ## 📦 Architecture
 
@@ -251,13 +259,21 @@ batch_processor
 | Broker | URL Scheme | Status |
 |--------|------------|--------|
 | Redis | `redis://`, `rediss://` | ✅ Supported |
-| RabbitMQ | `amqp://`, `amqps://` | 🚧 Planned |
+| RabbitMQ | `amqp://`, `amqps://`, `pyamqp://` | ✅ Supported |
 
 ## 🐳 Docker
 
 ```bash
 docker run -p 8000:8000 \
     -e STEMTRACE_BROKER_URL=redis://host.docker.internal:6379/0 \
+    ghcr.io/iansokolskyi/stemtrace
+```
+
+RabbitMQ example:
+
+```bash
+docker run -p 8000:8000 \
+    -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672// \
     ghcr.io/iansokolskyi/stemtrace
 ```
 
@@ -272,6 +288,8 @@ services:
     environment:
       - STEMTRACE_BROKER_URL=redis://redis:6379/0
 ```
+
+For a local RabbitMQ setup, see [`docker-compose.rabbitmq.yml`](docker-compose.rabbitmq.yml).
 
 ## 🖥️ Deployment Options
 
@@ -383,12 +401,12 @@ stemtrace.init_app(
 - ✅ **Sensitive data scrubbing** — Passwords and API keys filtered automatically
 - ✅ **Real-time updates** — WebSocket-powered live dashboard
 - ✅ **FastAPI integration** — Mount into your existing app
+- ✅ **RabbitMQ support** — Use your existing RabbitMQ broker (`amqp://`, `amqps://`, `pyamqp://`)
 - ✅ **Workers page** — Monitor online/offline workers and their registered tasks
 - ✅ **Task registry** — Browse discovered + registered tasks with clear status badges
 
 ### Coming Soon
 
-- 🔜 **RabbitMQ support** — Use your existing RabbitMQ broker
 - 🔜 **Anomaly detection** — Spot stuck, orphaned, or failed tasks
 - 🔜 **Dashboard with stats** — Success rates, durations, failure trends
 - 🔜 **OpenTelemetry export** — Send traces to Jaeger, Tempo, Datadog
