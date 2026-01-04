@@ -248,11 +248,33 @@ batch_processor
 - **Timing** — Each node displays start time and duration directly in the graph
 - **Aggregate state** — Container shows running/success/failure based on member states
 
-### Environment Variables
+### Environment Variables (Optional)
+
+You **do not need** these environment variables if you’re using the Python APIs:
+- `stemtrace.init_worker(app, transport_url=..., prefix=..., ttl=...)`
+- `stemtrace.init_app(app, broker_url=..., transport_url=...)`
+
+They exist mainly as **convenient defaults** for:
+- `stemtrace server` / `stemtrace consume`
+- container/Docker setups where passing flags is awkward
+
+If your app already uses env vars like `BROKER_URL`, `REDIS_URL`, etc., just pass them through:
+
+```python
+import os
+import stemtrace
+
+stemtrace.init_app(
+    app,
+    broker_url=os.environ["BROKER_URL"],
+    transport_url=os.getenv("STEMTRACE_TRANSPORT_URL") or os.environ["BROKER_URL"],
+)
+```
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STEMTRACE_BROKER_URL` | Broker URL for `stemtrace server` / `stemtrace consume` and `stemtrace.init_app()` | `redis://localhost:6379/0` |
+| `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
+| `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
 
 ### Supported Brokers
 
@@ -260,6 +282,24 @@ batch_processor
 |--------|------------|--------|
 | Redis | `redis://`, `rediss://` | ✅ Supported |
 | RabbitMQ | `amqp://`, `amqps://`, `pyamqp://` | ✅ Supported |
+
+### Event Retention & Server Restarts (Important)
+
+stemtrace builds the UI from **events** and keeps state in an **in-memory** graph store.
+That means a `stemtrace server` restart starts from an empty store and only becomes “full”
+again once events are re-consumed.
+
+- **Redis (Streams)**: On restart, the server can rebuild state by replaying events that are
+  still retained in the stream (bounded by `ttl` / stream trimming).
+- **RabbitMQ (fanout + per-consumer queue)**:
+  - Events already consumed/acked by the server are **gone**.
+  - Events published while the server is down are only visible after restart if the server’s
+    durable per-consumer queue still exists and the messages are still within TTL.
+- **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
+  and registered tasks, so those pages work even if the server missed `worker_ready` events.
+- **If you need durable history across restarts**: point stemtrace events at Redis even if your
+  Celery broker is RabbitMQ (set `transport_url` in `stemtrace.init_worker(...)` and set
+  `STEMTRACE_TRANSPORT_URL` for the server / embedded setup).
 
 ## 🐳 Docker
 
@@ -274,6 +314,15 @@ RabbitMQ example:
 ```bash
 docker run -p 8000:8000 \
     -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672// \
+    ghcr.io/iansokolskyi/stemtrace
+```
+
+RabbitMQ broker + Redis event transport (recommended if you want history across server restarts):
+
+```bash
+docker run -p 8000:8000 \
+    -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672// \
+    -e STEMTRACE_TRANSPORT_URL=redis://host.docker.internal:6379/0 \
     ghcr.io/iansokolskyi/stemtrace
 ```
 
@@ -317,6 +366,7 @@ Open [http://localhost:8000](http://localhost:8000) to view the dashboard.
 ```bash
 stemtrace server \
     --broker-url redis://myredis:6379/0 \
+    --transport-url redis://myredis:6379/0 \
     --host 0.0.0.0 \
     --port 8000 \
     --reload  # For development
@@ -343,6 +393,8 @@ That's it. `init_app()` automatically:
 - Mounts the dashboard at `/stemtrace/`
 - Starts the event consumer
 
+Tip: you can also set `transport_url` if you want stemtrace events stored separately from your Celery broker.
+
 #### Configuration Options
 
 ```python
@@ -352,6 +404,7 @@ import stemtrace
 extension = stemtrace.init_app(
     app,
     broker_url="redis://localhost:6379/0",
+    transport_url=None,          # Defaults to broker_url
     prefix="/stemtrace",        # Mount path AND event stream prefix (normalized)
     ttl=86400,                  # Event TTL in seconds
     max_nodes=10000,            # Max nodes in memory
