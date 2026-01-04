@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- UI: optional built-in form login flow for protecting the stemtrace UI
+
+### Changed
+- Config: split server broker URL from worker event transport URL (`broker_url` vs `transport_url`)
+- API: avoid blocking worker/registry refresh operations
+- Docs: clarify optional configuration and retention behavior
+
+### Fixed
+- Workers/Registry: refresh via Celery inspect to reduce stale worker/task registry data
+
 ## [0.3.0] - 2026-01-04
 
 ### Added
