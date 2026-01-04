@@ -372,6 +372,16 @@ stemtrace server \
     --reload  # For development
 ```
 
+#### Protecting the Server (Built-in Login Page)
+
+```bash
+stemtrace server \
+    --broker-url redis://myredis:6379/0 \
+    --login-username admin \
+    --login-password secret \
+    --login-secret change-me
+```
+
 #### High-Scale Production Setup
 
 Note: `stemtrace server` includes an embedded consumer today (single-process). A multi-process deployment mode is planned.
@@ -424,7 +434,26 @@ from your_app.auth import require_admin
 stemtrace.init_app(app, broker_url="redis://localhost:6379/0", auth_dependency=Depends(require_admin))
 ```
 
-Or use built-in auth helpers:
+#### With Built-in Login Page (Recommended for UI-first)
+
+If you primarily use the UI, the easiest way to protect **UI + assets + API + WebSocket**
+is the built-in form login (cookie session):
+
+```python
+import stemtrace
+
+stemtrace.init_app(
+    app,
+    broker_url="redis://localhost:6379/0",
+    login_username="admin",
+    login_password="secret",
+    login_secret="change-me",  # recommended for production
+)
+```
+
+This serves a sign-in page at `/stemtrace/login` and protects everything under `/stemtrace`.
+
+#### Built-in Auth Helpers (Basic / API key)
 
 ```python
 import stemtrace
