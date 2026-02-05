@@ -275,7 +275,7 @@ stemtrace.init_app(
 |---------------------------|----------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
 | `STEMTRACE_BROKER_URL`    | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0`          |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).                                                           | Defaults to `STEMTRACE_BROKER_URL`. |
-| `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`| Use one of the task's args/kwargs as the note title (UI). int: args[index], str: kwargs[key], None: task_name              | None                                |
+| `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`| Use one of the task's args/kwargs as the node title (UI). int: args[index], str: kwargs[key], None: task_name              | None                                |
 
 ### Supported Brokers
 
