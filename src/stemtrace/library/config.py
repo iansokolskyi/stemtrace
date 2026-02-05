@@ -16,6 +16,8 @@ class StemtraceConfig(BaseModel):
         scrub_sensitive_data: Whether to scrub sensitive keys.
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
+        capture_output: Whether to capture task stdout/stderr.
+        max_output_size: Maximum size in bytes for captured output.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -33,6 +35,10 @@ class StemtraceConfig(BaseModel):
     scrub_sensitive_data: bool = True
     additional_sensitive_keys: frozenset[str] = Field(default_factory=frozenset)
     safe_keys: frozenset[str] = Field(default_factory=frozenset)
+
+    # Output capture options (disabled by default)
+    capture_output: bool = False
+    max_output_size: int = 65536  # 64KB
 
 
 _config: StemtraceConfig | None = None
