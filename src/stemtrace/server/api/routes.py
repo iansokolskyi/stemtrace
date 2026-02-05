@@ -158,6 +158,8 @@ def _node_to_graph_response(
         GraphNodeResponse with timing from children.
     """
     config = get_config()
+    node_alias_from_arguments = config.node_alias_from_arguments if config is not None else None
+
     first_seen = node.events[0].timestamp if node.events else None
     last_updated = node.events[-1].timestamp if node.events else None
 
@@ -182,7 +184,7 @@ def _node_to_graph_response(
 
     return GraphNodeResponse(
         task_id=node.task_id,
-        name=_get_node_name(node, config.node_alias_from_arguments),
+        name=_get_node_name(node, node_alias_from_arguments),
         state=node.state,
         node_type=node.node_type,
         group_id=node.group_id,
