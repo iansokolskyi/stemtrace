@@ -92,7 +92,6 @@ class TestOutputCapture:
 
     def test_empty_capture_returns_empty_strings(self) -> None:
         with OutputCapture() as capture:
-            pass  # No output
             output = capture.get_output()
 
         assert output.stdout == ""
