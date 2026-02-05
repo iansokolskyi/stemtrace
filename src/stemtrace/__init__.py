@@ -92,7 +92,6 @@ def init_worker(
     scrub_sensitive_data: bool = True,
     additional_sensitive_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
-    node_alias_from_arguments: str | int | None = None,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -128,7 +127,6 @@ def init_worker(
         scrub_sensitive_data=scrub_sensitive_data,
         additional_sensitive_keys=additional_sensitive_keys or frozenset(),
         safe_keys=safe_keys or frozenset(),
-        node_alias_from_arguments=node_alias_from_arguments,
     )
     set_config(config)
 

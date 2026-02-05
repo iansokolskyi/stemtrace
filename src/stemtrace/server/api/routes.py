@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 import time
-from celery import Celery
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Annotated
+
+from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
-from stemtrace.library.config import get_config
 from stemtrace.server.api.schemas import (
     ErrorResponse,
     GraphListResponse,
@@ -27,7 +29,6 @@ from stemtrace.server.api.schemas import (
     WorkerListResponse,
     WorkerResponse,
 )
-from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
     from celery.app.control import Inspect
@@ -132,9 +133,9 @@ def _get_node_name(node: TaskNode, key: int | str = None) -> str:
 
     event = node.events[0]
 
-    if isinstance(key, int):
-        if isinstance(event.args, (list, tuple)) and len(event.args) > key:
-            return str(event.args[key])
+    if key.isdigit():
+        if isinstance(event.args, (list, tuple)) and len(event.args) > int(key):
+            return str(event.args[int(key)])
 
     if isinstance(key, str):
         if isinstance(event.kwargs, dict) and key in event.kwargs:
@@ -157,8 +158,6 @@ def _node_to_graph_response(
     Returns:
         GraphNodeResponse with timing from children.
     """
-    config = get_config()
-    node_alias_from_arguments = config.node_alias_from_arguments if config is not None else None
 
     first_seen = node.events[0].timestamp if node.events else None
     last_updated = node.events[-1].timestamp if node.events else None
@@ -184,7 +183,7 @@ def _node_to_graph_response(
 
     return GraphNodeResponse(
         task_id=node.task_id,
-        name=_get_node_name(node, node_alias_from_arguments),
+        name=_get_node_name(node, os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS")),
         state=node.state,
         node_type=node.node_type,
         group_id=node.group_id,
