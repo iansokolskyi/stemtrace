@@ -21,6 +21,7 @@ from celery.signals import (
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.ports import EventTransport
 from stemtrace.library.config import get_config
+from stemtrace.library.output_capture import start_capture, stop_capture
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     safe_serialize,
@@ -118,6 +119,18 @@ def _get_scrub_config() -> tuple[
     )
 
 
+def _get_output_capture_config() -> tuple[bool, int]:
+    """Get output capture configuration.
+
+    Returns:
+        Tuple of (capture_output, max_output_size)
+    """
+    config = get_config()
+    if config is None:
+        return (False, 65536)
+    return (config.capture_output, config.max_output_size)
+
+
 def _scrub_and_serialize_args(
     args: tuple[Any, ...],
 ) -> list[Any] | None:
@@ -199,6 +212,10 @@ def _on_task_prerun(
     kwargs: dict[str, Any],
     **_: Any,
 ) -> None:
+    capture_output, max_output_size = _get_output_capture_config()
+    if capture_output:
+        start_capture(max_size=max_output_size)
+
     chord_id, chord_callback_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
@@ -230,6 +247,11 @@ def _on_task_postrun(
     **_: Any,
 ) -> None:
     del args, kwargs
+
+    captured = stop_capture()
+    stdout = captured.stdout if captured.stdout else None
+    stderr = captured.stderr if captured.stderr else None
+
     if state != "SUCCESS":
         return
 
@@ -252,6 +274,8 @@ def _on_task_postrun(
             chord_callback_id=chord_callback_id,
             retries=task.request.retries or 0,
             result=_scrub_and_serialize_result(retval),
+            stdout=stdout,
+            stderr=stderr,
         )
     )
 
@@ -267,6 +291,10 @@ def _on_task_failure(
     **_: Any,
 ) -> None:
     del args, kwargs, traceback
+
+    captured = stop_capture()
+    stdout = captured.stdout if captured.stdout else None
+    stderr = captured.stderr if captured.stderr else None
 
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
@@ -288,6 +316,8 @@ def _on_task_failure(
             retries=sender.request.retries or 0,
             exception=_format_exception(exception),
             traceback=_format_traceback(einfo),
+            stdout=stdout,
+            stderr=stderr,
         )
     )
 
@@ -299,6 +329,10 @@ def _on_task_retry(
     einfo: Any,
     **_: Any,
 ) -> None:
+    captured = stop_capture()
+    stdout = captured.stdout if captured.stdout else None
+    stderr = captured.stderr if captured.stderr else None
+
     # reason can be an exception or string
     exc_message: str | None = None
     if isinstance(reason, BaseException):
@@ -323,6 +357,8 @@ def _on_task_retry(
             retries=request.retries or 0,
             exception=exc_message,
             traceback=_format_traceback(einfo),
+            stdout=stdout,
+            stderr=stderr,
         )
     )
 
