@@ -122,6 +122,28 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
         duration_ms=duration_ms,
     )
 
+def _get_node_name(node: TaskNode, key: int | str = None) -> str:
+    """
+    Resolve node name from the first event:
+    - int key → args[index]
+    - str key → kwargs[key]
+    """
+    if not node.events:
+        return node.name
+
+    event = node.events[0]
+
+    if isinstance(key, int):
+        args = event.get("args")
+        if isinstance(args, (list, tuple)) and len(args) > key:
+            return args[key]
+
+    if isinstance(key, str):
+        kwargs = event.get("kwargs")
+        if isinstance(kwargs, dict) and key in kwargs:
+            return kwargs[key]
+
+    return node.name
 
 def _node_to_graph_response(
     node: TaskNode,
@@ -138,6 +160,7 @@ def _node_to_graph_response(
     Returns:
         GraphNodeResponse with timing from children.
     """
+    config = get_config()
     first_seen = node.events[0].timestamp if node.events else None
     last_updated = node.events[-1].timestamp if node.events else None
 
@@ -159,9 +182,10 @@ def _node_to_graph_response(
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
 
+
     return GraphNodeResponse(
         task_id=node.task_id,
-        name=node.name,
+        name=_get_node_name(node, config.node_alias_from_arguments),
         state=node.state,
         node_type=node.node_type,
         group_id=node.group_id,

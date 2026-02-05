@@ -34,6 +34,9 @@ class StemtraceConfig(BaseModel):
     additional_sensitive_keys: frozenset[str] = Field(default_factory=frozenset)
     safe_keys: frozenset[str] = Field(default_factory=frozenset)
 
+    # UI options
+    node_alias_from_arguments: str | int | None = None  # str: kwargs[key] | int: args[key] | None: task_name
+
 
 _config: StemtraceConfig | None = None
 
