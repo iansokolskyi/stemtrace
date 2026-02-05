@@ -35,6 +35,8 @@ export interface TaskEvent {
   result: unknown | null
   exception: string | null
   traceback: string | null
+  stdout: string | null
+  stderr: string | null
 }
 
 export type TaskStatus = 'active' | 'never_run' | 'not_registered'
