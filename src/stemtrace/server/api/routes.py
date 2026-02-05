@@ -7,12 +7,10 @@ import contextlib
 import logging
 import threading
 import time
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated
-
 from celery import Celery
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
-
+from stemtrace.library.config import get_config
 from stemtrace.server.api.schemas import (
     ErrorResponse,
     GraphListResponse,
@@ -29,6 +27,7 @@ from stemtrace.server.api.schemas import (
     WorkerListResponse,
     WorkerResponse,
 )
+from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
     from celery.app.control import Inspect
@@ -134,14 +133,12 @@ def _get_node_name(node: TaskNode, key: int | str = None) -> str:
     event = node.events[0]
 
     if isinstance(key, int):
-        args = event.get("args")
-        if isinstance(args, (list, tuple)) and len(args) > key:
-            return args[key]
+        if isinstance(event.args, (list, tuple)) and len(event.args) > key:
+            return str(event.args[key])
 
     if isinstance(key, str):
-        kwargs = event.get("kwargs")
-        if isinstance(kwargs, dict) and key in kwargs:
-            return kwargs[key]
+        if isinstance(event.kwargs, dict) and key in event.kwargs:
+            return str(event.kwargs[key])
 
     return node.name
 
