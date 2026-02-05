@@ -1,9 +1,3 @@
-"""Output capture for task stdout/stderr.
-
-This module provides thread-safe capture of stdout/stderr during task execution.
-Uses contextvars for per-task isolation.
-"""
-
 from __future__ import annotations
 
 import io
@@ -14,8 +8,6 @@ from typing import NamedTuple, TextIO
 
 
 class CapturedOutput(NamedTuple):
-    """Captured stdout and stderr from a task."""
-
     stdout: str
     stderr: str
 
@@ -41,16 +33,6 @@ class TeeWriter:
 
 
 class OutputCapture:
-    """Context manager for capturing stdout/stderr during task execution.
-
-    Uses TeeWriter to capture output while still displaying it to the
-    original streams.
-
-    Args:
-        max_size: Maximum size in bytes for captured output. Output will be
-                  truncated with a marker if exceeded.
-    """
-
     def __init__(self, max_size: int = 65536) -> None:
         self._max_size = max_size
         self._stdout_buffer: io.StringIO | None = None
