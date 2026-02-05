@@ -128,7 +128,7 @@ def _get_node_name(node: TaskNode, key: int | str = None) -> str:
     - int key → args[index]
     - str key → kwargs[key]
     """
-    if not node.events:
+    if not node.events or key is None:
         return node.name
 
     event = node.events[0]
