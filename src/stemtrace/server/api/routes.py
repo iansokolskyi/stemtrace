@@ -159,6 +159,16 @@ def _node_to_graph_response(
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
 
+    # UI traversal is order-sensitive when callbacks can appear as both direct
+    # children and CHORD-linked nodes. Prefer TASK children first so callback
+    # branches render before synthetic containers.
+    children = node.children
+    if all_nodes is not None:
+        children = sorted(
+            node.children,
+            key=lambda c: getattr(all_nodes.get(c), "node_type", None) != "TASK",
+        )
+
     return GraphNodeResponse(
         task_id=node.task_id,
         name=node.name,
@@ -167,7 +177,7 @@ def _node_to_graph_response(
         group_id=node.group_id,
         chord_id=node.chord_id,
         parent_id=node.parent_id,
-        children=node.children,
+        children=children,
         duration_ms=duration_ms,
         first_seen=first_seen,
         last_updated=last_updated,
