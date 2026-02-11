@@ -1,3 +1,4 @@
+import contextlib
 import sys
 
 import pytest
@@ -23,9 +24,19 @@ def clean_state() -> None:
         stop_capture()
 
 
+@contextlib.contextmanager
+def capture_output(*args, **kwargs):
+    try:
+        capture = OutputCapture(*args, **kwargs)
+        capture.start()
+        yield capture
+    finally:
+        capture.stop()
+
+
 class TestOutputCapture:
     def test_captures_stdout(self) -> None:
-        with OutputCapture() as capture:
+        with capture_output() as capture:
             print("Hello, stdout!")
             output = capture.get_output()
 
@@ -33,7 +44,7 @@ class TestOutputCapture:
         assert output.stderr == ""
 
     def test_captures_stderr(self) -> None:
-        with OutputCapture() as capture:
+        with capture_output() as capture:
             print("Hello, stderr!", file=sys.stderr)
             output = capture.get_output()
 
@@ -41,7 +52,7 @@ class TestOutputCapture:
         assert "Hello, stderr!" in output.stderr
 
     def test_captures_both_stdout_and_stderr(self) -> None:
-        with OutputCapture() as capture:
+        with capture_output() as capture:
             print("stdout message")
             print("stderr message", file=sys.stderr)
             output = capture.get_output()
@@ -53,7 +64,7 @@ class TestOutputCapture:
         original_stdout = sys.stdout
         original_stderr = sys.stderr
 
-        with OutputCapture():
+        with capture_output():
             assert sys.stdout is not original_stdout
             assert sys.stderr is not original_stderr
 
@@ -62,7 +73,7 @@ class TestOutputCapture:
 
     def test_tee_output_to_original_stream(self, capsys: pytest.CaptureFixture) -> None:
         """Output is still sent to the original stream (tee behavior)."""
-        with OutputCapture() as capture:
+        with capture_output() as capture:
             print("visible message")
             print("error message", file=sys.stderr)
 
@@ -75,7 +86,7 @@ class TestOutputCapture:
         assert "error message" in captured.err
 
     def test_max_output_size_truncates_stdout(self) -> None:
-        with OutputCapture(max_size=50) as capture:
+        with capture_output(max_size=50) as capture:
             print("x" * 100)
             output = capture.get_output()
 
@@ -83,7 +94,7 @@ class TestOutputCapture:
         assert "[truncated]" in output.stdout
 
     def test_max_output_size_truncates_stderr(self) -> None:
-        with OutputCapture(max_size=50) as capture:
+        with capture_output(max_size=50) as capture:
             print("y" * 100, file=sys.stderr)
             output = capture.get_output()
 
@@ -91,7 +102,7 @@ class TestOutputCapture:
         assert "[truncated]" in output.stderr
 
     def test_empty_capture_returns_empty_strings(self) -> None:
-        with OutputCapture() as capture:
+        with capture_output() as capture:
             output = capture.get_output()
 
         assert output.stdout == ""
