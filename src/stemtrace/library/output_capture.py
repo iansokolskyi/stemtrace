@@ -169,7 +169,7 @@ def stop_capture() -> CapturedOutput:
         return CapturedOutput(stdout="", stderr="")
 
     output = capture.get_output()
-    capture.stop(None, None, None)
+    capture.stop()
     _active_capture.set(None)
     return output
 
