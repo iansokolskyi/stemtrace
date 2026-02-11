@@ -38,7 +38,7 @@ class StemtraceConfig(BaseModel):
 
     # Output capture options (disabled by default)
     capture_output: bool = False
-    max_output_size: int = 65536  # 64KB
+    max_output_size: int = Field(ge=0, default=65536)  # 64KB
 
 
 _config: StemtraceConfig | None = None
