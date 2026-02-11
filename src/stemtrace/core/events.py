@@ -74,6 +74,8 @@ class TaskEvent(BaseModel):
         result: Return value of the task (SUCCESS state only).
         exception: Exception message (FAILURE/RETRY states).
         traceback: Full traceback string (FAILURE/RETRY states).
+        stdout: Captured stdout during task execution.
+        stderr: Captured stderr during task execution.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -96,6 +98,8 @@ class TaskEvent(BaseModel):
     result: Any | None = None
     exception: str | None = None
     traceback: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
 
 
 class WorkerEvent(BaseModel):
