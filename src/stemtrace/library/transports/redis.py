@@ -21,6 +21,34 @@ logger = logging.getLogger(__name__)
 # Type alias for all events that can be consumed from the stream
 StreamEvent = TaskEvent | WorkerEvent
 
+# Mapping from CERT_* constants (used in URLs) to lowercase values expected by redis-py
+_SSL_CERT_REQS_MAP = {
+    "CERT_NONE": "none",
+    "CERT_OPTIONAL": "optional",
+    "CERT_REQUIRED": "required",
+}
+
+
+def _normalize_redis_ssl_params(url: str) -> str:
+    """Normalize ssl_cert_reqs in a Redis URL from CERT_* to lowercase.
+
+    redis-py expects lowercase values (none/optional/required) but URLs
+    commonly use the Python ssl module constants (CERT_NONE/CERT_REQUIRED).
+    """
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    params = parse_qs(parsed.query)
+    if "ssl_cert_reqs" not in params:
+        return url
+    raw = params["ssl_cert_reqs"][0]
+    normalized = _SSL_CERT_REQS_MAP.get(raw, raw)
+    params["ssl_cert_reqs"] = [normalized]
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
 
 class RedisTransport:
     """Redis Streams-based event transport (XADD/XREAD)."""
@@ -129,6 +157,7 @@ class RedisTransport:
         """Create transport from Redis URL."""
         from redis import Redis as RedisClient
 
+        url = _normalize_redis_ssl_params(url)
         return cls(
             client=RedisClient.from_url(url, decode_responses=False),
             prefix=prefix,

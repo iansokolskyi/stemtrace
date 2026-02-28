@@ -92,6 +92,7 @@ def init_worker(
     scrub_sensitive_data: bool = True,
     additional_sensitive_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
+    max_data_size: int = 10240,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -105,6 +106,7 @@ def init_worker(
         scrub_sensitive_data: Whether to scrub sensitive keys (default: True).
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
+        max_data_size: Maximum size in bytes for serialized data (default: 10KB).
 
     Raises:
         ConfigurationError: If no broker URL can be determined.
@@ -127,6 +129,7 @@ def init_worker(
         scrub_sensitive_data=scrub_sensitive_data,
         additional_sensitive_keys=additional_sensitive_keys or frozenset(),
         safe_keys=safe_keys or frozenset(),
+        max_data_size=max_data_size,
     )
     set_config(config)
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-02-28
+
+### Fixed
+- Redis transport: normalize `ssl_cert_reqs` URL parameter from `CERT_REQUIRED`/`CERT_NONE`/`CERT_OPTIONAL` to lowercase values expected by redis-py
+
 ## [0.3.1] - 2026-01-04
 
 ### Added

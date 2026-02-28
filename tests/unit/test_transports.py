@@ -15,7 +15,10 @@ from stemtrace.core.exceptions import UnsupportedBrokerError
 from stemtrace.library.transports import get_transport
 from stemtrace.library.transports.memory import MemoryTransport
 from stemtrace.library.transports.rabbitmq import RabbitMQTransport
-from stemtrace.library.transports.redis import RedisTransport
+from stemtrace.library.transports.redis import (
+    RedisTransport,
+    _normalize_redis_ssl_params,
+)
 
 
 @pytest.fixture
@@ -199,6 +202,40 @@ class TestGetTransport:
 
         assert isinstance(transport, RedisTransport)
         assert transport.ttl == 7200
+
+
+class TestNormalizeRedisSslParams:
+    """Tests for _normalize_redis_ssl_params URL normalization."""
+
+    def test_cert_required_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/1?ssl_cert_reqs=CERT_REQUIRED"
+        assert "ssl_cert_reqs=required" in _normalize_redis_ssl_params(url)
+
+    def test_cert_none_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=CERT_NONE"
+        assert "ssl_cert_reqs=none" in _normalize_redis_ssl_params(url)
+
+    def test_cert_optional_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=CERT_OPTIONAL"
+        assert "ssl_cert_reqs=optional" in _normalize_redis_ssl_params(url)
+
+    def test_already_lowercase_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=required"
+        assert "ssl_cert_reqs=required" in _normalize_redis_ssl_params(url)
+
+    def test_no_query_params_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0"
+        assert _normalize_redis_ssl_params(url) == url
+
+    def test_no_ssl_cert_reqs_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0?timeout=5"
+        assert _normalize_redis_ssl_params(url) == url
+
+    def test_other_params_preserved(self) -> None:
+        url = "rediss://:pass@host:6379/1?ssl_cert_reqs=CERT_REQUIRED&timeout=5"
+        result = _normalize_redis_ssl_params(url)
+        assert "ssl_cert_reqs=required" in result
+        assert "timeout=5" in result
 
 
 class TestRedisTransport:
