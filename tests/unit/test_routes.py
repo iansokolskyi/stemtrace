@@ -1236,3 +1236,92 @@ class TestGraphNodeTimingResponse:
         resp = routes._node_to_graph_response(parent, all_nodes=all_nodes)
 
         assert resp.children == ["task-a", "task-b", "group:chord-1"]
+
+
+class TestResolveNodeAlias:
+    """Tests for _resolve_node_alias helper."""
+
+    def _make_node(
+        self,
+        args: list[object] | None = None,
+        kwargs: dict[str, object] | None = None,
+    ) -> TaskNode:
+        """Create a TaskNode with a single event carrying given args/kwargs."""
+        return TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="test-1",
+                    name="myapp.tasks.process",
+                    state=TaskState.SUCCESS,
+                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    args=args,
+                    kwargs=kwargs,
+                )
+            ],
+        )
+
+    def test_none_key_returns_task_name(self) -> None:
+        """When key is None, returns the task name unchanged."""
+        node = self._make_node(args=["ignored"])
+        assert routes._resolve_node_alias(node, None) == "myapp.tasks.process"
+
+    def test_digit_key_returns_args_by_index(self) -> None:
+        """Digit string key extracts positional argument by index."""
+        node = self._make_node(args=["upload.csv", 42])
+        assert routes._resolve_node_alias(node, "0") == "upload.csv"
+        assert routes._resolve_node_alias(node, "1") == "42"
+
+    def test_string_key_returns_kwargs_value(self) -> None:
+        """String key extracts keyword argument by name."""
+        node = self._make_node(kwargs={"operator_type": "run_query"})
+        assert routes._resolve_node_alias(node, "operator_type") == "run_query"
+
+    def test_digit_key_out_of_range_returns_task_name(self) -> None:
+        """Falls back to task name when args index is out of range."""
+        node = self._make_node(args=["only_one"])
+        assert routes._resolve_node_alias(node, "5") == "myapp.tasks.process"
+
+    def test_string_key_missing_returns_task_name(self) -> None:
+        """Falls back to task name when kwargs key doesn't exist."""
+        node = self._make_node(kwargs={"other": "value"})
+        assert routes._resolve_node_alias(node, "missing_key") == "myapp.tasks.process"
+
+    def test_no_events_returns_task_name(self) -> None:
+        """Falls back to task name when node has no events."""
+        node = TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.PENDING,
+        )
+        assert routes._resolve_node_alias(node, "0") == "myapp.tasks.process"
+
+    def test_none_args_returns_task_name(self) -> None:
+        """Falls back to task name when args is None."""
+        node = self._make_node(args=None)
+        assert routes._resolve_node_alias(node, "0") == "myapp.tasks.process"
+
+    def test_none_kwargs_returns_task_name(self) -> None:
+        """Falls back to task name when kwargs is None."""
+        node = self._make_node(kwargs=None)
+        assert routes._resolve_node_alias(node, "some_key") == "myapp.tasks.process"
+
+    def test_non_string_value_converted_to_str(self) -> None:
+        """Non-string args/kwargs values are converted to string."""
+        node = self._make_node(args=[123], kwargs={"count": 456})
+        assert routes._resolve_node_alias(node, "0") == "123"
+        assert routes._resolve_node_alias(node, "count") == "456"
+
+    def test_graph_response_uses_alias(self) -> None:
+        """_node_to_graph_response passes alias key through."""
+        node = self._make_node(kwargs={"operator_type": "sync_table"})
+        resp = routes._node_to_graph_response(node, node_alias_key="operator_type")
+        assert resp.name == "sync_table"
+
+    def test_graph_response_without_alias_uses_task_name(self) -> None:
+        """_node_to_graph_response without alias key uses task name."""
+        node = self._make_node(kwargs={"operator_type": "sync_table"})
+        resp = routes._node_to_graph_response(node)
+        assert resp.name == "myapp.tasks.process"

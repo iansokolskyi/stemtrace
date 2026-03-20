@@ -123,9 +123,40 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     )
 
 
+def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
+    """Resolve display name for a graph node from task arguments.
+
+    When a key is configured, attempts to extract a value from the first
+    event's args (if key is a digit string) or kwargs (if key is a regular
+    string). Falls back to the node's registered task name.
+
+    Args:
+        node: Task node containing events with args/kwargs.
+        key: Digit string for args[index], string for kwargs[key],
+            or None to use the task name.
+
+    Returns:
+        Resolved display name for the node.
+    """
+    if key is None or not node.events:
+        return node.name
+
+    event = node.events[0]
+
+    if key.isdigit():
+        index = int(key)
+        if isinstance(event.args, list) and index < len(event.args):
+            return str(event.args[index])
+    elif isinstance(event.kwargs, dict) and key in event.kwargs:
+        return str(event.kwargs[key])
+
+    return node.name
+
+
 def _node_to_graph_response(
     node: TaskNode,
     all_nodes: dict[str, TaskNode] | None = None,
+    node_alias_key: str | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -134,6 +165,7 @@ def _node_to_graph_response(
     Args:
         node: Task node from graph store.
         all_nodes: All nodes dict for child lookup.
+        node_alias_key: Key to resolve display name from task arguments.
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -171,7 +203,7 @@ def _node_to_graph_response(
 
     return GraphNodeResponse(
         task_id=node.task_id,
-        name=node.name,
+        name=_resolve_node_alias(node, node_alias_key),
         state=node.state,
         node_type=node.node_type,
         group_id=node.group_id,
@@ -299,6 +331,7 @@ def create_api_router(
     ws_manager: WebSocketManager | None = None,
     worker_registry: WorkerRegistry | None = None,
     broker_url: str | None = None,
+    node_alias_from_arguments: str | None = None,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -308,6 +341,8 @@ def create_api_router(
         ws_manager: Optional WebSocket manager.
         worker_registry: Optional worker registry for lifecycle tracking.
         broker_url: Optional Celery broker URL for on-demand inspection.
+        node_alias_from_arguments: Key to derive node display name from task
+            arguments. Digit string for args[index], string for kwargs[key].
 
     Returns:
         Configured API router.
@@ -572,7 +607,12 @@ def create_api_router(
             for child in store.get_children(root.task_id):
                 all_nodes[child.task_id] = child
         return GraphListResponse(
-            graphs=[_node_to_graph_response(r, all_nodes) for r in roots],
+            graphs=[
+                _node_to_graph_response(
+                    r, all_nodes, node_alias_key=node_alias_from_arguments
+                )
+                for r in roots
+            ],
             total=total,
             limit=limit,
             offset=offset,
@@ -596,7 +636,10 @@ def create_api_router(
         return GraphResponse(
             root_id=root_id,
             nodes={
-                tid: _node_to_graph_response(n, all_nodes) for tid, n in graph.items()
+                tid: _node_to_graph_response(
+                    n, all_nodes, node_alias_key=node_alias_from_arguments
+                )
+                for tid, n in graph.items()
             },
         )
 
