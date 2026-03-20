@@ -1184,3 +1184,55 @@ class TestGraphNodeTimingResponse:
         assert resp.first_seen == t1
         assert resp.last_updated == t2
         assert resp.duration_ms == int((t2 - t1).total_seconds() * 1000)
+
+    def test_graph_node_response_children_sorted_tasks_first(self) -> None:
+        """Children are ordered with TASK nodes first, GROUP/CHORD nodes last."""
+        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+
+        task_a = TaskNode(
+            task_id="task-a",
+            name="myapp.tasks.a",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="task-a",
+                    name="myapp.tasks.a",
+                    state=TaskState.SUCCESS,
+                    timestamp=t0,
+                )
+            ],
+        )
+        task_b = TaskNode(
+            task_id="task-b",
+            name="myapp.tasks.b",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="task-b",
+                    name="myapp.tasks.b",
+                    state=TaskState.SUCCESS,
+                    timestamp=t0,
+                )
+            ],
+        )
+        chord_node = TaskNode(
+            task_id="group:chord-1",
+            name="chord",
+            state=TaskState.SUCCESS,
+            node_type=NodeType.CHORD,
+            children=[],
+        )
+
+        # Parent has children in "wrong" order: chord first, then tasks
+        parent = TaskNode(
+            task_id="root",
+            name="myapp.tasks.process_uploads",
+            state=TaskState.SUCCESS,
+            node_type=NodeType.TASK,
+            children=["group:chord-1", "task-a", "task-b"],
+        )
+
+        all_nodes = {"task-a": task_a, "task-b": task_b, "group:chord-1": chord_node}
+        resp = routes._node_to_graph_response(parent, all_nodes=all_nodes)
+
+        assert resp.children == ["task-a", "task-b", "group:chord-1"]
