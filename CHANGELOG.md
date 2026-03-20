@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Node alias from arguments: derive graph node display name from task args/kwargs via `node_alias_from_arguments` config option (thanks @ohadmata for the idea — #46, #48)
+- Docker: multi-architecture image builds (amd64 + arm64) (thanks @ohadmata — #51)
+
+### Fixed
+- Graph: order task nodes before synthetic container nodes (GROUP/CHORD) for correct rendering (thanks @codyburrito — #52)
+
 ## [0.3.2] - 2026-02-28
 
 ### Fixed
