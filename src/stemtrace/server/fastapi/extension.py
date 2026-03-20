@@ -67,6 +67,7 @@ class StemtraceExtension:
         max_nodes: int = 10000,
         auth_dependency: Any = None,
         form_auth_config: FormAuthConfig | None = None,
+        node_alias_from_arguments: str | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -81,6 +82,8 @@ class StemtraceExtension:
             max_nodes: Maximum number of nodes to keep in memory.
             auth_dependency: Optional FastAPI dependency applied to all routes for authentication.
             form_auth_config: Optional cookie-session configuration used to protect WebSocket.
+            node_alias_from_arguments: Key to derive graph node display name from task
+                arguments. Digit string for args[index], string for kwargs[key].
         """
         self._broker_url = broker_url
         self._transport_url = transport_url or broker_url
@@ -102,6 +105,8 @@ class StemtraceExtension:
                 ttl=ttl,
                 worker_registry=self._worker_registry,
             )
+
+        self._node_alias_from_arguments = node_alias_from_arguments
 
         self._store.add_listener(self._ws_manager.queue_event)
 
@@ -141,6 +146,7 @@ class StemtraceExtension:
             broker_url=self._broker_url,
             auth_dependency=self._auth_dependency,
             form_auth_config=self._form_auth_config,
+            node_alias_from_arguments=self._node_alias_from_arguments,
         )
 
         if self._serve_ui:

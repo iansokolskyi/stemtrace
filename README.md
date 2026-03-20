@@ -196,6 +196,10 @@ stemtrace.init_worker(
     scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
+
+    # UI display
+    node_alias_from_arguments="operator_type", # Use kwargs["operator_type"] as node name
+    # node_alias_from_arguments="0",           # Or use args[0] (digit string = positional index)
 )
 
 # Introspection (after init)

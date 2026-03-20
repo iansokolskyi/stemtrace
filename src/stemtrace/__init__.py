@@ -93,6 +93,7 @@ def init_worker(
     additional_sensitive_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
     max_data_size: int = 10240,
+    node_alias_from_arguments: str | None = None,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -107,6 +108,9 @@ def init_worker(
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
         max_data_size: Maximum size in bytes for serialized data (default: 10KB).
+        node_alias_from_arguments: Derive node display name from task arguments.
+            Pass a digit string to use args[index], a string key for kwargs[key],
+            or None to use the task name (default).
 
     Raises:
         ConfigurationError: If no broker URL can be determined.
@@ -130,6 +134,7 @@ def init_worker(
         additional_sensitive_keys=additional_sensitive_keys or frozenset(),
         safe_keys=safe_keys or frozenset(),
         max_data_size=max_data_size,
+        node_alias_from_arguments=node_alias_from_arguments,
     )
     set_config(config)
 
@@ -153,6 +158,7 @@ def init_app(
     login_password: str | None = None,
     login_secret: str | None = None,
     login_ttl_seconds: int = 86400,
+    node_alias_from_arguments: str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -174,6 +180,8 @@ def init_app(
             STEMTRACE_LOGIN_SECRET env var. If still missing, a random secret is
             generated (sessions invalidated on app restart).
         login_ttl_seconds: Session TTL in seconds (default: 24 hours).
+        node_alias_from_arguments: Derive graph node display name from task arguments.
+            Digit string for args[index], string for kwargs[key], or None (default).
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -230,6 +238,7 @@ def init_app(
         max_nodes=max_nodes,
         auth_dependency=auth_dependency,
         form_auth_config=form_auth_config,
+        node_alias_from_arguments=node_alias_from_arguments,
     )
     extension.init_app(fastapi_app, prefix=prefix)
 
