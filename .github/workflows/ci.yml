@@ -85,7 +85,7 @@ jobs:
         run: uv run pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.12'
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -182,7 +182,7 @@ jobs:
         run: uv run pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage (main)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
