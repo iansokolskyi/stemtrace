@@ -1,7 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { createRootRouteWithContext, Link, Outlet } from '@tanstack/react-router'
 import { TanStackRouterDevtools } from '@tanstack/router-devtools'
+import { useSyncExternalStore } from 'react'
+import { isSessionRejected, subscribeSessionRejected } from '@/api/client'
 import { useHealth } from '@/api/queries'
+import { SessionRejectedNotice } from '@/components/SessionRejectedNotice'
 import { SproutMark } from '@/components/SproutMark'
 import { Tooltip } from '@/components/Tooltip'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
@@ -21,13 +24,20 @@ function RootLayout() {
   // Check if server is reachable via health endpoint
   const { data: health, isError: isServerDown } = useHealth()
 
+  // Set when the server reports a session signed by a different secret
+  const sessionRejected = useSyncExternalStore(subscribeSessionRejected, isSessionRejected)
+
   // Determine display status
-  // Priority: Server down > WS connected > WS connecting > Polling
+  // Priority: Session rejected > Server down > WS connected > WS connecting > Polling
   let statusLabel: string
   let statusColor: string
   let statusTooltip: string
 
-  if (isServerDown) {
+  if (sessionRejected) {
+    statusLabel = 'Unauthorized'
+    statusColor = 'bg-red-500'
+    statusTooltip = 'Session was signed by a different server process.'
+  } else if (isServerDown) {
     statusLabel = 'Offline'
     statusColor = 'bg-red-500'
     statusTooltip = 'Server is unreachable. Check if stemtrace is running.'
@@ -105,7 +115,7 @@ function RootLayout() {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <Outlet />
+        {sessionRejected ? <SessionRejectedNotice /> : <Outlet />}
       </main>
 
       {/* Dev tools */}

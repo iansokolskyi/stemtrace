@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { TaskEvent } from '@/api/client'
+import { isRedirectingToLogin, type TaskEvent } from '@/api/client'
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 
@@ -36,8 +36,11 @@ const getWsUrl = (): string => {
 }
 const WS_URL = getWsUrl()
 
-// Reconnect interval when disconnected (3 seconds for quick recovery)
-const RECONNECT_INTERVAL = 3000
+// Reconnect with exponential backoff: 3s for quick recovery, doubling up to 60s.
+// A denied handshake (e.g. expired session) is indistinguishable from the server
+// being down, so backing off keeps us from hammering the server forever.
+const RECONNECT_BASE_DELAY = 3000
+const RECONNECT_MAX_DELAY = 60000
 
 interface WebSocketProviderProps {
   children: ReactNode
@@ -50,6 +53,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const queryClient = useQueryClient()
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  const reconnectAttemptsRef = useRef(0)
 
   const connect = useCallback(() => {
     // Don't reconnect if already connected or connecting
@@ -62,12 +66,30 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
     setConnectionStatus('connecting')
 
+    const scheduleReconnect = () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      // Page is navigating to the login form; reconnecting would just be denied
+      if (isRedirectingToLogin()) return
+      const delay = Math.min(
+        RECONNECT_BASE_DELAY * 2 ** reconnectAttemptsRef.current,
+        RECONNECT_MAX_DELAY,
+      )
+      reconnectAttemptsRef.current += 1
+      console.log(`[WebSocket] Disconnected, will retry in ${delay / 1000}s...`)
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect()
+      }, delay)
+    }
+
     try {
       const ws = new WebSocket(WS_URL)
       wsRef.current = ws
 
       ws.onopen = () => {
         setConnectionStatus('connected')
+        reconnectAttemptsRef.current = 0
         console.log('[WebSocket] Connected')
       }
 
@@ -96,15 +118,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       ws.onclose = () => {
         setConnectionStatus('disconnected')
         wsRef.current = null
-        console.log('[WebSocket] Disconnected, will retry in 3s...')
-
-        // Schedule reconnect
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current)
-        }
-        reconnectTimeoutRef.current = window.setTimeout(() => {
-          connect()
-        }, RECONNECT_INTERVAL)
+        scheduleReconnect()
       }
 
       ws.onerror = () => {
@@ -114,14 +128,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     } catch (e) {
       setConnectionStatus('error')
       console.error('[WebSocket] Failed to connect:', e)
-
-      // Schedule reconnect on error
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-      }
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect()
-      }, RECONNECT_INTERVAL)
+      scheduleReconnect()
     }
   }, [queryClient])
 
