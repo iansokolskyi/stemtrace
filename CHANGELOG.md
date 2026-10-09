@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Minimum FastAPI is now 0.112.1 and minimum Starlette 0.38.6: the lowest versions verified by the test suite at release time. FastAPI 0.100–0.104 never worked with current Pydantic (building the app fails with `'FieldInfo' object has no attribute 'in_'`). Starlette is now a declared dependency because stemtrace imports it directly.
 - Minimum redis-py is now 4.1.0, the lowest version verified by the test suite at release time; 4.0.x imports `distutils`, which was removed in Python 3.12.
+- Docker image: Python dependencies are now installed from the project's lockfile, so each image ships the exact versions audited for that release instead of whatever was newest at build time. Base images are pinned by digest, and the UI is built with Node 22.
+- Examples now bind to `127.0.0.1` instead of `0.0.0.0`.
 - Health endpoint: `status` is now `"degraded"` instead of `"ok"` when the event consumer died unexpectedly, its loop keeps restarting after errors (such as `WRONGTYPE` or `NOPERM`), or `consumer_connected` is `false`. With RabbitMQ only consumer loop failures are detected. A consumer stopped on purpose, or whose event source finished normally (for example `memory://`), is not degraded. The response is still HTTP 200, so status-code-only health checks behave as before; check the `status` field to alert on a degraded consumer. See the README's "Health Endpoint" section.
 
 ### Fixed
