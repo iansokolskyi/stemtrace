@@ -7,6 +7,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # Dependabot's uv updater fails on the build backend; updated by the
+      # weekly maintenance routine
+      - dependency-name: "hatchling"
 
   - package-ecosystem: npm
     directory: /src/stemtrace/server/ui/frontend
@@ -14,6 +18,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # Types track the Node 22 LTS runtime the UI is built with: no new majors
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -29,3 +37,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # The shipped Python runtime is deliberate: stay on 3.12.x patch updates
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # UI is built with Node 22 LTS: allow minor/patch updates only
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
