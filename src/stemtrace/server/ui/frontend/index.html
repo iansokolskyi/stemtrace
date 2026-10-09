@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- Inline favicon: no request, no auth redirect, independent of the mount prefix.
+         Source of truth: docs/brand/. Deliberately uses thicker strokes (3.2, r=3) than
+         the brand mark for 16px legibility. Keep identical to templates/login.html. -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Cstyle%3E.t%7Bfill:%23123A2B%7D.s%7Bstroke:%2346D39A%7D.r%7Bfill:%2346D39A%7D.l%7Bfill:%23E7ECF2%7D@media%20(prefers-color-scheme:light)%7B.t%7Bfill:%230F7B53%7D.s%7Bstroke:%23FFFFFF%7D.r%7Bfill:%23FFFFFF%7D.l%7Bfill:%23BFF0D9%7D%7D%3C/style%3E%3Crect%20class='t'%20x='1'%20y='1'%20width='30'%20height='30'%20rx='8'/%3E%3Cpath%20class='s'%20d='M16%2026V15M16%2015L9.5%208.5M16%2015l6.5-6.5'%20stroke-width='3.2'%20stroke-linecap='round'%20fill='none'/%3E%3Ccircle%20class='r'%20cx='16'%20cy='26'%20r='3'/%3E%3Ccircle%20class='l'%20cx='9'%20cy='8'%20r='3'/%3E%3Ccircle%20class='l'%20cx='23'%20cy='8'%20r='3'/%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>stemtrace</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">

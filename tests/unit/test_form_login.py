@@ -271,3 +271,23 @@ class TestFormLoginProtection:
             resp = client.get("/stemtrace/?foo=bar", follow_redirects=False)
             assert resp.status_code == 303
             assert "%3Ffoo%3Dbar" in resp.headers["location"]
+
+    def test_login_page_embeds_inline_favicon_without_request(self) -> None:
+        """Login page favicon is an inline data URI, so it never hits the auth wall."""
+        app = FastAPI()
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",  # NOSONAR - test credential only
+            login_secret="test-secret",
+        )
+
+        with TestClient(app) as client:
+            page = client.get("/stemtrace/login")
+            assert page.status_code == 200
+            favicon = '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
+            assert favicon in page.text
+            assert "/vite.svg" not in page.text

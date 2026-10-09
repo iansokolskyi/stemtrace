@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`). Only the Redis transport reports it: it detects refused or reset connections, connect timeouts and repeated read timeouts. On redis-py < 8, whose default socket timeout is unbounded, a half-open or hung connection may go unnoticed unless the broker URL sets `socket_timeout` or `health_check_interval`. With RabbitMQ it is always `null`.
+- UI: "Sprout" brand mark in the header and as the favicon (dashboard and login page). The favicon is an inline SVG data URI that follows the OS light/dark theme, so it needs no extra request, is never redirected by form login, and works under any mount prefix. Brand assets live in `docs/brand/`.
 
 ### Changed
 - Minimum FastAPI is now 0.112.1 and minimum Starlette 0.38.6: the lowest versions verified by the test suite at release time. FastAPI 0.100–0.104 never worked with current Pydantic (building the app fails with `'FieldInfo' object has no attribute 'in_'`). Starlette is now a declared dependency because stemtrace imports it directly.
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis transport: the server stopped receiving events after about 5 seconds of quiet when used with redis-py 8. redis-py 8 defaults `socket_timeout` to 5 seconds, the same as the `XREAD` block window, so the first idle read timed out and the consumer thread exited for good. The `XREAD` block window is now half of the client's effective socket timeout (2.5 seconds with redis-py 8 defaults, 5 seconds when the timeout is unbounded), so idle reads return normally on a single connection. This includes clients passed in directly, such as `redis.Redis.from_url(url)`. The client's own timeouts are unchanged, so publishing from tasks never blocks longer than before.
 - Redis transport: losing the connection (for example a Redis restart, an unreachable host, or a connect timeout) no longer stops event consumption. The consumer logs one warning with a traceback, then one line per attempt, and retries with exponential backoff (1 s doubling to a 30 s cap, reset on success), resuming from the last stream entry it read. Repeated read timeouts are logged as warnings at most once a minute.
 - Server: the event consumer thread restarts with the same backoff after an unexpected error instead of exiting silently, and `stop()` interrupts a pending reconnect wait instead of leaving the thread behind.
+- UI: the favicon no longer 404s (the dashboard referenced a non-existent `/vite.svg`).
 
 ## [0.3.5] - 2026-10-09
 

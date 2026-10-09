@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { createRootRouteWithContext, Link, Outlet } from '@tanstack/react-router'
 import { TanStackRouterDevtools } from '@tanstack/router-devtools'
 import { useHealth } from '@/api/queries'
+import { SproutMark } from '@/components/SproutMark'
 import { Tooltip } from '@/components/Tooltip'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
 
@@ -51,11 +52,16 @@ function RootLayout() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
             {/* Logo */}
-            <Link to="/" className="flex items-baseline gap-2">
-              <span className="text-lg font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent">
-                stemtrace
+            <Link to="/" className="flex items-center gap-2">
+              <SproutMark size={22} className="shrink-0" />
+              <span className="flex items-baseline gap-2">
+                <span className="text-lg font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent">
+                  stemtrace
+                </span>
+                {health?.version && (
+                  <span className="text-xs text-slate-500">v{health.version}</span>
+                )}
               </span>
-              {health?.version && <span className="text-xs text-slate-500">v{health.version}</span>}
             </Link>
 
             {/* Navigation */}

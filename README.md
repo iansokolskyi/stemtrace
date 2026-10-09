@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/iansokolskyi/stemtrace/main/docs/brand/stemtrace-mark.svg" width="48" alt="stemtrace logo" />
+
 # stemtrace 🌿
 
 **Zero-infrastructure Celery task flow visualizer**
