@@ -400,16 +400,18 @@ def create_api_router(
 
         ``status`` is "degraded" when a configured consumer has stopped
         unexpectedly or can't read from the broker, and "ok" otherwise (a
-        consumer whose event source finished normally is not degraded). The
-        response is always HTTP 200 so existing health checks keep working.
+        consumer whose event source finished normally, or that was stopped on
+        purpose, is not degraded). The response is always HTTP 200 so existing
+        health checks keep working.
         """
         from stemtrace import __version__
 
         running = consumer.is_running if consumer else False
         connected = consumer.is_connected if consumer else None
         finished = consumer.is_finished if consumer else False
+        stopped = consumer.is_stopped if consumer else False
         degraded = consumer is not None and (
-            (not running and not finished) or connected is False
+            (not running and not finished and not stopped) or connected is False
         )
 
         return HealthResponse(

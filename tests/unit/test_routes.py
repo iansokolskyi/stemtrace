@@ -145,6 +145,7 @@ class FakeHealthConsumer:
         self.is_running = running
         self.is_connected = connected
         self.is_finished = finished
+        self.is_stopped = False
 
 
 class TestTaskListEndpoint:

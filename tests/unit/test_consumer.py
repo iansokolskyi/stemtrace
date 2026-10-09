@@ -719,3 +719,39 @@ class TestConsumerHealthState:
         assert time.monotonic() - started < 1.0
         assert "did not stop gracefully" not in caplog.text
         assert consumer.is_running is False
+
+
+class TestGracefulStopHealth:
+    def test_health_after_graceful_stop_is_not_degraded(
+        self, store: GraphStore
+    ) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        assert consumer.is_running is False
+        assert consumer.is_stopped is True
+        health = _health(consumer, store)
+        assert health["status"] == "ok"
+        assert health["consumer_running"] is False
+        assert health["consumer_connected"] is None
+
+    def test_start_after_stop_clears_stopped_flag(self, store: GraphStore) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            consumer.stop(timeout=0.1)
+            assert consumer.is_stopped is True
+
+            consumer.start()
+            assert consumer.is_stopped is False
+
+            fake.stop()
+            consumer.stop(timeout=1.0)

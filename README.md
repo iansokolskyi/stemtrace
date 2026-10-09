@@ -482,14 +482,19 @@ stemtrace.init_app(
 
 | Field | Meaning |
 |-------|---------|
-| `status` | `"ok"`, or `"degraded"` when a configured event consumer stopped unexpectedly, can't reach the broker, or keeps failing to read (a consumer whose event source finished normally, like `memory://`, stays `"ok"`) |
+| `status` | `"ok"`, or `"degraded"` when the event consumer died unexpectedly, its loop keeps failing, or `consumer_connected` is `false`. A consumer stopped on purpose, or whose event source finished normally (`memory://`), stays `"ok"` |
 | `version` | Installed stemtrace version |
 | `consumer_running` | Whether the event consumer thread is alive |
-| `consumer_connected` | `true` if the consumer's last broker read succeeded, `false` while it's failing, `null` if unknown (starting up, or the transport doesn't report it) |
+| `consumer_connected` | `true` if the last broker read succeeded, `false` while reads fail, `null` if unknown (starting up, or the transport doesn't report it) |
 | `websocket_connections` | Open UI WebSocket connections |
 | `node_count` | Tasks currently held in memory |
 
 Because the status code stays 200, check `status` in the body if you want monitoring to alert on a degraded consumer.
+
+What is detected depends on the transport:
+
+- **Redis:** refused or reset connections, connect timeouts, repeated read timeouts, and consumer loop failures. On redis-py < 8 the default socket timeout is unbounded, so a half-open or hung broker connection may go unnoticed; add `?socket_timeout=…` or `?health_check_interval=…` to the broker URL if you need that.
+- **RabbitMQ:** connectivity isn't reported (`consumer_connected` is `null`), so `"degraded"` only reflects consumer loop failures.
 
 ## 🗺️ Roadmap
 

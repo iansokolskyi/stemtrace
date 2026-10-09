@@ -54,11 +54,18 @@ class EventConsumer:
         self._failures = 0
         # True once the transport's iterator ended on its own (not stopped).
         self._finished = False
+        # True after stop() was called, until the next start().
+        self._stopped = False
 
     @property
     def is_running(self) -> bool:
         """Whether the consumer thread is alive."""
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def is_stopped(self) -> bool:
+        """Whether the consumer was stopped on purpose with stop()."""
+        return self._stopped
 
     @property
     def is_finished(self) -> bool:
@@ -95,6 +102,7 @@ class EventConsumer:
         self._stop_event.clear()
         self._failures = 0
         self._finished = False
+        self._stopped = False
         self._transport = get_transport(
             self._broker_url, prefix=self._prefix, ttl=self._ttl
         )
@@ -114,6 +122,7 @@ class EventConsumer:
         if self._thread is None:
             return
 
+        self._stopped = True
         self._stop_event.set()
         self._thread.join(timeout=timeout)
         if self._thread.is_alive():
@@ -260,6 +269,11 @@ class AsyncEventConsumer:
     def is_finished(self) -> bool:
         """Whether the event source ended normally (e.g. memory://)."""
         return self._consumer.is_finished
+
+    @property
+    def is_stopped(self) -> bool:
+        """Whether the consumer was stopped on purpose with stop()."""
+        return self._consumer.is_stopped
 
     @property
     def is_connected(self) -> bool | None:
