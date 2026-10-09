@@ -181,6 +181,8 @@ markers = [
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:celery.*",
+    # Starlette 1.x TestClient prefers httpx2 but still supports httpx.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
 asyncio_mode = "auto"
 
