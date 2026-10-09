@@ -8,8 +8,8 @@ cannot be pointed at arbitrary internal or external network targets.
 from __future__ import annotations
 
 import argparse
+import http.client
 import time
-import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
@@ -41,7 +41,8 @@ def main() -> None:
                     if 200 <= response.status < 300:
                         return
                     last_error = f"HTTP {response.status}"
-            except (urllib.error.URLError, TimeoutError) as exc:
+            except (OSError, http.client.HTTPException) as exc:
+                # URLError, timeouts and connection resets while the stack starts
                 last_error = str(exc)
 
             time.sleep(args.interval)

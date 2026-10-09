@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import urllib.request
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "wait_for_http.py"
 _spec = importlib.util.spec_from_file_location("wait_for_http", SCRIPT)
@@ -59,3 +64,40 @@ def test_main_with_allowed_url_reaches_polling_loop(
     message = _run(monkeypatch, url)
 
     assert message == "Service not healthy within 0.0s: None"
+
+
+class _FakeResponse:
+    status = 200
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def test_main_when_connection_resets_retries_until_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors: list[Exception] = [
+        ConnectionResetError(104, "Connection reset by peer"),
+        http.client.RemoteDisconnected("Remote end closed connection"),
+    ]
+    calls: list[str] = []
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> _FakeResponse:
+        calls.append(request.full_url)
+        if errors:
+            raise errors.pop(0)
+        return _FakeResponse()
+
+    monkeypatch.setattr(wait_for_http.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(wait_for_http.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["wait_for_http.py", "http://localhost:8000/health", "--timeout", "30"],
+    )
+
+    wait_for_http.main()
+
+    assert calls == ["http://localhost:8000/health"] * 3
