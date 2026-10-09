@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.12"
+      STEMTRACE_SKIP_UI_BUILD: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -44,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.12"
+      STEMTRACE_SKIP_UI_BUILD: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -68,6 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      STEMTRACE_SKIP_UI_BUILD: "1"
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -175,6 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.12"
+      STEMTRACE_SKIP_UI_BUILD: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
