@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Updated UI bundle dependencies with known advisories (seroval, TanStack Router). The runtime (shipped) dependencies that changed are `@tanstack/react-router` 1.168.1 → 1.170.41, with its `@tanstack/router-core` 1.168.1 → 1.171.34, `@tanstack/history` 1.161.6 → 1.162.4, `@tanstack/react-store`/`@tanstack/store` 0.9.2 → 0.11.2 and `cookie-es` 2.0.0 → 3.1.1; and `seroval`/`seroval-plugins` 1.4.2 → 1.6.8, which fixes GHSA-3rxj-6cgf-8cfw, GHSA-hj76-42vx-jwp4, GHSA-mv8w-475r-vwqw, GHSA-p6vx-979v-rg4c and related denial-of-service advisories. seroval is only used by the router's server-side rendering code, which stemtrace doesn't use, and none of it ends up in the built UI bundle. `@tanstack/react-query` also moved 5.90.16 → 5.94.5 (no advisory). Build-time-only packages (Vite, Rollup, PostCSS and others) were updated too.
+
 ### Added
 - Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`, also for transports that don't report it).
 
