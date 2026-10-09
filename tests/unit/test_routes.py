@@ -285,7 +285,7 @@ class TestTaskDetailEndpoint:
         store: GraphStore,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         def event(state: TaskState, offset_ms: int) -> TaskEvent:
             return TaskEvent(
@@ -332,7 +332,7 @@ class TestTaskDetailEndpoint:
     def test_get_task_pending_stamped_after_finish_sorts_first(
         self, client: TestClient, store: GraphStore
     ) -> None:
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         def event(state: TaskState, offset_ms: int) -> TaskEvent:
             return TaskEvent(
@@ -366,7 +366,7 @@ class TestTaskDetailEndpoint:
         store: GraphStore,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
         store.add_event(
             TaskEvent(
                 task_id="parent",
@@ -399,7 +399,7 @@ class TestTaskDetailEndpoint:
     def test_get_task_with_late_pending_event_returns_terminal_state_and_timing(
         self, client: TestClient, store: GraphStore
     ) -> None:
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         def event(state: TaskState, offset_ms: int) -> TaskEvent:
             return TaskEvent(
