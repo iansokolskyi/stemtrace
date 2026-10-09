@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -83,7 +83,7 @@ def _event(task_id: str) -> TaskEvent:
         task_id=task_id,
         name="tests.task",
         state=TaskState.STARTED,
-        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
 
 

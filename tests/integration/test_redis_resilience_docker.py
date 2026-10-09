@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 import redis
@@ -108,7 +108,7 @@ def _event(task_id: str) -> TaskEvent:
         task_id=task_id,
         name="tests.resilience",
         state=TaskState.STARTED,
-        timestamp=datetime.now(UTC),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
