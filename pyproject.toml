@@ -204,6 +204,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@abstractmethod",
-    "\\.\\.\\.",  # Protocol method stubs
+    "^\\s*\\.\\.\\.\\s*$",  # Protocol method stubs (a bare `...` body line)
     "class.*Protocol.*:",
 ]
