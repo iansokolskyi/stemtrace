@@ -388,6 +388,10 @@ stemtrace server \
     --login-secret change-me
 ```
 
+Set `--login-secret` (or `STEMTRACE_LOGIN_SECRET`) to a long random value, and use the same
+value on every replica. Without it, each process generates its own random secret, so sessions
+only work within a single process and are lost on restart.
+
 #### High-Scale Production Setup
 
 Note: `stemtrace server` includes an embedded consumer today (single-process). A multi-process deployment mode is planned.
@@ -457,7 +461,19 @@ stemtrace.init_app(
 )
 ```
 
-This serves a sign-in page at `/stemtrace/login` and protects everything under `/stemtrace`.
+This serves a sign-in page at `/stemtrace/login` and protects the UI, API and WebSocket under
+`/stemtrace`. The static JS/CSS bundle under `/stemtrace/assets/` is the public UI build and is
+served without a session. So is `/stemtrace/api/health/live`, a liveness probe for load
+balancers and container health checks: it always answers 200 while the process is serving,
+with only `{"status": "ok"}`, or `{"status": "degraded"}` when the embedded consumer isn't
+running.
+
+For any multi-process deployment (`uvicorn --workers N`, gunicorn, or several replicas behind
+a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) to the same long
+random value everywhere, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+Without it, each process signs sessions with its own random secret, and users get logged out
+at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
+the problem when a session signed by another process is rejected.
 
 #### Built-in Auth Helpers (Basic / API key)
 
