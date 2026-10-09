@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Minimum redis-py is now 4.1.0, the lowest version verified by the test suite at release time; 4.0.x imports `distutils`, which was removed in Python 3.12.
 - Docker image: Python dependencies are now installed from the project's lockfile, so each image ships the exact versions audited for that release instead of whatever was newest at build time. Base images are pinned by digest, and the UI is built with Node 22.
 - Examples now bind to `127.0.0.1` instead of `0.0.0.0`.
+- Docker image: stemtrace now runs from a virtual environment at `/opt/venv` (it's first on `PATH`). The image's system `pip` does not install into it; to add packages in a derived image use `RUN python -m ensurepip && python -m pip install <package>`, which targets `/opt/venv`.
+- Docker image: the built-in `HEALTHCHECK` only checks the HTTP status, so a container whose event consumer is degraded (e.g. the broker is unreachable) still reports healthy. Probe `/stemtrace/api/health` and check its `status` field if you need to alert on that.
+- Building from source: the UI build hook now runs `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a lockfile) instead of `npm install`. Set `STEMTRACE_SKIP_UI_BUILD=1` to skip the UI build entirely; a wheel built that way contains no UI.
 - Health endpoint: `status` is now `"degraded"` instead of `"ok"` when the event consumer died unexpectedly, its loop keeps restarting after errors (such as `WRONGTYPE` or `NOPERM`), or `consumer_connected` is `false`. With RabbitMQ only consumer loop failures are detected. A consumer stopped on purpose, or whose event source finished normally (for example `memory://`), is not degraded. The response is still HTTP 200, so status-code-only health checks behave as before; check the `status` field to alert on a degraded consumer. See the README's "Health Endpoint" section.
 
 ### Fixed
@@ -143,7 +146,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.2.0...v0.2.1
