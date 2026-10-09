@@ -270,6 +270,7 @@ def _install_stemtrace_form_auth(
             api_prefix=f"{mount_prefix}/api",
             assets_prefix=f"{mount_prefix}/assets",
             protected_prefix=mount_prefix,
+            public_paths=(f"{mount_prefix}/api/health/live",),
         )
     )
 

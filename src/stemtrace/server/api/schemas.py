@@ -131,6 +131,12 @@ class HealthResponse(BaseModel):
     node_count: int = 0
 
 
+class LivenessResponse(BaseModel):
+    """Minimal liveness status, safe to serve without authentication."""
+
+    status: str = "ok"
+
+
 class ErrorResponse(BaseModel):
     """API error."""
 

@@ -19,6 +19,7 @@ from stemtrace.server.api.schemas import (
     GraphNodeResponse,
     GraphResponse,
     HealthResponse,
+    LivenessResponse,
     RegisteredTaskResponse,
     TaskDetailResponse,
     TaskEventResponse,
@@ -325,6 +326,11 @@ def _refresh_worker_registry_from_inspect(
         )
 
 
+def _is_consumer_healthy(consumer: AsyncEventConsumer | None) -> bool:
+    """Whether the event consumer is fine: disabled, or enabled with a live thread."""
+    return consumer is None or consumer.is_running
+
+
 def create_api_router(
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
@@ -422,6 +428,22 @@ def create_api_router(
             websocket_connections=ws_manager.connection_count if ws_manager else 0,
             node_count=store.node_count,
         )
+
+    @router.get(
+        "/health/live",
+        response_model=LivenessResponse,
+    )
+    async def health_live() -> LivenessResponse:
+        """Process liveness probe for container health checks.
+
+        Always 200 while the app is serving, so a broker blip that stops the
+        consumer doesn't mark the container unhealthy for good. Served without
+        form-login authentication, so it exposes only an informational status:
+        "ok", or "degraded" when the embedded event consumer is enabled but its
+        thread is not running.
+        """
+        status = "ok" if _is_consumer_healthy(consumer) else "degraded"
+        return LivenessResponse(status=status)
 
     @router.get(
         "/tasks",

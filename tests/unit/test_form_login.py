@@ -602,6 +602,52 @@ class TestFormLoginProtection:
             assert "%3Ffoo%3Dbar" in resp.headers["location"]
 
 
+class TestLivenessEndpoint:
+    """``<prefix>/api/health/live`` is open under form login and exposes no data."""
+
+    @staticmethod
+    def _app(*, embedded_consumer: bool) -> FastAPI:
+        app = FastAPI()
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=embedded_consumer,
+            serve_ui=False,
+            login_username="admin",
+            login_password="secret",  # NOSONAR - test credential only
+            login_secret="test-secret",
+        )
+        return app
+
+    def test_live_without_cookie_returns_ok_and_only_status(self) -> None:
+        # No embedded consumer: nothing to be unhealthy about.
+        with TestClient(self._app(embedded_consumer=False)) as client:
+            live = client.get("/stemtrace/api/health/live")
+            health = client.get("/stemtrace/api/health")
+            tasks = client.get("/stemtrace/api/tasks")
+
+        assert live.status_code == 200
+        assert live.json() == {"status": "ok"}
+        assert health.status_code == 401
+        assert tasks.status_code == 401
+
+    def test_live_with_stopped_consumer_returns_200_degraded(self) -> None:
+        # No lifespan (no ``with``): the enabled consumer was never started.
+        # Liveness is about the process, so it stays 200; the body informs.
+        client = TestClient(self._app(embedded_consumer=True))
+
+        live = client.get("/stemtrace/api/health/live")
+
+        assert live.status_code == 200
+        assert live.json() == {"status": "degraded"}
+
+    def test_live_subpaths_are_not_public(self) -> None:
+        with TestClient(self._app(embedded_consumer=False)) as client:
+            resp = client.get("/stemtrace/api/health/live/extra")
+
+        assert resp.status_code == 401
+
+
 _TRAVERSAL_PATHS = [
     "/stemtrace/assets/../api/tasks",
     "/stemtrace/assets/../index.html",

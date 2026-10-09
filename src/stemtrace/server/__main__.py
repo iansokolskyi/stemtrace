@@ -140,6 +140,7 @@ def server(
                 logout_path="/logout",
                 api_prefix="/stemtrace/api",
                 assets_prefix="/assets",
+                public_paths=("/stemtrace/api/health/live",),
             )
         )
 

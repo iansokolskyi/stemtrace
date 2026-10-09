@@ -65,6 +65,38 @@ def make_event() -> type[MakeEvent]:
     return MakeEvent
 
 
+class _FakeConsumer:
+    """Stand-in for AsyncEventConsumer exposing only ``is_running``."""
+
+    def __init__(self, *, running: bool) -> None:
+        self.is_running = running
+
+
+def _live_client(store: GraphStore, consumer: _FakeConsumer | None) -> TestClient:
+    app = FastAPI()
+    app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # duck-typed fake
+    return TestClient(app)
+
+
+class TestLivenessEndpoint:
+    def test_live_without_consumer_returns_ok(self, store: GraphStore) -> None:
+        resp = _live_client(store, None).get("/api/health/live")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_live_with_running_consumer_returns_ok(self, store: GraphStore) -> None:
+        resp = _live_client(store, _FakeConsumer(running=True)).get("/api/health/live")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_live_with_stopped_consumer_returns_200_degraded(
+        self, store: GraphStore
+    ) -> None:
+        resp = _live_client(store, _FakeConsumer(running=False)).get("/api/health/live")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "degraded"}
+
+
 class TestHealthEndpoint:
     def test_health_basic(self, client: TestClient) -> None:
         response = client.get("/api/health")

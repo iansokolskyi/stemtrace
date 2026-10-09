@@ -56,6 +56,7 @@ def create_form_auth_middleware(
     api_prefix: str,
     assets_prefix: str,
     protected_prefix: str | None = None,
+    public_paths: tuple[str, ...] = (),
 ) -> FormAuthMiddleware:
     """Create an HTTP middleware that requires a valid session cookie.
 
@@ -65,10 +66,11 @@ def create_form_auth_middleware(
 
     Behaviour for unauthenticated requests:
 
-    - login/logout paths and the static bundle under ``assets_prefix`` are
-      always served. The bundle is the public open-source UI build and holds
-      no data; leaving it open keeps the SPA bootable (and styled) even when a
-      request lands on a worker that rejects the session.
+    - login/logout paths, ``public_paths`` (e.g. the liveness probe) and the
+      static bundle under ``assets_prefix`` are always served. The bundle is
+      the public open-source UI build and holds no data; leaving it open keeps
+      the SPA bootable (and styled) even when a request lands on a worker that
+      rejects the session.
     - API paths get a JSON 401. If the cookie was signed by another process's
       generated secret, the body carries ``reason: "session_secret_mismatch"``.
     - Everything else (UI routes) redirects to the login page with ``next``
@@ -84,12 +86,14 @@ def create_form_auth_middleware(
         assets_prefix: Path prefix of the static UI bundle (served without auth).
         protected_prefix: Only paths under this prefix are protected; None
             protects every path.
+        public_paths: Exact paths served without a session. They must not
+            expose any data.
 
     Returns:
         The middleware callable.
     """
     assets_dir = assets_prefix.rstrip("/") + "/"
-    open_paths = frozenset((login_path, logout_path))
+    open_paths = frozenset((login_path, logout_path, *public_paths))
 
     async def form_auth_middleware(
         request: Request,

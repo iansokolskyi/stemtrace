@@ -157,6 +157,22 @@ class TestCliFormLogin:
         assert api.status_code == 200
         assert caplog.records == []
 
+    def test_cli_live_endpoint_is_public_and_reflects_consumer(
+        self, build_cli_app: Callable[..., FastAPI]
+    ) -> None:
+        app = build_cli_app("--login-secret", "shared")
+
+        # The CLI always embeds a consumer; with the memory:// transport its
+        # thread exits once the (empty) stream is drained, so it is degraded,
+        # but the process is alive, so the probe still answers 200.
+        with TestClient(app) as client:
+            live = client.get("/stemtrace/api/health/live")
+            health = client.get("/stemtrace/api/health")
+
+        assert live.status_code == 200
+        assert live.json() == {"status": "degraded"}
+        assert health.status_code == 401
+
 
 _CLI_TRAVERSAL_PATHS = [
     "/assets/../stemtrace/api/tasks",
