@@ -71,7 +71,7 @@ function RootLayout() {
                   stemtrace
                 </span>
                 {health?.version && (
-                  <span className="text-xs text-slate-500">v{health.version}</span>
+                  <span className="hidden sm:inline text-xs text-slate-500">v{health.version}</span>
                 )}
               </span>
             </Link>
