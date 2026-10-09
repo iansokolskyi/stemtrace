@@ -43,6 +43,12 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Drop the base image's system pip: stemtrace runs from /opt/venv and never
+# uses it, and it would otherwise ship known advisories. `python -m ensurepip`
+# still works for derived images (see CHANGELOG).
+RUN /usr/local/bin/python -m pip uninstall --yes --quiet pip \
+    && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.12
+
 # Create non-root user
 RUN useradd -m -u 1000 stemtrace
 USER stemtrace
