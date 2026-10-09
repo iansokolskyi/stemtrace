@@ -10,11 +10,26 @@ from __future__ import annotations
 import argparse
 import http.client
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "server"})
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so polling never leaves the validated host.
+
+    A 3xx response then surfaces as an ``HTTPError`` and counts as unhealthy.
+    """
+
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        """Return None so urllib raises HTTPError instead of following."""
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _parse_args() -> argparse.Namespace:
@@ -37,10 +52,13 @@ def main() -> None:
         while time.monotonic() < deadline:
             try:
                 request = urllib.request.Request(url, method="GET")
-                with urllib.request.urlopen(request, timeout=2.0) as response:
+                with _OPENER.open(request, timeout=2.0) as response:
                     if 200 <= response.status < 300:
                         return
                     last_error = f"HTTP {response.status}"
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                last_error = f"HTTP {exc.code}"
             except (OSError, http.client.HTTPException) as exc:
                 # URLError, timeouts and connection resets while the stack starts
                 last_error = str(exc)

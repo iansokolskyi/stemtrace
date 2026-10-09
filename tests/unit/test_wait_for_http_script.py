@@ -85,13 +85,13 @@ def test_main_when_connection_resets_retries_until_healthy(
     ]
     calls: list[str] = []
 
-    def fake_urlopen(request: urllib.request.Request, timeout: float) -> _FakeResponse:
+    def fake_open(request: urllib.request.Request, timeout: float) -> _FakeResponse:
         calls.append(request.full_url)
         if errors:
             raise errors.pop(0)
         return _FakeResponse()
 
-    monkeypatch.setattr(wait_for_http.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(wait_for_http._OPENER, "open", fake_open)
     monkeypatch.setattr(wait_for_http.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         "sys.argv",
