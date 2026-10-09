@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-10-09
+
 ### Security
 - UI: fixed a path traversal in the static file handler. Crafted URLs could read any file the server process can access, not just the bundled frontend. When the UI is exposed without authentication (no form login or `auth_dependency`, which is the default for `stemtrace server` and the Docker image), no credentials were needed. All users should upgrade. If you can't upgrade right away, put the UI behind authentication or a reverse proxy that blocks it from untrusted networks.
 
