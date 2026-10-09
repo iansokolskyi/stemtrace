@@ -34,6 +34,8 @@ export interface MockEvent {
   exception: string | null
   traceback: string | null
   retry_count: number
+  /** Retry attempt the event belongs to (field name used by the real API) */
+  retries?: number
 }
 
 export interface MockWorker {

@@ -15,16 +15,17 @@ const stateColors: Record<string, string> = {
 
 const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED'])
 
-// State priority within a retry cycle: PENDING → RECEIVED → STARTED → RETRY → terminal
+// Fixed state order for exact timestamp ties. Matches the server's
+// _STATE_ORDER (stemtrace/core/graph.py), so the UI agrees with the API order.
 const STATE_PRIORITY: Record<string, number> = {
   PENDING: 0,
   RECEIVED: 1,
   STARTED: 2,
   RETRY: 3,
-  SUCCESS: 10,
-  FAILURE: 10,
-  REVOKED: 10,
-  REJECTED: 10,
+  SUCCESS: 4,
+  FAILURE: 5,
+  REJECTED: 6,
+  REVOKED: 7,
 }
 
 const heightClasses = { sm: 'h-6', md: 'h-8', lg: 'h-10' }
@@ -44,10 +45,26 @@ interface TimelineSegment {
   widthPct: number
 }
 
-function buildSegments(events: TaskEvent[]): TimelineSegment[] {
-  if (!events || events.length === 0) return []
+/**
+ * Attempt-0 PENDING/RECEIVED belong before the first run whatever their
+ * timestamps: the sender's PENDING (task_sent fires after publish) can be
+ * stamped after the worker already started or finished the task.
+ */
+function isPreStart(event: TaskEvent): boolean {
+  return (event.retries ?? 0) === 0 && (event.state === 'PENDING' || event.state === 'RECEIVED')
+}
 
-  // Filter: only keep first PENDING and first RECEIVED (retry re-queues create duplicates)
+/**
+ * Order events for display, mirroring the API's order: attempt-0
+ * PENDING/RECEIVED first, then everything by timestamp, with a fixed state
+ * order for exact ties (the sort is stable). Keeps only the first PENDING and
+ * RECEIVED (retry re-queues create duplicates).
+ *
+ * Don't sort by retry count: Celery reports failures raised in the worker main
+ * process (hard time limit, lost worker) with retries=0, which would put the
+ * final FAILURE before later attempts and produce negative durations.
+ */
+function sortEventsChronologically(events: TaskEvent[]): TaskEvent[] {
   let hasPending = false
   let hasReceived = false
   const filtered = events.filter((e) => {
@@ -62,36 +79,44 @@ function buildSegments(events: TaskEvent[]): TimelineSegment[] {
     return true
   })
 
-  // Sort by logical order: (retry_count, state_priority, timestamp)
-  // This ensures correct ordering regardless of timing issues
-  const sorted = filtered.sort((a, b) => {
-    const retryA = a.retries ?? 0
-    const retryB = b.retries ?? 0
-
-    // 1. Sort by retry count first
-    if (retryA !== retryB) return retryA - retryB
-
-    // 2. Within same retry, sort by state lifecycle
-    const priorityA = STATE_PRIORITY[a.state] ?? 5
-    const priorityB = STATE_PRIORITY[b.state] ?? 5
-    if (priorityA !== priorityB) return priorityA - priorityB
-
-    // 3. Same retry and state: use timestamp as tiebreaker
-    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  return filtered.sort((a, b) => {
+    const groupDiff = (isPreStart(a) ? 0 : 1) - (isPreStart(b) ? 0 : 1)
+    if (groupDiff !== 0) return groupDiff
+    const timeDiff = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    if (timeDiff !== 0) return timeDiff
+    return (STATE_PRIORITY[a.state] ?? 8) - (STATE_PRIORITY[b.state] ?? 8)
   })
+}
 
-  const minTime = new Date(sorted[0].timestamp).getTime()
-  const maxTime = new Date(sorted[sorted.length - 1].timestamp).getTime()
+/**
+ * Display times for events in display order, never decreasing: a late-stamped
+ * PENDING is clamped to the time of the first run (its timestamp isn't changed).
+ */
+function effectiveTimes(sorted: TaskEvent[]): number[] {
+  const times = sorted.map((e) => new Date(e.timestamp).getTime())
+  for (let i = times.length - 2; i >= 0; i--) {
+    times[i] = Math.min(times[i], times[i + 1])
+  }
+  return times
+}
+
+function buildSegments(events: TaskEvent[]): TimelineSegment[] {
+  if (!events || events.length === 0) return []
+
+  const sorted = sortEventsChronologically(events)
+  const times = effectiveTimes(sorted)
+
+  const minTime = times[0]
+  const maxTime = times[times.length - 1]
   const range = maxTime - minTime || 1
 
   const segments: TimelineSegment[] = []
 
   for (let i = 0; i < sorted.length; i++) {
     const event = sorted[i]
-    const eventTime = new Date(event.timestamp).getTime()
+    const eventTime = times[i]
     const isTerminal = TERMINAL_STATES.has(event.state)
-    const nextEvent = sorted[i + 1]
-    const endTime = nextEvent ? new Date(nextEvent.timestamp).getTime() : eventTime
+    const endTime = i + 1 < times.length ? times[i + 1] : eventTime
 
     const duration = endTime - eventTime
     const widthPct = range > 0 ? (duration / range) * 100 : 100 / sorted.length
@@ -221,4 +246,12 @@ export function TimelineBar({ events, height = 'sm', showLabels = false }: Timel
 }
 
 export type { TimelineSegment }
-export { buildSegments, formatDuration, formatTime, stateColors, TERMINAL_STATES }
+export {
+  buildSegments,
+  effectiveTimes,
+  formatDuration,
+  formatTime,
+  sortEventsChronologically,
+  stateColors,
+  TERMINAL_STATES,
+}
