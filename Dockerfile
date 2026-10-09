@@ -6,37 +6,42 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 COPY src/stemtrace/server/ui/frontend/package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY src/stemtrace/server/ui/frontend/ ./
 RUN npm run build
 
-# Stage 2: Build Python package
+# Stage 2: Build a virtualenv with the locked dependencies and stemtrace itself
 FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /usr/local/bin/uv
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_NO_CACHE=1
 
 WORKDIR /app
 
-# Install build dependencies
-RUN pip install --no-cache-dir hatch
+# Install locked runtime dependencies from wheels only (cached layer)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-build --no-install-project
 
 # Copy source
-COPY pyproject.toml README.md LICENSE build_ui.py ./
+COPY README.md LICENSE build_ui.py ./
 COPY src/ src/
 
 # Copy pre-built frontend
 COPY --from=frontend-builder /app/frontend/dist/ src/stemtrace/server/ui/frontend/dist/
 
-# Build wheel
-RUN hatch build -t wheel
+# Build and install stemtrace itself (non-editable) into the virtualenv
+RUN uv sync --locked --no-build --no-editable
 
 # Stage 3: Production image
 FROM python:3.12-slim AS production
 
 WORKDIR /app
 
-# Install the wheel
-COPY --from=builder /app/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Create non-root user
 RUN useradd -m -u 1000 stemtrace
