@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -71,6 +73,10 @@ class TestFormLoginProtection:
             # WebSocket now connects and is tracked by ws_manager
             with client.websocket_connect("/stemtrace/ws"):
                 assert ext.ws_manager.connection_count == 1
+            # The server handles the disconnect asynchronously; wait for it.
+            deadline = time.monotonic() + 2.0
+            while ext.ws_manager.connection_count and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert ext.ws_manager.connection_count == 0
 
     def test_unauthenticated_websocket_denied_at_handshake(self) -> None:

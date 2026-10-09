@@ -1,5 +1,6 @@
 """Integration tests for FastAPI components."""
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -86,7 +87,10 @@ class TestWebSocketEndpoint:
             with client.websocket_connect("/ws"):
                 assert ws_manager.connection_count == 1
 
-            # After disconnect
+            # The server handles the disconnect asynchronously; wait for it.
+            deadline = time.monotonic() + 2.0
+            while ws_manager.connection_count and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert ws_manager.connection_count == 0
 
     def test_store_listener_queues_events_for_broadcast(self) -> None:

@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`, also for transports that don't report it).
 
 ### Changed
-- Minimum FastAPI is now 0.115.7; older versions never worked with current Pydantic (building the app failed with `'FieldInfo' object has no attribute 'in_'` up to 0.104.x, and 0.105–0.115.6 only allow Starlette releases that fail the test suite). Starlette is now a declared dependency at `>=0.42.0`, since stemtrace imports it directly.
-- Minimum redis-py is now 4.1.0; 4.0.x imports `distutils`, which was removed in Python 3.12.
+- Minimum FastAPI is now 0.112.1 and minimum Starlette 0.38.6: the lowest versions verified by the test suite. FastAPI 0.100–0.104 never worked with current Pydantic (building the app fails with `'FieldInfo' object has no attribute 'in_'`). Starlette is now a declared dependency because stemtrace imports it directly.
+- Minimum redis-py is now 4.1.0, the lowest version verified by the test suite; 4.0.x imports `distutils`, which was removed in Python 3.12.
 - Health endpoint: `status` is now `"degraded"` instead of `"ok"` when a configured event consumer has stopped unexpectedly or can't read from the broker (`consumer_connected` is `false`, which includes a consume loop that keeps restarting after errors such as `WRONGTYPE` or `NOPERM`). A consumer whose event source finished normally (for example `memory://`) is not degraded. The response is still HTTP 200, so status-code-only health checks behave as before; check the `status` field to alert on a degraded consumer. See the README's "Health Endpoint" section.
 
 ### Fixed
