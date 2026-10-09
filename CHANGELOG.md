@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`, also for transports that don't report it). Existing fields are unchanged.
+- Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`, also for transports that don't report it).
+
+### Changed
+- Health endpoint: `status` is now `"degraded"` instead of `"ok"` when a configured event consumer isn't running or can't reach the broker (`consumer_connected` is `false`). The response is still HTTP 200, so status-code-only health checks behave as before; check the `status` field to alert on a degraded consumer. See the README's "Health Endpoint" section.
 
 ### Fixed
 - Redis transport: the server stopped receiving events after about 5 seconds of quiet when used with redis-py 8. redis-py 8 defaults `socket_timeout` to 5 seconds, the same as the `XREAD` block window, so the first idle read timed out and the consumer thread exited for good. Clients created from a URL now get a `socket_timeout` of 10 seconds unless the URL sets one, so idle reads return normally on a single connection. If a client's `socket_timeout` is shorter than the block window, the window is shortened to fit.

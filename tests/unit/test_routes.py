@@ -97,6 +97,42 @@ class TestHealthEndpoint:
         assert data["consumer_connected"] is False
         assert data["websocket_connections"] == 5
 
+    @pytest.mark.parametrize(
+        ("running", "connected", "expected_status"),
+        [
+            (True, True, "ok"),
+            (True, None, "ok"),
+            (False, None, "degraded"),
+            (True, False, "degraded"),
+        ],
+        ids=["running-connected", "running-unknown", "not-running", "disconnected"],
+    )
+    def test_health_status_with_consumer_state_reports_status(
+        self,
+        store: GraphStore,
+        running: bool,
+        connected: bool | None,
+        expected_status: str,
+    ) -> None:
+        consumer = FakeHealthConsumer(running=running, connected=connected)
+        app = FastAPI()
+        app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # structural fake
+
+        response = TestClient(app).get("/api/health")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == expected_status
+        assert response.json()["consumer_running"] is running
+        assert response.json()["consumer_connected"] is connected
+
+
+class FakeHealthConsumer:
+    """Consumer stand-in exposing only what the health endpoint reads."""
+
+    def __init__(self, *, running: bool, connected: bool | None) -> None:
+        self.is_running = running
+        self.is_connected = connected
+
 
 class TestTaskListEndpoint:
     def test_list_tasks_empty(self, client: TestClient) -> None:

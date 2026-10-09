@@ -118,6 +118,8 @@ class GraphListResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check status."""
 
+    # "ok", or "degraded" when a configured consumer isn't running or can't
+    # reach the broker. Always served with HTTP 200.
     status: str = "ok"
     version: str
     consumer_running: bool = False

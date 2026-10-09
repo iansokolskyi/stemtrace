@@ -476,6 +476,21 @@ stemtrace.init_app(
 | Embedded | Development, simple apps | Default — consumer runs in FastAPI process |
 | External | Production, high scale | Planned |
 
+### Health Endpoint
+
+`GET /stemtrace/api/health` (under your mount prefix when embedded) always returns HTTP 200 with:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `"ok"`, or `"degraded"` when a configured event consumer isn't running or can't reach the broker |
+| `version` | Installed stemtrace version |
+| `consumer_running` | Whether the event consumer thread is alive |
+| `consumer_connected` | `true` if the consumer's last broker read succeeded, `false` while it's failing, `null` if unknown (starting up, or the transport doesn't report it) |
+| `websocket_connections` | Open UI WebSocket connections |
+| `node_count` | Tasks currently held in memory |
+
+Because the status code stays 200, check `status` in the body if you want monitoring to alert on a degraded consumer.
+
 ## 🗺️ Roadmap
 
 ### What's Working Now
