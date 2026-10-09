@@ -75,7 +75,7 @@ jobs:
         run: uv sync --locked --no-build --all-extras --no-install-project
 
       - name: Build package
-        run: uv run --locked --no-build --no-sync pyproject-build
+        run: uv run --locked --no-build --no-sync pyproject-build --no-isolation
 
       - name: Verify package
         run: uv run --locked --no-build --no-sync twine check dist/*
