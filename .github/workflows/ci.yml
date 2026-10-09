@@ -29,13 +29,13 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Lint with ruff
-        run: uv run ruff check src/ tests/
+        run: uv run --locked --no-build ruff check src/ tests/
 
       - name: Check formatting
-        run: uv run ruff format --check src/ tests/
+        run: uv run --locked --no-build ruff format --check src/ tests/
 
   type-check:
     if: github.event_name == 'pull_request'
@@ -54,10 +54,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Type check with mypy
-        run: uv run mypy src/ --strict
+        run: uv run --locked --no-build mypy src/ --strict
 
   test:
     if: github.event_name == 'pull_request'
@@ -79,10 +79,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Run tests
-        run: uv run pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
+        run: uv run --locked --no-build pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -109,7 +109,7 @@ jobs:
           cache-dependency-path: src/stemtrace/server/ui/frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Lint with Biome
         run: npm run check
@@ -142,14 +142,17 @@ jobs:
           cache-dependency-path: src/stemtrace/server/ui/frontend/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
         working-directory: src/stemtrace/server/ui/frontend
 
+      - name: Install build tools
+        run: uv sync --locked --no-build --all-extras --no-install-project
+
       - name: Build package
-        run: uvx --from build pyproject-build
+        run: uv run --locked --no-build --no-sync pyproject-build
 
       - name: Verify package
-        run: uvx twine check dist/*
+        run: uv run --locked --no-build --no-sync twine check dist/*
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -176,10 +179,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Run tests (coverage only)
-        run: uv run pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
+        run: uv run --locked --no-build pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage (main)
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

@@ -61,10 +61,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Run API E2E tests
-        run: uv run pytest tests/e2e/ -m e2e -v --tb=short
+        run: uv run --locked --no-build pytest tests/e2e/ -m e2e -v --tb=short
 
       - name: Show logs on failure
         if: failure()
@@ -127,12 +127,12 @@ jobs:
           enable-cache: true
 
       - name: Install Python dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Submit test tasks
         run: |
           # Submit some tasks to populate the UI for testing
-          uv run python -c "
+          uv run --locked --no-build python -c "
           from tests.e2e.tasks import add, create_workflow, always_fails
           # Submit a few tasks
           add.delay(1, 2)
@@ -153,11 +153,11 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: src/stemtrace/server/ui/frontend
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Install Playwright browsers
         working-directory: src/stemtrace/server/ui/frontend
-        run: npx playwright install chromium --with-deps
+        run: ./node_modules/.bin/playwright install chromium --with-deps
 
       - name: Run Playwright tests
         working-directory: src/stemtrace/server/ui/frontend
