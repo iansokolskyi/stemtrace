@@ -30,11 +30,11 @@ def _run(monkeypatch: pytest.MonkeyPatch, url: str) -> str:
 @pytest.mark.parametrize(
     "url",
     [
-        "http://example.com/health",
-        "http://169.254.169.254/latest/meta-data/",
-        "http://10.0.0.5:8000/stemtrace/api/health",
-        "http://localhost.example.com/health",
-        "http://localhost@example.com/health",
+        "https://example.com/health",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://internal.example:8000/stemtrace/api/health",
+        "https://localhost.example.com/health",
+        "https://localhost@example.com/health",
         "file:///etc/passwd",
         "ftp://localhost/health",
         "localhost:8000/health",
@@ -55,7 +55,7 @@ def test_main_with_disallowed_url_exits_with_refusal(
         "http://127.0.0.1:8000/stemtrace/api/health",
         "http://[::1]:8000/stemtrace/api/health",
         "https://localhost/health",
-        "http://server:8000/stemtrace/api/health",
+        "https://server:8000/stemtrace/api/health",
     ],
 )
 def test_main_with_allowed_url_reaches_polling_loop(
