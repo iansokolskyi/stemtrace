@@ -5,7 +5,7 @@
 
 import type { ReactNode } from 'react'
 
-type TooltipPlacement = 'top' | 'bottom' | 'left' | 'right'
+type TooltipPlacement = 'top' | 'bottom' | 'bottom-end' | 'left' | 'right'
 
 interface TooltipProps {
   content: string
@@ -23,6 +23,11 @@ const placementStyles: Record<TooltipPlacement, { container: string; arrow: stri
     container: 'top-full left-1/2 -translate-x-1/2 mt-2',
     arrow:
       'bottom-full left-1/2 -translate-x-1/2 border-b-slate-800 border-x-transparent border-t-transparent',
+  },
+  // Right-aligned below the trigger: for triggers near the right edge
+  'bottom-end': {
+    container: 'top-full right-0 mt-2',
+    arrow: 'bottom-full right-3 border-b-slate-800 border-x-transparent border-t-transparent',
   },
   left: {
     container: 'right-full top-1/2 -translate-y-1/2 mr-2',
@@ -43,7 +48,7 @@ export function Tooltip({ content, placement = 'bottom', children }: TooltipProp
     <div className="relative group">
       {children}
       <div
-        className={`absolute ${styles.container} px-2 py-1 text-xs text-slate-200 bg-slate-800 rounded shadow-lg whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 pointer-events-none z-50`}
+        className={`absolute ${styles.container} px-2 py-1 text-xs text-slate-200 bg-slate-800 rounded shadow-lg w-max max-w-64 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 pointer-events-none z-50`}
       >
         {content}
         {/* Arrow */}

@@ -19,74 +19,6 @@ _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 _PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
-_LOGOUT_INJECTION_JS_TEMPLATE = """
-window.__STEMTRACE_LOGOUT_PATH__=__LOGOUT_PATH__;
-document.addEventListener("DOMContentLoaded", () => {
-  try {
-    const action = window.__STEMTRACE_LOGOUT_PATH__;
-    if (!action) return;
-
-    const style = document.createElement("style");
-    style.textContent = `
-      #stemtrace-logout {
-        position: fixed;
-        top: 12px;
-        right: 12px;
-        z-index: 9999;
-        margin: 0;
-        padding: 0;
-      }
-
-      #stemtrace-logout button {
-        all: unset;
-        cursor: pointer;
-        user-select: none;
-        padding: 6px 10px;
-        border-radius: 999px;
-        font: 600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
-          Arial;
-        letter-spacing: 0.01em;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: rgba(255, 255, 255, 0.92);
-        background: rgba(17, 24, 39, 0.7);
-        backdrop-filter: blur(8px);
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
-        transition: filter 0.12s ease, transform 0.12s ease, background 0.12s ease;
-      }
-
-      #stemtrace-logout button:hover {
-        filter: brightness(1.06);
-      }
-
-      #stemtrace-logout button:active {
-        transform: translateY(1px);
-      }
-
-      @media (prefers-color-scheme: light) {
-        #stemtrace-logout button {
-          border: 1px solid rgba(0, 0, 0, 0.1);
-          color: rgba(17, 24, 39, 0.92);
-          background: rgba(255, 255, 255, 0.85);
-        }
-      }
-    `;
-    document.head.appendChild(style);
-
-    const form = document.createElement("form");
-    form.id = "stemtrace-logout";
-    form.method = "post";
-    form.action = action;
-
-    const btn = document.createElement("button");
-    btn.type = "submit";
-    btn.textContent = "Logout";
-
-    form.appendChild(btn);
-    document.body.appendChild(form);
-  } catch {}
-});
-"""
-
 
 def _sanitize_derived_prefix(prefix: str) -> str:
     """Sanitize a prefix derived from request paths.
@@ -133,7 +65,9 @@ def _rewrite_html_for_prefix(
         html: The HTML content to rewrite.
         prefix: The base path prefix (e.g., "/stemtrace").
         rewrite_assets: If True, rewrite asset paths. If False, only inject API base.
-        show_logout: If True, inject a small Logout button into the UI.
+        show_logout: If True, inject ``window.__STEMTRACE_LOGOUT_PATH__`` so the
+            SPA renders a Logout control in its header (and knows form login is
+            enabled, e.g. to redirect to the login page on 401).
         logout_path: Absolute logout endpoint path. If None and show_logout=True,
             defaults to f"{prefix}/logout" (or "/logout" if prefix is empty).
     """
@@ -151,9 +85,7 @@ def _rewrite_html_for_prefix(
     if show_logout:
         effective_logout = logout_path or (f"{prefix}/logout" if prefix else "/logout")
         logout_js = json.dumps(effective_logout).replace("</", "<\\/")
-        logout_injection = _LOGOUT_INJECTION_JS_TEMPLATE.replace(
-            "__LOGOUT_PATH__", logout_js
-        )
+        logout_injection = f"window.__STEMTRACE_LOGOUT_PATH__={logout_js};"
     else:
         logout_injection = ""
 

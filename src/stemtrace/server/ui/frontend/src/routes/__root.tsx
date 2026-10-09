@@ -4,6 +4,7 @@ import { TanStackRouterDevtools } from '@tanstack/router-devtools'
 import { useSyncExternalStore } from 'react'
 import { isSessionRejected, subscribeSessionRejected } from '@/api/client'
 import { useHealth } from '@/api/queries'
+import { LogoutButton } from '@/components/LogoutButton'
 import { SessionRejectedNotice } from '@/components/SessionRejectedNotice'
 import { SproutMark } from '@/components/SproutMark'
 import { Tooltip } from '@/components/Tooltip'
@@ -60,9 +61,10 @@ function RootLayout() {
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-14">
+          {/* Below md: logo + status/logout on the first row, nav below */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2 md:flex-nowrap md:h-14 md:py-0">
             {/* Logo */}
-            <Link to="/" className="flex items-center gap-2">
+            <Link to="/" className="flex items-center gap-2 shrink-0">
               <SproutMark size={22} className="shrink-0" />
               <span className="flex items-baseline gap-2">
                 <span className="text-lg font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent">
@@ -75,7 +77,7 @@ function RootLayout() {
             </Link>
 
             {/* Navigation */}
-            <nav className="flex items-center gap-6">
+            <nav className="order-last w-full flex items-center gap-5 md:order-none md:w-auto md:gap-6">
               <Link
                 to="/"
                 className="text-sm text-slate-400 hover:text-slate-100 transition-colors [&.active]:text-slate-100"
@@ -102,13 +104,16 @@ function RootLayout() {
               </Link>
             </nav>
 
-            {/* Status indicator with tooltip */}
-            <Tooltip content={statusTooltip} placement="bottom">
-              <div className="flex items-center gap-2 cursor-help">
-                <span className={`w-2 h-2 rounded-full ${statusColor}`} />
-                <span className="text-xs text-slate-500">{statusLabel}</span>
-              </div>
-            </Tooltip>
+            <div className="flex items-center gap-4 shrink-0">
+              {/* Status indicator with tooltip */}
+              <Tooltip content={statusTooltip} placement="bottom-end">
+                <div className="flex items-center gap-2 cursor-help">
+                  <span className={`w-2 h-2 rounded-full ${statusColor}`} />
+                  <span className="text-xs text-slate-500">{statusLabel}</span>
+                </div>
+              </Tooltip>
+              <LogoutButton />
+            </div>
           </div>
         </div>
       </header>
