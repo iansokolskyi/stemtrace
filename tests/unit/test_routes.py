@@ -12,7 +12,9 @@ import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.api.schemas import TaskEventResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
+from tests.conftest import InterleavingLock
 
 
 @pytest.fixture
@@ -276,6 +278,158 @@ class TestTaskDetailEndpoint:
         data = response.json()
 
         assert len(data["children"]) == 2
+
+    def test_get_task_insert_during_serialization_returns_consistent_snapshot(
+        self,
+        client: TestClient,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        store.add_event(event(TaskState.STARTED, 100))
+        store.add_event(event(TaskState.SUCCESS, 1100))
+        late_pending = event(TaskState.PENDING, 0)
+        inserted: list[bool] = []
+
+        class InsertingEventResponse(TaskEventResponse):
+            """Simulates the consumer inserting an event mid-serialization."""
+
+            @classmethod
+            def model_validate(cls, obj: object, **kwargs: object) -> TaskEventResponse:  # type: ignore[override]  # test hook narrows the signature
+                if not inserted:
+                    inserted.append(True)
+                    # Lands at index 0 of the live list, shifting the rest.
+                    store.add_event(late_pending)
+                return TaskEventResponse.model_validate(obj)
+
+        monkeypatch.setattr(routes, "TaskEventResponse", InsertingEventResponse)
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert inserted == [True]
+        assert [e["state"] for e in task["events"]] == ["STARTED", "SUCCESS"]
+        assert task["first_seen"] == "2024-01-01T00:00:00.100000Z"
+        assert task["last_updated"] == "2024-01-01T00:00:01.100000Z"
+        assert task["duration_ms"] == 1000
+        # The store itself did take the late event.
+        node = store.get_node("task-1")
+        assert node is not None
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+
+    def test_get_task_pending_stamped_after_finish_sorts_first(
+        self, client: TestClient, store: GraphStore
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        # task_sent fires after publish, so PENDING can be stamped last.
+        store.add_event(event(TaskState.STARTED, 10))
+        store.add_event(event(TaskState.SUCCESS, 20))
+        store.add_event(event(TaskState.PENDING, 25))
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert task["state"] == "SUCCESS"
+        assert [e["state"] for e in task["events"]] == [
+            "PENDING",
+            "STARTED",
+            "SUCCESS",
+        ]
+        assert task["events"][0]["timestamp"] == "2024-01-01T00:00:00.025000Z"
+        assert task["first_seen"] == "2024-01-01T00:00:00.010000Z"
+        assert task["last_updated"] == "2024-01-01T00:00:00.020000Z"
+        assert task["duration_ms"] == 10
+
+    def test_get_task_children_consistent_with_interleaved_writer(
+        self,
+        client: TestClient,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.sample",
+                state=TaskState.STARTED,
+                timestamp=base,
+            )
+        )
+        counter = iter(range(100))
+
+        def add_child() -> None:
+            n = next(counter)
+            store.add_event(
+                TaskEvent(
+                    task_id=f"child-{n}",
+                    name="tests.sample",
+                    state=TaskState.STARTED,
+                    timestamp=base + timedelta(seconds=n + 1),
+                    parent_id="parent",
+                )
+            )
+
+        monkeypatch.setattr(store, "_lock", InterleavingLock(store._lock, add_child))
+
+        data = client.get("/api/tasks/parent").json()
+
+        assert data["task"]["children"] == [c["task_id"] for c in data["children"]]
+        assert data["children"] != []
+
+    def test_get_task_with_late_pending_event_returns_terminal_state_and_timing(
+        self, client: TestClient, store: GraphStore
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        store.add_event(event(TaskState.STARTED, 100))
+        store.add_event(event(TaskState.SUCCESS, 1100))
+        # Sender-side PENDING reaches the stream after the worker finished.
+        store.add_event(event(TaskState.PENDING, 0))
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert task["state"] == "SUCCESS"
+        assert [e["state"] for e in task["events"]] == [
+            "PENDING",
+            "STARTED",
+            "SUCCESS",
+        ]
+        assert task["first_seen"] == "2024-01-01T00:00:00Z"
+        assert task["last_updated"] == "2024-01-01T00:00:01.100000Z"
+        assert task["duration_ms"] == 1100
+
+        listed = client.get("/api/tasks?state=SUCCESS").json()
+        assert [t["task_id"] for t in listed["tasks"]] == ["task-1"]
+        assert listed["tasks"][0]["duration_ms"] == 1100
+        assert client.get("/api/tasks?state=PENDING").json()["total"] == 0
 
 
 class TestTaskChildrenEndpoint:

@@ -1,5 +1,6 @@
 """Tests for GraphStore."""
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -8,6 +9,121 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
+from tests.conftest import InterleavingLock
+
+_T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def _task_event(
+    task_id: str,
+    state: TaskState,
+    seconds: float,
+    parent_id: str | None = None,
+) -> TaskEvent:
+    return TaskEvent(
+        task_id=task_id,
+        name="test.task",
+        state=state,
+        timestamp=_T0 + timedelta(seconds=seconds),
+        parent_id=parent_id,
+    )
+
+
+class TestGraphStoreConsistency:
+    """Readers must see one consistent snapshot while the consumer writes."""
+
+    def test_get_nodes_state_filter_consistent_with_interleaved_writer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = GraphStore()
+        for i in range(5):
+            store.add_event(_task_event(f"task-{i}", TaskState.STARTED, i))
+        to_finish = [f"task-{i}" for i in range(5)]
+
+        def finish_next_task() -> None:
+            if to_finish:
+                store.add_event(_task_event(to_finish.pop(0), TaskState.SUCCESS, 10))
+
+        lock = InterleavingLock(store._lock, finish_next_task)
+        monkeypatch.setattr(store, "_lock", lock)
+
+        nodes, total = store.get_nodes(state=TaskState.STARTED)
+
+        assert lock.interleavings >= 1
+        assert {n.state for n in nodes} == {TaskState.STARTED}
+        assert total == len(nodes)
+        assert "task-0" not in {n.task_id for n in nodes}
+
+    def test_get_nodes_state_filter_consistent_under_concurrent_writer(
+        self,
+    ) -> None:
+        store = GraphStore()
+        stop = threading.Event()
+        mismatches: list[str] = []
+
+        def writer() -> None:
+            i = 0
+            while not stop.is_set():
+                store.add_event(_task_event(f"task-{i}", TaskState.STARTED, i))
+                store.add_event(_task_event(f"task-{i}", TaskState.SUCCESS, i + 0.5))
+                i += 1
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            for _ in range(200):
+                nodes, total = store.get_nodes(state=TaskState.STARTED, limit=1000)
+                mismatches.extend(
+                    n.task_id for n in nodes if n.state != TaskState.STARTED
+                )
+                assert total == len(nodes)
+        finally:
+            stop.set()
+            thread.join()
+
+        assert mismatches == []
+
+    def test_get_node_with_children_consistent_with_interleaved_writer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = GraphStore()
+        store.add_event(_task_event("parent", TaskState.STARTED, 0))
+        counter = iter(range(100))
+
+        def add_child() -> None:
+            n = next(counter)
+            store.add_event(
+                _task_event(f"child-{n}", TaskState.STARTED, 1 + n, parent_id="parent")
+            )
+
+        lock = InterleavingLock(store._lock, add_child)
+        monkeypatch.setattr(store, "_lock", lock)
+
+        found = store.get_node_with_children("parent")
+
+        assert found is not None
+        node, children = found
+        assert node.children == [c.task_id for c in children]
+        assert lock.interleavings == 1
+
+    def test_get_node_with_children_missing_returns_none(self) -> None:
+        assert GraphStore().get_node_with_children("missing") is None
+
+    def test_get_root_nodes_with_children_returns_roots_and_children(self) -> None:
+        store = GraphStore()
+        store.add_event(_task_event("root", TaskState.STARTED, 0))
+        store.add_event(_task_event("child", TaskState.SUCCESS, 1, parent_id="root"))
+        store.add_event(_task_event("other-root", TaskState.SUCCESS, 2))
+
+        roots, related, total = store.get_root_nodes_with_children(limit=1)
+
+        assert [r.task_id for r in roots] == ["other-root"]
+        assert set(related) == {"other-root"}
+        assert total == 2
+        roots, related, _ = store.get_root_nodes_with_children(limit=1, offset=1)
+        assert [r.task_id for r in roots] == ["root"]
+        assert set(related) == {"root", "child"}
+        assert related["child"].state == TaskState.SUCCESS
 
 
 @pytest.fixture
@@ -187,6 +303,126 @@ class TestGraphStoreRoots:
         assert total == 10
 
 
+class TestGraphStoreOutOfOrderEvents:
+    """Store queries must use event time, not arrival order."""
+
+    def test_get_nodes_late_pending_does_not_change_state_or_sort_order(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        base_time = make_event._base_time
+
+        def event(task_id: str, state: TaskState, hours: int) -> TaskEvent:
+            return TaskEvent(
+                task_id=task_id,
+                name="test.task",
+                state=state,
+                timestamp=base_time + timedelta(hours=hours),
+            )
+
+        store.add_event(event("older", TaskState.STARTED, 1))
+        store.add_event(event("older", TaskState.SUCCESS, 2))
+        store.add_event(event("newer", TaskState.SUCCESS, 3))
+        # Late sender-side PENDING for "older" arrives last.
+        store.add_event(event("older", TaskState.PENDING, 0))
+
+        nodes, total = store.get_nodes()
+        assert [n.task_id for n in nodes] == ["newer", "older"]
+        assert total == 2
+
+        success, success_total = store.get_nodes(state=TaskState.SUCCESS)
+        assert [n.task_id for n in success] == ["newer", "older"]
+        assert success_total == 2
+        _, pending_total = store.get_nodes(state=TaskState.PENDING)
+        assert pending_total == 0
+
+        # to_date uses the first event, which is now the late-arriving PENDING.
+        early, _ = store.get_nodes(to_date=base_time + timedelta(minutes=30))
+        assert [n.task_id for n in early] == ["older"]
+        # from_date uses the last event, which is still SUCCESS at hour 2.
+        late, _ = store.get_nodes(from_date=base_time + timedelta(hours=2))
+        assert sorted(n.task_id for n in late) == ["newer", "older"]
+
+        assert store.get_last_execution_time("test.task") == base_time + timedelta(
+            hours=3
+        )
+
+    def test_add_event_duplicate_not_broadcast_to_listeners(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        received: list[TaskEvent] = []
+        store.add_listener(received.append)
+        event = make_event.create("task-1", TaskState.SUCCESS)
+
+        store.add_event(event)
+        store.add_event(event)
+
+        assert received == [event]
+        node = store.get_node("task-1")
+        assert node is not None
+        assert len(node.events) == 1
+
+    def test_add_event_naive_timestamp_listener_receives_stored_event(
+        self, store: GraphStore
+    ) -> None:
+        received: list[TaskEvent] = []
+        store.add_listener(received.append)
+
+        store.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="test.task",
+                state=TaskState.SUCCESS,
+                timestamp=datetime(2024, 1, 1, 12, 0),  # naive
+            )
+        )
+
+        node = store.get_node("task-1")
+        assert node is not None
+        assert received == node.events
+        assert received[0].timestamp == datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    def test_get_node_returns_snapshot_unaffected_by_later_inserts(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", TaskState.SUCCESS))
+        snapshot = store.get_node("task-1")
+        assert snapshot is not None
+
+        store.add_event(make_event.create("task-1", TaskState.STARTED))
+        store.add_event(make_event.create("child-1", parent_id="task-1"))
+
+        assert len(snapshot.events) == 1
+        assert snapshot.children == []
+        live = store.get_node("task-1")
+        assert live is not None
+        assert len(live.events) == 2
+        assert live.children == ["child-1"]
+
+    def test_eviction_uses_earliest_event_after_out_of_order_arrival(self) -> None:
+        store = GraphStore(max_nodes=2)
+        base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        def event(task_id: str, state: TaskState, hours: int) -> TaskEvent:
+            return TaskEvent(
+                task_id=task_id,
+                name="test.task",
+                state=state,
+                timestamp=base_time + timedelta(hours=hours),
+            )
+
+        store.add_event(event("a", TaskState.SUCCESS, 5))
+        store.add_event(event("b", TaskState.SUCCESS, 2))
+        # "a" actually started first; its PENDING arrives late.
+        store.add_event(event("a", TaskState.PENDING, 1))
+        # Third node triggers eviction down to int(2 * 0.9) == 1 node.
+        store.add_event(event("c", TaskState.SUCCESS, 4))
+
+        assert store.get_node("a") is None
+        assert store.get_node("b") is None
+        assert store.get_node("c") is not None
+        assert store.node_count == 1
+
+
 class TestGraphStoreDateFiltering:
     """Tests for date filtering functionality."""
 
@@ -347,7 +583,7 @@ class TestGraphStoreDateFiltering:
         This simulates what happens when API receives YYYY-MM-DD dates
         which parse as naive datetimes.
         """
-        base_time = make_event._base_time  # This is timezone-aware (UTC)
+        base_time = make_event._base_time  # This is timezone-aware (timezone.utc)
         store.add_event(
             TaskEvent(
                 task_id="task-1",
@@ -396,7 +632,7 @@ class TestGraphStoreDateFiltering:
         When API receives ?to_date=2024-01-01, it parses to 2024-01-01 00:00:00.
         But a task that ran at 2024-01-01 14:00:00 should still be included.
         """
-        base_time = make_event._base_time  # 2024-01-01 00:00:00 UTC
+        base_time = make_event._base_time  # 2024-01-01 00:00:00 timezone.utc
         store.add_event(
             TaskEvent(
                 task_id="afternoon-task",

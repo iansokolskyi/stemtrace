@@ -3,6 +3,7 @@
 import urllib.parse
 from collections.abc import Awaitable, Callable, MutableMapping
 from datetime import datetime, timezone
+from types import TracebackType
 from typing import Any
 
 import pytest
@@ -10,6 +11,40 @@ import pytest
 from stemtrace.core.events import TaskEvent, TaskState
 
 RawGet = Callable[[Any, str], Awaitable[int]]
+
+
+class InterleavingLock:
+    """Lock wrapper that runs a callback right before every acquisition.
+
+    Simulates another thread winning the race for the lock at each
+    acquisition point, which makes interleavings deterministic in tests.
+    The callback may use the lock itself (re-entry doesn't re-trigger it).
+    """
+
+    def __init__(self, inner: Any, before_acquire: Callable[[], None]) -> None:
+        self._inner = inner
+        self._before_acquire = before_acquire
+        self._in_callback = False
+        self.interleavings = 0
+
+    def __enter__(self) -> "InterleavingLock":
+        if not self._in_callback:
+            self._in_callback = True
+            try:
+                self._before_acquire()
+                self.interleavings += 1
+            finally:
+                self._in_callback = False
+        self._inner.acquire()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._inner.release()
 
 
 @pytest.fixture

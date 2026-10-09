@@ -48,22 +48,32 @@ def _ensure_end_of_day(dt: datetime) -> datetime:
     return dt
 
 
+def _snapshot(node: TaskNode) -> TaskNode:
+    """Copy a node so callers can read it without holding the store lock.
+
+    The consumer thread inserts events mid-list (they are kept in lifecycle
+    order) and appends children, so handing out the live node could let an
+    API response see duplicated or skipped events. Call with the lock held.
+    """
+    return node.snapshot()
+
+
 # Fallback for nodes with no events (synthetic nodes)
 _MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the most recent timestamp for a node (including children for synthetic nodes)."""
-    if node.events:
-        return node.events[-1].timestamp
+    if node.last_updated is not None:
+        return node.last_updated
 
     # For synthetic nodes (GROUP/CHORD), use the latest child timestamp
     if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
         child_timestamps: list[datetime] = []
         for child_id in node.children:
             child = graph.get_node(child_id)
-            if child and child.events:
-                child_timestamps.append(child.events[-1].timestamp)
+            if child and child.last_updated is not None:
+                child_timestamps.append(child.last_updated)
         if child_timestamps:
             return max(child_timestamps)
 
@@ -72,16 +82,16 @@ def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
 
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the first timestamp for a node (including children for synthetic nodes)."""
-    if node.events:
-        return node.events[0].timestamp
+    if node.first_seen is not None:
+        return node.first_seen
 
     # For synthetic nodes (GROUP/CHORD), use the earliest child timestamp
     if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
         child_timestamps: list[datetime] = []
         for child_id in node.children:
             child = graph.get_node(child_id)
-            if child and child.events:
-                child_timestamps.append(child.events[0].timestamp)
+            if child and child.first_seen is not None:
+                child_timestamps.append(child.first_seen)
         if child_timestamps:
             return min(child_timestamps)
 
@@ -306,19 +316,27 @@ class GraphStore:
         self._listeners: list[Callable[[TaskEvent], None]] = []
 
     def add_event(self, event: TaskEvent) -> None:
-        """Add event to graph and notify listeners."""
+        """Add event to graph and notify listeners.
+
+        Listeners receive the event as stored (naive timestamps normalized to
+        UTC). Exact duplicate events (e.g. replayed from the broker) are
+        ignored and not broadcast.
+        """
         with self._lock:
-            self._graph.add_event(event)
+            stored = self._graph.add_event(event)
+            if stored is None:
+                return
             self._maybe_evict()
 
         for listener in self._listeners:
             with contextlib.suppress(Exception):
-                listener(event)
+                listener(stored)
 
     def get_node(self, task_id: str) -> TaskNode | None:
-        """Get node by ID, or None if not found."""
+        """Get a snapshot of a node by ID, or None if not found."""
         with self._lock:
-            return self._graph.get_node(task_id)
+            node = self._graph.get_node(task_id)
+            return _snapshot(node) if node is not None else None
 
     def get_nodes(
         self,
@@ -338,30 +356,39 @@ class GraphStore:
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
+        # Filter, sort and copy in one critical section: the consumer thread
+        # mutates live nodes, so a node could otherwise change state between
+        # passing the filter and being copied.
         with self._lock:
             # Exclude synthetic nodes (GROUP, CHORD) - they're for graphs, not task list
             nodes = [
                 n for n in self._graph.nodes.values() if n.node_type == NodeType.TASK
             ]
 
-        if state is not None:
-            nodes = [n for n in nodes if n.state == state]
-        if name_contains is not None:
-            name_lower = name_contains.lower()
-            nodes = [n for n in nodes if name_lower in n.name.lower()]
-        if from_date is not None:
-            from_dt = _ensure_tz_aware(from_date)
-            nodes = [n for n in nodes if n.events and n.events[-1].timestamp >= from_dt]
-        if to_date is not None:
-            to_dt = _ensure_end_of_day(to_date)
-            nodes = [n for n in nodes if n.events and n.events[0].timestamp <= to_dt]
+            if state is not None:
+                nodes = [n for n in nodes if n.state == state]
+            if name_contains is not None:
+                name_lower = name_contains.lower()
+                nodes = [n for n in nodes if name_lower in n.name.lower()]
+            if from_date is not None:
+                from_dt = _ensure_tz_aware(from_date)
+                nodes = [
+                    n
+                    for n in nodes
+                    if n.last_updated is not None and n.last_updated >= from_dt
+                ]
+            if to_date is not None:
+                to_dt = _ensure_end_of_day(to_date)
+                nodes = [
+                    n
+                    for n in nodes
+                    if n.first_seen is not None and n.first_seen <= to_dt
+                ]
 
-        nodes.sort(
-            key=lambda n: n.events[-1].timestamp if n.events else _MIN_DATETIME,
-            reverse=True,
-        )
-        total = len(nodes)
-        return nodes[offset : offset + limit], total
+            nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+            total = len(nodes)
+            page = [_snapshot(n) for n in nodes[offset : offset + limit]]
+        return page, total
 
     def get_root_nodes(
         self,
@@ -377,35 +404,93 @@ class GraphStore:
             Tuple of (filtered root nodes, total count matching filters).
         """
         with self._lock:
+            live, total = self._root_nodes_locked(
+                limit=limit, offset=offset, from_date=from_date, to_date=to_date
+            )
+            return [_snapshot(n) for n in live], total
+
+    def get_root_nodes_with_children(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
+        """Get root nodes and their direct children from one consistent snapshot.
+
+        Returns:
+            Tuple of (filtered root nodes, map of task_id to node for the roots
+            and their direct children, total count matching filters).
+        """
+        with self._lock:
+            live, total = self._root_nodes_locked(
+                limit=limit, offset=offset, from_date=from_date, to_date=to_date
+            )
+            roots = [_snapshot(n) for n in live]
+            related: dict[str, TaskNode] = {}
+            for root in roots:
+                related[root.task_id] = root
+                for child_id in root.children:
+                    child = self._graph.nodes.get(child_id)
+                    if child is not None and child_id not in related:
+                        related[child_id] = _snapshot(child)
+            return roots, related, total
+
+    def _root_nodes_locked(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        from_date: datetime | None,
+        to_date: datetime | None,
+    ) -> tuple[list[TaskNode], int]:
+        """Filter, sort and page live root nodes. Call with the lock held."""
+        root_nodes = [
+            self._graph.nodes[rid]
+            for rid in self._graph.root_ids
+            if rid in self._graph.nodes
+        ]
+
+        # Date filtering - use child timestamps for synthetic nodes
+        if from_date is not None:
+            from_dt = _ensure_tz_aware(from_date)
             root_nodes = [
-                self._graph.nodes[rid]
-                for rid in self._graph.root_ids
-                if rid in self._graph.nodes
+                n for n in root_nodes if _get_node_timestamp(n, self._graph) >= from_dt
+            ]
+        if to_date is not None:
+            to_dt = _ensure_end_of_day(to_date)
+            root_nodes = [
+                n for n in root_nodes if _get_first_timestamp(n, self._graph) <= to_dt
             ]
 
-            # Date filtering - use child timestamps for synthetic nodes
-            if from_date is not None:
-                from_dt = _ensure_tz_aware(from_date)
-                root_nodes = [
-                    n
-                    for n in root_nodes
-                    if _get_node_timestamp(n, self._graph) >= from_dt
-                ]
-            if to_date is not None:
-                to_dt = _ensure_end_of_day(to_date)
-                root_nodes = [
-                    n
-                    for n in root_nodes
-                    if _get_first_timestamp(n, self._graph) <= to_dt
-                ]
-
-            # Sort while holding lock since we need access to graph for children
-            root_nodes.sort(
-                key=lambda n: _get_node_timestamp(n, self._graph),
-                reverse=True,
-            )
-            total = len(root_nodes)
+        # Sort needs the graph for synthetic nodes' children
+        root_nodes.sort(
+            key=lambda n: _get_node_timestamp(n, self._graph),
+            reverse=True,
+        )
+        total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
+
+    def get_node_with_children(
+        self, task_id: str
+    ) -> tuple[TaskNode, list[TaskNode]] | None:
+        """Get a node and its direct children from one consistent snapshot.
+
+        Returns:
+            Tuple of (node, children), or None if the node doesn't exist.
+        """
+        with self._lock:
+            node = self._graph.get_node(task_id)
+            if node is None:
+                return None
+            snapshot = _snapshot(node)
+            children = [
+                _snapshot(self._graph.nodes[cid])
+                for cid in snapshot.children
+                if cid in self._graph.nodes
+            ]
+            return snapshot, children
 
     def get_children(self, task_id: str) -> list[TaskNode]:
         """Get child nodes of a task."""
@@ -414,7 +499,7 @@ class GraphStore:
             if node is None:
                 return []
             return [
-                self._graph.nodes[cid]
+                _snapshot(self._graph.nodes[cid])
                 for cid in node.children
                 if cid in self._graph.nodes
             ]
@@ -436,7 +521,7 @@ class GraphStore:
                 node = self._graph.get_node(current_id)
                 if node is None:
                     continue
-                result[current_id] = node
+                result[current_id] = _snapshot(node)
                 to_visit.extend(node.children)
 
             return result
@@ -505,9 +590,9 @@ class GraphStore:
                 if (
                     node.name == task_name
                     and node.node_type == NodeType.TASK
-                    and node.events
+                    and node.last_updated is not None
                 ):
-                    node_time = node.events[-1].timestamp
+                    node_time = node.last_updated
                     if last_time is None or node_time > last_time:
                         last_time = node_time
             return last_time
@@ -519,7 +604,7 @@ class GraphStore:
 
         nodes_by_age = sorted(
             self._graph.nodes.values(),
-            key=lambda n: n.events[0].timestamp if n.events else _MIN_DATETIME,
+            key=lambda n: n.first_seen or _MIN_DATETIME,
         )
 
         to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)

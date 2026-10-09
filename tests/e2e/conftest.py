@@ -145,6 +145,49 @@ def wait_for_task(
     )
 
 
+def wait_for_event(
+    api_client: httpx.Client,
+    task_id: str,
+    state: str,
+    timeout: float = 10.0,
+    poll_interval: float = 0.25,
+) -> dict[str, Any]:
+    """Poll the API until the task has an event with the given state.
+
+    Events from different processes can arrive in any order, so a task can
+    reach a terminal state before e.g. the sender-side PENDING event lands.
+
+    Args:
+        api_client: HTTP client for API calls.
+        task_id: Task ID to poll.
+        state: Event state to wait for (e.g. "PENDING").
+        timeout: Maximum time to wait in seconds.
+        poll_interval: Time between polls in seconds.
+
+    Returns:
+        The first matching event from the API.
+
+    Raises:
+        TimeoutError: If no such event shows up within the timeout.
+    """
+    start_time = time.time()
+    seen: list[str] = []
+
+    while time.time() - start_time < timeout:
+        response = api_client.get(f"/tasks/{task_id}")
+        if response.status_code == 200:
+            events = response.json().get("task", {}).get("events", [])
+            seen = [e.get("state") for e in events]
+            for event in events:
+                if event.get("state") == state:
+                    return event
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Task {task_id} has no {state} event after {timeout}s. Events: {seen}"
+    )
+
+
 def wait_for_graph(
     api_client: httpx.Client,
     root_id: str,
@@ -203,6 +246,7 @@ __all__ = [
     "process_item",
     "server_url",
     "slow_task",
+    "wait_for_event",
     "wait_for_graph",
     "wait_for_task",
 ]

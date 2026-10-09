@@ -101,8 +101,8 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     Returns:
         TaskNodeResponse with timestamp and duration.
     """
-    first_seen = node.events[0].timestamp if node.events else None
-    last_updated = node.events[-1].timestamp if node.events else None
+    first_seen = node.first_seen
+    last_updated = node.last_updated
 
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
@@ -171,8 +171,8 @@ def _node_to_graph_response(
     Returns:
         GraphNodeResponse with timing from children.
     """
-    first_seen = node.events[0].timestamp if node.events else None
-    last_updated = node.events[-1].timestamp if node.events else None
+    first_seen = node.first_seen
+    last_updated = node.last_updated
 
     # For synthetic nodes (GROUP/CHORD), compute timing from children
     if not node.events and node.children and all_nodes:
@@ -180,9 +180,9 @@ def _node_to_graph_response(
         child_last_updated: list[datetime] = []
         for child_id in node.children:
             child = all_nodes.get(child_id)
-            if child and child.events:
-                child_first_seen.append(child.events[0].timestamp)
-                child_last_updated.append(child.events[-1].timestamp)
+            if child and child.first_seen and child.last_updated:
+                child_first_seen.append(child.first_seen)
+                child_last_updated.append(child.last_updated)
         if child_first_seen:
             first_seen = min(child_first_seen)
         if child_last_updated:
@@ -596,11 +596,11 @@ def create_api_router(
     )
     async def get_task(task_id: str) -> TaskDetailResponse:
         """Get detailed information for a specific task including children."""
-        node = store.get_node(task_id)
-        if node is None:
+        found = store.get_node_with_children(task_id)
+        if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        children = store.get_children(task_id)
+        node, children = found
         return TaskDetailResponse(
             task=_node_to_response(node),
             children=[_node_to_response(c) for c in children],
@@ -613,11 +613,11 @@ def create_api_router(
     )
     async def get_task_children(task_id: str) -> list[TaskNodeResponse]:
         """Get child tasks for a specific task."""
-        node = store.get_node(task_id)
-        if node is None:
+        found = store.get_node_with_children(task_id)
+        if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        children = store.get_children(task_id)
+        _, children = found
         return [_node_to_response(c) for c in children]
 
     @router.get("/graphs", response_model=GraphListResponse)
@@ -632,18 +632,13 @@ def create_api_router(
         ] = None,
     ) -> GraphListResponse:
         """List task execution graphs (root tasks) with pagination and date filtering."""
-        roots, total = store.get_root_nodes(
+        # Roots plus children (for synthetic node timing) from one snapshot
+        roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=from_date,
             to_date=to_date,
         )
-        # Build nodes dict for synthetic node timing computation
-        all_nodes: dict[str, TaskNode] = {}
-        for root in roots:
-            all_nodes[root.task_id] = root
-            for child in store.get_children(root.task_id):
-                all_nodes[child.task_id] = child
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
