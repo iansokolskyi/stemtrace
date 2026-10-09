@@ -1,6 +1,7 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # Python dependencies: pyproject.toml + uv.lock (CI and images install from the lock)
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
@@ -15,6 +16,14 @@ updates:
       prefix: "chore(deps)"
 
   - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Base images in Dockerfile and Dockerfile.e2e (tags pinned by digest)
+  - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly

@@ -101,6 +101,30 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  audit:
+    name: Audit runtime dependencies
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+
+      - name: Export locked runtime dependencies
+        run: uv export --frozen --no-emit-project --no-dev --output-file requirements-audit.txt
+
+      - name: Audit for known vulnerabilities
+        run: uvx --no-build pip-audit==2.10.1 --strict --require-hashes --disable-pip -r requirements-audit.txt
+
   frontend:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
