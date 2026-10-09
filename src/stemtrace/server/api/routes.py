@@ -398,15 +398,19 @@ def create_api_router(
     async def health() -> HealthResponse:
         """Return server health status and connection counts.
 
-        ``status`` is "degraded" when a configured consumer isn't running or
-        can't reach the broker, and "ok" otherwise. The response is always
-        HTTP 200 so existing health checks keep working.
+        ``status`` is "degraded" when a configured consumer has stopped
+        unexpectedly or can't read from the broker, and "ok" otherwise (a
+        consumer whose event source finished normally is not degraded). The
+        response is always HTTP 200 so existing health checks keep working.
         """
         from stemtrace import __version__
 
         running = consumer.is_running if consumer else False
         connected = consumer.is_connected if consumer else None
-        degraded = consumer is not None and (not running or connected is False)
+        finished = consumer.is_finished if consumer else False
+        degraded = consumer is not None and (
+            (not running and not finished) or connected is False
+        )
 
         return HealthResponse(
             status="degraded" if degraded else "ok",

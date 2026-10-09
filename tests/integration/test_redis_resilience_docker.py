@@ -145,11 +145,25 @@ def _connections_received(url: str) -> int:
 
 
 class TestRedisResilience:
+    @pytest.mark.parametrize(
+        "construction",
+        ["transport-from-url", "redis-from-url-client"],
+    )
     def test_consume_when_idle_keeps_a_single_connection(
-        self, container: RedisContainer
+        self, container: RedisContainer, construction: str
     ) -> None:
-        assert int(redis.__version__.split(".")[0]) >= 8
-        consumer_transport = RedisTransport.from_url(container.url, prefix="idle")
+        """Idle XREADs return before the socket times out, on any redis-py.
+
+        "redis-from-url-client" passes ``redis.Redis.from_url(url)`` to the
+        constructor; on redis-py 8 its connections default to a 5s socket
+        timeout that the pool kwargs don't show.
+        """
+        if construction == "transport-from-url":
+            consumer_transport = RedisTransport.from_url(container.url, prefix="idle")
+        else:
+            consumer_transport = RedisTransport(
+                client=redis.Redis.from_url(container.url), prefix="idle", ttl=60
+            )
         publisher = RedisTransport.from_url(container.url, prefix="idle")
         before = _connections_received(container.url)
 

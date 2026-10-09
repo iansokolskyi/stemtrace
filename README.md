@@ -482,7 +482,7 @@ stemtrace.init_app(
 
 | Field | Meaning |
 |-------|---------|
-| `status` | `"ok"`, or `"degraded"` when a configured event consumer isn't running or can't reach the broker |
+| `status` | `"ok"`, or `"degraded"` when a configured event consumer stopped unexpectedly, can't reach the broker, or keeps failing to read (a consumer whose event source finished normally, like `memory://`, stays `"ok"`) |
 | `version` | Installed stemtrace version |
 | `consumer_running` | Whether the event consumer thread is alive |
 | `consumer_connected` | `true` if the consumer's last broker read succeeded, `false` while it's failing, `null` if unknown (starting up, or the transport doesn't report it) |

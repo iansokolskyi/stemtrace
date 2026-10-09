@@ -4,12 +4,18 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.library.transports.redis import RedisTransport
 from stemtrace.server import consumer as consumer_module
+from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -582,3 +588,134 @@ class TestConsumerRecovery:
 
             fake.stop()
             consumer.stop(timeout=1.0)
+
+
+class SwitchableTransport(FakeTransport):
+    """Connection-aware transport whose reads fail while ``fail`` is True."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.fail = True
+        self.connected: bool | None = None
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        self._consume_started = True
+        self.connected = None
+        if self.fail:
+            self.connected = False
+            raise RuntimeError(
+                "WRONGTYPE Operation against a key holding the wrong kind"
+            )
+        self.connected = True
+        yield from super().consume()
+
+
+class FiniteTransport:
+    """Transport whose iterator ends after its events, like memory://."""
+
+    def __init__(self, events: list[TaskEvent | WorkerEvent]) -> None:
+        self.events = events
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        yield from self.events
+
+
+class AlwaysDownRedis:
+    """Redis client stand-in whose reads always fail to connect."""
+
+    def xread(self, streams: dict[str, str], block: int, count: int) -> Any:
+        del streams, block, count
+        raise RedisConnectionError("Error 111 connecting to localhost:6379.")
+
+
+def _health(consumer: AsyncEventConsumer, store: GraphStore) -> dict[str, Any]:
+    app = FastAPI()
+    app.include_router(create_api_router(store, consumer=consumer))
+    body: dict[str, Any] = TestClient(app).get("/api/health").json()
+    return body
+
+
+class TestConsumerHealthState:
+    def test_is_connected_while_restarting_on_errors_is_false_until_read(
+        self,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        monkeypatch.setattr(consumer_module, "RESTART_MAX_BACKOFF", 0.01)
+        fake = SwitchableTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: consumer._consumer._failures >= 2)
+
+            assert consumer.is_running is True
+            assert consumer.is_connected is False
+            assert _health(consumer, store)["status"] == "degraded"
+
+            fake.fail = False
+            _wait_until(lambda: fake.connected is True)
+
+            assert consumer.is_connected is True
+            assert _health(consumer, store)["status"] == "ok"
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+    def test_is_connected_while_failing_without_connectivity_support_is_false(
+        self, store: GraphStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        fake = FlakyTransport([], failures=1_000_000)
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: consumer._failures >= 1)
+
+            assert consumer.is_connected is False
+
+            consumer.stop(timeout=1.0)
+
+    def test_consumer_whose_source_finished_is_not_degraded(
+        self, store: GraphStore, sample_events: list[TaskEvent]
+    ) -> None:
+        fake = FiniteTransport(list(sample_events))
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: not consumer.is_running)
+
+            assert consumer.is_finished is True
+            assert store.node_count == len(sample_events)
+            health = _health(consumer, store)
+            assert health["status"] == "ok"
+            assert health["consumer_running"] is False
+
+            consumer.stop(timeout=1.0)
+
+    def test_stop_during_transport_reconnect_backoff_is_prompt(
+        self, store: GraphStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = RedisTransport(
+            client=AlwaysDownRedis(),  # type: ignore[arg-type]  # structural fake
+            prefix="test",
+            ttl=60,
+        )
+
+        with (
+            patch("stemtrace.server.consumer.get_transport", return_value=transport),
+            caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"),
+        ):
+            consumer = EventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: transport.connected is False)
+            started = time.monotonic()
+
+            consumer.stop(timeout=2.0)
+
+        assert time.monotonic() - started < 1.0
+        assert "did not stop gracefully" not in caplog.text
+        assert consumer.is_running is False

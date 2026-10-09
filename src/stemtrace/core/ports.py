@@ -1,5 +1,6 @@
 """Protocol definitions for dependency inversion."""
 
+import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -33,6 +34,15 @@ class ConnectionAwareTransport(Protocol):
     @property
     def connected(self) -> bool | None:
         """True if the last read reached the broker, False if failing, None if unknown."""
+        ...
+
+
+@runtime_checkable
+class StoppableTransport(Protocol):
+    """Optional transport capability: end consume() promptly when asked to stop."""
+
+    def bind_stop_event(self, event: threading.Event) -> None:
+        """End consume() and interrupt any retry waits once ``event`` is set."""
         ...
 
 

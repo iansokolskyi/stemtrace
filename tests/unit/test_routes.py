@@ -98,23 +98,33 @@ class TestHealthEndpoint:
         assert data["websocket_connections"] == 5
 
     @pytest.mark.parametrize(
-        ("running", "connected", "expected_status"),
+        ("running", "connected", "finished", "expected_status"),
         [
-            (True, True, "ok"),
-            (True, None, "ok"),
-            (False, None, "degraded"),
-            (True, False, "degraded"),
+            (True, True, False, "ok"),
+            (True, None, False, "ok"),
+            (False, None, False, "degraded"),
+            (True, False, False, "degraded"),
+            (False, None, True, "ok"),
         ],
-        ids=["running-connected", "running-unknown", "not-running", "disconnected"],
+        ids=[
+            "running-connected",
+            "running-unknown",
+            "not-running",
+            "disconnected",
+            "source-finished",
+        ],
     )
     def test_health_status_with_consumer_state_reports_status(
         self,
         store: GraphStore,
         running: bool,
         connected: bool | None,
+        finished: bool,
         expected_status: str,
     ) -> None:
-        consumer = FakeHealthConsumer(running=running, connected=connected)
+        consumer = FakeHealthConsumer(
+            running=running, connected=connected, finished=finished
+        )
         app = FastAPI()
         app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # structural fake
 
@@ -129,9 +139,12 @@ class TestHealthEndpoint:
 class FakeHealthConsumer:
     """Consumer stand-in exposing only what the health endpoint reads."""
 
-    def __init__(self, *, running: bool, connected: bool | None) -> None:
+    def __init__(
+        self, *, running: bool, connected: bool | None, finished: bool = False
+    ) -> None:
         self.is_running = running
         self.is_connected = connected
+        self.is_finished = finished
 
 
 class TestTaskListEndpoint:

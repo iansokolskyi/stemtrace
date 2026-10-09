@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from stemtrace.core.events import TaskEvent, WorkerEvent, WorkerEventType
-from stemtrace.core.ports import ConnectionAwareTransport
+from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
 from stemtrace.library.transports import get_transport
 
 if TYPE_CHECKING:
@@ -50,6 +50,10 @@ class EventConsumer:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._last_stale_check: float = 0.0
+        # Consecutive consume-loop restarts since the last received event.
+        self._failures = 0
+        # True once the transport's iterator ended on its own (not stopped).
+        self._finished = False
 
     @property
     def is_running(self) -> bool:
@@ -57,16 +61,31 @@ class EventConsumer:
         return self._thread is not None and self._thread.is_alive()
 
     @property
-    def is_connected(self) -> bool | None:
-        """Whether the transport can currently reach the broker.
+    def is_finished(self) -> bool:
+        """Whether the transport's iterator ended normally (e.g. memory://).
 
-        None when not running or when the transport doesn't report it.
+        A finished consumer is not running but hasn't failed either.
         """
-        transport: object = self._transport
-        if not self.is_running or not isinstance(transport, ConnectionAwareTransport):
+        return self._finished
+
+    @property
+    def is_connected(self) -> bool | None:
+        """Whether the consumer can currently read from the broker.
+
+        False while the consume loop keeps restarting after errors, until the
+        transport reports a successful read again. Otherwise the transport's
+        own report. None when not running or when nothing is known.
+        """
+        if not self.is_running:
             return None
-        connected = transport.connected
-        return connected if isinstance(connected, bool) else None
+        transport: object = self._transport
+        connected: bool | None = None
+        if isinstance(transport, ConnectionAwareTransport):
+            reported = transport.connected
+            connected = reported if isinstance(reported, bool) else None
+        if self._failures and connected is not True:
+            return False
+        return connected
 
     def start(self) -> None:
         """Start consuming in background thread. Idempotent."""
@@ -74,9 +93,14 @@ class EventConsumer:
             return
 
         self._stop_event.clear()
+        self._failures = 0
+        self._finished = False
         self._transport = get_transport(
             self._broker_url, prefix=self._prefix, ttl=self._ttl
         )
+        transport: object = self._transport
+        if isinstance(transport, StoppableTransport):
+            transport.bind_stop_event(self._stop_event)
         self._thread = threading.Thread(
             target=self._consume_loop,
             name="stemtrace-consumer",
@@ -104,16 +128,17 @@ class EventConsumer:
 
         logger.debug("Consumer loop starting, reading from %s", self._broker_url)
 
-        failures = 0
         backoff = RESTART_INITIAL_BACKOFF
         while not self._stop_event.is_set():
             try:
                 for event in self._transport.consume():
                     if self._stop_event.is_set():
                         return
-                    if failures:
-                        logger.info("Consumer recovered after %d restart(s)", failures)
-                        failures = 0
+                    if self._failures:
+                        logger.info(
+                            "Consumer recovered after %d restart(s)", self._failures
+                        )
+                        self._failures = 0
                         backoff = RESTART_INITIAL_BACKOFF
 
                     try:
@@ -121,13 +146,17 @@ class EventConsumer:
                         self._maybe_check_stale_workers()
                     except Exception:
                         logger.exception("Error processing event")
-                # The transport's iterator ended on its own (e.g. MemoryTransport).
+                if not self._stop_event.is_set():
+                    # The iterator ended on its own (e.g. MemoryTransport).
+                    self._finished = True
+                    self._failures = 0
+                    logger.info("Event source exhausted; consumer finished")
                 return
             except Exception as exc:
                 if self._stop_event.is_set():
                     return
-                failures += 1
-                if failures == 1:
+                self._failures += 1
+                if self._failures == 1:
                     logger.warning(
                         "Consumer loop error; restarting in %.1fs",
                         backoff,
@@ -137,7 +166,7 @@ class EventConsumer:
                     logger.warning(
                         "Consumer loop still failing (attempt %d): %s; "
                         "restarting in %.1fs",
-                        failures,
+                        self._failures,
                         exc,
                         backoff,
                     )
@@ -226,6 +255,11 @@ class AsyncEventConsumer:
     def is_running(self) -> bool:
         """Whether the consumer thread is alive."""
         return self._consumer.is_running
+
+    @property
+    def is_finished(self) -> bool:
+        """Whether the event source ended normally (e.g. memory://)."""
+        return self._consumer.is_finished
 
     @property
     def is_connected(self) -> bool | None:
