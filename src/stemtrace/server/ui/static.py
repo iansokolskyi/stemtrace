@@ -229,9 +229,18 @@ def get_static_router_with_base(
         return None
 
     router = APIRouter(tags=["stemtrace-ui"])
+    # follow_symlink: per-file symlinked installs (e.g. uv --link-mode symlink)
+    # ship assets as links into a cache outside dist/. Starlette still confines
+    # the *request* path to the directory lexically before following links.
+    # The directory is resolved up front because older Starlette compares the
+    # unresolved request path against the resolved directory, which would 404
+    # every asset when the install path itself contains a symlink.
     router.mount(
         "/assets",
-        StaticFiles(directory=_FRONTEND_DIR / "assets"),
+        StaticFiles(
+            directory=os.path.realpath(_FRONTEND_DIR / "assets"),
+            follow_symlink=True,
+        ),
         name="stemtrace-assets",
     )
 

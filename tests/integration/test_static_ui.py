@@ -707,6 +707,58 @@ class TestStaticPathContainment:
             assert page.status_code == 200
             assert "SPA-INDEX" in page.text
 
+    @pytest.mark.parametrize("mount", ["/stemtrace", ""])
+    @pytest.mark.parametrize("via_symlinked_parent", [False, True])
+    def test_assets_with_per_file_symlinks_are_served(
+        self, tmp_path: Path, mount: str, via_symlinked_parent: bool
+    ) -> None:
+        """Bundle assets that are symlinks into a cache are served.
+
+        Per-file symlinked installs (e.g. ``uv pip install --link-mode
+        symlink``) produce exactly this layout. On FastAPI versions that keep
+        the ``/assets`` StaticFiles mount, the mount itself must follow them.
+        """
+        cache = tmp_path / "cache"
+        (cache / "assets").mkdir(parents=True)
+        (cache / "assets" / "index-abc.js").write_text("console.log('ok')")
+        (cache / "assets" / "index-abc.css").write_text("body{}")
+
+        dist_dir = tmp_path / "dist"
+        (dist_dir / "assets").mkdir(parents=True)
+        (dist_dir / "index.html").write_text(
+            "<html><head></head><body>SPA-INDEX</body></html>"
+        )
+        for rel in ("assets/index-abc.js", "assets/index-abc.css"):
+            (dist_dir / rel).symlink_to(cache / rel)
+        secret = tmp_path / "secret.txt"
+        secret.write_text(_SECRET_MARKER)
+
+        frontend_dir = dist_dir
+        if via_symlinked_parent:
+            # The install path itself goes through a symlink (e.g. /var on macOS).
+            link = tmp_path / "linked-site-packages"
+            link.symlink_to(tmp_path, target_is_directory=True)
+            frontend_dir = link / "dist"
+
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", frontend_dir):
+            router = get_static_router()
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router, prefix=mount)
+            client = TestClient(app)
+
+            js = client.get(f"{mount}/assets/index-abc.js")
+            assert js.status_code == 200
+            assert js.text == "console.log('ok')"
+
+            css = client.get(f"{mount}/assets/index-abc.css")
+            assert css.status_code == 200
+            assert css.text == "body{}"
+
+            escape = client.get(f"{mount}/assets/..%2F..%2Fsecret.txt")
+            assert _SECRET_MARKER not in escape.text
+            assert escape.status_code == 404
+
     def test_serve_spa_with_overlong_segment_falls_back_to_index(
         self, tmp_path: Path
     ) -> None:

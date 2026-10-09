@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis transport: losing the connection (for example a Redis restart, an unreachable host, or a connect timeout) no longer stops event consumption. The consumer logs one warning with a traceback, then one line per attempt, and retries with exponential backoff (1 s doubling to a 30 s cap, reset on success), resuming from the last stream entry it read. Repeated read timeouts are logged as warnings at most once a minute.
 - Server: the event consumer thread restarts with the same backoff after an unexpected error instead of exiting silently, and `stop()` interrupts a pending reconnect wait instead of leaving the thread behind.
 - UI: the favicon no longer 404s (the dashboard referenced a non-existent `/vite.svg`).
+- UI: JS and CSS assets no longer 404 on FastAPI 0.137+ when stemtrace is installed with per-file symlinks (e.g. `uv pip install --link-mode symlink`). The `/assets` mount now follows symlinks inside the bundle; request paths are still confined to the assets directory.
 
 ## [0.3.5] - 2026-10-09
 
