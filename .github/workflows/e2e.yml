@@ -12,6 +12,8 @@ jobs:
   api-e2e:
     name: API E2E Tests
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -79,6 +81,8 @@ jobs:
   playwright:
     name: Playwright E2E Tests
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
     timeout-minutes: 20
     strategy:
       fail-fast: false
