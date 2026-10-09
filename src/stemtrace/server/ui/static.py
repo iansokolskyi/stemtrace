@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -160,6 +162,46 @@ def _rewrite_html_for_prefix(
     return html.replace("<head>", script)
 
 
+def _contained_frontend_path(path: str) -> str | None:
+    """Confine a request path to the frontend directory, lexically.
+
+    The request path is user-controlled. It is joined onto the resolved
+    frontend directory and normalized as a string (dot-segments collapsed,
+    no symlink resolution), then accepted only if the result is still under
+    that directory. The filesystem is never touched for the candidate before
+    this check passes. Symlinks inside the frontend directory are trusted and
+    followed when the file is served (they come from the installed package,
+    e.g. symlink-mode installs), since only the request path is untrusted.
+
+    Args:
+        path: Path parameter taken from the request URL.
+
+    Returns:
+        The normalized absolute path if it lies under the frontend directory
+        (it may not exist), or None if it escapes the directory.
+    """
+    base = os.path.realpath(_FRONTEND_DIR)
+    candidate = os.path.normpath(Path(base) / path)
+    # Plain string prefix check: an absolute request path, a drive change or
+    # a UNC path (Windows) all produce a candidate outside this prefix.
+    base_prefix = base if base.endswith(os.sep) else base + os.sep
+    if candidate != base and not candidate.startswith(base_prefix):
+        return None
+    return candidate
+
+
+def _is_regular_file(path: str) -> bool:
+    """Return True if path is an existing regular file (symlinks followed).
+
+    Any error while inspecting the path (missing file, name too long,
+    embedded NUL byte, permission denied) is treated as "not a file".
+    """
+    try:
+        return stat.S_ISREG(Path(path).stat().st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
     """Create router for UI static files. Returns None if dist/ missing."""
     return get_static_router_with_base(None, show_logout=show_logout)
@@ -220,9 +262,17 @@ def get_static_router_with_base(
 
     @router.get("/{path:path}", response_model=None)
     async def serve_spa(path: str, request: Request) -> FileResponse | HTMLResponse:
-        """Serve static files or fall back to index.html for SPA routing."""
-        file_path = _FRONTEND_DIR / path
-        if file_path.exists() and file_path.is_file():
+        """Serve static files or fall back to index.html for SPA routing.
+
+        Only regular files under the frontend directory are served. Paths
+        that normalize to a location outside of it get a 404; any other path
+        that is not a servable file (missing, a directory, or not inspectable)
+        falls back to index.html so client-side routes keep working.
+        """
+        file_path = _contained_frontend_path(path)
+        if file_path is None:
+            return HTMLResponse("<h1>Not found</h1>", status_code=404)
+        if _is_regular_file(file_path):
             return FileResponse(file_path)
 
         index_path = _FRONTEND_DIR / "index.html"

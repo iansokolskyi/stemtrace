@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Fixed path traversal in UI static file serving that could expose files outside the bundled frontend directory.
+
 ## [0.3.4] - 2026-06-25
 
 ### Fixed
