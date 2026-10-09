@@ -3,7 +3,7 @@
 import logging
 import time
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -57,7 +57,7 @@ def store() -> GraphStore:
 @pytest.fixture
 def sample_events() -> list[TaskEvent]:
     """Create sample events for testing."""
-    base_time = datetime(2024, 1, 1, tzinfo=UTC)
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
     return [
         TaskEvent(
             task_id=f"task-{i}",
@@ -183,7 +183,7 @@ class TestWorkerEventHandling:
         """Worker ready event should register worker in registry."""
         worker_registry = WorkerRegistry()
         # Use future time to ensure event is after consumer's _started_at
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         worker_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
@@ -218,7 +218,7 @@ class TestWorkerEventHandling:
         worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
 
         # Use future time to ensure event is after consumer's _started_at
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         shutdown_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_SHUTDOWN,
             hostname="worker-1",
@@ -248,8 +248,8 @@ class TestWorkerEventHandling:
         worker_registry = WorkerRegistry()
         # Use future time for worker event so it's after consumer's _started_at
         # Task events can use any time (they're not filtered)
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
-        past_time = datetime(2024, 1, 1, tzinfo=UTC)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
+        past_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         events: list[TaskEvent | WorkerEvent] = [
             TaskEvent(
@@ -293,7 +293,7 @@ class TestWorkerEventHandling:
 
     def test_worker_events_skipped_without_registry(self, store: GraphStore) -> None:
         """Worker events should be skipped if no registry provided."""
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         worker_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
@@ -325,7 +325,7 @@ class TestWorkerEventHandling:
         """
         worker_registry = WorkerRegistry()
         # Create an event from 1 minute ago (before consumer starts but recent)
-        one_min_ago = datetime.now(UTC) - timedelta(minutes=1)
+        one_min_ago = datetime.now(timezone.utc) - timedelta(minutes=1)
         old_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="still-running-worker",
@@ -362,8 +362,8 @@ class TestWorkerEventHandling:
         """
         worker_registry = WorkerRegistry()
         # Worker started at T1, shut down at T2 (both before consumer but recent)
-        t1 = datetime.now(UTC) - timedelta(minutes=2)
-        t2 = datetime.now(UTC) - timedelta(minutes=1)
+        t1 = datetime.now(timezone.utc) - timedelta(minutes=2)
+        t2 = datetime.now(timezone.utc) - timedelta(minutes=1)
         events: list[WorkerEvent] = [
             WorkerEvent(
                 event_type=WorkerEventType.WORKER_READY,
@@ -410,14 +410,14 @@ class TestWorkerEventHandling:
         # Manually set last_seen to 20 minutes ago to trigger stale detection
         with worker_registry._lock:
             worker = worker_registry._workers["stale-worker:11111"]
-            worker.last_seen = datetime.now(UTC) - timedelta(minutes=20)
+            worker.last_seen = datetime.now(timezone.utc) - timedelta(minutes=20)
 
         # Create a task event to trigger processing (stale check happens after events)
         task_event = TaskEvent(
             task_id="trigger-1",
             name="tests.trigger",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         fake = FakeTransport([task_event])
 

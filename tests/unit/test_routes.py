@@ -1,7 +1,7 @@
 """Tests for REST API routes."""
 
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -34,7 +34,7 @@ class MakeEvent:
     """Factory for creating events with incrementing timestamps."""
 
     _counter = 0
-    _base_time = datetime(2024, 1, 1, tzinfo=UTC)
+    _base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
     @classmethod
     def reset(cls) -> None:
@@ -317,7 +317,7 @@ class TestTaskNodeResponse:
         self, client: TestClient, store: GraphStore
     ) -> None:
         """Test that duration is calculated for completed tasks."""
-        start_time = datetime(2024, 1, 1, tzinfo=UTC)
+        start_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
         end_time = start_time + timedelta(seconds=5)
 
         store.add_event(
@@ -1193,7 +1193,7 @@ class TestGraphNodeTimingResponse:
 
     def test_graph_node_response_timing_computed_from_children(self) -> None:
         """Synthetic nodes with no events compute timing/duration from child nodes."""
-        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t1 = t0 + timedelta(seconds=10)
         t2 = t0 + timedelta(seconds=25)
 
@@ -1240,7 +1240,7 @@ class TestGraphNodeTimingResponse:
 
     def test_graph_node_response_children_sorted_tasks_first(self) -> None:
         """Children are ordered with TASK nodes first, GROUP/CHORD nodes last."""
-        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         task_a = TaskNode(
             task_id="task-a",
@@ -1309,7 +1309,7 @@ class TestResolveNodeAlias:
                     task_id="test-1",
                     name="myapp.tasks.process",
                     state=TaskState.SUCCESS,
-                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                     args=args,
                     kwargs=kwargs,
                 )

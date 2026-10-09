@@ -1,6 +1,6 @@
 """Tests for GraphStore."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,7 +20,7 @@ class MakeEvent:
     """Factory for creating events with incrementing timestamps."""
 
     _counter = 0
-    _base_time = datetime(2024, 1, 1, tzinfo=UTC)
+    _base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
     @classmethod
     def reset(cls) -> None:
@@ -811,7 +811,7 @@ class TestGraphStoreSyntheticNodes:
         self, store: GraphStore
     ) -> None:
         """Synthetic nodes should sort by their children's most recent timestamp."""
-        base_time = datetime(2024, 1, 1, tzinfo=UTC)
+        base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         # Create an old regular task (first)
         store.add_event(
@@ -877,7 +877,7 @@ class TestGraphStoreSyntheticNodes:
         self, store: GraphStore
     ) -> None:
         """When a group member gets updated, the group should move to the top."""
-        base_time = datetime(2024, 1, 1, tzinfo=UTC)
+        base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         # Create a group
         group_id = "my-group"
@@ -983,8 +983,8 @@ class TestWorkerRegistry:
         self, registry: WorkerRegistry
     ) -> None:
         """Re-registering the same hostname+pid should update that worker entry."""
-        ts1 = datetime(2024, 1, 1, tzinfo=UTC)
-        ts2 = datetime(2024, 1, 1, 0, 0, 10, tzinfo=UTC)
+        ts1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 0, 0, 10, tzinfo=timezone.utc)
 
         registry.register_worker(
             hostname="worker-1.example.com",
@@ -1346,7 +1346,7 @@ class TestGraphStoreRootNodesSyntheticDateFiltering:
         self, store: GraphStore
     ) -> None:
         """Synthetic GROUP roots should be filtered by the earliest child timestamp."""
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
         group_id = "date-filter-group"
 
         # Two grouped tasks that both start on Jan 2 (so Jan 1 filter should exclude the group)
@@ -1410,7 +1410,7 @@ class TestGraphStoreGetGraphFromRootEdgeCases:
         self, store: GraphStore
     ) -> None:
         """get_graph_from_root should ignore missing children and avoid infinite loops."""
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
         store.add_event(
             TaskEvent(
                 task_id="root",
@@ -1444,7 +1444,7 @@ class TestGraphStoreEvictionParentCleanup:
     def test_eviction_removes_evicted_child_from_parent_children(self) -> None:
         """When a child is evicted, it should be removed from its parent's children list."""
         store = GraphStore(max_nodes=3)
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         store.add_event(
             TaskEvent(
@@ -1493,7 +1493,7 @@ class TestGraphStoreEvictionParentCleanup:
     def test_eviction_does_not_require_child_in_parent_children(self) -> None:
         """Eviction should handle nodes with parent_id that were never linked as children."""
         store = GraphStore(max_nodes=3)
-        base = datetime(2024, 1, 1, tzinfo=UTC)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         # Child arrives first referencing a missing parent => no backlinking occurs.
         store.add_event(

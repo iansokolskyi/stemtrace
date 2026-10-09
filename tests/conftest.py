@@ -1,6 +1,6 @@
 """Shared pytest fixtures."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -14,5 +14,5 @@ def sample_event() -> TaskEvent:
         task_id="test-123",
         name="tests.sample_task",
         state=TaskState.PENDING,
-        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )

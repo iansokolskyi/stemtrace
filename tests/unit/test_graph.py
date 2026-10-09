@@ -1,6 +1,6 @@
 """Tests for task graph models."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -65,7 +65,7 @@ class TestTaskNode:
             task_id="task-1",
             name="test",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         node.events.append(event)
         assert len(node.events) == 1
@@ -114,7 +114,7 @@ class TestTaskGraphBasics:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         graph.add_event(event)
         assert "task-1" in graph.nodes
@@ -128,7 +128,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -136,7 +136,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         assert len(graph.nodes) == 1
@@ -154,7 +154,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         node = graph.get_node("task-1")
@@ -170,7 +170,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -178,7 +178,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -193,7 +193,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -209,7 +209,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -218,7 +218,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         # Child knows parent, but parent doesn't know child (no back-linking)
@@ -232,7 +232,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         for idx in range(3):
@@ -241,7 +241,7 @@ class TestTaskGraphParentChild:
                     task_id=f"child-{idx}",
                     name="myapp.tasks.subtask",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     parent_id="parent-1",
                 )
             )
@@ -259,7 +259,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         # Child's PENDING event (from task_sent) lacks parent_id
@@ -268,7 +268,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=None,  # task_sent doesn't know parent
             )
         )
@@ -282,7 +282,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",  # Worker has this info
             )
         )
@@ -300,7 +300,7 @@ class TestTaskGraphNesting:
                 task_id="root",
                 name="myapp.tasks.root",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -308,7 +308,7 @@ class TestTaskGraphNesting:
                 task_id="parent",
                 name="myapp.tasks.parent",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="root",
             )
         )
@@ -317,7 +317,7 @@ class TestTaskGraphNesting:
                 task_id="child",
                 name="myapp.tasks.child",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent",
             )
         )
@@ -333,7 +333,7 @@ class TestTaskGraphNesting:
                     task_id=f"root-{idx}",
                     name="myapp.tasks.root",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                 )
             )
         assert len(graph.root_ids) == 3
@@ -355,7 +355,7 @@ class TestTaskNodeStateTransitions:
                     task_id=task_id,
                     name="myapp.tasks.process",
                     state=state,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                 )
             )
         node = graph.nodes[task_id]
@@ -370,7 +370,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=0,
             )
         )
@@ -379,7 +379,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.RETRY,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -388,7 +388,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -397,7 +397,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -415,7 +415,7 @@ class TestTaskGraphSerialization:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         data = graph.model_dump()
@@ -430,7 +430,7 @@ class TestTaskGraphSerialization:
                 task_id="parent",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
         graph.add_event(
@@ -438,7 +438,7 @@ class TestTaskGraphSerialization:
                 task_id="child",
                 name="myapp.tasks.sub",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 parent_id="parent",
             )
         )
@@ -458,7 +458,7 @@ class TestGroupIdCapture:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             group_id="group-abc",
         )
         assert event.group_id == "group-abc"
@@ -468,7 +468,7 @@ class TestGroupIdCapture:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         assert event.group_id is None
 
@@ -479,7 +479,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -496,7 +496,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=None,
             )
         )
@@ -508,7 +508,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -526,7 +526,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -545,7 +545,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -557,7 +557,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -578,7 +578,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -587,7 +587,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -607,7 +607,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -616,7 +616,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -635,7 +635,7 @@ class TestSyntheticGroupNodes:
                     task_id=f"task-{i}",
                     name=f"myapp.tasks.t{i}",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     group_id=group_id,
                 )
             )
@@ -656,7 +656,7 @@ class TestSyntheticGroupNodes:
                 task_id="a1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-a",
             )
         )
@@ -665,7 +665,7 @@ class TestSyntheticGroupNodes:
                 task_id="a2",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-a",
             )
         )
@@ -676,7 +676,7 @@ class TestSyntheticGroupNodes:
                 task_id="b1",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-b",
             )
         )
@@ -685,7 +685,7 @@ class TestSyntheticGroupNodes:
                 task_id="b2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-b",
             )
         )
@@ -705,7 +705,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -714,7 +714,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -742,7 +742,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -751,7 +751,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -769,7 +769,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -778,7 +778,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.FAILURE,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -796,7 +796,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -805,7 +805,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -823,7 +823,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -832,7 +832,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -851,7 +851,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -860,7 +860,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -874,7 +874,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -886,7 +886,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -909,7 +909,7 @@ class TestGroupNodeState:
                 task_id=parent_id,
                 name="myapp.workflow",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
 
@@ -919,7 +919,7 @@ class TestGroupNodeState:
                 task_id="member-1",
                 name="myapp.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -928,7 +928,7 @@ class TestGroupNodeState:
                 task_id="member-2",
                 name="myapp.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -945,7 +945,7 @@ class TestGroupNodeState:
                 task_id="member-1",
                 name="myapp.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -955,7 +955,7 @@ class TestGroupNodeState:
                 task_id="member-2",
                 name="myapp.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -979,7 +979,7 @@ class TestGroupNodeState:
                 task_id=parent_id,
                 name="myapp.tasks.parent",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
 
@@ -989,7 +989,7 @@ class TestGroupNodeState:
                 task_id="child-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -999,7 +999,7 @@ class TestGroupNodeState:
                 task_id="child-2",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -1053,7 +1053,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1080,7 +1080,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1090,7 +1090,7 @@ class TestChordNodeCreation:
                 task_id="header-2",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1104,7 +1104,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1127,7 +1127,7 @@ class TestChordNodeCreation:
                     task_id=f"add-{i}",
                     name="myapp.tasks.add",
                     state=TaskState.SUCCESS,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     group_id=group_id,
                     chord_id=group_id,
                     chord_callback_id=callback_id,
@@ -1140,7 +1140,7 @@ class TestChordNodeCreation:
                 task_id=callback_id,
                 name="myapp.tasks.aggregate",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,  # Callback has same group_id
             )
         )
@@ -1170,7 +1170,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1183,7 +1183,7 @@ class TestChordNodeCreation:
                 task_id=callback_id,
                 name="myapp.tasks.aggregate",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1204,7 +1204,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1215,7 +1215,7 @@ class TestChordNodeCreation:
                 task_id="header-2",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1232,7 +1232,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1261,7 +1261,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1270,7 +1270,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.RETRY,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1287,7 +1287,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1296,7 +1296,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.REVOKED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1313,7 +1313,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.REJECTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1322,7 +1322,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1343,7 +1343,7 @@ class TestGraphCoverageEdgeCases:
                 task_id=callback_id,
                 name="myapp.tasks.callback",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1355,7 +1355,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="header-1",
                 name="myapp.tasks.header",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_callback_id=callback_id,
             )
@@ -1378,7 +1378,7 @@ class TestGraphCoverageEdgeCases:
                 task_id=callback_id,
                 name="myapp.tasks.callback",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         assert callback_id in graph.root_ids
@@ -1388,7 +1388,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="header-1",
                 name="myapp.tasks.header",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_callback_id=callback_id,
             )

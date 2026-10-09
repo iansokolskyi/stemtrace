@@ -4,7 +4,7 @@ import logging
 import socket
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -36,7 +36,7 @@ def started_event() -> TaskEvent:
         task_id="task-001",
         name="tests.my_task",
         state=TaskState.STARTED,
-        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -47,7 +47,7 @@ def success_event() -> TaskEvent:
         task_id="task-001",
         name="tests.my_task",
         state=TaskState.SUCCESS,
-        timestamp=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
     )
 
 
@@ -73,7 +73,7 @@ class TestMemoryTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             registered_tasks=["tasks.add"],
         )
 
@@ -259,7 +259,7 @@ class TestRedisTransport:
             task_id="task-123",
             name="tests.sample_task",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
     @pytest.fixture
@@ -269,7 +269,7 @@ class TestRedisTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             registered_tasks=["tasks.add", "tasks.multiply"],
         )
 
@@ -764,7 +764,7 @@ class TestRabbitMQTransport:
             task_id="task-123",
             name="tests.sample_task",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
         transport.publish(event)
@@ -784,7 +784,7 @@ class TestRabbitMQTransport:
             task_id="t1",
             name="tests.t1",
             state=TaskState.SUCCESS,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ).model_dump(mode="json")
         parsed = RabbitMQTransport._parse_event(payload)
         assert isinstance(parsed, TaskEvent)
@@ -796,7 +796,7 @@ class TestRabbitMQTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="h",
             pid=1,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             registered_tasks=[],
         ).model_dump(mode="json")
         parsed = RabbitMQTransport._parse_event(payload)
@@ -821,7 +821,7 @@ class TestRabbitMQTransport:
             task_id="t2",
             name="tests.t2",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         transport.publish(event)
         assert seen["task_id"] == "t2"
@@ -838,7 +838,7 @@ class TestRabbitMQTransport:
                 task_id="consume-1",
                 name="tests.consume",
                 state=TaskState.RECEIVED,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             ).model_dump(mode="json")
             # Use the fake message type we installed on the kombu module.
             msg = sys.modules["kombu"].FakeMessage()  # type: ignore[attr-defined]
@@ -966,7 +966,7 @@ class TestRabbitMQTransport:
                     task_id="consume-2",
                     name="tests.consume",
                     state=TaskState.RECEIVED,
-                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 ).model_dump(mode="json")
                 seen["valid_msg"] = FakeMessage(reject_raises=False)
                 for cb in callbacks:
@@ -1003,7 +1003,7 @@ class TestRabbitMQTransport:
             task_id="t3",
             name="tests.t3",
             state=TaskState.SUCCESS,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         json_str = event.model_dump_json()
         parsed_str = RabbitMQTransport._parse_event(json_str)
@@ -1036,7 +1036,7 @@ class TestRabbitMQTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             registered_tasks=[],
         )
 
@@ -1094,7 +1094,7 @@ class TestRabbitMQTransport:
             task_id="t4",
             name="tests.t4",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         transport.publish(event)
 

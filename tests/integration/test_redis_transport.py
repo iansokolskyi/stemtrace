@@ -9,7 +9,7 @@ Run with: pytest tests/integration/test_redis_transport.py -v
 import contextlib
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -60,7 +60,7 @@ def sample_event() -> TaskEvent:
         task_id="redis-test-123",
         name="tests.redis_task",
         state=TaskState.STARTED,
-        timestamp=datetime.now(UTC),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -91,7 +91,7 @@ class TestRedisTransportIntegration:
                 task_id=f"task-{i}",
                 name="tests.multi",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
             for i in range(5)
         ]
@@ -117,7 +117,7 @@ class TestRedisTransportIntegration:
             task_id="full-event-123",
             name="tests.full_task",
             state=TaskState.RETRY,
-            timestamp=datetime(2024, 6, 15, 12, 30, 45, tzinfo=UTC),
+            timestamp=datetime(2024, 6, 15, 12, 30, 45, tzinfo=timezone.utc),
             parent_id="parent-456",
             root_id="root-789",
             group_id="group-xyz",
@@ -146,7 +146,7 @@ class TestRedisTransportIntegration:
                 task_id=f"group-task-{i}",
                 name="tests.group_member",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
             for i in range(3)
@@ -188,7 +188,7 @@ class TestRedisStreamOperations:
                 task_id="create-stream",
                 name="tests.create",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
 
@@ -203,7 +203,7 @@ class TestRedisStreamOperations:
                     task_id=f"len-test-{i}",
                     name="tests.length",
                     state=TaskState.SUCCESS,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                 )
             )
 

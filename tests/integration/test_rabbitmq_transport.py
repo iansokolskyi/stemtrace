@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -105,7 +105,7 @@ class TestRabbitMQTransportIntegration:
             task_id="rabbitmq-test-123",
             name="tests.rabbitmq_task",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         # Ensure the consumer queue exists before publishing; RabbitMQ does not
         # retain messages in the exchange.
@@ -126,7 +126,7 @@ class TestRabbitMQTransportIntegration:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             registered_tasks=["tests.task_a"],
         )
         rabbitmq_transport._declare_exchange_and_queue()

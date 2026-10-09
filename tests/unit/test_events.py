@@ -1,6 +1,6 @@
 """Tests for core event models."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -45,7 +45,7 @@ class TestTaskEventCreation:
             task_id="abc-123",
             name="myapp.tasks.send_email",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
         assert event.task_id == "abc-123"
         assert event.name == "myapp.tasks.send_email"
@@ -60,7 +60,7 @@ class TestTaskEventCreation:
             task_id="child-456",
             name="myapp.tasks.subtask",
             state=TaskState.RETRY,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             parent_id="parent-123",
             root_id="root-001",
             trace_id="trace-abc-xyz",
@@ -78,7 +78,7 @@ class TestTaskEventCreation:
                 task_id=123,  # type: ignore[arg-type]
                 name="test",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
 
     def test_validates_retries_type(self) -> None:
@@ -87,7 +87,7 @@ class TestTaskEventCreation:
                 task_id="abc-123",
                 name="test",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries="five",  # type: ignore[arg-type]
             )
 
@@ -96,7 +96,7 @@ class TestTaskEventCreation:
             task_id="abc-123",
             name="test",
             state="SUCCESS",  # type: ignore[arg-type]
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         assert event.state == TaskState.SUCCESS
 
@@ -106,7 +106,7 @@ class TestTaskEventCreation:
                 task_id="abc-123",
                 name="test",
                 state="INVALID_STATE",  # type: ignore[arg-type]
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
 
 
@@ -116,7 +116,7 @@ class TestTaskEventImmutability:
             task_id="abc-123",
             name="myapp.tasks.send_email",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         with pytest.raises(ValidationError):
             event.task_id = "changed"  # type: ignore[misc]
@@ -126,7 +126,7 @@ class TestTaskEventImmutability:
             task_id="abc-123",
             name="test",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         with pytest.raises(ValidationError):
             event.state = TaskState.SUCCESS  # type: ignore[misc]
@@ -134,7 +134,7 @@ class TestTaskEventImmutability:
 
 class TestTaskEventEquality:
     def test_equal_events(self) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         event1 = TaskEvent(
             task_id="abc-123",
             name="test",
@@ -150,7 +150,7 @@ class TestTaskEventEquality:
         assert event1 == event2
 
     def test_different_task_id_not_equal(self) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         event1 = TaskEvent(
             task_id="abc-123",
             name="test",
@@ -166,7 +166,7 @@ class TestTaskEventEquality:
         assert event1 != event2
 
     def test_hashable_for_sets(self) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         event1 = TaskEvent(
             task_id="abc-123",
             name="test",
@@ -195,7 +195,7 @@ class TestTaskEventSerialization:
             task_id="abc-123",
             name="myapp.tasks.send_email",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
         data = event.model_dump()
         assert data["task_id"] == "abc-123"
@@ -207,7 +207,7 @@ class TestTaskEventSerialization:
             task_id="abc-123",
             name="myapp.tasks.send_email",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
         json_str = event.model_dump_json()
         assert "abc-123" in json_str
@@ -233,7 +233,7 @@ class TestTaskEventSerialization:
             task_id="abc-123",
             name="myapp.tasks.send_email",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             parent_id="parent-001",
             root_id="root-001",
             trace_id="trace-xyz",
@@ -265,7 +265,7 @@ class TestWorkerEventCreation:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1.example.com",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
             registered_tasks=["myapp.tasks.add", "myapp.tasks.process"],
         )
         assert event.event_type == WorkerEventType.WORKER_READY
@@ -276,7 +276,7 @@ class TestWorkerEventCreation:
 
     def test_worker_shutdown_event(self) -> None:
         """Create worker_shutdown event with shutdown time."""
-        shutdown_time = datetime(2024, 1, 1, 13, 30, 0, tzinfo=UTC)
+        shutdown_time = datetime(2024, 1, 1, 13, 30, 0, tzinfo=timezone.utc)
         event = WorkerEvent(
             event_type=WorkerEventType.WORKER_SHUTDOWN,
             hostname="worker-1.example.com",
@@ -303,7 +303,7 @@ class TestWorkerEventCreation:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1.example.com",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
         )
         assert event.registered_tasks == []
 
@@ -313,7 +313,7 @@ class TestWorkerEventCreation:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1.example.com",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
             registered_tasks=["myapp.tasks.send_email"],
         )
         data = event.model_dump()
@@ -329,7 +329,7 @@ class TestWorkerEventCreation:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1.example.com",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
             registered_tasks=["myapp.tasks.process"],
         )
         json_str = event.model_dump_json()
@@ -343,7 +343,7 @@ class TestWorkerEventCreation:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-2.example.com",
             pid=54321,
-            timestamp=datetime(2024, 2, 1, 12, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc),
             registered_tasks=["myapp.tasks.analyze"],
         )
         data = original.model_dump(mode="json")
