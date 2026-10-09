@@ -1,13 +1,15 @@
 """Tests for EventConsumer and AsyncEventConsumer."""
 
+import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.server import consumer as consumer_module
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -434,3 +436,149 @@ class TestWorkerEventHandling:
         worker = worker_registry.get_worker("stale-worker", 11111)
         assert worker is not None
         assert worker.status == WorkerStatus.OFFLINE
+
+
+class FlakyTransport(FakeTransport):
+    """Transport whose consume() raises for the first ``failures`` calls."""
+
+    def __init__(
+        self,
+        events: list[TaskEvent | WorkerEvent],
+        *,
+        failures: int,
+        connected: bool | None = None,
+    ) -> None:
+        super().__init__(events)
+        self.failures_left = failures
+        self.consume_calls = 0
+        self.connected = connected
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        self.consume_calls += 1
+        if self.failures_left > 0:
+            self.failures_left -= 1
+            raise ConnectionError("Connection closed by server.")
+        yield from super().consume()
+
+
+def _wait_until(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met in time")
+        time.sleep(0.01)
+
+
+class TestConsumerRecovery:
+    def test_consume_loop_after_errors_restarts_and_processes_events(
+        self,
+        store: GraphStore,
+        sample_events: list[TaskEvent],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        fake = FlakyTransport(list(sample_events), failures=3)
+
+        with (
+            patch("stemtrace.server.consumer.get_transport", return_value=fake),
+            caplog.at_level(logging.INFO, logger="stemtrace.server.consumer"),
+        ):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: store.node_count == len(sample_events))
+
+            assert consumer.is_running
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        assert fake.consume_calls == 4
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 3
+        assert warnings[0].exc_info is not None
+        assert all(w.exc_info is None for w in warnings[1:])
+        assert "still failing (attempt 3)" in warnings[-1].message
+        assert "Consumer recovered after 3 restart(s)" in caplog.text
+
+    def test_consume_loop_restart_backoff_doubles_up_to_cap(
+        self, store: GraphStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        delays: list[float] = []
+        consumer = EventConsumer("memory://", store)
+        fake = FlakyTransport([], failures=8)
+
+        def fake_wait(timeout: float | None = None) -> bool:
+            delays.append(timeout or 0.0)
+            if len(delays) == 8:
+                fake.stop()
+            return False
+
+        monkeypatch.setattr(consumer._stop_event, "wait", fake_wait)
+        consumer._transport = fake
+        consumer._consume_loop()
+
+        assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
+
+    def test_consume_loop_when_stopped_before_start_exits(
+        self, store: GraphStore
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+        fake = FlakyTransport([], failures=1)
+        consumer._transport = fake
+        consumer._stop_event.set()
+
+        consumer._consume_loop()
+
+        assert fake.consume_calls == 0
+
+    def test_consume_loop_when_stopped_during_error_exits_without_warning(
+        self, store: GraphStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+
+        class StopThenFail(FlakyTransport):
+            def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+                consumer._stop_event.set()
+                return super().consume()
+
+        fake = StopThenFail([], failures=1)
+        consumer._transport = fake
+
+        with caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"):
+            consumer._consume_loop()
+
+        assert fake.consume_calls == 1
+        assert caplog.records == []
+
+    def test_is_connected_reports_transport_connectivity(
+        self, store: GraphStore
+    ) -> None:
+        fake = FlakyTransport([], failures=0, connected=False)
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("memory://", store)
+            assert consumer.is_connected is None
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+
+            assert consumer.is_connected is False
+            fake.connected = True
+            assert consumer.is_connected is True
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+    def test_is_connected_without_connectivity_support_is_none(
+        self, store: GraphStore
+    ) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+
+            assert consumer.is_connected is None
+
+            fake.stop()
+            consumer.stop(timeout=1.0)

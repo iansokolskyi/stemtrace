@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from stemtrace.core.events import TaskEvent, WorkerEvent, WorkerEventType
+from stemtrace.core.ports import ConnectionAwareTransport
 from stemtrace.library.transports import get_transport
 
 if TYPE_CHECKING:
@@ -18,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 # Default interval for stale worker checks (seconds)
 STALE_CHECK_INTERVAL = 60
+
+# Backoff for restarting the consume loop after an unexpected error (seconds).
+# Doubles per consecutive failure and resets once an event is received.
+RESTART_INITIAL_BACKOFF = 1.0
+RESTART_MAX_BACKOFF = 30.0
 
 
 class EventConsumer:
@@ -49,6 +55,18 @@ class EventConsumer:
     def is_running(self) -> bool:
         """Whether the consumer thread is alive."""
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def is_connected(self) -> bool | None:
+        """Whether the transport can currently reach the broker.
+
+        None when not running or when the transport doesn't report it.
+        """
+        transport: object = self._transport
+        if not self.is_running or not isinstance(transport, ConnectionAwareTransport):
+            return None
+        connected = transport.connected
+        return connected if isinstance(connected, bool) else None
 
     def start(self) -> None:
         """Start consuming in background thread. Idempotent."""
@@ -86,19 +104,45 @@ class EventConsumer:
 
         logger.debug("Consumer loop starting, reading from %s", self._broker_url)
 
-        try:
-            for event in self._transport.consume():
-                if self._stop_event.is_set():
-                    break
+        failures = 0
+        backoff = RESTART_INITIAL_BACKOFF
+        while not self._stop_event.is_set():
+            try:
+                for event in self._transport.consume():
+                    if self._stop_event.is_set():
+                        return
+                    if failures:
+                        logger.info("Consumer recovered after %d restart(s)", failures)
+                        failures = 0
+                        backoff = RESTART_INITIAL_BACKOFF
 
-                try:
-                    self._process_event(event)
-                    self._maybe_check_stale_workers()
-                except Exception:
-                    logger.exception("Error processing event")
-        except Exception:
-            if not self._stop_event.is_set():
-                logger.exception("Consumer loop error")
+                    try:
+                        self._process_event(event)
+                        self._maybe_check_stale_workers()
+                    except Exception:
+                        logger.exception("Error processing event")
+                # The transport's iterator ended on its own (e.g. MemoryTransport).
+                return
+            except Exception as exc:
+                if self._stop_event.is_set():
+                    return
+                failures += 1
+                if failures == 1:
+                    logger.warning(
+                        "Consumer loop error; restarting in %.1fs",
+                        backoff,
+                        exc_info=True,
+                    )
+                else:
+                    logger.warning(
+                        "Consumer loop still failing (attempt %d): %s; "
+                        "restarting in %.1fs",
+                        failures,
+                        exc,
+                        backoff,
+                    )
+                self._stop_event.wait(backoff)
+                backoff = min(backoff * 2, RESTART_MAX_BACKOFF)
 
     def _maybe_check_stale_workers(self) -> None:
         """Periodically check for and mark stale workers as offline.
@@ -182,6 +226,11 @@ class AsyncEventConsumer:
     def is_running(self) -> bool:
         """Whether the consumer thread is alive."""
         return self._consumer.is_running
+
+    @property
+    def is_connected(self) -> bool | None:
+        """Whether the transport can currently reach the broker (None if unknown)."""
+        return self._consumer.is_connected
 
     async def __aenter__(self) -> AsyncEventConsumer:
         """Start consumer on context enter."""

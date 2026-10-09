@@ -113,6 +113,7 @@ export interface HealthResponse {
   status: string
   version: string
   consumer_running: boolean
+  consumer_connected?: boolean | null
   websocket_connections: number
   node_count: number
 }

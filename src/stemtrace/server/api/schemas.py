@@ -121,6 +121,10 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     consumer_running: bool = False
+    # True if the consumer's last broker read succeeded, False while it is
+    # failing to reach the broker, None if unknown (not started, first read
+    # pending, or the transport doesn't report connectivity).
+    consumer_connected: bool | None = None
     websocket_connections: int = 0
     node_count: int = 0
 

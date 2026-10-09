@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
@@ -520,6 +521,38 @@ class TestRedisTransport:
         # Should have skipped first message and got second
         assert len(events) == 1
         assert call_count == 2
+
+    def test_consume_when_xread_times_out_retries_and_yields_event(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+    ) -> None:
+        """consume() treats a socket read timeout as an empty read and keeps going."""
+        serialized = sample_event.model_dump_json().encode()
+        call_count = 0
+
+        def xread_side_effect(*args: Any, **kwargs: Any) -> list[Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RedisTimeoutError("Timeout reading from socket")
+            return [
+                (
+                    b"test:events",
+                    [(b"1234567890-0", {b"data": serialized})],
+                )
+            ]
+
+        mock_client.xread.side_effect = xread_side_effect
+
+        events = []
+        for event in transport.consume():
+            events.append(event)
+            break
+
+        assert call_count == 2
+        assert events == [sample_event]
 
     def test_consume_with_custom_last_id(
         self,

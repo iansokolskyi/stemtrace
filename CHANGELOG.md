@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Health endpoint: `consumer_connected` reports whether the event consumer's last broker read succeeded (`true`), is failing (`false`), or is unknown (`null`, also for transports that don't report it). Existing fields are unchanged.
+
+### Fixed
+- Redis transport: the server stopped receiving events after about 5 seconds of quiet when used with redis-py 8. redis-py 8 defaults `socket_timeout` to 5 seconds, the same as the `XREAD` block window, so the first idle read timed out and the consumer thread exited for good. Clients created from a URL now get a `socket_timeout` of 10 seconds unless the URL sets one, so idle reads return normally on a single connection. If a client's `socket_timeout` is shorter than the block window, the window is shortened to fit.
+- Redis transport: losing the connection (for example a Redis restart, an unreachable host, or a connect timeout) no longer stops event consumption. The consumer logs one warning with a traceback, then one line per attempt, and retries with exponential backoff (1 s doubling to a 30 s cap, reset on success), resuming from the last stream entry it read. Repeated read timeouts are logged as warnings at most once a minute.
+- Server: the event consumer thread restarts with the same backoff after an unexpected error instead of exiting silently.
+
 ## [0.3.5] - 2026-10-09
 
 ### Security

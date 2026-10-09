@@ -73,10 +73,12 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "ok"
         assert data["node_count"] == 0
+        assert data["consumer_connected"] is None
 
     def test_health_with_consumer_and_ws(self, store: GraphStore) -> None:
         mock_consumer = MagicMock()
         mock_consumer.is_running = True
+        mock_consumer.is_connected = False
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.connection_count = 5
@@ -92,6 +94,7 @@ class TestHealthEndpoint:
         data = response.json()
 
         assert data["consumer_running"] is True
+        assert data["consumer_connected"] is False
         assert data["websocket_connections"] == 5
 
 

@@ -403,6 +403,7 @@ def create_api_router(
             status="ok",
             version=__version__,
             consumer_running=consumer.is_running if consumer else False,
+            consumer_connected=consumer.is_connected if consumer else None,
             websocket_connections=ws_manager.connection_count if ws_manager else 0,
             node_count=store.node_count,
         )
