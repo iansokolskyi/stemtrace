@@ -220,5 +220,5 @@ export function TimelineBar({ events, height = 'sm', showLabels = false }: Timel
   )
 }
 
-export { stateColors, TERMINAL_STATES, buildSegments, formatDuration, formatTime }
 export type { TimelineSegment }
+export { buildSegments, formatDuration, formatTime, stateColors, TERMINAL_STATES }
