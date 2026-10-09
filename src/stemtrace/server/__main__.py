@@ -64,7 +64,10 @@ def server(
         typer.Option(
             "--login-secret",
             envvar="STEMTRACE_LOGIN_SECRET",
-            help="Secret used to sign session cookies (recommended for production).",
+            help=(
+                "Secret used to sign session cookies (recommended for production). "
+                "If unset, a random per-process secret is used (single process only)."
+            ),
         ),
     ] = None,
     login_ttl: Annotated[
@@ -77,19 +80,16 @@ def server(
     ] = 86400,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
-    import secrets
-    import urllib.parse
-    from collections.abc import Awaitable, Callable
-
     import uvicorn
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse, RedirectResponse
-    from starlette.responses import Response
+    from fastapi import FastAPI
 
     from stemtrace.server.fastapi.extension import StemtraceExtension
     from stemtrace.server.fastapi.form_auth import (
         FormAuthConfig,
-        is_authenticated_cookie,
+        resolve_session_secret,
+    )
+    from stemtrace.server.fastapi.form_auth_middleware import (
+        create_form_auth_middleware,
     )
     from stemtrace.server.fastapi.login_routes import create_login_router
     from stemtrace.server.ui.static import get_static_router_with_base
@@ -105,13 +105,15 @@ def server(
         )
     if login_username and login_password:
         # Cookie must cover both UI at '/' and API at '/stemtrace'.
+        secret, secret_is_generated = resolve_session_secret(login_secret)
         form_auth_config = FormAuthConfig(
             username=login_username,
             password=login_password,
-            secret=login_secret or secrets.token_urlsafe(32),
+            secret=secret,
             ttl_seconds=login_ttl,
             cookie_name="stemtrace_session",
             cookie_path="/",
+            secret_is_generated=secret_is_generated,
         )
 
     # Create extension without UI (we'll serve UI at root separately)
@@ -131,37 +133,15 @@ def server(
         login_router = create_login_router(form_auth_config, default_next_path="/")
         fastapi_app.include_router(login_router)
 
-        login_path = "/login"
-        logout_path = "/logout"
-
-        @fastapi_app.middleware("http")
-        async def _form_auth_middleware(
-            request: Request,
-            call_next: Callable[[Request], Awaitable[Response]],
-        ) -> Response:
-            path = request.url.path
-            if path in (login_path, logout_path):
-                return await call_next(request)
-
-            cookie_value = request.cookies.get(form_auth_config.cookie_name)
-            if is_authenticated_cookie(
-                cookie_value,
-                secret=form_auth_config.secret,
-                expected_username=form_auth_config.username,
-            ):
-                return await call_next(request)
-
-            if path.startswith("/stemtrace/api") or path.startswith("/assets"):
-                return JSONResponse(
-                    {"detail": "Authentication required"},
-                    status_code=401,
-                )
-
-            next_target = path
-            if request.url.query:
-                next_target = f"{path}?{request.url.query}"
-            next_qs = urllib.parse.urlencode({"next": next_target})
-            return RedirectResponse(url=f"/login?{next_qs}", status_code=303)
+        fastapi_app.middleware("http")(
+            create_form_auth_middleware(
+                form_auth_config,
+                login_path="/login",
+                logout_path="/logout",
+                api_prefix="/stemtrace/api",
+                assets_prefix="/assets",
+            )
+        )
 
     # API and WebSocket at /stemtrace (frontend expects this path)
     fastapi_app.include_router(extension.router, prefix="/stemtrace")

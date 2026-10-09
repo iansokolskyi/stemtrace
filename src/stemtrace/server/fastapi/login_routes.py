@@ -12,10 +12,22 @@ from typing import TYPE_CHECKING, Final
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
+
 if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
 
 _DEFAULT_TITLE: Final[str] = "stemtrace"
+
+# Fixed messages for known ``reason`` codes; the query value is never echoed.
+_REASON_MESSAGES: Final[dict[str, str]] = {
+    LOGIN_REASON_SESSION_MISMATCH: (
+        "Your session was rejected because it was signed by a different server "
+        "process (another worker or replica, or a recent restart). If stemtrace "
+        "runs with several workers or replicas, set STEMTRACE_LOGIN_SECRET to the "
+        "same long random value on all of them."
+    ),
+}
 _LOGIN_TEMPLATE_PATH: Final[str] = "templates/login.html"
 
 
@@ -103,6 +115,8 @@ def create_login_router(
     async def login_page(request: Request) -> HTMLResponse:
         """Render sign-in page."""
         error = request.query_params.get("error")
+        if error is None:
+            error = _REASON_MESSAGES.get(request.query_params.get("reason") or "")
         next_path = _safe_next(
             request.query_params.get("next"), default=default_next_path
         )

@@ -190,6 +190,17 @@ def _contained_frontend_path(path: str) -> str | None:
     return candidate
 
 
+def _is_under_assets(candidate: str) -> bool:
+    """Return True if a contained, normalized path lies in the assets directory.
+
+    Paths under ``assets/`` are served without a login session (they are the
+    public UI bundle), so anything there that is not a real file must 404
+    rather than fall back to the SPA shell.
+    """
+    assets_dir = str(Path(os.path.realpath(_FRONTEND_DIR)) / "assets")
+    return candidate == assets_dir or candidate.startswith(assets_dir + os.sep)
+
+
 def _is_regular_file(path: str) -> bool:
     """Return True if path is an existing regular file (symlinks followed).
 
@@ -274,15 +285,19 @@ def get_static_router_with_base(
         """Serve static files or fall back to index.html for SPA routing.
 
         Only regular files under the frontend directory are served. Paths
-        that normalize to a location outside of it get a 404; any other path
-        that is not a servable file (missing, a directory, or not inspectable)
-        falls back to index.html so client-side routes keep working.
+        that normalize to a location outside of it get a 404, and so do
+        non-file paths under ``assets/`` (served without a session, so they
+        must not return the app shell); any other path that is not a servable
+        file (missing, a directory, or not inspectable) falls back to
+        index.html so client-side routes keep working.
         """
         file_path = _contained_frontend_path(path)
         if file_path is None:
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
         if _is_regular_file(file_path):
             return FileResponse(file_path)
+        if _is_under_assets(file_path):
+            return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
