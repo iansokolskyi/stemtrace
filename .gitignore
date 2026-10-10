@@ -33,3 +33,4 @@ src/stemtrace/server/ui/frontend/src/routeTree.gen.ts
 src/stemtrace/server/ui/frontend/playwright-report/
 src/stemtrace/server/ui/frontend/test-results/
 src/stemtrace/server/ui/frontend/playwright/.cache/
+.release-notes.md

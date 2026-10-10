@@ -1,4 +1,4 @@
-.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major release
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major release release-pr release-tag
 
 # Install all dependencies
 install:
@@ -99,6 +99,8 @@ build:
 # Full pre-release checklist
 release-check:
 	@echo "=== Pre-release Checklist ==="
+	@echo "0. Checking CHANGELOG.md has [Unreleased] entries..."
+	@uv run python scripts/changelog_section.py Unreleased > /dev/null
 	@echo "1. Running all checks..."
 	$(MAKE) check
 	@echo ""
@@ -107,7 +109,7 @@ release-check:
 	@echo ""
 	@echo "✅ Ready to release!"
 	@echo ""
-	@echo "Next: make release"
+	@echo "Next: push the release branch and open the PR (see make release-pr)"
 
 # =============================================================================
 # Versioning (bump-my-version)
@@ -126,7 +128,7 @@ bump-patch:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Next: push the release branch and open the PR (see make release-pr)"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
@@ -134,7 +136,7 @@ bump-minor:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Next: push the release branch and open the PR (see make release-pr)"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
@@ -142,20 +144,42 @@ bump-major:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Next: push the release branch and open the PR (see make release-pr)"
 
 # Tag and push to trigger release workflow
 release:
+	@echo "Releases go through a PR: make release-pr BUMP=patch|minor|major, then make release-tag."
+	@exit 1
+
+# Open a release PR: checks, release/vX.Y.Z branch, version bump, PR with notes.
+# Usage: make release-pr BUMP=patch|minor|major
+release-pr:
+	@case "$(BUMP)" in patch|minor|major) ;; *) echo "Usage: make release-pr BUMP=patch|minor|major"; exit 1;; esac
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "Run from main"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "Working tree not clean"; exit 1; }
+	@git fetch -q origin main
+	@test -z "$$(git log HEAD..origin/main --oneline)" || { echo "main is behind origin/main"; exit 1; }
+	$(MAKE) release-check
+	@NEW=$$(uv run bump-my-version show new_version --increment $(BUMP)); \
+	git switch -c "release/v$$NEW" && \
+	uv run bump-my-version bump $(BUMP) && \
+	uv run python scripts/changelog_section.py "$$NEW" > .release-notes.md && \
+	git push -u origin "release/v$$NEW" && \
+	gh pr create --base main --head "release/v$$NEW" --title "chore: release v$$NEW" --body-file .release-notes.md; \
+	rm -f .release-notes.md; \
+	echo ""; \
+	echo "Next: wait for CI, merge the PR with a merge commit, then make release-tag"
+
+# Tag the merged release on main; the tag push triggers the Release workflow.
+release-tag:
+	@git switch -q main && git pull -q --ff-only origin main
 	@VERSION=$$(uv run bump-my-version show current_version); \
 	TAG="v$$VERSION"; \
-	echo "Tagging $$TAG..."; \
-	git tag -a "$$TAG" -m "Release $$TAG"; \
-	echo "Pushing to origin..."; \
-	git push origin main; \
-	git push origin "$$TAG"; \
-	echo ""; \
-	echo "✅ Released $$TAG"; \
-	echo "   → GitHub Actions will publish to PyPI and Docker"
+	git log -1 --format=%s | grep -q "release/v$$VERSION\|release v$$VERSION" || { echo "HEAD of main is not the v$$VERSION release merge"; exit 1; }; \
+	! git rev-parse -q --verify "refs/tags/$$TAG" >/dev/null || { echo "$$TAG already exists"; exit 1; }; \
+	git tag -a "$$TAG" -m "Release $$TAG" && \
+	git push origin "$$TAG" && \
+	echo "✅ Tagged $$TAG → Release workflow publishes PyPI, GHCR and the GitHub Release"
 
 # =============================================================================
 # E2E Testing
