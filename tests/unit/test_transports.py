@@ -17,22 +17,22 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
 from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
-from stemtrace.library.transports import get_transport
-from stemtrace.library.transports.memory import MemoryTransport
-from stemtrace.library.transports.rabbitmq import (
+from stemtrace.transports import get_transport
+from stemtrace.transports.memory import MemoryTransport
+from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     DRAIN_TIMEOUT,
     RECONNECT_INITIAL_BACKOFF,
     RECONNECT_MAX_BACKOFF,
     RabbitMQTransport,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RECONNECT_INITIAL_BACKOFF as REDIS_RECONNECT_INITIAL_BACKOFF,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RECONNECT_MAX_BACKOFF as REDIS_RECONNECT_MAX_BACKOFF,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RedisTransport,
     _normalize_redis_ssl_params,
 )
@@ -1101,7 +1101,7 @@ class TestRabbitMQTransport:
         self, caplog: Any, monkeypatch: Any
     ) -> None:
         """consume() rejects malformed messages and still yields subsequent valid ones."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
 
         seen: dict[str, Any] = {}
 
@@ -1732,7 +1732,7 @@ class TestRabbitMQConsumeBackoff:
         self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A message kombu can't decode is rejected once, not retried as an outage."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
         sleeper = _BoundedSleep()
         bad: dict[str, Any] = {}
         conn_ref: dict[str, Any] = {}
@@ -1775,7 +1775,7 @@ class TestRabbitMQConsumeBackoff:
         self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A failing close never escapes; the consumer reconnects as usual."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
         sleeper = _BoundedSleep()
         drains = {"n": 0}
 

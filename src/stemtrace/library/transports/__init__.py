@@ -1,40 +1,24 @@
-"""Broker-agnostic transport factory."""
+"""Deprecated alias of :mod:`stemtrace.transports`.
 
-from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+The transports moved to ``stemtrace.transports`` so the Celery integration
+(``stemtrace.library``) and the server (``stemtrace.server``) can share them
+without importing each other. This package and its submodules (``redis``,
+``rabbitmq``, ``memory``, ``breaker``) re-export the same objects, so existing
+imports keep working, but importing any of them emits one DeprecationWarning.
+They will be removed in stemtrace 1.0.
+"""
 
-from stemtrace.core.exceptions import UnsupportedBrokerError
+import warnings
 
-if TYPE_CHECKING:
-    from stemtrace.core.ports import EventTransport
+from stemtrace.transports import get_transport
 
-_SCHEME_ALIASES: dict[str, str] = {
-    "rediss": "redis",
-    "amqps": "amqp",
-    "pyamqp": "amqp",
-}
-
-
-def get_transport(
-    url: str, prefix: str = "stemtrace", ttl: int = 86400
-) -> "EventTransport":
-    """Create a transport from a broker URL."""
-    scheme = urlparse(url).scheme.lower()
-    scheme = _SCHEME_ALIASES.get(scheme, scheme)
-
-    if scheme == "redis":
-        from stemtrace.library.transports.redis import RedisTransport
-
-        return RedisTransport.from_url(url, prefix=prefix, ttl=ttl)
-    if scheme == "amqp":
-        from stemtrace.library.transports.rabbitmq import RabbitMQTransport
-
-        return RabbitMQTransport.from_url(url, prefix=prefix, ttl=ttl)
-    if scheme == "memory":
-        from stemtrace.library.transports.memory import MemoryTransport
-
-        return MemoryTransport()
-    raise UnsupportedBrokerError(scheme)
-
+warnings.warn(
+    "stemtrace.library.transports is deprecated and will be removed in "
+    "stemtrace 1.0; import from stemtrace.transports instead (for example "
+    "stemtrace.transports.redis)",
+    DeprecationWarning,
+    # Points at the importing module: warnings skips importlib's frames.
+    stacklevel=2,
+)
 
 __all__ = ["get_transport"]

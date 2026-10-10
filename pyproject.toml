@@ -193,10 +193,10 @@ root_package = "stemtrace"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
-name = "core is independent of library and server"
+name = "core is independent of library, server and transports"
 type = "forbidden"
 source_modules = ["stemtrace.core"]
-forbidden_modules = ["stemtrace.library", "stemtrace.server"]
+forbidden_modules = ["stemtrace.library", "stemtrace.server", "stemtrace.transports"]
 
 [[tool.importlinter.contracts]]
 name = "core uses no broker, Celery or web libraries"
@@ -225,11 +225,12 @@ name = "server does not import library"
 type = "forbidden"
 source_modules = ["stemtrace.server"]
 forbidden_modules = ["stemtrace.library"]
-# Baseline: existing violations, to be removed by refactors — do not add new entries.
-ignore_imports = [
-    # Removed when transports move to a neutral package both sides may import.
-    "stemtrace.server.consumer -> stemtrace.library.transports",
-]
+
+[[tool.importlinter.contracts]]
+name = "transports import only core (library and server both use them)"
+type = "forbidden"
+source_modules = ["stemtrace.transports"]
+forbidden_modules = ["stemtrace.library", "stemtrace.server"]
 
 # =============================================================================
 # pytest

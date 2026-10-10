@@ -14,7 +14,7 @@ from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     READ_TIMEOUT_WARN_AFTER,
     READ_TIMEOUT_WARN_INTERVAL,
     RECONNECT_MAX_BACKOFF,

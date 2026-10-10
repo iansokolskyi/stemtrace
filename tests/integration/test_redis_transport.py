@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports import get_transport
-from stemtrace.library.transports.redis import RedisTransport
+from stemtrace.transports import get_transport
+from stemtrace.transports.redis import RedisTransport
 
 # Skip all tests if Redis is not available
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")

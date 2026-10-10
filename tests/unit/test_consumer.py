@@ -13,12 +13,12 @@ from fastapi.testclient import TestClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from stemtrace.library.transports.redis import RedisTransport
 from stemtrace.server import consumer as consumer_module
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.transports.redis import RedisTransport
 
 
 class FakeTransport:

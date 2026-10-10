@@ -24,8 +24,8 @@ import pytest
 from kombu import Connection, Exchange, Producer
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from stemtrace.library.transports import get_transport
-from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+from stemtrace.transports import get_transport
+from stemtrace.transports.rabbitmq import RabbitMQTransport
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
@@ -207,7 +207,7 @@ class TestRabbitMQTransportReconnect:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Events published after a forced disconnect still arrive."""
-        caplog.set_level(logging.INFO, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.INFO, logger="stemtrace.transports.rabbitmq")
         rabbitmq_transport._declare_exchange_and_queue()
         stop = threading.Event()
         rabbitmq_transport.bind_stop_event(stop)
@@ -311,9 +311,7 @@ class TestRabbitMQTransportResilience:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A text/plain message is dropped once; the next event still arrives."""
-        caplog.set_level(
-            logging.WARNING, logger="stemtrace.library.transports.rabbitmq"
-        )
+        caplog.set_level(logging.WARNING, logger="stemtrace.transports.rabbitmq")
         rabbitmq_transport._declare_exchange_and_queue()
         with Connection(RABBITMQ_URL, connect_timeout=2) as conn:
             Producer(conn.channel()).publish(

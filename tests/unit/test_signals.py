@@ -30,7 +30,7 @@ from stemtrace.library.signals import (
     on_worker_ready,
     on_worker_shutdown,
 )
-from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.transports.memory import MemoryTransport
 
 
 @pytest.fixture(autouse=True)

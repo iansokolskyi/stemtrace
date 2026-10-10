@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from stemtrace.core.events import TaskEvent, WorkerEvent, WorkerEventType
 from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
-from stemtrace.library.transports import get_transport
+from stemtrace.transports import get_transport
 
 if TYPE_CHECKING:
     from stemtrace.core.ports import EventTransport

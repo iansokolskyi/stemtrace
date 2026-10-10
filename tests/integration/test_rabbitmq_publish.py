@@ -27,14 +27,14 @@ from kombu import Connection
 from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports import rabbitmq
-from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+from stemtrace.transports import rabbitmq
+from stemtrace.transports.rabbitmq import RabbitMQTransport
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
     "RABBITMQ_MANAGEMENT_URL", "http://guest:guest@localhost:15672"
 )
-LOGGER_NAME = "stemtrace.library.transports.rabbitmq"
+LOGGER_NAME = "stemtrace.transports.rabbitmq"
 
 
 def rabbitmq_available() -> bool:
