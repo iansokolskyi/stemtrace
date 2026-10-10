@@ -20,7 +20,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.104.1",
     "@tanstack/react-router": "^1.147.1",
-    "@xyflow/react": "^12.3.0",
+    "@xyflow/react": "^12.12.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "react": "^19.1.0",
