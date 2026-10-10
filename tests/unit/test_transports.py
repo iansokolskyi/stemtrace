@@ -1150,11 +1150,18 @@ class TestRabbitMQTransport:
         class FakeChannel:
             pass
 
+        class FakeAmqpConnection:
+            def close(self) -> None:
+                published["closed"] = True
+
+            def collect(self) -> None:
+                published["collected"] = True
+
         class Connection:
             def __init__(self, url: str, **_: Any) -> None:
                 self.url = url
                 self.alt: list[str] = []
-                self.connection = None
+                self.connection = FakeAmqpConnection()
                 self._channel = FakeChannel()
 
             def __enter__(self) -> "Connection":
@@ -1202,6 +1209,8 @@ class TestRabbitMQTransport:
         assert published["body"]["task_id"] == "t4"
         assert published["serializer"] == "json"
         assert published["delivery_mode"] == 2
+        assert published["closed"] is True
+        assert "collected" not in published
 
 
 class _RecordingStopEvent(threading.Event):

@@ -292,8 +292,49 @@ class TestRabbitMQPublishFailFast:
         assert warnings[0].exc_info is not None
 
 
-class TestRabbitMQPublishDrops:
-    """Dropped events are visible at DEBUG level."""
+class TestRabbitMQPublishClose:
+    """The connection close is part of the attempt."""
+
+    def test_publish_success_closes_with_handshake_not_abruptly(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+
+        transport.publish(_event())
+
+        assert broker.connections[0].connection.calls == ["close"]
+
+    def test_publish_close_timeout_counts_as_failure_and_opens_breaker(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A broker under a memory/disk alarm stops reading after the publish,
+        # so Close-Ok never arrives.
+        broker.close_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+
+        transport.publish(_event("t-blocked"))
+        for i in range(20):
+            transport.publish(_event(f"t-{i}"))
+
+        assert len(broker.connections) == 1
+        warnings = _records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert (
+            warnings[0]
+            .getMessage()
+            .startswith("Failed to publish event t-blocked to RabbitMQ")
+        )
+
+    def test_publish_failure_after_connect_drops_socket_without_close_wait(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+
+        transport.publish(_event())
+
+        # No close handshake that would wait out another timeout.
+        assert broker.connections[0].connection.calls == ["collect"]
 
     def test_publish_dropped_event_logs_debug_line(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture

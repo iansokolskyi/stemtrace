@@ -186,10 +186,13 @@ class RabbitMQTransport:
         Fire-and-forget: never raises, and events that can't be published are
         dropped, not queued. An attempt tries each host of the URL once, with
         CONNECT_TIMEOUT to connect and PUBLISH_IO_TIMEOUT per socket operation
-        after that. When an attempt fails, a circuit breaker drops events
-        without connecting for a cooldown (1s, doubling per failed retry up to
-        30s, reset by a successful publish), so a broker outage costs tasks
-        about one bounded attempt per cooldown instead of one per event. Only one
+        after that, and includes the connection close: a broker that stops
+        reading after the publish (e.g. a memory or disk alarm blocking
+        publishers) makes the Close-Ok wait time out, which counts as a
+        failure. When an attempt fails, a circuit breaker drops events without
+        connecting for a cooldown (1s, doubling per failed retry up to 30s,
+        reset by a successful publish), so a broker outage costs tasks about
+        one bounded attempt per cooldown instead of one per event. Only one
         retry (probe) runs at a time, and failures of attempts that were
         already in flight don't lengthen the cooldown. The first failure is
         logged with a traceback, then at most one summary line per
@@ -221,6 +224,9 @@ class RabbitMQTransport:
         that stalls after receiving the message (e.g. before confirming the
         connection close) still raises here, so such an event can count as
         failed although it was delivered.
+
+        Worst case per attempt once connected: one PUBLISH_IO_TIMEOUT, since
+        a failure drops the socket instead of waiting for Close-Ok too.
         """
         # kombu is imported lazily to keep import-time side effects minimal.
         from kombu import Connection, Exchange, Producer
@@ -259,22 +265,36 @@ class RabbitMQTransport:
                 reraise_as_library_errors=False,
             )
             self._publish_first_host = (first + failed_hosts) % len(hosts)
-            self._bound_publish_io(conn)
-            channel = conn.channel()
-            producer = Producer(channel)
-            producer.publish(
-                payload,
-                exchange=exchange,
-                routing_key="",
-                declare=[exchange],
-                serializer="json",
-                delivery_mode=delivery_mode,
-                retry=False,
-            )
+            # The py-amqp connection (connected, so this doesn't reconnect).
+            amqp_conn = conn.connection
+            self._bound_publish_io(amqp_conn)
+            try:
+                channel = conn.channel()
+                producer = Producer(channel)
+                producer.publish(
+                    payload,
+                    exchange=exchange,
+                    routing_key="",
+                    declare=[exchange],
+                    serializer="json",
+                    delivery_mode=delivery_mode,
+                    retry=False,
+                )
+                # Close here, inside the attempt: kombu's release() (run by
+                # the with block) swallows a Close-Ok timeout, so a broker
+                # that stopped reading would look healthy. After a successful
+                # close, release() has nothing left to do.
+                amqp_conn.close()
+            except BaseException:
+                # The attempt failed or timed out: drop the socket without the
+                # close handshake, which would wait out another timeout.
+                with contextlib.suppress(Exception):
+                    amqp_conn.collect()
+                raise
 
     @staticmethod
-    def _bound_publish_io(conn: Any) -> None:
-        """Make every later socket read/write of ``conn`` time out.
+    def _bound_publish_io(amqp_conn: Any) -> None:
+        """Make every later socket read/write of a py-amqp connection time out.
 
         py-amqp's ``read_timeout`` transport option doesn't bound reads (its
         reader retries on the resulting EAGAIN), and its frame waits outside
@@ -282,7 +302,7 @@ class RabbitMQTransport:
         the connected socket bounds channel open, declare, publish and close.
         A no-op for transports without a socket attribute.
         """
-        transport = getattr(conn.connection, "transport", None)
+        transport = getattr(amqp_conn, "transport", None)
         sock = getattr(transport, "sock", None)
         if isinstance(sock, socket.socket):
             sock.settimeout(PUBLISH_IO_TIMEOUT)
