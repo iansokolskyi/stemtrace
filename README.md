@@ -255,7 +255,12 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
   task runs, in one chronological stream. Log levels still apply to log records:
   one your logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`)
   isn't captured. stemtrace's own logs and Celery/kombu internals are left out.
-  The worker's own console/log output is unchanged.
+  What the worker prints to its console or log file is unchanged (when no
+  logging handlers are configured, warnings still print as Python's
+  `logging.lastResort` would). One side effect: from the first task on, the root
+  logger has stemtrace's handler, so `logging.getLogger().hasHandlers()` is
+  `True` and a later `logging.basicConfig()` call without `force=True` does
+  nothing. Configure logging at startup (or pass `force=True`).
 - **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
   keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
   Output travels with the task's terminal event, so it is stored wherever events
