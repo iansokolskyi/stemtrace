@@ -19,7 +19,7 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     ignore:
-      # Types track the Node 22 LTS runtime the UI is built with: no new majors
+      # Pinned to ^22: types must match the Node 22 runtime used in CI and Docker
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
