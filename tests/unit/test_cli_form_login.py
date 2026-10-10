@@ -242,7 +242,26 @@ def real_ui(
     return lambda: build_cli_app("--login-secret", "shared")
 
 
+# Decoded, these contain '?' or '#', which a parsed URL would split off,
+# making them look like an open path (login, logout, liveness) or an asset.
+_CLI_ENCODED_DELIMITER_PATHS = [
+    "/stemtrace/api/health/live%3Fx",
+    "/stemtrace/api/health/live%23x",
+    "/login%23/graphs",
+    "/login%3F/graphs",
+    "/logout%3Fa",
+    "/assets/index-abc123.js%3F",
+    "/assets/%3F/graphs",
+]
+
+
 class TestCliPublicAssets:
+    @pytest.mark.parametrize("raw_path", _CLI_ENCODED_DELIMITER_PATHS)
+    async def test_cli_encoded_delimiter_path_without_session_returns_404(
+        self, real_ui: Callable[[], FastAPI], raw_get: RawGet, raw_path: str
+    ) -> None:
+        assert await raw_get(real_ui(), raw_path) == 404
+
     @pytest.mark.parametrize("raw_path", _CLI_NON_FILE_ASSET_PATHS)
     async def test_cli_non_file_asset_path_without_session_returns_404(
         self, real_ui: Callable[[], FastAPI], raw_get: RawGet, raw_path: str

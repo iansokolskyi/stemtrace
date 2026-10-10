@@ -714,6 +714,19 @@ def fake_dist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return dist
 
 
+# Decoded, these contain '?' or '#', which a parsed URL would split off,
+# making them look like an open path (login, logout, liveness) or an asset.
+_ENCODED_DELIMITER_PATHS = [
+    "/stemtrace/api/health/live%3Fx",
+    "/stemtrace/api/health/live%23x",
+    "/stemtrace/login%23/graphs",
+    "/stemtrace/login%3F/graphs",
+    "/stemtrace/logout%3Fa",
+    "/stemtrace/assets/index-abc123.js%3F",
+    "/stemtrace/assets/%3F/graphs",
+]
+
+
 class TestPublicAssetsWithServedUi:
     """The public assets/ exemption must only ever serve real bundle files."""
 
@@ -733,6 +746,12 @@ class TestPublicAssetsWithServedUi:
 
     @pytest.mark.parametrize("raw_path", _NON_FILE_ASSET_PATHS)
     async def test_non_file_asset_path_without_session_returns_404(
+        self, fake_dist: Path, raw_get: RawGet, raw_path: str
+    ) -> None:
+        assert await raw_get(self._ui_app(), raw_path) == 404
+
+    @pytest.mark.parametrize("raw_path", _ENCODED_DELIMITER_PATHS)
+    async def test_encoded_delimiter_path_without_session_returns_404(
         self, fake_dist: Path, raw_get: RawGet, raw_path: str
     ) -> None:
         assert await raw_get(self._ui_app(), raw_path) == 404

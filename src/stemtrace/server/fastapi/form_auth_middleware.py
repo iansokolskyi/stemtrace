@@ -60,9 +60,12 @@ def create_form_auth_middleware(
 ) -> FormAuthMiddleware:
     """Create an HTTP middleware that requires a valid session cookie.
 
-    Paths containing '.' or '..' segments (in the decoded path or the raw,
-    possibly percent-encoded one) are rejected with 404 before any other
-    decision, so prefix checks can never be bypassed with ``assets/../``.
+    All decisions use the decoded ASGI path (``scope["path"]``, what routing
+    matches) and the raw path. Paths containing '.' or '..' segments (in the
+    decoded path or the raw, possibly percent-encoded one), or whose decoded
+    path contains '?' or '#' (sent as ``%3F``/``%23``), are rejected with 404
+    before any other decision, so prefix and open-path checks can never be
+    bypassed with ``assets/../`` or ``health/live%3Fx``.
 
     Behaviour for unauthenticated requests:
 
@@ -100,7 +103,10 @@ def create_form_auth_middleware(
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """Let authenticated requests through; reject or redirect the rest."""
-        path = request.url.path
+        # The decoded ASGI path, as routing sees it. Not request.url.path: that
+        # re-parses the path as a URL, so a decoded '?' or '#' (from %3F/%23)
+        # would cut it short and e.g. "live%3Fx" would pass as an open path.
+        path: str = request.scope["path"]
         raw = request.scope.get("raw_path")
         raw_path = raw.decode("latin-1") if isinstance(raw, bytes) else ""
         in_scope = (
@@ -111,7 +117,12 @@ def create_form_auth_middleware(
         if not in_scope:
             # Routing doesn't normalize paths, so these can't reach our routes.
             return await call_next(request)
-        if _has_dot_segment(path) or _has_dot_segment(raw_path):
+        if (
+            "?" in path
+            or "#" in path
+            or _has_dot_segment(path)
+            or _has_dot_segment(raw_path)
+        ):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if path in open_paths or path.startswith(assets_dir):
             return await call_next(request)
