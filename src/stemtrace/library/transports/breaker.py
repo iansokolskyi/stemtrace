@@ -69,13 +69,17 @@ class PublishBreaker:
     - one line for a failure while the breaker stays closed (WARNING with
       traceback);
     - one line for a failure that opens the breaker (with traceback);
-    - one recovery line for an outage whose opening line was written;
+    - one recovery line for an outage whose opening line was written (if
+      that line is rate-limited, it is owed and written once one is due,
+      on a later successful publish);
     - one report line otherwise: a summary when a probe fails, a recovery
       line for an outage whose opening line was suppressed, or, once
       publishing works again, a line with the losses still unreported.
       It is written once an interval has passed since the last line that
-      reported losses, so no loss stays unreported for much longer than
-      one interval while events keep being published.
+      reported losses (and, while open, when the next probe fails, at most
+      ``max_cooldown`` later), so while events keep being published no loss
+      stays unreported for longer than about one interval plus the
+      maximum cooldown (1.5 minutes with stemtrace's settings).
 
     So at most four lines per interval, however the broker behaves. Nothing
     is logged per dropped event.
@@ -144,6 +148,9 @@ class PublishBreaker:
         self._last_closed_log: float | None = None
         self._last_open_log: float | None = None
         self._last_recovery_log: float | None = None
+        # Length of an outage whose opening line was written but whose
+        # recovery line was rate-limited; written once a line is due.
+        self._recovery_owed: float | None = None
         self._last_report: float | None = None
         self._close()
 
@@ -230,7 +237,7 @@ class PublishBreaker:
         self._check_fork()
         if not self.is_open:
             self._consecutive_failures = 0
-            if self._dropped or self._unconfirmed:
+            if self._dropped or self._unconfirmed or self._recovery_owed is not None:
                 self._report_pending()
             return
         with self._lock:
@@ -249,6 +256,10 @@ class PublishBreaker:
                 self._last_recovery_log = now
             if log:
                 losses = self._take_losses(now)
+                self._recovery_owed = None
+            elif self._outage_reported:
+                # The opening line was written: owe it a recovery line.
+                self._recovery_owed = outage
             self._epoch += 1
             self._close()
         if log:
@@ -260,18 +271,34 @@ class PublishBreaker:
             )
 
     def _report_pending(self) -> None:
-        """Report losses still unreported once a report line is due."""
+        """Write an owed recovery line, or report pending losses, once due."""
         with self._lock:
             now = self._monotonic()
-            pending = self._dropped or self._unconfirmed
-            if not pending or not self._log_due(self._last_report, now):
+            owed = self._recovery_owed
+            recovery_due = self._log_due(self._last_recovery_log, now)
+            report_due = self._log_due(self._last_report, now)
+            if owed is not None and (recovery_due or report_due):
+                if recovery_due:
+                    self._last_recovery_log = now
+                self._recovery_owed = None
+            elif not (self._dropped or self._unconfirmed) or not report_due:
                 return
+            else:
+                owed = None
             losses = self._take_losses(now)
-        self._logger.warning(
-            "Publishing to %s continues (%s since the last report)",
-            self._name,
-            losses,
-        )
+        if owed is not None:
+            self._logger.warning(
+                "Publishing to %s recovered after %.1fs (%s since the last report)",
+                self._name,
+                owed,
+                losses,
+            )
+        else:
+            self._logger.warning(
+                "Publishing to %s continues (%s since the last report)",
+                self._name,
+                losses,
+            )
 
     def _take_losses(self, now: float) -> str:
         """Describe and reset the unreported losses (lock held)."""

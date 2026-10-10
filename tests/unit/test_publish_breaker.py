@@ -490,6 +490,36 @@ class TestPublishBreakerLossReporting:
             "(6 event(s) dropped since the last report)"
         ]
 
+    def test_suppressed_recovery_of_logged_outage_is_written_later(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        clock.advance(30.0)
+        _attempt_succeeds(breaker)
+        assert len(_records(caplog)) == 2
+        # A second outage a minute after the first: its opening line is
+        # written, but its recovery a second later is rate-limited, and no
+        # losses are pending to trigger a report.
+        clock.advance(30.0)
+        _attempt_fails(breaker, "second")
+        assert len(_records(caplog)) == 3
+        clock.advance(1.0)
+        _attempt_succeeds(breaker)
+        assert len(_records(caplog)) == 3
+
+        for _ in range(60):
+            clock.advance(1.0)
+            _attempt_succeeds(breaker)
+
+        messages = [r.getMessage() for r in _records(caplog)]
+        assert messages[3:] == [
+            "Publishing to TestBroker recovered after 1.0s "
+            "(0 event(s) dropped since the last report)"
+        ]
+
     def test_nothing_pending_writes_no_report(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
