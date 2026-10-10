@@ -136,6 +136,18 @@ uv lock --upgrade
 - Fire-and-forget pattern for publishers (never block)
 - Fakes over mocks in tests
 
+## Releasing (maintainers)
+
+Releases go through a pull request; nothing is published from a local push.
+
+1. Add user-facing entries under `## [Unreleased]` in `CHANGELOG.md`.
+2. `make release-pr BUMP=patch|minor|major` runs the checks, creates `release/vX.Y.Z`, bumps the
+   version and opens a PR whose description is the changelog section.
+3. When CI is green, merge the PR with a merge commit.
+4. `make release-tag` tags the merge on `main`. The tag triggers the Release workflow, which
+   publishes to PyPI and GHCR and creates the GitHub Release from the changelog section. It
+   refuses to publish if the section is empty or the tag isn't on `main`.
+
 ## Questions?
 
 - Open an issue for bugs or feature requests
