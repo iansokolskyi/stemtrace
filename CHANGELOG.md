@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docker image: the UI is built once on the build machine's native platform instead of under emulation for each architecture, which also makes release builds faster. Building the image from source now needs BuildKit (the default since Docker 23 and in `docker compose`).
+
 ## [0.3.9] - 2026-10-10
 
 ### Added

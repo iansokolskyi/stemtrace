@@ -88,7 +88,9 @@ jobs:
           path: dist/
 
   pypi:
-    needs: build
+    # After the image: a failed or hung docker build then publishes nothing,
+    # instead of leaving PyPI ahead of GHCR and the GitHub Release.
+    needs: [build, docker]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: pypi
