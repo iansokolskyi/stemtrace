@@ -53,10 +53,9 @@ reviews:
         loops stop within a bounded time.
     - path: "pyproject.toml"
       instructions: |
-        The "Baseline" blocks (ruff per-file-ignores, import-linter
-        ignore_imports) list violations that predate the rules. They may only
-        shrink: flag any added file, rule code or ignored import. New
-        dependencies need a stated reason.
+        Flag any new per-file-ignores entry for the design rules (C90, PLR09xx,
+        BLE, ERA, RET, PT) and any added import-linter ignore_imports entry:
+        the baseline only shrinks. New dependencies need a stated reason.
     - path: "tests/**"
       instructions: |
         - A new test should fail on the old code with an assertion error that is
@@ -66,6 +65,8 @@ reviews:
           unittest.mock; a fake that always succeeds proves nothing.
         - No real sleeps in unit tests: inject the clock and sleep function, and
           bound loops so a regression fails instead of hanging.
+        - New `# noqa` comments need a reason after the codes; bare ones are
+          the pre-existing baseline and only shrink.
         - Imports at the top of the file. Names follow
           test_<action>_<condition>_<result>. Tests needing Redis or RabbitMQ
           are marked integration; Docker-based ones e2e.
@@ -82,8 +83,10 @@ reviews:
           behavior should name the library version and function.
         - Behavior claims in docstrings, README and CHANGELOG must be backed by a
           test. Changes to user-visible behavior should be opt-in.
-        - Do not accept new entries in the pyproject.toml "Baseline" blocks (ruff
-          per-file-ignores, import-linter ignore_imports). They may only shrink.
+        - Bare `# noqa: <codes>` comments are the baseline of code that predates
+          the lint rules; it only shrinks. Flag a newly added bare noqa: a new
+          suppression must give a reason after the codes, and a refactor
+          should delete the noqa it makes unnecessary.
 
 chat:
   art: false

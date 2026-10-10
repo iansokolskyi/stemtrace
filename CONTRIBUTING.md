@@ -72,12 +72,17 @@ boundaries (`uv run lint-imports`, part of `make lint` and CI):
 - `stemtrace.library` does not import `stemtrace.server`
 - `stemtrace.server` does not import `stemtrace.library`
 
-**Baseline policy.** Code that predates these rules is listed in `pyproject.toml`
-under the "Baseline" comments (ruff `per-file-ignores` and import-linter
-`ignore_imports`). The baseline only shrinks: don't add entries for new code. When
-you fix a listed file, delete its codes in the same change. import-linter fails
-on an ignore that no longer matches anything; ruff doesn't, so check ruff entries
-by hand.
+**Baseline policy.** Code that predates these rules carries a per-line
+`# noqa: <codes>` comment with no reason (added with `ruff check --add-noqa`), and
+the one known import violation is listed under `ignore_imports` in
+`pyproject.toml`. The baseline only shrinks:
+
+- New code follows the rules. If a suppression is really needed, it names the
+  code and gives a reason: `# noqa: BLE001  fire-and-forget: <why>`. Never add a
+  bare `# noqa`.
+- When you fix a baselined line, delete its `# noqa`. Ruff's `RUF100` fails on a
+  `# noqa` that no longer suppresses anything, and import-linter fails on an
+  `ignore_imports` entry that no longer matches, so stale entries can't linger.
 
 ### Type Checking
 
