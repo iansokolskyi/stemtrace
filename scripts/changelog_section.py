@@ -21,7 +21,7 @@ def changelog_section(text: str, version: str) -> str:
 
     Returns:
         The section body with surrounding blank lines stripped; empty if the
-        section is missing or has no content.
+        section is missing or holds only subheadings or HTML comments.
     """
     version = version.removeprefix("v")
     heading = re.compile(rf"^## \[{re.escape(version)}\][^\n]*\n", re.MULTILINE)
@@ -33,7 +33,11 @@ def changelog_section(text: str, version: str) -> str:
     body = rest[: next_heading.start()] if next_heading else rest
     # Link reference definitions at the end of the file aren't release notes.
     body = re.sub(r"^\[[^\]]+\]:\s+\S+\s*$", "", body, flags=re.MULTILINE)
-    return body.strip()
+    body = body.strip()
+    # A section with only "### Added"-style headings or comments has no notes.
+    content = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    content = re.sub(r"^#{3,}.*$", "", content, flags=re.MULTILINE)
+    return body if content.strip() else ""
 
 
 def main(argv: list[str]) -> int:

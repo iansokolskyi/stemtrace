@@ -58,6 +58,14 @@ def test_empty_or_missing_section_returns_empty() -> None:
     assert changelog_section.changelog_section(CHANGELOG, "9.9.9") == ""
 
 
+def test_section_with_only_headings_or_comments_is_empty() -> None:
+    skeleton = (
+        "## [Unreleased]\n\n### Added\n\n### Fixed\n<!-- add entries -->\n\n"
+        "## [0.1.0]\n- x\n"
+    )
+    assert changelog_section.changelog_section(skeleton, "Unreleased") == ""
+
+
 def test_version_dots_are_not_regex_wildcards() -> None:
     assert changelog_section.changelog_section(CHANGELOG, "0x2x0") == ""
 

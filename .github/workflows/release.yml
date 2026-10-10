@@ -1,19 +1,9 @@
 name: Release
 
 on:
+  # Releases are tagged on main after the release PR merges (make release-tag).
   push:
     tags: ["v*"]
-  # Manual trigger from Actions tab
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release (e.g., 0.1.0) - must match version in pyproject.toml"
-        required: true
-        type: string
-
-env:
-  # Determine version from tag or manual input
-  VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -31,13 +21,8 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-          fi
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Verify version matches pyproject.toml
         run: |
@@ -53,7 +38,6 @@ jobs:
           echo "✅ Version $PYPROJECT_VERSION matches"
 
       - name: Verify the tagged commit is on main
-        if: github.event_name == 'push'
         run: |
           # Releases are tagged after the release PR merges; never from a branch.
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
@@ -62,8 +46,9 @@ jobs:
       - name: Check release notes exist in CHANGELOG.md
         run: |
           # Fail before anything is published: every release needs notes.
-          python3 scripts/changelog_section.py "${{ steps.version.outputs.version }}" > release_notes.md
-          cat release_notes.md
+          python3 scripts/changelog_section.py "$VERSION"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -173,16 +158,10 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Create tag (for manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ needs.build.outputs.tag }}" -m "Release ${{ needs.build.outputs.tag }}"
-          git push origin "${{ needs.build.outputs.tag }}"
-
       - name: Extract release notes from CHANGELOG.md
-        run: python3 scripts/changelog_section.py "${{ needs.build.outputs.version }}" > release_notes.md
+        run: python3 scripts/changelog_section.py "$VERSION" > "$RUNNER_TEMP/release_notes.md"
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -190,6 +169,6 @@ jobs:
           tag_name: ${{ needs.build.outputs.tag }}
           # CHANGELOG.md section first; GitHub appends contributors, PR list
           # and the compare link.
-          body_path: release_notes.md
+          body_path: ${{ runner.temp }}/release_notes.md
           generate_release_notes: true
           files: dist/*
