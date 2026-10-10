@@ -2,13 +2,18 @@
 
 import logging
 import os
+import random
+import re
 import threading
+from collections.abc import Callable
 
 import pytest
 
 from stemtrace.library.transports.breaker import PublishBreaker
 
 LOGGER_NAME = "tests.publish_breaker"
+SLOW = 2.0  # elapsed seconds of a failed attempt that timed out
+FAST = 0.001  # elapsed seconds of e.g. a refused connection
 
 
 class FakeClock:
@@ -32,6 +37,8 @@ def _make_breaker(clock: FakeClock, *, probe_timeout: float = 60.0) -> PublishBr
         max_cooldown=30.0,
         log_interval=60.0,
         probe_timeout=probe_timeout,
+        slow_attempt=0.5,
+        failures_to_open=3,
         monotonic=clock,
     )
 
@@ -47,9 +54,17 @@ def _take(breaker: PublishBreaker) -> int:
     return ticket
 
 
-def _attempt_fails(breaker: PublishBreaker, event_id: str = "evt") -> None:
+def _attempt_fails(
+    breaker: PublishBreaker,
+    event_id: str = "evt",
+    *,
+    elapsed: float = SLOW,
+    unconfirmed: bool = False,
+) -> None:
     """Start an attempt and report that it failed, like publish() does."""
-    breaker.record_failure(_take(breaker), event_id, _error())
+    breaker.record_failure(
+        _take(breaker), event_id, _error(), elapsed=elapsed, unconfirmed=unconfirmed
+    )
 
 
 def _attempt_succeeds(breaker: PublishBreaker) -> None:
@@ -60,8 +75,32 @@ def _records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [r for r in caplog.records if r.name == LOGGER_NAME]
 
 
-class TestPublishBreaker:
-    """Open/skip/probe/reset behaviour of PublishBreaker."""
+def _simulate(
+    breaker: PublishBreaker,
+    clock: FakeClock,
+    *,
+    seconds: float,
+    rate: float,
+    fails: Callable[[int], bool],
+    elapsed: float = FAST,
+) -> int:
+    """Publish ``rate`` events per second; return how many were delivered."""
+    delivered = 0
+    for i in range(int(seconds * rate)):
+        clock.advance(1 / rate)
+        ticket = breaker.allow()
+        if ticket is None:
+            continue
+        if fails(i):
+            breaker.record_failure(ticket, f"e{i}", _error(), elapsed=elapsed)
+        else:
+            breaker.record_success(ticket)
+            delivered += 1
+    return delivered
+
+
+class TestPublishBreakerOpening:
+    """When a failure opens the breaker, and what it logs."""
 
     def test_allow_when_closed_returns_ticket(self) -> None:
         breaker = _make_breaker(FakeClock())
@@ -70,25 +109,94 @@ class TestPublishBreaker:
         assert breaker.is_open is False
         assert breaker.dropped == 0
 
-    def test_record_failure_opens_and_logs_traceback_once(
+    def test_slow_failure_opens_and_logs_traceback(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
         breaker = _make_breaker(FakeClock())
 
-        _attempt_fails(breaker, "task-1")
+        _attempt_fails(breaker, "task-1", elapsed=0.5)
 
         assert breaker.is_open is True
-        assert breaker.dropped == 1
         assert breaker.cooldown == 1.0
         records = _records(caplog)
         assert len(records) == 1
         assert records[0].levelno == logging.WARNING
         assert records[0].exc_info is not None
         assert records[0].getMessage() == (
-            "Failed to publish event task-1 to TestBroker; dropping events "
-            "for 1.0s before trying again"
+            "Failed to publish event task-1 to TestBroker; dropping events for "
+            "1.0s before trying again (1 event(s) dropped since the last report)"
         )
+
+    def test_single_fast_failure_drops_only_that_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        breaker = _make_breaker(FakeClock())
+
+        _attempt_fails(breaker, "task-1", elapsed=FAST)
+
+        assert breaker.is_open is False
+        assert breaker.allow() is not None
+        records = _records(caplog)
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert records[0].getMessage() == (
+            "Failed to publish event task-1 to TestBroker; publishing continues "
+            "(1 event(s) dropped since the last report)"
+        )
+
+    def test_consecutive_fast_failures_open_on_third(self) -> None:
+        breaker = _make_breaker(FakeClock())
+
+        _attempt_fails(breaker, elapsed=FAST)
+        _attempt_fails(breaker, elapsed=FAST)
+        assert breaker.is_open is False
+        _attempt_fails(breaker, elapsed=FAST)
+
+        assert breaker.is_open is True
+        assert breaker.cooldown == 1.0
+
+    def test_success_resets_consecutive_fast_failures(self) -> None:
+        breaker = _make_breaker(FakeClock())
+
+        for _ in range(10):
+            _attempt_fails(breaker, elapsed=FAST)
+            _attempt_fails(breaker, elapsed=FAST)
+            _attempt_succeeds(breaker)
+
+        assert breaker.is_open is False
+
+    def test_unconfirmed_failure_opens_with_max_cooldown(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+
+        _attempt_fails(breaker, unconfirmed=True)
+
+        assert breaker.is_open is True
+        assert breaker.cooldown == 30.0
+        clock.advance(29.9)
+        assert breaker.allow() is None
+        clock.advance(0.1)
+        assert breaker.allow() is not None
+
+    def test_unconfirmed_probe_failure_keeps_max_cooldown(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+
+        _attempt_fails(breaker, unconfirmed=True)
+
+        assert breaker.cooldown == 30.0
+        clock.advance(30.0)
+        _attempt_fails(breaker, unconfirmed=True)
+        assert breaker.cooldown == 30.0
+        assert breaker.unconfirmed == 2
+
+
+class TestPublishBreakerOpen:
+    """Open/skip/probe/reset behaviour once the breaker is open."""
 
     def test_allow_while_open_skips_and_counts_drops(
         self, caplog: pytest.LogCaptureFixture
@@ -102,7 +210,7 @@ class TestPublishBreaker:
         results = [breaker.allow() for _ in range(100)]
 
         assert results == [None] * 100
-        assert breaker.dropped == 101
+        assert breaker.dropped == 100
         assert len(_records(caplog)) == 1
 
     def test_allow_after_cooldown_lets_exactly_one_probe_through(self) -> None:
@@ -116,7 +224,6 @@ class TestPublishBreaker:
         # The probe claimed the slot: concurrent callers keep dropping.
         assert breaker.allow() is None
         assert breaker.allow() is None
-        assert breaker.dropped == 3
 
     def test_failed_probe_doubles_cooldown_up_to_cap(self) -> None:
         clock = FakeClock()
@@ -126,7 +233,8 @@ class TestPublishBreaker:
 
         for _ in range(7):
             clock.advance(breaker.cooldown)
-            _attempt_fails(breaker)
+            # Even a fast probe failure counts: the breaker is already open.
+            _attempt_fails(breaker, elapsed=FAST)
             cooldowns.append(breaker.cooldown)
 
         assert cooldowns == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
@@ -143,7 +251,7 @@ class TestPublishBreaker:
         clock.advance(0.1)
         assert breaker.allow() is not None
 
-    def test_record_success_after_outage_resets_and_logs_summary(
+    def test_record_success_after_outage_resets_and_logs_recovery(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
@@ -165,8 +273,34 @@ class TestPublishBreaker:
         # WARNING so it shows at Celery's default worker log level.
         assert records[1].levelno == logging.WARNING
         assert records[1].getMessage() == (
-            "Publishing to TestBroker recovered after 1.0s; dropped 5 event(s) "
-            "during the outage"
+            "Publishing to TestBroker recovered after 1.0s "
+            "(4 event(s) dropped since the last report)"
+        )
+
+    def test_unconfirmed_events_are_reported_separately(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker, "t-blocked", unconfirmed=True)
+        for _ in range(3):
+            breaker.allow()
+        clock.advance(30.0)
+        _attempt_fails(breaker, unconfirmed=True)
+        clock.advance(30.0)
+
+        _attempt_succeeds(breaker)
+
+        messages = [r.getMessage() for r in _records(caplog)]
+        assert messages[0] == (
+            "Failed to publish event t-blocked to TestBroker; dropping events for "
+            "30.0s before trying again (0 event(s) dropped, 1 sent but "
+            "unconfirmed since the last report)"
+        )
+        assert messages[-1] == (
+            "Publishing to TestBroker recovered after 60.0s "
+            "(3 event(s) dropped, 1 sent but unconfirmed since the last report)"
         )
 
     def test_record_success_when_closed_logs_nothing(
@@ -193,32 +327,7 @@ class TestPublishBreaker:
 
         assert breaker.cooldown == 1.0
 
-    def test_long_outage_logs_bounded_summaries(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        _attempt_fails(breaker)
-
-        # Ten minutes of outage, 100 events per second, every probe failing.
-        for _ in range(600 * 100):
-            clock.advance(0.01)
-            ticket = breaker.allow()
-            if ticket is not None:
-                breaker.record_failure(ticket, "evt", _error())
-
-        records = _records(caplog)
-        # One traceback when it opened, then at most one line per minute.
-        assert len(records) <= 1 + 10
-        assert len(records) >= 1 + 9
-        assert all(r.exc_info is None for r in records[1:])
-        assert records[1].levelno == logging.WARNING
-        assert "TestBroker still unavailable" in records[1].getMessage()
-        assert "next attempt in 30.0s" in records[-1].getMessage()
-        assert breaker.dropped == 600 * 100 + 1
-
-    def test_summary_reports_dropped_count_and_last_error(
+    def test_summary_reports_losses_since_last_report_and_last_error(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
@@ -231,17 +340,104 @@ class TestPublishBreaker:
         clock.advance(60.0)
         _attempt_fails(breaker)
 
-        message = _records(caplog)[-1].getMessage()
-        assert message == (
-            "TestBroker still unavailable after 60.0s; dropped 11 event(s) so far "
-            "(last error: ConnectionRefusedError: broker down); next attempt in 2.0s"
+        record = _records(caplog)[-1]
+        assert record.getMessage() == (
+            "TestBroker still unavailable after 60.0s (10 event(s) dropped since "
+            "the last report; last error: ConnectionRefusedError: broker down); "
+            "next attempt in 2.0s"
         )
+        assert record.exc_info is None
+
+
+class TestPublishBreakerFlakyBroker:
+    """Sporadic failures on a healthy broker cost little and log little."""
+
+    @pytest.mark.parametrize(
+        ("failure_rate", "min_delivered"), [(0.02, 0.97), (0.10, 0.87)]
+    )
+    def test_random_fast_failures_deliver_close_to_failure_free_rate(
+        self, failure_rate: float, min_delivered: float
+    ) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        rng = random.Random(1234)
+        seconds, rate = 600.0, 20.0
+
+        delivered = _simulate(
+            breaker,
+            clock,
+            seconds=seconds,
+            rate=rate,
+            fails=lambda _i: rng.random() < failure_rate,
+        )
+
+        assert delivered / (seconds * rate) >= min_delivered
+
+    def test_alternating_fast_failures_log_at_most_once_per_interval(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+
+        delivered = _simulate(
+            breaker, clock, seconds=120.0, rate=20.0, fails=lambda i: i % 2 == 1
+        )
+
+        assert delivered == 1200
+        records = _records(caplog)
+        assert 2 <= len(records) <= 3
+        assert all(r.exc_info is not None for r in records)
+        # Everything since the first line, about 60s at 10 failures per second.
+        match = re.search(r"\((\d+) event\(s\) dropped", records[1].getMessage())
+        assert match is not None
+        assert 599 <= int(match.group(1)) <= 601
+
+    def test_alternating_slow_failures_log_bounded_lines(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+
+        _simulate(
+            breaker,
+            clock,
+            seconds=120.0,
+            rate=20.0,
+            fails=lambda i: i % 2 == 1,
+            elapsed=SLOW,
+        )
+
+        records = _records(caplog)
+        # Failure lines at most once a minute, each followed by at most one
+        # recovery line.
+        assert len(records) <= 2 * 3
+        assert sum(r.exc_info is not None for r in records) <= 3
+
+    def test_long_outage_logs_bounded_summaries(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+
+        # Ten minutes of outage, 100 events per second, every probe failing.
+        _simulate(breaker, clock, seconds=600.0, rate=100.0, fails=lambda _i: True)
+
+        records = _records(caplog)
+        # One traceback when it opened, then at most one line per minute.
+        assert 1 + 9 <= len(records) <= 1 + 10
+        assert all(r.exc_info is None for r in records[1:])
+        assert "TestBroker still unavailable" in records[1].getMessage()
+        assert "next attempt in 30.0s" in records[-1].getMessage()
 
 
 class TestPublishBreakerInFlightAttempts:
     """Only the claimed probe changes an open breaker's cooldown."""
 
-    def test_concurrent_failures_open_once_with_initial_cooldown(
+    def test_concurrent_slow_failures_open_once_with_initial_cooldown(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
@@ -251,10 +447,10 @@ class TestPublishBreakerInFlightAttempts:
         tickets = [_take(breaker) for _ in range(8)]
 
         for i, ticket in enumerate(tickets):
-            breaker.record_failure(ticket, f"t-{i}", _error())
+            breaker.record_failure(ticket, f"t-{i}", _error(), elapsed=SLOW)
 
         assert breaker.cooldown == 1.0
-        assert breaker.dropped == 8
+        assert breaker.dropped == 7
         records = _records(caplog)
         assert len(records) == 1
         assert "dropping events for 1.0s" in records[0].getMessage()
@@ -270,7 +466,7 @@ class TestPublishBreakerInFlightAttempts:
 
         def worker(ticket: int) -> None:
             start.wait()
-            breaker.record_failure(ticket, "evt", _error())
+            breaker.record_failure(ticket, "evt", _error(), elapsed=SLOW)
 
         threads = [threading.Thread(target=worker, args=(t,)) for t in tickets]
         for thread in threads:
@@ -278,8 +474,8 @@ class TestPublishBreakerInFlightAttempts:
         for thread in threads:
             thread.join(timeout=5.0)
 
+        assert breaker.is_open is True
         assert breaker.cooldown == 1.0
-        assert breaker.dropped == 16
 
     def test_probe_slower_than_cooldown_admits_no_second_probe(self) -> None:
         clock = FakeClock()
@@ -291,7 +487,7 @@ class TestPublishBreakerInFlightAttempts:
         # The probe's connect takes 2s, twice the 1s cooldown.
         clock.advance(2.0)
         assert breaker.allow() is None
-        breaker.record_failure(probe, "probe", _error())
+        breaker.record_failure(probe, "probe", _error(), elapsed=SLOW)
 
         assert breaker.cooldown == 2.0
         clock.advance(1.9)
@@ -309,16 +505,15 @@ class TestPublishBreakerInFlightAttempts:
         clock.advance(1.0)
         probe = _take(breaker)
 
-        breaker.record_failure(stale, "stale", _error())
+        breaker.record_failure(stale, "stale", _error(), elapsed=SLOW)
 
         assert breaker.cooldown == 1.0
-        assert breaker.dropped == 2
+        assert breaker.dropped == 1
         breaker.record_success(probe)
         assert breaker.is_open is False
 
     def test_in_flight_success_while_open_keeps_breaker_open(self) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
+        breaker = _make_breaker(FakeClock())
         stale = _take(breaker)
         _attempt_fails(breaker)
 
@@ -327,7 +522,7 @@ class TestPublishBreakerInFlightAttempts:
         assert breaker.is_open is True
         assert breaker.allow() is None
 
-    def test_stale_failure_after_recovery_is_ignored(
+    def test_stale_failure_after_recovery_does_not_reopen(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
@@ -338,11 +533,13 @@ class TestPublishBreakerInFlightAttempts:
         clock.advance(1.0)
         _attempt_succeeds(breaker)
 
-        breaker.record_failure(stale, "stale", _error())
+        breaker.record_failure(stale, "stale", _error(), elapsed=SLOW)
 
         assert breaker.is_open is False
-        assert breaker.dropped == 0
-        assert len(_records(caplog)) == 2
+        assert _records(caplog)[-1].getMessage() == (
+            "Failed to publish event stale to TestBroker; publishing continues "
+            "(1 event(s) dropped since the last report)"
+        )
 
     def test_probe_that_never_reports_is_replaced_after_probe_timeout(self) -> None:
         clock = FakeClock()
@@ -357,7 +554,7 @@ class TestPublishBreakerInFlightAttempts:
         replacement = _take(breaker)
 
         # The abandoned probe reporting late changes nothing.
-        breaker.record_failure(lost, "lost", _error())
+        breaker.record_failure(lost, "lost", _error(), elapsed=SLOW)
         assert breaker.cooldown == 1.0
         breaker.record_success(replacement)
         assert breaker.is_open is False
@@ -386,7 +583,6 @@ class TestPublishBreakerInFlightAttempts:
 
         assert len(results) == 16 * 50
         assert sum(ticket is not None for ticket in results) == 1
-        assert breaker.dropped == 1 + 16 * 50 - 1
 
 
 class TestPublishBreakerFork:
@@ -395,8 +591,7 @@ class TestPublishBreakerFork:
     def test_allow_in_forked_child_resets_inherited_open_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
+        breaker = _make_breaker(FakeClock())
         _attempt_fails(breaker)
         assert breaker.allow() is None
         parent_pid = os.getpid()

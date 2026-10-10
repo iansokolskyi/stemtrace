@@ -138,12 +138,15 @@ class TestRabbitMQPublishFailFastNoBroker:
     ) -> None:
         transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
 
-        first = _timed_publish(transport, "t-1")
-        rest = [_timed_publish(transport, f"t-{i}") for i in range(2, 102)]
+        # Fast failures drop only their own event until three in a row open
+        # the breaker.
+        attempts = [_timed_publish(transport, f"t-{i}") for i in range(3)]
+        rest = [_timed_publish(transport, f"t-{i}") for i in range(3, 103)]
 
-        assert first < 0.5
+        assert max(attempts) < 0.5
         assert max(rest) < 0.01
-        assert len(_warnings(caplog)) == 1
+        # One line for the first failure, one when the breaker opens.
+        assert len(_warnings(caplog)) == 2
 
     def test_publish_silent_listener_bounded_by_connect_timeout(
         self,
@@ -152,8 +155,10 @@ class TestRabbitMQPublishFailFastNoBroker:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setattr(rabbitmq, "CONNECT_TIMEOUT", 0.3)
+        monkeypatch.setattr(rabbitmq, "PUBLISH_SLOW_ATTEMPT", 0.2)
         transport = RabbitMQTransport(silent_listener.url, prefix="test", ttl=60)
 
+        # A slow (timed-out) attempt opens the breaker at once.
         first = _timed_publish(transport, "t-1")
         second = _timed_publish(transport, "t-2")
 

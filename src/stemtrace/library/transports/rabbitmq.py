@@ -60,11 +60,28 @@ PUBLISH_IO_TIMEOUT = 2.0
 # any real attempt.
 PUBLISH_PROBE_TIMEOUT = 60.0
 
-# After a failed publish, events are dropped without connecting for a cooldown
-# that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
-# RECONNECT_MAX_BACKOFF) and resets once a publish succeeds. While that lasts,
-# a summary line is logged at most this often.
+# A failed publish attempt that took this long (a timeout or stall, which is
+# what blocks tasks) opens the publish circuit breaker at once; fast failures
+# (e.g. a refused connection) open it after PUBLISH_FAILURES_TO_OPEN in a row.
+# Until then, a failure drops only its own event.
+PUBLISH_SLOW_ATTEMPT = 0.5
+PUBLISH_FAILURES_TO_OPEN = 3
+
+# While the breaker is open, events are dropped without connecting for a
+# cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
+# RECONNECT_MAX_BACKOFF; straight to the maximum while the broker blocks
+# publishers) and resets once a publish succeeds. Publish failures are logged
+# at most this often.
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
+
+
+class _PublishUnconfirmedError(Exception):
+    """The event was sent, but the broker never confirmed the connection close.
+
+    This is how a RabbitMQ that blocks publishers (memory or disk alarm) looks
+    from a fresh connection: it stops reading after the publish, so Close-Ok
+    never arrives. The event may still be delivered once the alarm clears.
+    """
 
 
 class _StopRequestedError(Exception):
@@ -111,6 +128,7 @@ class RabbitMQTransport:
         self._url = url
         self._ttl = ttl
         self._sleep = sleep
+        self._monotonic = monotonic
         self._connected: bool | None = None
         self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
@@ -126,6 +144,8 @@ class RabbitMQTransport:
             max_cooldown=RECONNECT_MAX_BACKOFF,
             log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
             probe_timeout=PUBLISH_PROBE_TIMEOUT,
+            slow_attempt=PUBLISH_SLOW_ATTEMPT,
+            failures_to_open=PUBLISH_FAILURES_TO_OPEN,
             monotonic=monotonic,
         )
 
@@ -188,16 +208,21 @@ class RabbitMQTransport:
         CONNECT_TIMEOUT to connect and PUBLISH_IO_TIMEOUT per socket operation
         after that, and includes the connection close: a broker that stops
         reading after the publish (e.g. a memory or disk alarm blocking
-        publishers) makes the Close-Ok wait time out, which counts as a
-        failure. When an attempt fails, a circuit breaker drops events without
-        connecting for a cooldown (1s, doubling per failed retry up to 30s,
-        reset by a successful publish), so a broker outage costs tasks about
-        one bounded attempt per cooldown instead of one per event. Only one
-        retry (probe) runs at a time, and failures of attempts that were
-        already in flight don't lengthen the cooldown. The first failure is
-        logged with a traceback, then at most one summary line per
-        PUBLISH_FAILURE_LOG_INTERVAL, and one line with the dropped count once
-        publishing recovers; each dropped event gets a DEBUG line.
+        publishers) makes the Close-Ok wait time out, and the event counts as
+        sent but unconfirmed.
+
+        A failure that took PUBLISH_SLOW_ATTEMPT or longer, an unconfirmed
+        one, or PUBLISH_FAILURES_TO_OPEN fast failures in a row open a circuit
+        breaker; a single fast failure drops only its own event. While open,
+        events are dropped without connecting for a cooldown (1s, doubling per
+        failed retry up to 30s; 30s at once while the broker blocks
+        publishers; reset by a successful publish), so a broker outage costs
+        tasks about one bounded attempt per cooldown instead of one per event.
+        Only one retry (probe) runs at a time, and failures of attempts that
+        were already in flight don't lengthen the cooldown. Failures are
+        logged at most once per PUBLISH_FAILURE_LOG_INTERVAL (with the number
+        of events lost since the previous line), recovery once; each dropped
+        event gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -210,20 +235,35 @@ class RabbitMQTransport:
                 self._event_identifier(event),
             )
             return
+        started = self._monotonic()
         try:
             self._publish_payload(event.model_dump(mode="json"))
+        except _PublishUnconfirmedError as exc:
+            breaker.record_failure(
+                ticket,
+                self._event_identifier(event),
+                exc,
+                elapsed=self._monotonic() - started,
+                unconfirmed=True,
+            )
         except Exception as exc:
-            breaker.record_failure(ticket, self._event_identifier(event), exc)
+            breaker.record_failure(
+                ticket,
+                self._event_identifier(event),
+                exc,
+                elapsed=self._monotonic() - started,
+            )
         else:
             breaker.record_success(ticket)
 
     def _publish_payload(self, payload: dict[str, Any]) -> None:
         """Publish a JSON-serializable payload via kombu.
 
-        Raises whatever kombu/py-amqp raise; publish() handles it. A broker
-        that stalls after receiving the message (e.g. before confirming the
-        connection close) still raises here, so such an event can count as
-        failed although it was delivered.
+        Raises whatever kombu/py-amqp raise; publish() handles it.
+
+        Raises:
+            _PublishUnconfirmedError: The publish was sent but the connection
+                close timed out (the event may still be delivered).
 
         Worst case per attempt once connected: one PUBLISH_IO_TIMEOUT, since
         a failure drops the socket instead of waiting for Close-Ok too.
@@ -284,7 +324,13 @@ class RabbitMQTransport:
                 # the with block) swallows a Close-Ok timeout, so a broker
                 # that stopped reading would look healthy. After a successful
                 # close, release() has nothing left to do.
-                amqp_conn.close()
+                try:
+                    amqp_conn.close()
+                except TimeoutError as exc:
+                    raise _PublishUnconfirmedError(
+                        "RabbitMQ did not confirm the connection close after "
+                        "the publish (is it blocking publishers?)"
+                    ) from exc
             except BaseException:
                 # The attempt failed or timed out: drop the socket without the
                 # close handshake, which would wait out another timeout.
@@ -304,8 +350,16 @@ class RabbitMQTransport:
         """
         transport = getattr(amqp_conn, "transport", None)
         sock = getattr(transport, "sock", None)
+        # socket.socket is looked up at call time, so gevent's monkey-patched
+        # socket class matches too.
         if isinstance(sock, socket.socket):
             sock.settimeout(PUBLISH_IO_TIMEOUT)
+        else:
+            logger.debug(
+                "RabbitMQ publish: no socket to bound (got %s); reads and writes "
+                "after connecting may block",
+                type(sock).__name__,
+            )
 
     def _declare_exchange_and_queue(self) -> None:
         """Declare the fanout exchange and this transport's durable consumer queue.

@@ -48,9 +48,14 @@ class FakeClock:
 class FakeBroker:
     """State shared by the fake kombu module: which hosts are down, what arrived."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
         self.down: set[str] = set()
         self.publish_error: Exception | None = None
+        # Hosts where publish_error applies (None: every host).
+        self.publish_error_hosts: set[str] | None = None
+        # Seconds Producer.publish takes (advances the fake clock).
+        self.publish_delay = 0.0
         # Raised by the AMQP close handshake, e.g. socket.timeout while a
         # blocked broker (memory/disk alarm) never sends Close-Ok.
         self.close_error: Exception | None = None
@@ -186,9 +191,12 @@ def _install_fake_kombu_for_publish(
         def publish(self, body: Any, **kwargs: Any) -> None:
             if broker.publish_gate is not None:
                 broker.publish_gate.wait(timeout=5.0)
-            if broker.publish_error is not None:
-                raise broker.publish_error
+            broker.clock.advance(broker.publish_delay)
             host = self.channel.connection.host
+            if broker.publish_error is not None and (
+                broker.publish_error_hosts is None or host in broker.publish_error_hosts
+            ):
+                raise broker.publish_error
             broker.published.append((host, body, kwargs))
 
     fake_kombu.Connection = Connection
@@ -198,15 +206,15 @@ def _install_fake_kombu_for_publish(
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeBroker]:
-    fake = FakeBroker()
-    _install_fake_kombu_for_publish(monkeypatch, fake)
-    yield fake
+def clock() -> FakeClock:
+    return FakeClock()
 
 
 @pytest.fixture
-def clock() -> FakeClock:
-    return FakeClock()
+def broker(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> Iterator[FakeBroker]:
+    fake = FakeBroker(clock)
+    _install_fake_kombu_for_publish(monkeypatch, fake)
+    yield fake
 
 
 def _event(task_id: str = "t-1") -> TaskEvent:
@@ -282,12 +290,9 @@ class TestRabbitMQPublishFailFast:
         assert broker.published == []
         warnings = _records(caplog, logging.WARNING)
         assert len(warnings) == 1
-        assert (
-            warnings[0]
-            .getMessage()
-            .startswith(
-                "Failed to publish event t-down to RabbitMQ; dropping events for 1.0s"
-            )
+        assert warnings[0].getMessage() == (
+            "Failed to publish event t-down to RabbitMQ; publishing continues "
+            "(1 event(s) dropped since the last report)"
         )
         assert warnings[0].exc_info is not None
 
@@ -319,11 +324,19 @@ class TestRabbitMQPublishClose:
         assert len(broker.connections) == 1
         warnings = _records(caplog, logging.WARNING)
         assert len(warnings) == 1
-        assert (
-            warnings[0]
-            .getMessage()
-            .startswith("Failed to publish event t-blocked to RabbitMQ")
+        assert warnings[0].getMessage() == (
+            "Failed to publish event t-blocked to RabbitMQ; dropping events for "
+            "30.0s before trying again (0 event(s) dropped, 1 sent but "
+            "unconfirmed since the last report)"
         )
+        # A blocking broker is retried only every 30s: each probe leaves a
+        # blocked connection on the broker until the alarm clears.
+        clock.advance(29.9)
+        transport.publish(_event("t-skipped"))
+        assert len(broker.connections) == 1
+        clock.advance(0.1)
+        transport.publish(_event("t-probe"))
+        assert len(broker.connections) == 2
 
     def test_publish_failure_after_connect_drops_socket_without_close_wait(
         self, broker: FakeBroker, clock: FakeClock
@@ -342,7 +355,8 @@ class TestRabbitMQPublishClose:
         caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
         broker.down = {H1}
         transport = _transport(H1, clock)
-        transport.publish(_event("t-0"))
+        for i in range(3):
+            transport.publish(_event(f"t-{i}"))
 
         transport.publish(_event("t-dropped"))
 
@@ -423,50 +437,75 @@ class TestRabbitMQPublishFailover:
 class TestRabbitMQPublishBreaker:
     """During an outage publish() skips connecting and logs a bounded amount."""
 
-    def test_publish_while_breaker_open_skips_connecting(
+    def test_publish_fast_failures_open_breaker_on_third_in_a_row(
         self, broker: FakeBroker, clock: FakeClock
     ) -> None:
         broker.down = {H1}
         transport = _transport(H1, clock)
-        transport.publish(_event("t-0"))
+        for i in range(3):
+            transport.publish(_event(f"t-{i}"))
 
         for i in range(50):
-            transport.publish(_event(f"t-{i + 1}"))
+            transport.publish(_event(f"t-{i + 3}"))
+
+        assert len(broker.connections) == 3
+
+    def test_publish_slow_failure_opens_breaker_at_once(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The publish step timed out after PUBLISH_IO_TIMEOUT.
+        broker.publish_error = TimeoutError("timed out")
+        broker.publish_delay = PUBLISH_IO_TIMEOUT
+        transport = _transport(H1, clock)
+
+        transport.publish(_event("t-slow"))
+        for i in range(50):
+            transport.publish(_event(f"t-{i}"))
 
         assert len(broker.connections) == 1
+        warnings = _records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert "dropping events for 1.0s" in warnings[0].getMessage()
 
     def test_publish_probes_after_cooldown_and_recovers(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:
         broker.down = {H1}
         transport = _transport(H1, clock)
-        transport.publish(_event("t-0"))
+        for i in range(3):
+            transport.publish(_event(f"t-{i}"))
 
         clock.advance(1.0)
         transport.publish(_event("t-probe-1"))
-        assert len(broker.connections) == 2
+        assert len(broker.connections) == 4
 
         clock.advance(1.0)
         transport.publish(_event("t-skipped"))
-        assert len(broker.connections) == 2
+        assert len(broker.connections) == 4
 
         broker.down = set()
         clock.advance(1.0)
         transport.publish(_event("t-probe-2"))
         transport.publish(_event("t-after"))
 
-        assert len(broker.connections) == 4
+        assert len(broker.connections) == 6
         assert [body["task_id"] for _, body, _ in broker.published] == [
             "t-probe-2",
             "t-after",
         ]
         # Warning level, so it shows at Celery's default worker log level.
         warnings = _records(caplog, logging.WARNING)
-        assert len(warnings) == 2
-        assert warnings[1].getMessage() == (
-            "Publishing to RabbitMQ recovered after 3.0s; dropped 3 event(s) "
-            "during the outage"
+        assert [w.getMessage().split(";")[0] for w in warnings[:2]] == [
+            "Failed to publish event t-0 to RabbitMQ",
+            "Failed to publish event t-2 to RabbitMQ",
+        ]
+        assert "publishing continues" in warnings[0].getMessage()
+        assert "dropping events for 1.0s" in warnings[1].getMessage()
+        assert warnings[2].getMessage() == (
+            "Publishing to RabbitMQ recovered after 3.0s "
+            "(2 event(s) dropped since the last report)"
         )
+        assert len(warnings) == 3
 
     def test_publish_failover_failure_does_not_open_breaker_for_other_host(
         self, broker: FakeBroker, clock: FakeClock
@@ -480,17 +519,19 @@ class TestRabbitMQPublishBreaker:
         assert len(broker.connections) == 5
         assert len(broker.published) == 5
 
-    def test_publish_unexpected_producer_error_is_swallowed_and_opens_breaker(
+    def test_publish_sporadic_fast_error_drops_only_that_event(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:
         broker.publish_error = RuntimeError("channel error")
         transport = _transport(H1, clock)
-
         transport.publish(_event("t-0"))
+        broker.publish_error = None
+
         transport.publish(_event("t-1"))
 
-        assert len(broker.connections) == 1
+        assert len(broker.connections) == 2
         assert broker.connections[0].closed is True
+        assert [body["task_id"] for _, body, _ in broker.published] == ["t-1"]
         assert len(_records(caplog, logging.WARNING)) == 1
 
     def test_publish_concurrent_failures_open_breaker_once_for_initial_cooldown(
@@ -499,6 +540,7 @@ class TestRabbitMQPublishBreaker:
         # Eight task threads are mid-publish when the broker stops answering.
         broker.publish_gate = threading.Barrier(8)
         broker.publish_error = TimeoutError("timed out")
+        broker.publish_delay = PUBLISH_IO_TIMEOUT
         transport = _transport(H1, clock)
         threads = [
             threading.Thread(target=transport.publish, args=(_event(f"t-{i}"),))
@@ -510,6 +552,7 @@ class TestRabbitMQPublishBreaker:
             thread.join(timeout=5.0)
         broker.publish_gate = None
         broker.publish_error = None
+        broker.publish_delay = 0.0
 
         warnings = _records(caplog, logging.WARNING)
         assert len(warnings) == 1
@@ -535,5 +578,6 @@ class TestRabbitMQPublishBreaker:
 
         warnings = _records(caplog, logging.WARNING)
         assert 1 + 3 <= len(warnings) <= 1 + 5
-        # One connection per probe: 1, 2, 4, 8, 16, then every 30s.
-        assert len(broker.connections) <= 6 + 300 // 30
+        # Three fast failures, then one connection per probe: after 1, 2, 4,
+        # 8, 16, then every 30s.
+        assert len(broker.connections) <= 3 + 5 + 300 // 30
