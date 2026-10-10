@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
 
 
-def create_router(  # noqa: PLR0917
+def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): positional callers must keep working
     store: GraphStore | None = None,
     consumer: AsyncEventConsumer | None = None,
     ws_manager: WebSocketManager | None = None,
@@ -37,9 +37,9 @@ def create_router(  # noqa: PLR0917
     router = APIRouter()
     api_router = create_api_router(
         store,
-        consumer,
-        ws_manager,
-        worker_registry,
+        consumer=consumer,
+        ws_manager=ws_manager,
+        worker_registry=worker_registry,
         broker_url=broker_url,
         node_alias_from_arguments=node_alias_from_arguments,
     )
