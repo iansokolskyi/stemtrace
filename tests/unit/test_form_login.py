@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -268,6 +269,22 @@ class TestFormLoginAcrossWorkers:
         assert api.json() == {"detail": "Authentication required"}
         assert "reason=" not in page.headers["location"]
         assert _form_auth_warnings(caplog) == []
+
+    def test_deeply_nested_json_cookie_returns_401_not_500(self) -> None:
+        # The payload is parsed before the signature check, so an unsigned
+        # cookie must not be able to crash the JSON decoder (RecursionError).
+        nested = base64.urlsafe_b64encode(b"[" * 5000).decode("ascii").rstrip("=")
+        app = _make_login_app(login_secret=None)
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            client.cookies.set(_COOKIE_NAME, f"{nested}.c2ln")
+            api = client.get("/stemtrace/api/health")
+            page = client.get("/stemtrace/", follow_redirects=False)
+
+        assert api.status_code == 401
+        assert api.json() == {"detail": "Authentication required"}
+        assert page.status_code == 303
+        assert page.headers["location"].startswith("/stemtrace/login?next=")
 
     def test_shared_explicit_secret_accepts_cookie_from_other_app(self) -> None:
         worker_a = _make_login_app(login_secret="shared-secret")

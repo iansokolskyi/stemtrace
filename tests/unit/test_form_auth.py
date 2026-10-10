@@ -387,3 +387,68 @@ class TestWarnSessionSecretMismatch:
         warn_session_secret_mismatch()
 
         assert len(_form_auth_records(caplog)) == 1
+
+
+def _raw_cookie(payload: bytes, *, secret: str | None = None) -> str:
+    """Build a cookie from raw payload bytes, signed with ``secret`` if given."""
+    sig = hmac.new(secret.encode(), payload, sha256).digest() if secret else b"x" * 32
+    return (
+        base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        + "."
+        + base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+    )
+
+
+# Untrusted cookie values that must all decode to "unauthenticated", never raise.
+_MALFORMED_COOKIES: dict[str, str] = {
+    "non_ascii_payload": "été.c2ln",
+    "non_ascii_signature": "e30.é",
+    "bad_padding_payload": "a.c2ln",
+    "bad_padding_signature": "e30.a",
+    "huge_bad_padding": "a" * 1_000_001 + ".c2ln",
+    "huge_zero_bytes_payload": "A" * 1_000_000 + ".AAAA",
+    "nul_bytes": "\x00.\x00",
+    "invalid_utf8_payload": _raw_cookie(b"\xff\xfe\xfd"),
+    "nested_list_unsigned": _raw_cookie(b"[" * 100_000),
+    "nested_dict_unsigned": _raw_cookie(b'{"a":' * 50_000),
+    "nested_list_signed": _raw_cookie(b"[" * 100_000, secret="secret"),
+    "huge_int_exp": _raw_cookie(b'{"exp":' + b"9" * 5000 + b"}"),
+    "huge_int_exp_signed": _raw_cookie(
+        b'{"exp":' + b"9" * 5000 + b"}", secret="secret"
+    ),
+    "infinite_exp": _raw_cookie(b'{"exp":1e999,"u":"admin"}', secret="secret"),
+    "nan_exp": _raw_cookie(b'{"exp":NaN,"u":"admin"}', secret="secret"),
+    "json_null": _raw_cookie(b"null", secret="secret"),
+    "json_string": _raw_cookie(b'"admin"', secret="secret"),
+}
+
+
+class TestMalformedCookies:
+    """Garbage from the client is always "not authenticated", never an error."""
+
+    @pytest.mark.parametrize(
+        "cookie", list(_MALFORMED_COOKIES.values()), ids=list(_MALFORMED_COOKIES)
+    )
+    def test_check_session_cookie_malformed_returns_invalid(self, cookie: str) -> None:
+        for generated in (True, False):
+            cfg = _config(secret="secret", generated=generated, started_at=0)
+            assert check_session_cookie(cookie, cfg) is SessionStatus.INVALID
+
+    @pytest.mark.parametrize(
+        "cookie", list(_MALFORMED_COOKIES.values()), ids=list(_MALFORMED_COOKIES)
+    )
+    def test_verify_session_malformed_returns_none(self, cookie: str) -> None:
+        assert verify_session(cookie, secret="secret") is None
+        assert (
+            is_authenticated_cookie(cookie, secret="secret", expected_username="admin")
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "header",
+        ["a@b=1", "{=1", "x=1; a,b=2", "a=1; Path=/; b<c=2", "a/b=1"],
+    )
+    def test_parse_cookie_header_illegal_key_returns_empty_dict(
+        self, header: str
+    ) -> None:
+        assert parse_cookie_header(header) == {}
