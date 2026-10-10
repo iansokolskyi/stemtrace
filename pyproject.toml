@@ -207,12 +207,29 @@ known-first-party = ["stemtrace"]
 # =============================================================================
 [tool.importlinter]
 root_package = "stemtrace"
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "core is independent of library and server"
 type = "forbidden"
 source_modules = ["stemtrace.core"]
 forbidden_modules = ["stemtrace.library", "stemtrace.server"]
+
+[[tool.importlinter.contracts]]
+name = "core uses no broker, Celery or web libraries"
+type = "forbidden"
+source_modules = ["stemtrace.core"]
+forbidden_modules = [
+    "amqp",
+    "celery",
+    "fastapi",
+    "httpx",
+    "kombu",
+    "redis",
+    "starlette",
+    "typer",
+    "uvicorn",
+]
 
 [[tool.importlinter.contracts]]
 name = "library does not import server"

@@ -66,7 +66,9 @@ except is accepted only at a fire-and-forget boundary, with
 [import-linter](https://import-linter.readthedocs.io/) checks the architecture
 boundaries (`uv run lint-imports`, part of `make lint` and CI):
 
-- `stemtrace.core` imports nothing from `stemtrace.library` or `stemtrace.server`
+- `stemtrace.core` imports nothing from `stemtrace.library` or `stemtrace.server`,
+  and no broker, Celery or web library (`celery`, `kombu`, `amqp`, `redis`,
+  `fastapi`, `starlette`, `uvicorn`, `typer`, `httpx`)
 - `stemtrace.library` does not import `stemtrace.server`
 - `stemtrace.server` does not import `stemtrace.library`
 
