@@ -27,6 +27,12 @@ from stemtrace.library.transports.rabbitmq import (
     RabbitMQTransport,
 )
 from stemtrace.library.transports.redis import (
+    RECONNECT_INITIAL_BACKOFF as REDIS_RECONNECT_INITIAL_BACKOFF,
+)
+from stemtrace.library.transports.redis import (
+    RECONNECT_MAX_BACKOFF as REDIS_RECONNECT_MAX_BACKOFF,
+)
+from stemtrace.library.transports.redis import (
     RedisTransport,
     _normalize_redis_ssl_params,
 )
@@ -684,6 +690,8 @@ def _install_fake_kombu_for_consume(
         instances: ClassVar[list["Connection"]] = []
         # Hosts that refuse connections; tests mutate this to simulate outages.
         down_hosts: ClassVar[set[str]] = set()
+        # Optional hook called with each host as it is tried.
+        on_attempt: ClassVar[Any] = None
 
         def __init__(self, url: str, **kwargs: Any) -> None:
             self.url = url
@@ -713,11 +721,17 @@ def _install_fake_kombu_for_consume(
             for retries in itertools.count():
                 host = hosts[retries % len(hosts)]
                 self.attempted_hosts.append(host)
+                if Connection.on_attempt is not None:
+                    Connection.on_attempt(host)
                 if host not in Connection.down_hosts:
                     self.connected_host = host
                     return self
                 if max_retries is not None and retries >= max_retries:
                     raise ConnectionRefusedError(f"{host} is down")
+                # kombu calls `callback` before moving on to the next host.
+                callback = kwargs.get("callback")
+                if callback is not None:
+                    callback()
             raise AssertionError("unreachable")
 
         def channel(self) -> FakeChannel:
@@ -1217,9 +1231,9 @@ class TestRabbitMQConsumeBackoff:
             cb(cls._event_body(), msg)
 
     def test_backoff_constants_match_redis_transport(self) -> None:
-        """Backoff starts at 1s and is capped at 30s."""
-        assert RECONNECT_INITIAL_BACKOFF == 1.0
-        assert RECONNECT_MAX_BACKOFF == 30.0
+        """Both transports back off with the same initial delay and cap."""
+        assert RECONNECT_INITIAL_BACKOFF == REDIS_RECONNECT_INITIAL_BACKOFF
+        assert RECONNECT_MAX_BACKOFF == REDIS_RECONNECT_MAX_BACKOFF
 
     def test_transport_implements_stoppable_and_connection_aware(self) -> None:
         """The consumer can bind a stop event and read connectivity."""
@@ -1266,11 +1280,12 @@ class TestRabbitMQConsumeBackoff:
         assert received.task_id == "backoff-1"
         assert sleeper.delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == failures_before_success
+        # One per failure, plus the recovery line.
+        assert len(warnings) == failures_before_success + 1
         assert warnings[0].exc_info is not None
         assert all(r.exc_info is None for r in warnings[1:])
-        assert "still failing (attempt 7): broker down" in warnings[-1].getMessage()
-        assert "reconnected after 7 failure(s)" in caplog.text
+        assert "still failing (attempt 7): broker down" in warnings[-2].getMessage()
+        assert "reconnected after 7 failure(s)" in warnings[-1].getMessage()
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     def test_consume_when_connection_drops_before_first_read_keeps_backing_off(
@@ -1562,7 +1577,11 @@ class TestRabbitMQConsumeBackoff:
         (conn,) = conn_cls.instances
         assert conn.kwargs == {"connect_timeout": CONNECT_TIMEOUT}
         assert conn.ensure_calls == [
-            {"max_retries": 0, "reraise_as_library_errors": False}
+            {
+                "max_retries": 0,
+                "reraise_as_library_errors": False,
+                "callback": transport._raise_if_stopping,
+            }
         ]
         assert conn.drain_timeouts == [DRAIN_TIMEOUT, DRAIN_TIMEOUT]
 
@@ -1591,7 +1610,11 @@ class TestRabbitMQConsumeBackoff:
         assert sleeper.delays == []
         (conn,) = conn_cls.instances
         assert conn.ensure_calls == [
-            {"max_retries": 1, "reraise_as_library_errors": False}
+            {
+                "max_retries": 1,
+                "reraise_as_library_errors": False,
+                "callback": transport._raise_if_stopping,
+            }
         ]
         assert conn.attempted_hosts == ["amqp://h1//", "amqp://h2//"]
         assert conn.connected_host == "amqp://h2//"
@@ -1753,3 +1776,34 @@ class TestRabbitMQConsumeBackoff:
         assert received.task_id == "backoff-1"
         assert sleeper.delays == [1.0]
         assert "Failed to close RabbitMQ consumer connection" in caplog.text
+
+    def test_consume_when_stopped_during_failover_pass_skips_remaining_hosts(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stop requested while trying one host ends before trying the next."""
+        sleeper = _BoundedSleep()
+        stop = threading.Event()
+        hosts = ["amqp://h1//", "amqp://h2//", "amqp://h3//"]
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=lambda _n, _cb: None
+        )
+        conn_cls.down_hosts.update(hosts)
+        monkeypatch.setattr(
+            conn_cls,
+            "on_attempt",
+            lambda host: stop.set() if host == hosts[0] else None,
+        )
+        transport = RabbitMQTransport(
+            ";".join(hosts), prefix="test", ttl=60, sleep=sleeper
+        )
+        transport.bind_stop_event(stop)
+
+        with caplog.at_level(logging.WARNING):
+            assert list(transport.consume()) == []
+
+        (conn,) = conn_cls.instances
+        assert conn.attempted_hosts == [hosts[0]]
+        assert conn.ensure_calls[0]["max_retries"] == 2
+        assert sleeper.delays == []
+        assert caplog.records == []
