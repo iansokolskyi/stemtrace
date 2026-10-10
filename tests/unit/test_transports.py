@@ -1111,8 +1111,10 @@ class TestRabbitMQTransport:
             pass
 
         class Connection:
-            def __init__(self, url: str) -> None:
+            def __init__(self, url: str, **_: Any) -> None:
                 self.url = url
+                self.alt: list[str] = []
+                self.connection = None
                 self._channel = FakeChannel()
 
             def __enter__(self) -> "Connection":
@@ -1120,6 +1122,9 @@ class TestRabbitMQTransport:
 
             def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
                 del exc_type, exc, tb
+
+            def ensure_connection(self, **_: Any) -> "Connection":
+                return self
 
             def channel(self) -> FakeChannel:
                 return self._channel
