@@ -24,13 +24,13 @@ import pytest
 from kombu import Connection as KombuConnection
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports.rabbitmq import (
+from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     PUBLISH_IO_TIMEOUT,
     RabbitMQTransport,
 )
 
-LOGGER_NAME = "stemtrace.library.transports.rabbitmq"
+LOGGER_NAME = "stemtrace.transports.rabbitmq"
 H1 = "amqp://guest:guest@h1:5672//"
 H2 = "amqp://guest:guest@h2:5672//"
 

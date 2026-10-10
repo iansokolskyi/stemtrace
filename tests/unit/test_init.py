@@ -22,7 +22,7 @@ from stemtrace import (
     is_initialized,
 )
 from stemtrace.library.signals import disconnect_signals
-from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.transports.memory import MemoryTransport
 
 _INIT_LOGGER = "stemtrace"
 

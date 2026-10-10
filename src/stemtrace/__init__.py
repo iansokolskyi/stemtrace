@@ -29,7 +29,6 @@ from stemtrace.library.bootsteps import register_bootsteps
 from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.config import get_config as _get_config
 from stemtrace.library.signals import connect_signals
-from stemtrace.library.transports import get_transport as _get_transport
 from stemtrace.server.fastapi import (
     StemtraceExtension,
     create_router,
@@ -39,6 +38,7 @@ from stemtrace.server.fastapi import (
 from stemtrace.server.fastapi.form_auth import FormAuthConfig, resolve_session_secret
 from stemtrace.server.fastapi.form_auth_middleware import create_form_auth_middleware
 from stemtrace.server.fastapi.login_routes import create_login_router
+from stemtrace.transports import get_transport as _get_transport
 
 if TYPE_CHECKING:
     from celery import Celery

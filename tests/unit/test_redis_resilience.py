@@ -14,7 +14,8 @@ from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports.redis import (
+from stemtrace.transports import redis as redis_transport_module
+from stemtrace.transports.redis import (
     READ_TIMEOUT_WARN_AFTER,
     READ_TIMEOUT_WARN_INTERVAL,
     RECONNECT_MAX_BACKOFF,
@@ -422,3 +423,92 @@ class TestOtherErrorsAndStopping:
         assert time.monotonic() - started < 0.9
         # The bound event replaces the injected sleep entirely.
         assert sleeper.delays == []
+
+
+class TestFailureBookkeeping:
+    """How connection failures, read timeouts and successful reads reset each other."""
+
+    @pytest.mark.parametrize(
+        "connect_error", [CONNECTION_CLOSED, CONNECT_TIMEOUT], ids=["closed", "timeout"]
+    )
+    def test_consume_with_connect_failure_between_read_timeouts_restarts_count(
+        self, connect_error: Exception, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        streak = READ_TIMEOUT_WARN_AFTER - 1
+        script: list[Any] = [READ_TIMEOUT] * streak
+        script += [connect_error]
+        script += [READ_TIMEOUT] * streak
+        script.append(_entry("1-0", _event("a")))
+        transport, _, sleeper, _ = _make(script)
+
+        with caplog.at_level(logging.WARNING):
+            _take(transport.consume(), 1)
+
+        warnings = [r.getMessage() for r in caplog.records]
+        assert len(warnings) == 1
+        assert warnings[0].startswith("Redis consumer on test:events cannot reach")
+        assert sleeper.delays == [1.0]
+
+    def test_consume_with_read_timeouts_between_failures_keeps_backoff_growing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport, _, sleeper, _ = _make(
+            [
+                CONNECTION_CLOSED,
+                READ_TIMEOUT,
+                CONNECTION_CLOSED,
+                _entry("1-0", _event("a")),
+            ]
+        )
+
+        with caplog.at_level(logging.WARNING):
+            _take(transport.consume(), 1)
+
+        assert sleeper.delays == [1.0, 2.0]
+        assert "still failing (attempt 2)" in caplog.records[-1].getMessage()
+
+    def test_consume_after_successful_read_warns_on_next_timeout_streak_at_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        streak: list[Any] = [READ_TIMEOUT] * READ_TIMEOUT_WARN_AFTER
+        transport, _, _, clock = _make(
+            [*streak, [], *streak, _entry("1-0", _event("a"))]
+        )
+
+        with caplog.at_level(logging.WARNING):
+            _take(transport.consume(), 1)
+
+        # Same instant, but the empty read in between ended the first streak.
+        assert clock.now == 0.0
+        assert [r.getMessage() for r in caplog.records] == [
+            "XREAD on test:events timed out 3 times in a row; check the network "
+            "and the socket_timeout setting"
+        ] * 2
+
+    def test_consume_after_reconnect_logs_recovery_at_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport, _, _, _ = _make(
+            [CONNECTION_CLOSED, CONNECTION_CLOSED, _entry("1-0", _event("a"))]
+        )
+
+        with caplog.at_level(logging.INFO):
+            _take(transport.consume(), 1)
+
+        recovery = caplog.records[-1]
+        assert recovery.levelno == logging.INFO
+        assert recovery.getMessage() == (
+            "Redis consumer on test:events reconnected after 2 failure(s)"
+        )
+        assert recovery.exc_info is None
+
+
+def test_consume_first_backoff_reads_initial_constant_at_consume_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(redis_transport_module, "RECONNECT_INITIAL_BACKOFF", 0.25)
+    transport, _, sleeper, _ = _make([CONNECTION_CLOSED, _entry("1-0", _event("a"))])
+
+    _take(transport.consume(), 1)
+
+    assert sleeper.delays == [0.25]

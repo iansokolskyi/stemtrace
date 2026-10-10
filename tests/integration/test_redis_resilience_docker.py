@@ -19,7 +19,7 @@ import pytest
 import redis
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent
-from stemtrace.library.transports.redis import RedisTransport
+from stemtrace.transports.redis import RedisTransport
 
 pytestmark = [
     pytest.mark.integration,
