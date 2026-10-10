@@ -17,17 +17,19 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * Run tests:
  *   npm test                    # Mock mode (default)
+ *   E2E_PORT=5174 npm test      # Mock mode on another port
  *   E2E_MODE=real npm test      # Real mode (requires Docker)
  *   npx playwright test --ui    # Interactive mode
  */
 
 const isRealMode = process.env.E2E_MODE === 'real'
 
-// In mock mode, use Vite dev server (5173)
+// In mock mode, use Vite dev server (5173, or E2E_PORT when another checkout
+// already serves 5173: the run would otherwise reuse that checkout's server)
 // In real mode, use Docker server (8000 or custom)
-const baseURL = isRealMode
-  ? process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8000'
-  : 'http://localhost:5173'
+const devPort = Number(process.env.E2E_PORT || 5173)
+const devURL = `http://localhost:${devPort}`
+const baseURL = isRealMode ? process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8000' : devURL
 
 export default defineConfig({
   testDir: './tests',
@@ -55,8 +57,9 @@ export default defineConfig({
   webServer: isRealMode
     ? undefined
     : {
-        command: 'npm run dev',
-        url: 'http://localhost:5173',
+        // --strictPort: fail instead of silently moving to the next free port
+        command: `npm run dev -- --port ${devPort} --strictPort`,
+        url: devURL,
         reuseExistingServer: !process.env.CI,
         timeout: 30000,
       },
