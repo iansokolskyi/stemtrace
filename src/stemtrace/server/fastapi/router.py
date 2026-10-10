@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
 
 
-def create_router(
+def create_router(  # noqa: PLR0917
     store: GraphStore | None = None,
     consumer: AsyncEventConsumer | None = None,
     ws_manager: WebSocketManager | None = None,

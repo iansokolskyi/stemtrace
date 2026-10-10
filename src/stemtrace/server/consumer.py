@@ -131,7 +131,7 @@ class EventConsumer:
         self._transport = None
         logger.info("Event consumer stopped")
 
-    def _consume_loop(self) -> None:
+    def _consume_loop(self) -> None:  # noqa: C901
         if self._transport is None:
             return
 

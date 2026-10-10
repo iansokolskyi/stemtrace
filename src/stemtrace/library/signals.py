@@ -261,7 +261,7 @@ def _on_task_prerun(
     _start_output_capture(task_id)
 
 
-def _on_task_postrun(
+def _on_task_postrun(  # noqa: PLR0917
     task_id: str,
     task: "Task",
     args: tuple[Any, ...],
@@ -306,7 +306,7 @@ def _on_task_postrun(
     )
 
 
-def _on_task_failure(
+def _on_task_failure(  # noqa: PLR0917
     task_id: str,
     exception: BaseException,
     args: tuple[Any, ...],
@@ -414,7 +414,7 @@ def _on_task_revoked(
     )
 
 
-def _on_task_sent(
+def _on_task_sent(  # noqa: PLR0917
     sender: str | None = None,
     task_id: str | None = None,
     task: str | None = None,

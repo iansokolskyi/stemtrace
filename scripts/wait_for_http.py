@@ -26,7 +26,6 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, *_args: object, **_kwargs: object) -> None:
         """Return None so urllib raises HTTPError instead of following."""
-        return None
 
 
 _OPENER = urllib.request.build_opener(_NoRedirectHandler())

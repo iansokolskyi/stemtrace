@@ -26,16 +26,15 @@ def get_transport(
         from stemtrace.library.transports.redis import RedisTransport
 
         return RedisTransport.from_url(url, prefix=prefix, ttl=ttl)
-    elif scheme == "amqp":
+    if scheme == "amqp":
         from stemtrace.library.transports.rabbitmq import RabbitMQTransport
 
         return RabbitMQTransport.from_url(url, prefix=prefix, ttl=ttl)
-    elif scheme == "memory":
+    if scheme == "memory":
         from stemtrace.library.transports.memory import MemoryTransport
 
         return MemoryTransport()
-    else:
-        raise UnsupportedBrokerError(scheme)
+    raise UnsupportedBrokerError(scheme)
 
 
 __all__ = ["get_transport"]

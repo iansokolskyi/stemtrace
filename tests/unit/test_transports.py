@@ -600,7 +600,7 @@ class TestRedisTransport:
         self, transport: RedisTransport
     ) -> None:
         """_parse_event should raise when payload lacks both event_type and task_id."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             transport._parse_event('{"unexpected": "value"}')
 
     def test_consume_skips_empty_reads_and_logs_parse_errors(
@@ -642,7 +642,7 @@ class TestRedisTransport:
         assert "Failed to parse event from Redis stream" in caplog.text
 
 
-def _install_fake_kombu_for_consume(
+def _install_fake_kombu_for_consume(  # noqa: C901
     monkeypatch: Any, *, drain_handler: Any
 ) -> type[Any]:
     """Install a fake kombu consumer stack into sys.modules (no broker required).
@@ -839,6 +839,63 @@ class _BoundedSleep:
             raise _RunawayLoopError(f"still reconnecting after {self._limit} sleeps")
 
 
+class _RecordingPublishChannel:
+    def __init__(self, published: dict[str, Any]) -> None:
+        self.published = published
+
+
+class _RecordingPublishAmqpConnection:
+    """py-amqp connection that records close() and collect() calls."""
+
+    def __init__(self, published: dict[str, Any]) -> None:
+        self._published = published
+
+    def close(self) -> None:
+        self._published["closed"] = True
+
+    def collect(self) -> None:
+        self._published["collected"] = True
+
+
+class _RecordingPublishConnection:
+    """kombu Connection that always connects; a subclass binds ``published``."""
+
+    published: ClassVar[dict[str, Any]]
+
+    def __init__(self, url: str, **_: Any) -> None:
+        self.url = url
+        self.alt: list[str] = []
+        self.connection = _RecordingPublishAmqpConnection(self.published)
+        self._channel = _RecordingPublishChannel(self.published)
+
+    def __enter__(self) -> "_RecordingPublishConnection":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        del exc_type, exc, tb
+
+    def ensure_connection(self, **_: Any) -> "_RecordingPublishConnection":
+        return self
+
+    def channel(self) -> _RecordingPublishChannel:
+        return self._channel
+
+
+class _RecordingPublishExchange:
+    def __init__(self, name: str, *, type: str, durable: bool) -> None:
+        self.name = name
+        del type, durable
+
+
+class _RecordingPublishProducer:
+    def __init__(self, channel: _RecordingPublishChannel) -> None:
+        self.channel = channel
+
+    def publish(self, body: Any, **kwargs: Any) -> None:
+        self.channel.published["body"] = body
+        self.channel.published.update(kwargs)
+
+
 class TestRabbitMQTransport:
     """Tests for RabbitMQTransport without a broker."""
 
@@ -955,7 +1012,7 @@ class TestRabbitMQTransport:
         assert received.task_id == "consume-1"
         assert seen["msg"].acked is True
 
-    def test_declare_exchange_and_queue_uses_queue_arguments(
+    def test_declare_exchange_and_queue_uses_queue_arguments(  # noqa: C901
         self, monkeypatch: Any
     ) -> None:
         """_declare_exchange_and_queue declares durable exchange + queue with TTL args."""
@@ -1112,7 +1169,7 @@ class TestRabbitMQTransport:
 
     def test_parse_event_raises_for_unknown_payload(self) -> None:
         """_parse_event raises for payloads missing task_id and event_type."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             RabbitMQTransport._parse_event({"unexpected": "value"})
 
     def test_publish_logs_worker_event_identifier_on_exception(
@@ -1143,55 +1200,13 @@ class TestRabbitMQTransport:
         self, monkeypatch: Any
     ) -> None:
         """_publish_payload runs against a fake kombu module (no broker required)."""
-        fake_kombu = types.ModuleType("kombu")
-
         published: dict[str, Any] = {}
-
-        class FakeChannel:
-            pass
-
-        class FakeAmqpConnection:
-            def close(self) -> None:
-                published["closed"] = True
-
-            def collect(self) -> None:
-                published["collected"] = True
-
-        class Connection:
-            def __init__(self, url: str, **_: Any) -> None:
-                self.url = url
-                self.alt: list[str] = []
-                self.connection = FakeAmqpConnection()
-                self._channel = FakeChannel()
-
-            def __enter__(self) -> "Connection":
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-
-            def ensure_connection(self, **_: Any) -> "Connection":
-                return self
-
-            def channel(self) -> FakeChannel:
-                return self._channel
-
-        class Exchange:
-            def __init__(self, name: str, *, type: str, durable: bool) -> None:
-                self.name = name
-                del type, durable
-
-        class Producer:
-            def __init__(self, channel: FakeChannel) -> None:
-                self.channel = channel
-
-            def publish(self, body: Any, **kwargs: Any) -> None:
-                published["body"] = body
-                published.update(kwargs)
-
-        fake_kombu.Connection = Connection
-        fake_kombu.Exchange = Exchange
-        fake_kombu.Producer = Producer
+        fake_kombu = types.ModuleType("kombu")
+        fake_kombu.Connection = type(
+            "Connection", (_RecordingPublishConnection,), {"published": published}
+        )
+        fake_kombu.Exchange = _RecordingPublishExchange
+        fake_kombu.Producer = _RecordingPublishProducer
 
         monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
 

@@ -41,7 +41,7 @@ def rabbitmq_available() -> bool:
         with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
             conn.connect()
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -64,7 +64,7 @@ def management_api_available() -> bool:
     try:
         _management_request("GET", "overview")
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -89,7 +89,7 @@ def _consume_one(
         gen = transport.consume()
         try:
             out.put(next(gen))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  forwarded to the test thread
             errors.put(exc)
         finally:
             gen.close()

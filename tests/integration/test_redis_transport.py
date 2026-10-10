@@ -29,7 +29,7 @@ def redis_available() -> bool:
         client = redis.from_url(REDIS_URL)
         client.ping()
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

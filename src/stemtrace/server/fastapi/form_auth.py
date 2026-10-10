@@ -187,7 +187,7 @@ def _split_cookie(cookie_value: str | None) -> tuple[bytes, bytes] | None:
     payload_b64, sig_b64 = cookie_value.split(_SESSION_SEPARATOR, 1)
     try:
         return _b64url_decode(payload_b64), _b64url_decode(sig_b64)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -195,7 +195,7 @@ def _parse_unexpired_payload(payload_bytes: bytes) -> dict[str, object] | None:
     """Parse a session payload; None unless it is a dict with a future 'exp'."""
     try:
         payload_obj = json.loads(payload_bytes.decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
     if not isinstance(payload_obj, dict):
@@ -241,7 +241,7 @@ def parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
     jar: SimpleCookie = SimpleCookie()
     try:
         jar.load(cookie_header)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     return {key: morsel.value for key, morsel in jar.items()}
 
@@ -254,7 +254,7 @@ def _is_expected_username(payload: dict[str, object], expected_username: str) ->
     )
 
 
-def check_session_cookie(
+def check_session_cookie(  # noqa: PLR0911
     cookie_value: str | None, config: FormAuthConfig
 ) -> SessionStatus:
     """Classify a session cookie as valid, invalid, or signed by another secret.

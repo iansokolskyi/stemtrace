@@ -20,6 +20,7 @@ import os
 import warnings
 from typing import TYPE_CHECKING, Any
 
+from stemtrace._version import __version__
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.core.graph import TaskGraph, TaskNode
@@ -43,7 +44,6 @@ if TYPE_CHECKING:
     from celery import Celery
     from fastapi import FastAPI
 
-__version__ = "0.3.9"
 __all__ = [
     "ConfigurationError",
     "StemtraceConfig",

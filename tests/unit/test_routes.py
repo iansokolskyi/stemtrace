@@ -8,9 +8,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import TaskEventResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -865,7 +865,7 @@ class TestTaskRegistryWithWorkers:
             tasks=["myapp.tasks.active_task", "myapp.tasks.never_run_task"],
         )
 
-        # Active: registered + executed
+        # Active task: registered and executed
         store.add_event(make_event.create("task-1", name="myapp.tasks.active_task"))
         # Not registered: executed but not registered
         store.add_event(make_event.create("task-2", name="myapp.tasks.orphan_task"))
@@ -1240,7 +1240,6 @@ class TestInspectRateLimiting:
 
         def _fake_get_inspector(_url: str, **_: object) -> None:
             called["n"] += 1
-            return None
 
         # Outer check passes (2.1s since last=0), inner check fails (<2s).
         values = iter([2.1, 0.1])

@@ -13,7 +13,7 @@ app = typer.Typer(
 
 
 @app.command()
-def server(
+def server(  # noqa: PLR0917
     broker_url: Annotated[
         str,
         typer.Option(
@@ -241,7 +241,7 @@ def consume(
 @app.command()
 def version() -> None:
     """Show version information."""
-    from stemtrace import __version__
+    from stemtrace._version import __version__
 
     typer.echo(f"stemtrace {__version__}")
 

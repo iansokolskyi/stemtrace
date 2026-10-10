@@ -264,7 +264,7 @@ class TaskGraph(BaseModel):
     # Track which tasks belong to each group_id (private, not serialized)
     _group_members: dict[str, list[str]] = PrivateAttr(default_factory=dict)
 
-    def add_event(self, event: TaskEvent) -> TaskEvent | None:
+    def add_event(self, event: TaskEvent) -> TaskEvent | None:  # noqa: C901, PLR0912, PLR0915
         """Add event, creating node if needed. Links child to parent if parent exists.
 
         Events may arrive out of order. The node's events stay in lifecycle
@@ -373,7 +373,7 @@ class TaskGraph(BaseModel):
                     ):
                         common_parent = member_real_parents.pop()
                         if (
-                            common_parent != group_node_id
+                            common_parent != group_node_id  # noqa: PLR1714
                             and group_node.parent_id != common_parent
                         ):
                             # Update group node's parent
@@ -404,7 +404,7 @@ class TaskGraph(BaseModel):
         self._link_chord_callback_if_needed(event.task_id)
         return event
 
-    def _track_group_member(self, task_id: str, group_id: str) -> None:
+    def _track_group_member(self, task_id: str, group_id: str) -> None:  # noqa: C901
         """Track task as member of a group and create synthetic node if needed.
 
         Creates a synthetic GROUP node when 2+ tasks share a group_id.
@@ -522,10 +522,9 @@ class TaskGraph(BaseModel):
                 for member_id in members:
                     if member_id in parent_node.children:
                         parent_node.children.remove(member_id)
-        else:
+        elif group_node_id not in self.root_ids:
             # GROUP is a root node
-            if group_node_id not in self.root_ids:
-                self.root_ids.append(group_node_id)
+            self.root_ids.append(group_node_id)
 
         # Update member nodes to point to group as parent
         for member_id in members:
@@ -537,7 +536,7 @@ class TaskGraph(BaseModel):
                 if member_id in self.root_ids:
                     self.root_ids.remove(member_id)
 
-    def _compute_group_state(self, member_ids: list[str]) -> TaskState:
+    def _compute_group_state(self, member_ids: list[str]) -> TaskState:  # noqa: PLR0911
         """Compute aggregate state for a group based on member states.
 
         Priority: FAILURE > STARTED/RECEIVED > PENDING > RETRY > REVOKED > SUCCESS
@@ -563,7 +562,7 @@ class TaskGraph(BaseModel):
 
         return states[0]
 
-    def _upgrade_to_chord(self, group_id: str, callback_id: str) -> None:
+    def _upgrade_to_chord(self, group_id: str, callback_id: str) -> None:  # noqa: C901
         """Upgrade a GROUP node to CHORD and register the callback.
 
         Called when a header task has chord info (chord_callback_id set).

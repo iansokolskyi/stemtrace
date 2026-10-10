@@ -150,7 +150,7 @@ def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
     return get_static_router_with_base(None, show_logout=show_logout)
 
 
-def get_static_router_with_base(
+def get_static_router_with_base(  # noqa: C901
     api_base: str | None,
     *,
     show_logout: bool = False,

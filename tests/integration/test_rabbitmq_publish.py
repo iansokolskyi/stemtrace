@@ -9,6 +9,7 @@ Run with: pytest tests/integration/test_rabbitmq_publish.py -v
 
 import base64
 import contextlib
+import http.client
 import json
 import logging
 import os
@@ -22,7 +23,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from amqp.exceptions import AMQPError
 from kombu import Connection
+from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.transports import rabbitmq
@@ -41,7 +44,7 @@ def rabbitmq_available() -> bool:
         with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
             conn.connect()
         return True
-    except Exception:
+    except (OSError, AMQPError, KombuError):
         return False
 
 
@@ -66,7 +69,8 @@ def management_api_available() -> bool:
     try:
         _management_request("GET", "overview")
         return True
-    except Exception:
+    except (OSError, ValueError, http.client.HTTPException):
+        # URLError/HTTPError/timeouts, bad JSON, or a non-HTTP service on the port
         return False
 
 

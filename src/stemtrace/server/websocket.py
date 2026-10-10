@@ -65,7 +65,7 @@ class WebSocketManager:
         for websocket in self._connections.copy():
             try:
                 await websocket.send_text(message)
-            except Exception:
+            except Exception:  # noqa: BLE001  a failing client is dropped; the broadcast goes on
                 disconnected.append(websocket)
 
         for websocket in disconnected:

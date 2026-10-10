@@ -1389,7 +1389,7 @@ class TestWorkerRegistry:
                     tasks=[f"{hostname}.task"],
                 )
                 results.append(True)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  collected and asserted empty by the test thread
                 errors.append(e)
 
         # Launch threads concurrently

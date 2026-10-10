@@ -359,7 +359,7 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
     return stopped_unexpectedly or consumer.is_connected is False
 
 
-def create_api_router(
+def create_api_router(  # noqa: C901, PLR0915, PLR0917
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
     ws_manager: WebSocketManager | None = None,
@@ -438,7 +438,7 @@ def create_api_router(
         purpose, is not degraded). The response is always HTTP 200 so existing
         health checks keep working.
         """
-        from stemtrace import __version__
+        from stemtrace._version import __version__
 
         running = consumer.is_running if consumer else False
         connected = consumer.is_connected if consumer else None
@@ -474,7 +474,7 @@ def create_api_router(
         response_model=TaskListResponse,
         responses={400: {"model": ErrorResponse}},
     )
-    async def list_tasks(
+    async def list_tasks(  # noqa: PLR0917
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
         state: Annotated[str | None, Query(description="Filter by task state")] = None,
@@ -515,7 +515,7 @@ def create_api_router(
         "/tasks/registry",
         response_model=TaskRegistryResponse,
     )
-    async def get_task_registry(
+    async def get_task_registry(  # noqa: C901
         query: Annotated[
             str | None, Query(description="Filter by task name substring")
         ] = None,
