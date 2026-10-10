@@ -1,6 +1,7 @@
 """Tests for WebSocketManager."""
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -100,6 +101,30 @@ class TestWebSocketManagerBroadcast:
 
         ws1.send_text.assert_awaited_once()
         ws2.send_text.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_omits_task_output(
+        self, ws_manager: WebSocketManager
+    ) -> None:
+        """Captured output stays out of broadcasts; the detail endpoint serves it."""
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.send_text = AsyncMock()
+        await ws_manager.connect(ws)
+        event = TaskEvent(
+            task_id="test-123",
+            name="tests.sample",
+            state=TaskState.SUCCESS,
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            output="x" * 1000,
+        )
+
+        await ws_manager.broadcast(event)
+
+        sent = json.loads(ws.send_text.await_args.args[0])
+        assert sent["task_id"] == "test-123"
+        assert sent["state"] == "SUCCESS"
+        assert "output" not in sent
 
     @pytest.mark.asyncio
     async def test_broadcast_empty_connections(
