@@ -138,6 +138,7 @@ select = [
     "TCH",    # flake8-type-checking
     "PTH",    # flake8-use-pathlib
     "RUF",    # Ruff-specific
+    "PGH004", # blanket noqa (always name the rule)
     "D",      # pydocstyle
     "C90",    # mccabe complexity
     "PLR0911", # too many return statements

@@ -9,6 +9,7 @@ Run with: pytest tests/integration/test_rabbitmq_publish.py -v
 
 import base64
 import contextlib
+import http.client
 import json
 import logging
 import os
@@ -68,7 +69,8 @@ def management_api_available() -> bool:
     try:
         _management_request("GET", "overview")
         return True
-    except (OSError, ValueError):  # URLError/HTTPError/timeouts; bad JSON
+    except (OSError, ValueError, http.client.HTTPException):
+        # URLError/HTTPError/timeouts, bad JSON, or a non-HTTP service on the port
         return False
 
 
