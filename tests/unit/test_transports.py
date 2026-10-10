@@ -1172,6 +1172,13 @@ class TestRabbitMQTransport:
         with pytest.raises(ValueError):  # noqa: PT011
             RabbitMQTransport._parse_event({"unexpected": "value"})
 
+    @pytest.mark.parametrize("payload", ['["task_id"]', b'"event_type"', 42])
+    def test_parse_event_with_non_object_payload_raises_value_error(
+        self, payload: Any
+    ) -> None:
+        with pytest.raises(ValueError, match="missing event_type and task_id"):
+            RabbitMQTransport._parse_event(payload)
+
     def test_publish_logs_worker_event_identifier_on_exception(
         self, caplog: Any, monkeypatch: Any
     ) -> None:

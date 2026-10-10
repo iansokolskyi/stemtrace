@@ -755,3 +755,97 @@ class TestGracefulStopHealth:
 
             fake.stop()
             consumer.stop(timeout=1.0)
+
+
+class FailingStore(GraphStore):
+    """GraphStore whose add_event raises for the given task ids."""
+
+    def __init__(self, failing_ids: set[str]) -> None:
+        super().__init__()
+        self.failing_ids = failing_ids
+
+    def add_event(self, event: TaskEvent) -> None:
+        if event.task_id in self.failing_ids:
+            raise RuntimeError(f"cannot store {event.task_id}")
+        super().add_event(event)
+
+
+class FailingStaleCheckRegistry(WorkerRegistry):
+    """WorkerRegistry whose stale-worker sweep always raises."""
+
+    def remove_stale_workers(
+        self, stale_timeout_minutes: int = 3, cleanup_timeout_minutes: int = 30
+    ) -> None:
+        raise RuntimeError("sweep failed")
+
+
+class TestConsumeLoopEventHandling:
+    def test_consume_loop_without_transport_returns_quietly(
+        self, store: GraphStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+
+        with caplog.at_level(logging.DEBUG, logger="stemtrace.server.consumer"):
+            consumer._consume_loop()
+
+        assert caplog.records == []
+        assert consumer.is_finished is False
+
+    def test_consume_loop_when_stopped_mid_stream_skips_remaining_events(
+        self, store: GraphStore, sample_events: list[TaskEvent]
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+        first, second = sample_events[0], sample_events[1]
+
+        class StopAfterFirst:
+            def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+                yield first
+                consumer._stop_event.set()
+                yield second
+
+        consumer._transport = StopAfterFirst()
+        consumer._consume_loop()
+
+        assert store.get_node(first.task_id) is not None
+        assert store.get_node(second.task_id) is None
+        assert consumer.is_finished is False
+
+    def test_consume_loop_when_processing_fails_logs_and_continues(
+        self, sample_events: list[TaskEvent], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = FailingStore({sample_events[0].task_id})
+        consumer = EventConsumer("memory://", store)
+        consumer._transport = FiniteTransport(list(sample_events[:2]))
+
+        with caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"):
+            consumer._consume_loop()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert [r.getMessage() for r in errors] == ["Error processing event"]
+        assert errors[0].exc_info is not None
+        assert str(errors[0].exc_info[1]) == f"cannot store {sample_events[0].task_id}"
+        assert store.node_count == 1
+        assert consumer._failures == 0
+        assert consumer.is_finished is True
+
+    def test_consume_loop_when_stale_check_fails_logs_and_continues(
+        self,
+        store: GraphStore,
+        sample_events: list[TaskEvent],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        consumer = EventConsumer(
+            "memory://",
+            store,
+            worker_registry=FailingStaleCheckRegistry(),
+            stale_check_interval=0,
+        )
+        consumer._transport = FiniteTransport(list(sample_events[:2]))
+
+        with caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"):
+            consumer._consume_loop()
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors == ["Error processing event"] * 2
+        assert store.node_count == 2
+        assert consumer.is_finished is True
