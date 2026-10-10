@@ -7,6 +7,8 @@ handlers after ``init_worker``) and ``print()`` going through Celery's
 ``LoggingProxy``.
 
 Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``).
+Pools default to prefork and threads; set ``OUTPUT_TEST_POOLS`` to try others,
+e.g. ``OUTPUT_TEST_POOLS=gevent uv run --with gevent pytest <this file>``.
 """
 
 import os
@@ -81,7 +83,10 @@ class WorkerRun:
         )
 
 
-@pytest.fixture(scope="module", params=["prefork", "threads"])
+@pytest.fixture(
+    scope="module",
+    params=os.environ.get("OUTPUT_TEST_POOLS", "prefork,threads").split(","),
+)
 def worker(
     request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[WorkerRun]:
