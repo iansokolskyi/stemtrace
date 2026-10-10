@@ -336,7 +336,7 @@ def warn_session_secret_mismatch() -> None:
     _last_mismatch_warning_at = now
     logger.warning(
         "Rejected a session cookie signed by a different secret, likely from "
-        "another worker/replica (or a recent restart) without %s. Set it to the "
+        "another worker/replica without %s. Set it to the "
         "same long random value on every worker and replica.",
         "STEMTRACE_LOGIN_SECRET",
     )

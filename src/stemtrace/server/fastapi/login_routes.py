@@ -23,7 +23,7 @@ _DEFAULT_TITLE: Final[str] = "stemtrace"
 _REASON_MESSAGES: Final[dict[str, str]] = {
     LOGIN_REASON_SESSION_MISMATCH: (
         "Your session was rejected because it was signed by a different server "
-        "process (another worker or replica, or a recent restart). If stemtrace "
+        "process (another worker or replica). If stemtrace "
         "runs with several workers or replicas, set STEMTRACE_LOGIN_SECRET to the "
         "same long random value on all of them."
     ),

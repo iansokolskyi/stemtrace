@@ -12,7 +12,7 @@ export function SessionRejectedNotice() {
     <div role="alert" className="text-center py-12">
       <p className="text-red-400">
         Your session was rejected because it was signed by a different server process (another
-        worker or replica, or a recent restart).
+        worker or replica).
       </p>
       <p className="text-sm text-slate-400 mt-2">
         If stemtrace runs with several workers or replicas, set STEMTRACE_LOGIN_SECRET to the same
