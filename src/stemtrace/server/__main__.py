@@ -78,6 +78,18 @@ def server(
             help="Login session TTL in seconds.",
         ),
     ] = 86400,
+    node_alias_from_arguments: Annotated[
+        str | None,
+        typer.Option(
+            "--node-alias-from-arguments",
+            envvar="STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS",
+            help=(
+                "Show a task argument as the graph node name instead of the task "
+                "name: a kwarg name (e.g. operator_type) or a positional index "
+                "(e.g. 0). Falls back to the task name when the argument is missing."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
@@ -122,6 +134,7 @@ def server(
         transport_url=transport_url,
         serve_ui=False,
         form_auth_config=form_auth_config,
+        node_alias_from_arguments=node_alias_from_arguments or None,
     )
     fastapi_app = FastAPI(
         title="stemtrace",
