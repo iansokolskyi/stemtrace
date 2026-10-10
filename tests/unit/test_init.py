@@ -96,6 +96,40 @@ class TestInit:
         assert config.capture_args is False
         assert config.scrub_sensitive_data is False
 
+    def test_init_worker_output_capture_is_off_by_default(self) -> None:
+        """Output capture is opt-in, with a 16 KB per-attempt cap."""
+        init_worker(MagicMock(), transport_url="memory://")
+
+        config = get_config()
+        assert config is not None
+        assert config.capture_output is False
+        assert config.max_output_size == 16384
+
+    def test_init_worker_stores_output_capture_options(self) -> None:
+        """capture_output and max_output_size reach the config."""
+        init_worker(
+            MagicMock(),
+            transport_url="memory://",
+            capture_output=True,
+            max_output_size=4096,
+        )
+
+        config = get_config()
+        assert config is not None
+        assert config.capture_output is True
+        assert config.max_output_size == 4096
+
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_init_worker_rejects_non_positive_max_output_size(self, size: int) -> None:
+        """A zero or negative output cap is a configuration error."""
+        with pytest.raises(ConfigurationError, match="max_output_size"):
+            init_worker(
+                MagicMock(),
+                transport_url="memory://",
+                capture_output=True,
+                max_output_size=size,
+            )
+
     def test_namespace_style_init(self) -> None:
         """init_worker() can be called via namespace."""
         app = MagicMock()

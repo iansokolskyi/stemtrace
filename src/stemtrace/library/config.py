@@ -19,8 +19,10 @@ class StemtraceConfig(BaseModel):
         node_alias_from_arguments: Derive graph node display name from task
             arguments. Pass a string key to use kwargs[key], a digit string
             to use args[index], or None to use the task name (default).
-        capture_output: Whether to capture task stdout/stderr.
-        max_output_size: Maximum size in bytes for captured output.
+        capture_output: Whether to capture what each task attempt prints and
+            logs and attach it to the attempt's terminal event.
+        max_output_size: Maximum UTF-8 bytes of output kept per attempt (the
+            end of the output is kept).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -44,7 +46,7 @@ class StemtraceConfig(BaseModel):
 
     # Output capture options (disabled by default)
     capture_output: bool = False
-    max_output_size: int = Field(ge=0, default=65536)  # 64KB
+    max_output_size: int = Field(default=16384, gt=0)  # 16 KB
 
 
 _config: StemtraceConfig | None = None

@@ -93,7 +93,7 @@ def init_worker(
     max_data_size: int = 10240,
     node_alias_from_arguments: str | None = None,
     capture_output: bool = False,
-    max_output_size: int = 65536,
+    max_output_size: int = 16384,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -111,11 +111,14 @@ def init_worker(
         node_alias_from_arguments: Derive node display name from task arguments.
             Pass a digit string to use args[index], a string key for kwargs[key],
             or None to use the task name (default).
-        capture_output: Whether to capture task stdout/stderr (default: False).
-        max_output_size: Maximum size in bytes for captured output (default: 64KB).
+        capture_output: Capture what each task attempt prints and logs and show
+            it in the UI (default: False). Output is not scrubbed.
+        max_output_size: Maximum UTF-8 bytes of output kept per attempt; the
+            end is kept (default: 16KB).
 
     Raises:
-        ConfigurationError: If no broker URL can be determined.
+        ConfigurationError: If no broker URL can be determined, or
+            max_output_size isn't positive.
     """
     global _transport
 
@@ -124,6 +127,10 @@ def init_worker(
         raise ConfigurationError(
             "No broker URL available. Either pass transport_url or configure "
             "Celery's broker_url."
+        )
+    if max_output_size <= 0:
+        raise ConfigurationError(
+            f"max_output_size must be a positive number of bytes, got {max_output_size}."
         )
 
     config = StemtraceConfig(

@@ -46,8 +46,7 @@ class TaskEventResponse(BaseModel):
     result: Any | None = None
     exception: str | None = None
     traceback: str | None = None
-    stdout: str | None = None
-    stderr: str | None = None
+    output: str | None = None
 
 
 class TaskNodeResponse(BaseModel):

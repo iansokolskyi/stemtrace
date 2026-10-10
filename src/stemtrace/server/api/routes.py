@@ -34,7 +34,7 @@ from stemtrace.server.api.schemas import (
 if TYPE_CHECKING:
     from celery.app.control import Inspect
 
-    from stemtrace.core.events import TaskState
+    from stemtrace.core.events import TaskEvent, TaskState
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -92,11 +92,24 @@ def _tasks_for_worker_key(
     return tasks
 
 
-def _node_to_response(node: TaskNode) -> TaskNodeResponse:
+def _event_to_response(event: TaskEvent, include_output: bool) -> TaskEventResponse:
+    """Convert a TaskEvent to its API model, optionally dropping its output."""
+    response = TaskEventResponse.model_validate(event)
+    if not include_output and response.output is not None:
+        response = response.model_copy(update={"output": None})
+    return response
+
+
+def _node_to_response(
+    node: TaskNode, *, include_output: bool = False
+) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
     Args:
         node: Task node from graph store.
+        include_output: Keep captured task output on events. Off for list
+            responses: output can be up to ``max_output_size`` per attempt and
+            only the task detail page shows it.
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -117,7 +130,7 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
         chord_id=node.chord_id,
         parent_id=node.parent_id,
         children=node.children,
-        events=[TaskEventResponse.model_validate(e) for e in node.events],
+        events=[_event_to_response(e, include_output) for e in node.events],
         first_seen=first_seen,
         last_updated=last_updated,
         duration_ms=duration_ms,
@@ -613,7 +626,7 @@ def create_api_router(
 
         node, children = found
         return TaskDetailResponse(
-            task=_node_to_response(node),
+            task=_node_to_response(node, include_output=True),
             children=[_node_to_response(c) for c in children],
         )
 
