@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-10
+
 ### Changed
 - Docker: the image's `HEALTHCHECK` now calls the new `<prefix>/api/health/live` endpoint instead of `/stemtrace/api/health`, which returns 401 under form login (so containers with login enabled reported unhealthy). The liveness endpoint needs no session and checks only that the process is serving: it always answers 200, with an informational `{"status": "ok"}`, or `{"status": "degraded"}` by the same rule as `/api/health` (the event consumer stopped unexpectedly or can't read from the broker; a consumer stopped on purpose or whose event source finished is not degraded).
 - Docker image: updated the locked runtime dependencies `fastapi` 0.141.1 → 0.142.2 (which now pulls in `opentelemetry-api` 1.45.1; stemtrace doesn't configure tracing, so it stays a no-op), `pydantic` 2.12.5 → 2.13.5 (`pydantic-core` 2.41.5 → 2.46.5), `celery` 5.6.0 → 5.6.3, `typer` 0.21.0 → 0.27.3, `typing-extensions` 4.15.0 → 4.16.0 and `websockets` 15.0.1 → 16.1.1 (used by uvicorn's WebSocket support). Only the lockfile changed: the package's dependency ranges are the same, so pip installs are unaffected. With typer 0.27, `--help` shows option types as `<str>`/`<int>` instead of `TEXT`/`INTEGER`.
