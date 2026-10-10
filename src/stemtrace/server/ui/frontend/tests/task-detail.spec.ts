@@ -443,6 +443,7 @@ test.describe('Task Detail - Output', () => {
     })
 
     await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
     await expect(page.getByTestId('output-attempt')).toHaveCount(2)
     await expect.poll(() => socket !== null).toBe(true)
     const ws = socket as unknown as WebSocketRoute
