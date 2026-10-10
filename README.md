@@ -301,6 +301,11 @@ again once events are re-consumed.
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
+  - Events published while RabbitMQ itself is unreachable are dropped, not buffered on the
+    worker. A worker tries each host of the broker URL once (2s connect timeout), then skips
+    publishing for a cooldown that grows from 1s to 30s and resets on the next successful
+    publish, so an outage doesn't slow tasks down. The worker logs a warning when this starts,
+    a summary at most once a minute, and the number of dropped events once publishing recovers.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
