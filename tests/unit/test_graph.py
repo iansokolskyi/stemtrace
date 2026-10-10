@@ -1,10 +1,12 @@
 """Tests for task graph models."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timedelta, timezone
+from itertools import permutations
 
 import pytest
 from pydantic import ValidationError
 
+import stemtrace.core.graph as graph_module
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 
@@ -65,7 +67,7 @@ class TestTaskNode:
             task_id="task-1",
             name="test",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         node.events.append(event)
         assert len(node.events) == 1
@@ -114,7 +116,7 @@ class TestTaskGraphBasics:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         graph.add_event(event)
         assert "task-1" in graph.nodes
@@ -128,7 +130,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -136,7 +138,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         assert len(graph.nodes) == 1
@@ -154,7 +156,7 @@ class TestTaskGraphBasics:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         node = graph.get_node("task-1")
@@ -170,7 +172,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -178,7 +180,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -193,7 +195,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -209,7 +211,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",
             )
         )
@@ -218,7 +220,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         # Child knows parent, but parent doesn't know child (no back-linking)
@@ -232,7 +234,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         for idx in range(3):
@@ -241,7 +243,7 @@ class TestTaskGraphParentChild:
                     task_id=f"child-{idx}",
                     name="myapp.tasks.subtask",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     parent_id="parent-1",
                 )
             )
@@ -259,7 +261,7 @@ class TestTaskGraphParentChild:
                 task_id="parent-1",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         # Child's PENDING event (from task_sent) lacks parent_id
@@ -268,7 +270,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=None,  # task_sent doesn't know parent
             )
         )
@@ -282,7 +284,7 @@ class TestTaskGraphParentChild:
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent-1",  # Worker has this info
             )
         )
@@ -300,7 +302,7 @@ class TestTaskGraphNesting:
                 task_id="root",
                 name="myapp.tasks.root",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         graph.add_event(
@@ -308,7 +310,7 @@ class TestTaskGraphNesting:
                 task_id="parent",
                 name="myapp.tasks.parent",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="root",
             )
         )
@@ -317,7 +319,7 @@ class TestTaskGraphNesting:
                 task_id="child",
                 name="myapp.tasks.child",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id="parent",
             )
         )
@@ -333,7 +335,7 @@ class TestTaskGraphNesting:
                     task_id=f"root-{idx}",
                     name="myapp.tasks.root",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                 )
             )
         assert len(graph.root_ids) == 3
@@ -355,7 +357,7 @@ class TestTaskNodeStateTransitions:
                     task_id=task_id,
                     name="myapp.tasks.process",
                     state=state,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                 )
             )
         node = graph.nodes[task_id]
@@ -370,7 +372,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=0,
             )
         )
@@ -379,7 +381,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.RETRY,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -388,7 +390,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -397,7 +399,7 @@ class TestTaskNodeStateTransitions:
                 task_id=task_id,
                 name="myapp.tasks.flaky",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 retries=1,
             )
         )
@@ -415,7 +417,7 @@ class TestTaskGraphSerialization:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         data = graph.model_dump()
@@ -430,7 +432,7 @@ class TestTaskGraphSerialization:
                 task_id="parent",
                 name="myapp.tasks.main",
                 state=TaskState.STARTED,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
         graph.add_event(
@@ -438,7 +440,7 @@ class TestTaskGraphSerialization:
                 task_id="child",
                 name="myapp.tasks.sub",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 parent_id="parent",
             )
         )
@@ -458,7 +460,7 @@ class TestGroupIdCapture:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             group_id="group-abc",
         )
         assert event.group_id == "group-abc"
@@ -468,7 +470,7 @@ class TestGroupIdCapture:
             task_id="task-1",
             name="myapp.tasks.process",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         assert event.group_id is None
 
@@ -479,7 +481,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -496,7 +498,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=None,
             )
         )
@@ -508,7 +510,7 @@ class TestGroupIdCapture:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -526,7 +528,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-abc",
             )
         )
@@ -545,7 +547,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -557,7 +559,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -578,7 +580,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -587,7 +589,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -607,7 +609,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -616,7 +618,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -635,7 +637,7 @@ class TestSyntheticGroupNodes:
                     task_id=f"task-{i}",
                     name=f"myapp.tasks.t{i}",
                     state=TaskState.STARTED,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     group_id=group_id,
                 )
             )
@@ -656,7 +658,7 @@ class TestSyntheticGroupNodes:
                 task_id="a1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-a",
             )
         )
@@ -665,7 +667,7 @@ class TestSyntheticGroupNodes:
                 task_id="a2",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-a",
             )
         )
@@ -676,7 +678,7 @@ class TestSyntheticGroupNodes:
                 task_id="b1",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-b",
             )
         )
@@ -685,7 +687,7 @@ class TestSyntheticGroupNodes:
                 task_id="b2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id="group-b",
             )
         )
@@ -705,7 +707,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -714,7 +716,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -742,7 +744,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -751,7 +753,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -769,7 +771,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -778,7 +780,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.FAILURE,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -796,7 +798,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -805,7 +807,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -823,7 +825,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -832,7 +834,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -851,7 +853,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -860,7 +862,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -874,7 +876,7 @@ class TestGroupNodeState:
                 task_id="task-1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -886,7 +888,7 @@ class TestGroupNodeState:
                 task_id="task-2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -909,7 +911,7 @@ class TestGroupNodeState:
                 task_id=parent_id,
                 name="myapp.workflow",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
 
@@ -919,7 +921,7 @@ class TestGroupNodeState:
                 task_id="member-1",
                 name="myapp.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -928,7 +930,7 @@ class TestGroupNodeState:
                 task_id="member-2",
                 name="myapp.process",
                 state=TaskState.PENDING,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -945,7 +947,7 @@ class TestGroupNodeState:
                 task_id="member-1",
                 name="myapp.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -955,7 +957,7 @@ class TestGroupNodeState:
                 task_id="member-2",
                 name="myapp.process",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -979,7 +981,7 @@ class TestGroupNodeState:
                 task_id=parent_id,
                 name="myapp.tasks.parent",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
 
@@ -989,7 +991,7 @@ class TestGroupNodeState:
                 task_id="child-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -999,7 +1001,7 @@ class TestGroupNodeState:
                 task_id="child-2",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 parent_id=parent_id,
                 group_id=group_id,
             )
@@ -1053,7 +1055,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1080,7 +1082,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1090,7 +1092,7 @@ class TestChordNodeCreation:
                 task_id="header-2",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1104,7 +1106,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1127,7 +1129,7 @@ class TestChordNodeCreation:
                     task_id=f"add-{i}",
                     name="myapp.tasks.add",
                     state=TaskState.SUCCESS,
-                    timestamp=datetime.now(UTC),
+                    timestamp=datetime.now(timezone.utc),
                     group_id=group_id,
                     chord_id=group_id,
                     chord_callback_id=callback_id,
@@ -1140,7 +1142,7 @@ class TestChordNodeCreation:
                 task_id=callback_id,
                 name="myapp.tasks.aggregate",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,  # Callback has same group_id
             )
         )
@@ -1170,7 +1172,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1183,7 +1185,7 @@ class TestChordNodeCreation:
                 task_id=callback_id,
                 name="myapp.tasks.aggregate",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1204,7 +1206,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.STARTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1215,7 +1217,7 @@ class TestChordNodeCreation:
                 task_id="header-2",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1232,7 +1234,7 @@ class TestChordNodeCreation:
                 task_id="header-1",
                 name="myapp.tasks.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -1261,7 +1263,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1270,7 +1272,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.RETRY,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1287,7 +1289,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1296,7 +1298,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.REVOKED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1313,7 +1315,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t1",
                 name="myapp.tasks.a",
                 state=TaskState.REJECTED,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1322,7 +1324,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="t2",
                 name="myapp.tasks.b",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1343,7 +1345,7 @@ class TestGraphCoverageEdgeCases:
                 task_id=callback_id,
                 name="myapp.tasks.callback",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
             )
         )
@@ -1355,7 +1357,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="header-1",
                 name="myapp.tasks.header",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_callback_id=callback_id,
             )
@@ -1378,7 +1380,7 @@ class TestGraphCoverageEdgeCases:
                 task_id=callback_id,
                 name="myapp.tasks.callback",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
         )
         assert callback_id in graph.root_ids
@@ -1388,7 +1390,7 @@ class TestGraphCoverageEdgeCases:
                 task_id="header-1",
                 name="myapp.tasks.header",
                 state=TaskState.SUCCESS,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 group_id=group_id,
                 chord_callback_id=callback_id,
             )
@@ -1398,3 +1400,626 @@ class TestGraphCoverageEdgeCases:
         assert graph.nodes[callback_id].parent_id == chord_node_id
         assert callback_id in graph.nodes[chord_node_id].children
         assert callback_id not in graph.root_ids
+
+
+_BASE_TIME = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def op_counter(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count event keys, precedence lookups and full event comparisons.
+
+    Lets complexity tests assert on work done instead of wall-clock time.
+    """
+    counts = {"digest": 0, "precedence": 0, "eq": 0}
+    real_digest = graph_module._digest
+    real_precedence = graph_module._precedence
+    real_eq = TaskEvent.__eq__
+
+    def digest(event: TaskEvent) -> bytes:
+        counts["digest"] += 1
+        return real_digest(event)
+
+    def precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
+        counts["precedence"] += 1
+        return real_precedence(event)
+
+    def eq(self: TaskEvent, other: object) -> bool:
+        counts["eq"] += 1
+        return real_eq(self, other)
+
+    monkeypatch.setattr(graph_module, "_digest", digest)
+    monkeypatch.setattr(graph_module, "_precedence", precedence)
+    monkeypatch.setattr(TaskEvent, "__eq__", eq)
+    return counts
+
+
+def _ordered_event(
+    state: TaskState,
+    offset_s: float,
+    *,
+    task_id: str = "task-1",
+    retries: int = 0,
+    group_id: str | None = None,
+) -> TaskEvent:
+    """Build an event at a fixed offset from a base time (deterministic ordering)."""
+    return TaskEvent(
+        task_id=task_id,
+        name="myapp.tasks.process",
+        state=state,
+        timestamp=_BASE_TIME + timedelta(seconds=offset_s),
+        retries=retries,
+        group_id=group_id,
+    )
+
+
+class TestOutOfOrderEvents:
+    """Node state must not regress when events arrive out of order."""
+
+    def test_add_event_pending_after_success_keeps_success(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1))
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 2))
+        # Sender-side PENDING (task_sent fires after publish) arrives last.
+        graph.add_event(_ordered_event(TaskState.PENDING, 0))
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.SUCCESS
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+
+    def test_add_event_pending_with_later_timestamp_after_success_keeps_success(
+        self,
+    ) -> None:
+        # task_sent can be stamped after the worker already started the task.
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1))
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 2))
+        graph.add_event(_ordered_event(TaskState.PENDING, 3))
+
+        assert graph.nodes["task-1"].state == TaskState.SUCCESS
+
+    def test_add_event_received_after_started_keeps_started(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.PENDING, 0))
+        graph.add_event(_ordered_event(TaskState.STARTED, 2))
+        graph.add_event(_ordered_event(TaskState.RECEIVED, 1))
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.STARTED
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.RECEIVED,
+            TaskState.STARTED,
+        ]
+
+    def test_add_event_in_order_retry_cycle_shows_retry_then_success(self) -> None:
+        graph = TaskGraph()
+        seen: list[TaskState] = []
+        for event in [
+            _ordered_event(TaskState.STARTED, 1, retries=0),
+            _ordered_event(TaskState.RETRY, 2, retries=0),
+            _ordered_event(TaskState.STARTED, 3, retries=1),
+            _ordered_event(TaskState.SUCCESS, 4, retries=1),
+        ]:
+            graph.add_event(event)
+            seen.append(graph.nodes["task-1"].state)
+
+        assert seen == [
+            TaskState.STARTED,
+            TaskState.RETRY,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+        node = graph.nodes["task-1"]
+        assert node.events[1].state == TaskState.RETRY
+        assert node.events[1].retries == 0
+
+    def test_add_event_interleaved_retry_cycle_ends_in_success(self) -> None:
+        # Next attempt's events overtake the RETRY event of the previous attempt.
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1, retries=0))
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=1))
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 4, retries=1))
+        graph.add_event(_ordered_event(TaskState.RETRY, 2, retries=0))
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.SUCCESS
+        assert [(e.state, e.retries) for e in node.events] == [
+            (TaskState.STARTED, 0),
+            (TaskState.RETRY, 0),
+            (TaskState.STARTED, 1),
+            (TaskState.SUCCESS, 1),
+        ]
+
+    def test_add_event_retry_after_next_attempt_started_keeps_started(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1, retries=0))
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=1))
+        graph.add_event(_ordered_event(TaskState.RETRY, 2, retries=0))
+
+        assert graph.nodes["task-1"].state == TaskState.STARTED
+
+    @pytest.mark.parametrize(
+        "terminal",
+        [
+            TaskState.FAILURE,
+            TaskState.REVOKED,
+            TaskState.REJECTED,
+            TaskState.SUCCESS,
+        ],
+    )
+    def test_add_event_terminal_state_not_overridden_by_same_attempt(
+        self, terminal: TaskState
+    ) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(terminal, 2))
+        graph.add_event(_ordered_event(TaskState.STARTED, 1))
+        graph.add_event(_ordered_event(TaskState.RECEIVED, 0.5))
+        graph.add_event(_ordered_event(TaskState.PENDING, 0))
+        # Even a non-terminal event stamped later in the same attempt loses.
+        graph.add_event(_ordered_event(TaskState.STARTED, 5))
+        graph.add_event(_ordered_event(TaskState.RETRY, 6))
+
+        assert graph.nodes["task-1"].state == terminal
+
+    def test_add_event_main_process_failure_with_zero_retries_ends_in_failure(
+        self,
+    ) -> None:
+        # Hard time limit / lost worker: Celery's main process emits
+        # task_failure with a default request, so retries is 0 even though the
+        # task already retried twice.
+        events = [
+            _ordered_event(TaskState.STARTED, 1, retries=0),
+            _ordered_event(TaskState.RETRY, 2, retries=0),
+            _ordered_event(TaskState.STARTED, 3, retries=1),
+            _ordered_event(TaskState.RETRY, 4, retries=1),
+            _ordered_event(TaskState.STARTED, 5, retries=2),
+            _ordered_event(TaskState.FAILURE, 6, retries=0),
+        ]
+        graph = TaskGraph()
+        for event in events:
+            graph.add_event(event)
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.FAILURE
+        assert node.events[-1].state == TaskState.FAILURE
+
+    def test_add_event_main_process_failure_any_arrival_order_ends_in_failure(
+        self,
+    ) -> None:
+        events = [
+            _ordered_event(TaskState.STARTED, 1, retries=0),
+            _ordered_event(TaskState.RETRY, 2, retries=0),
+            _ordered_event(TaskState.STARTED, 3, retries=1),
+            _ordered_event(TaskState.RETRY, 4, retries=1),
+            _ordered_event(TaskState.STARTED, 5, retries=2),
+            _ordered_event(TaskState.FAILURE, 6, retries=0),
+        ]
+        final_states = set()
+        for order in permutations(events):
+            graph = TaskGraph()
+            for event in order:
+                graph.add_event(event)
+            final_states.add(graph.nodes["task-1"].state)
+
+        assert final_states == {TaskState.FAILURE}
+
+    def test_add_event_terminal_beats_later_non_terminal_from_higher_attempt(
+        self,
+    ) -> None:
+        # A terminal's retries can be wrong (0 from the worker main process),
+        # so no non-terminal event overrides it.
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.FAILURE, 2, retries=0))
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=2))
+
+        assert graph.nodes["task-1"].state == TaskState.FAILURE
+
+    def test_add_event_connection_loss_redelivery_started_after_retry_wins(
+        self,
+    ) -> None:
+        # worker_cancel_long_running_tasks_on_connection_loss: RETRY(N), then
+        # the redelivered message runs with the same retries count.
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1, retries=1))
+        graph.add_event(_ordered_event(TaskState.RETRY, 2, retries=1))
+        assert graph.nodes["task-1"].state == TaskState.RETRY
+
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=1))
+        assert graph.nodes["task-1"].state == TaskState.STARTED
+
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 4, retries=1))
+        assert graph.nodes["task-1"].state == TaskState.SUCCESS
+
+    def test_add_event_connection_loss_redelivery_out_of_order_shows_started(
+        self,
+    ) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=1))
+        graph.add_event(_ordered_event(TaskState.RETRY, 2, retries=1))
+        graph.add_event(_ordered_event(TaskState.STARTED, 1, retries=1))
+
+        assert graph.nodes["task-1"].state == TaskState.STARTED
+
+    @pytest.mark.parametrize("state", list(TaskState))
+    def test_add_event_every_state_is_ranked(self, state: TaskState) -> None:
+        # Fails with KeyError if a new TaskState is added without a rank.
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1))
+        graph.add_event(_ordered_event(state, 2))
+        graph.add_event(_ordered_event(TaskState.PENDING, 0))
+
+        earlier_phase = {TaskState.PENDING, TaskState.RECEIVED}
+        expected = TaskState.STARTED if state in earlier_phase else state
+        assert graph.nodes["task-1"].state == expected
+
+    @pytest.mark.parametrize(
+        ("sequence", "expected"),
+        [
+            pytest.param(
+                [
+                    (TaskState.PENDING, 0, 0),
+                    (TaskState.RECEIVED, 0.5, 0),
+                    (TaskState.STARTED, 1, 0),
+                    (TaskState.SUCCESS, 2, 0),
+                ],
+                TaskState.SUCCESS,
+                id="simple-success",
+            ),
+            pytest.param(
+                [
+                    (TaskState.PENDING, 1.5, 0),  # stamped after publish
+                    (TaskState.STARTED, 1, 0),
+                    (TaskState.SUCCESS, 2, 0),
+                ],
+                TaskState.SUCCESS,
+                id="pending-stamped-late",
+            ),
+            pytest.param(
+                [
+                    (TaskState.PENDING, 0, 0),
+                    (TaskState.STARTED, 1, 0),
+                    (TaskState.RETRY, 2, 0),
+                    (TaskState.STARTED, 3, 1),
+                    (TaskState.RETRY, 4, 1),
+                    (TaskState.SUCCESS, 6, 1),
+                ],
+                TaskState.SUCCESS,
+                id="retries-then-success",
+            ),
+            pytest.param(
+                [
+                    (TaskState.STARTED, 1, 0),
+                    (TaskState.RETRY, 2, 0),
+                    (TaskState.STARTED, 3, 1),
+                    (TaskState.FAILURE, 4, 0),  # main-process failure
+                ],
+                TaskState.FAILURE,
+                id="main-process-failure",
+            ),
+            pytest.param(
+                [
+                    (TaskState.STARTED, 1, 1),
+                    (TaskState.RETRY, 2, 1),  # connection-loss cancel
+                    (TaskState.STARTED, 3, 1),  # redelivered run
+                ],
+                TaskState.STARTED,
+                id="connection-loss-redelivery",
+            ),
+            pytest.param(
+                [
+                    (TaskState.FAILURE, 10, 0),
+                    (TaskState.RETRY, 20, 1),
+                    (TaskState.STARTED, 8, 2),  # skewed clock
+                ],
+                TaskState.FAILURE,
+                id="skewed-clocks",
+            ),
+            pytest.param(
+                [
+                    (TaskState.STARTED, 1, 0),
+                    (TaskState.RETRY, 1, 0),  # same instant
+                ],
+                TaskState.RETRY,
+                id="started-retry-tie",
+            ),
+        ],
+    )
+    def test_add_event_final_state_independent_of_arrival_order(
+        self,
+        sequence: list[tuple[TaskState, float, int]],
+        expected: TaskState,
+    ) -> None:
+        events = [
+            _ordered_event(state, offset, retries=retries)
+            for state, offset, retries in sequence
+        ]
+        final_states = set()
+        for order in permutations(events):
+            graph = TaskGraph()
+            for event in order:
+                graph.add_event(event)
+            final_states.add(graph.nodes["task-1"].state)
+
+        assert final_states == {expected}
+
+    def test_add_event_naive_timestamp_treated_as_utc(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 2))
+        graph.add_event(
+            TaskEvent(
+                task_id="task-1",
+                name="myapp.tasks.process",
+                state=TaskState.PENDING,
+                timestamp=datetime(2024, 1, 1, 0, 0, 1),  # naive, 1s after base
+            )
+        )
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.SUCCESS
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.SUCCESS,
+        ]
+        assert node.events[0].timestamp == _BASE_TIME + timedelta(seconds=1)
+        assert node.events[0].timestamp.tzinfo is not None
+
+    def test_add_event_after_roundtrip_rebuilds_state_from_history(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 1))
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 2))
+        restored = TaskGraph.model_validate(graph.model_dump())
+
+        restored.add_event(_ordered_event(TaskState.PENDING, 0))
+
+        assert restored.nodes["task-1"].state == TaskState.SUCCESS
+        assert len(restored.nodes["task-1"].events) == 3
+
+    @pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+    def test_add_event_many_events_on_one_node_does_constant_work_per_event(
+        self, reverse: bool, op_counter: dict[str, int]
+    ) -> None:
+        graph = TaskGraph()
+        events = [_ordered_event(TaskState.RETRY, i, retries=i) for i in range(5000)]
+        if reverse:
+            events.reverse()
+
+        for event in events:
+            graph.add_event(event)
+        for event in events[:100]:
+            graph.add_event(event)  # duplicates
+
+        node = graph.nodes["task-1"]
+        assert len(node.events) == 5000
+        assert node.events[0].retries == 0
+        assert node.events[-1].retries == 4999
+        assert node.state == TaskState.RETRY
+        # One key per insert, at most two precedence lookups per new event, and
+        # full equality only for the 100 real duplicates: no scans.
+        assert op_counter["digest"] == 5100
+        assert op_counter["precedence"] <= 2 * 5000
+        assert op_counter["eq"] == 100
+
+    def test_add_event_same_timestamp_flood_does_constant_work_per_event(
+        self, op_counter: dict[str, int]
+    ) -> None:
+        graph = TaskGraph()
+        events = [
+            TaskEvent(
+                task_id="task-1",
+                name="myapp.tasks.process",
+                state=TaskState.STARTED,
+                timestamp=_BASE_TIME,
+                args=[i],
+            )
+            for i in range(5000)
+        ]
+
+        for event in events:
+            graph.add_event(event)
+        for event in events[:50]:
+            graph.add_event(event)  # duplicates
+
+        assert len(graph.nodes["task-1"].events) == 5000
+        assert op_counter["eq"] == 50
+        assert op_counter["digest"] == 5050
+
+    def test_add_event_equal_timestamps_order_is_deterministic(self) -> None:
+        events = [
+            _ordered_event(TaskState.SUCCESS, 1),
+            _ordered_event(TaskState.RETRY, 1),
+            _ordered_event(TaskState.STARTED, 1),
+            _ordered_event(TaskState.FAILURE, 1),
+        ]
+        orders = set()
+        for order in permutations(events):
+            graph = TaskGraph()
+            for event in order:
+                graph.add_event(event)
+            node = graph.nodes["task-1"]
+            orders.add((tuple(e.state for e in node.events), node.state))
+
+        assert orders == {
+            (
+                (
+                    TaskState.STARTED,
+                    TaskState.RETRY,
+                    TaskState.SUCCESS,
+                    TaskState.FAILURE,
+                ),
+                TaskState.FAILURE,
+            )
+        }
+
+    def test_add_event_pending_stamped_after_finish_sorts_first(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 0.010))
+        graph.add_event(_ordered_event(TaskState.SUCCESS, 0.020))
+        graph.add_event(_ordered_event(TaskState.PENDING, 0.025))
+
+        node = graph.nodes["task-1"]
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+        # Timestamps are kept as sent.
+        assert node.events[0].timestamp == _BASE_TIME + timedelta(seconds=0.025)
+        assert node.first_seen == _BASE_TIME + timedelta(seconds=0.010)
+        assert node.last_updated == _BASE_TIME + timedelta(seconds=0.020)
+
+    def test_add_event_pending_stamped_after_received_sorts_before_it(self) -> None:
+        events = [
+            _ordered_event(TaskState.PENDING, 0.060),
+            _ordered_event(TaskState.RECEIVED, 0.010),
+            _ordered_event(TaskState.STARTED, 0.020),
+            _ordered_event(TaskState.SUCCESS, 0.030),
+        ]
+        results = set()
+        for order in permutations(events):
+            graph = TaskGraph()
+            for event in order:
+                graph.add_event(event)
+            node = graph.nodes["task-1"]
+            results.add((tuple(e.state for e in node.events), node.first_seen))
+
+        assert results == {
+            (
+                (
+                    TaskState.PENDING,
+                    TaskState.RECEIVED,
+                    TaskState.STARTED,
+                    TaskState.SUCCESS,
+                ),
+                _BASE_TIME + timedelta(seconds=0.010),
+            )
+        }
+
+    def test_add_event_only_pending_uses_its_timestamps(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.PENDING, 3))
+
+        node = graph.nodes["task-1"]
+        assert node.first_seen == _BASE_TIME + timedelta(seconds=3)
+        assert node.last_updated == _BASE_TIME + timedelta(seconds=3)
+
+    def test_first_seen_and_last_updated_none_without_events(self) -> None:
+        node = TaskNode(task_id="group:g", name="group", state=TaskState.PENDING)
+
+        assert node.first_seen is None
+        assert node.last_updated is None
+
+    def test_add_event_with_unserializable_args_still_dedupes(self) -> None:
+        marker = object()
+        event = TaskEvent(
+            task_id="task-1",
+            name="myapp.tasks.process",
+            state=TaskState.STARTED,
+            timestamp=_BASE_TIME,
+            args=[marker],
+        )
+        graph = TaskGraph()
+
+        assert graph.add_event(event) is event
+        assert graph.add_event(event) is None
+        assert graph.nodes["task-1"].events == [event]
+
+    def test_add_event_to_node_built_with_unsorted_events_sorts_them(self) -> None:
+        node = TaskNode(
+            task_id="task-1",
+            name="myapp.tasks.process",
+            state=TaskState.PENDING,
+            events=[
+                _ordered_event(TaskState.SUCCESS, 3),
+                _ordered_event(TaskState.PENDING, 0),
+                _ordered_event(TaskState.STARTED, 2),
+            ],
+        )
+        graph = TaskGraph(nodes={"task-1": node}, root_ids=["task-1"])
+
+        graph.add_event(_ordered_event(TaskState.RECEIVED, 1))
+
+        assert [e.state for e in graph.nodes["task-1"].events] == [
+            TaskState.PENDING,
+            TaskState.RECEIVED,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+        assert graph.nodes["task-1"].state == TaskState.SUCCESS
+
+    def test_add_event_revoked_not_superseded_by_older_attempt(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.REVOKED, 5, retries=2))
+        graph.add_event(_ordered_event(TaskState.STARTED, 3, retries=1))
+        graph.add_event(_ordered_event(TaskState.RETRY, 4, retries=1))
+
+        assert graph.nodes["task-1"].state == TaskState.REVOKED
+
+    def test_add_event_two_terminals_same_attempt_latest_timestamp_wins(
+        self,
+    ) -> None:
+        forward = TaskGraph()
+        forward.add_event(_ordered_event(TaskState.FAILURE, 1))
+        forward.add_event(_ordered_event(TaskState.REVOKED, 2))
+        backward = TaskGraph()
+        backward.add_event(_ordered_event(TaskState.REVOKED, 2))
+        backward.add_event(_ordered_event(TaskState.FAILURE, 1))
+
+        assert forward.nodes["task-1"].state == TaskState.REVOKED
+        assert backward.nodes["task-1"].state == TaskState.REVOKED
+
+    def test_add_event_duplicate_is_idempotent(self) -> None:
+        graph = TaskGraph()
+        started = _ordered_event(TaskState.STARTED, 1)
+        success = _ordered_event(TaskState.SUCCESS, 2)
+        graph.add_event(started)
+        graph.add_event(success)
+        graph.add_event(started)
+        graph.add_event(success)
+
+        node = graph.nodes["task-1"]
+        assert node.state == TaskState.SUCCESS
+        assert node.events == [started, success]
+        assert graph.root_ids == ["task-1"]
+
+    def test_add_event_out_of_order_keeps_events_sorted_by_timestamp(self) -> None:
+        graph = TaskGraph()
+        for offset, state in [
+            (3, TaskState.SUCCESS),
+            (0, TaskState.PENDING),
+            (2, TaskState.STARTED),
+            (1, TaskState.RECEIVED),
+        ]:
+            graph.add_event(_ordered_event(state, offset))
+
+        node = graph.nodes["task-1"]
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.RECEIVED,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+        assert node.events[0].timestamp == _BASE_TIME
+        assert node.events[-1].timestamp == _BASE_TIME + timedelta(seconds=3)
+
+    def test_add_event_late_pending_in_group_keeps_group_success(self) -> None:
+        graph = TaskGraph()
+        for task_id in ("member-1", "member-2"):
+            graph.add_event(
+                _ordered_event(TaskState.STARTED, 1, task_id=task_id, group_id="g1")
+            )
+            graph.add_event(
+                _ordered_event(TaskState.SUCCESS, 2, task_id=task_id, group_id="g1")
+            )
+        graph.add_event(
+            _ordered_event(TaskState.PENDING, 0, task_id="member-1", group_id="g1")
+        )
+
+        group = graph.nodes["group:g1"]
+        assert group.events == []
+        assert graph.nodes["member-1"].state == TaskState.SUCCESS
+        assert group.state == TaskState.SUCCESS

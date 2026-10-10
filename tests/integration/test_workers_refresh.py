@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
@@ -53,7 +53,7 @@ class TestWorkersRefresh:
         worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
         worker_registry.mark_shutdown("worker-1", 12345)  # offline before refresh
 
-        started_at = datetime.now(UTC)
+        started_at = datetime.now(timezone.utc)
         fake = _FakeInspect(
             ping_result={
                 "celery@worker-1": {"ok": "pong"},
@@ -80,4 +80,6 @@ class TestWorkersRefresh:
         assert worker["hostname"] == "worker-1"
         assert worker["status"] == "online"
         # last_seen should be updated to "now-ish"
-        assert datetime.fromisoformat(worker["last_seen"]) >= started_at
+        # Python 3.10 fromisoformat() does not accept the "Z" suffix
+        last_seen = worker["last_seen"].replace("Z", "+00:00")
+        assert datetime.fromisoformat(last_seen) >= started_at

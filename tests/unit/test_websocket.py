@@ -1,7 +1,7 @@
 """Tests for WebSocketManager."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +25,7 @@ def sample_event() -> TaskEvent:
         task_id="test-123",
         name="tests.sample",
         state=TaskState.STARTED,
-        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
 
 

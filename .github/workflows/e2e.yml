@@ -12,6 +12,10 @@ jobs:
   api-e2e:
     name: API E2E Tests
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+      # The Docker images build their own UI; skip the host-side build.
+      STEMTRACE_SKIP_UI_BUILD: "1"
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -21,10 +25,10 @@ jobs:
           - rabbitmq
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Select compose file and Celery env
         run: |
@@ -51,20 +55,20 @@ jobs:
           echo "Services ready!"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Run API E2E tests
-        run: uv run pytest tests/e2e/ -m e2e -v --tb=short
+        run: uv run --locked --no-build pytest tests/e2e/ -m e2e -v --tb=short
 
       - name: Show logs on failure
         if: failure()
@@ -79,6 +83,10 @@ jobs:
   playwright:
     name: Playwright E2E Tests
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+      # The Docker images build their own UI; skip the host-side build.
+      STEMTRACE_SKIP_UI_BUILD: "1"
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -88,10 +96,10 @@ jobs:
           - rabbitmq
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Select compose file and Celery env
         run: |
@@ -117,22 +125,22 @@ jobs:
           echo "Services ready!"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
       - name: Install Python dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --no-build --all-extras
 
       - name: Submit test tasks
         run: |
           # Submit some tasks to populate the UI for testing
-          uv run python -c "
+          uv run --locked --no-build python -c "
           from tests.e2e.tasks import add, create_workflow, always_fails
           # Submit a few tasks
           add.delay(1, 2)
@@ -145,19 +153,19 @@ jobs:
           sleep 5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: src/stemtrace/server/ui/frontend/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: src/stemtrace/server/ui/frontend
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Install Playwright browsers
         working-directory: src/stemtrace/server/ui/frontend
-        run: npx playwright install chromium --with-deps
+        run: ./node_modules/.bin/playwright install chromium --with-deps
 
       - name: Run Playwright tests
         working-directory: src/stemtrace/server/ui/frontend
@@ -167,7 +175,7 @@ jobs:
           PLAYWRIGHT_BASE_URL: http://localhost:8000
 
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: playwright-report-${{ matrix.broker }}
@@ -175,7 +183,7 @@ jobs:
           retention-days: 7
 
       - name: Upload test results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-test-results-${{ matrix.broker }}

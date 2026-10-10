@@ -42,6 +42,10 @@ _pending_emitted_lock = threading.RLock()
 # Guard against overly-large docstrings bloating broker events.
 _MAX_DOCSTRING_CHARS = 4000
 
+# Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
+# with no reason and no einfo; mirror the reason Celery itself records.
+_CANCELLED_RETRY_REASON = "cancelled by Celery"
+
 
 def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
     """Extract chord group_id and callback task_id from chord attribute.
@@ -325,20 +329,23 @@ def _on_task_failure(
 def _on_task_retry(
     sender: "Task",
     request: Any,
-    reason: Any,
-    einfo: Any,
+    reason: Any = None,
+    einfo: Any = None,
     **_: Any,
 ) -> None:
     captured = stop_capture()
     stdout = captured.stdout if captured.stdout else None
     stderr = captured.stderr if captured.stderr else None
 
-    # reason can be an exception or string
-    exc_message: str | None = None
+    # reason can be an exception or string. Celery's cancel path calls
+    # send_retry(task, request=..., einfo=None) without a reason.
+    exc_message: str | None
     if isinstance(reason, BaseException):
         exc_message = _format_exception(reason)
     elif reason is not None:
         exc_message = str(reason)
+    else:
+        exc_message = _format_exception(None, einfo) or _CANCELLED_RETRY_REASON
 
     chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     # Use current retry count (not +1) so RETRY groups with the STARTED that failed

@@ -3,7 +3,14 @@ import { useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
-import { buildSegments, formatDuration, stateColors, TimelineBar } from '@/components/TimelineBar'
+import {
+  buildSegments,
+  effectiveTimes,
+  formatDuration,
+  sortEventsChronologically,
+  stateColors,
+  TimelineBar,
+} from '@/components/TimelineBar'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -132,7 +139,7 @@ function TaskDetailPage() {
       <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
         <h2 className="text-lg font-semibold text-slate-100 mb-4">Event History</h2>
         <div className="space-y-2">
-          {sortEventsByTime(task.events).map((event, index) => (
+          {sortEventsChronologically(task.events).map((event, index) => (
             <EventRow key={index} event={event} />
           ))}
         </div>
@@ -184,7 +191,7 @@ function EventRow({ event }: { event: TaskEvent }) {
   )
 
   return (
-    <div className="border-l-2 border-slate-700 pl-4 py-1">
+    <div className="border-l-2 border-slate-700 pl-4 py-1" data-testid="event-row">
       {hasTraceback && event.traceback ? (
         <button
           type="button"
@@ -261,62 +268,13 @@ function formatTime(timestamp: string | null | undefined): string {
   return new Date(timestamp).toLocaleTimeString()
 }
 
-// State priority within a retry cycle: PENDING → RECEIVED → STARTED → RETRY → terminal
-const STATE_PRIORITY: Record<string, number> = {
-  PENDING: 0,
-  RECEIVED: 1,
-  STARTED: 2,
-  RETRY: 3,
-  SUCCESS: 10,
-  FAILURE: 10,
-  REVOKED: 10,
-  REJECTED: 10,
-}
-
-function sortEventsByTime(events: TaskEvent[]): TaskEvent[] {
-  // Filter: only keep first PENDING and first RECEIVED (retry re-queues create duplicates)
-  let hasPending = false
-  let hasReceived = false
-  const filtered = events.filter((e) => {
-    if (e.state === 'PENDING') {
-      if (hasPending) return false
-      hasPending = true
-    }
-    if (e.state === 'RECEIVED') {
-      if (hasReceived) return false
-      hasReceived = true
-    }
-    return true
-  })
-
-  // Sort by logical order: (retry_count, state_priority, timestamp)
-  // This ensures correct ordering regardless of timing issues
-  return filtered.sort((a, b) => {
-    const retryA = a.retries ?? 0
-    const retryB = b.retries ?? 0
-
-    // 1. Sort by retry count first
-    if (retryA !== retryB) return retryA - retryB
-
-    // 2. Within same retry, sort by state lifecycle
-    const priorityA = STATE_PRIORITY[a.state] ?? 5
-    const priorityB = STATE_PRIORITY[b.state] ?? 5
-    if (priorityA !== priorityB) return priorityA - priorityB
-
-    // 3. Same retry and state: use timestamp as tiebreaker
-    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-  })
-}
-
 function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const segments = useMemo(() => buildSegments(events), [events])
 
   if (segments.length === 0) return null
 
-  const sorted = [...events].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  )
+  const times = effectiveTimes(sortEventsChronologically(events))
 
   return (
     <div className="space-y-4">
@@ -326,8 +284,8 @@ function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
 
       {/* Time markers */}
       <div className="flex justify-between text-xs text-slate-500">
-        <span>{formatTime(sorted[0].timestamp)}</span>
-        <span>{formatTime(sorted[sorted.length - 1].timestamp)}</span>
+        <span>{formatTime(new Date(times[0]).toISOString())}</span>
+        <span>{formatTime(new Date(times[times.length - 1]).toISOString())}</span>
       </div>
 
       {/* Duration breakdown */}
@@ -337,6 +295,7 @@ function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
           return (
             <div
               key={i}
+              data-testid="timeline-segment"
               role="presentation"
               className={`flex items-center gap-2 transition-opacity cursor-default ${hoveredIndex !== null && !isHovered ? 'opacity-50' : ''}`}
               onMouseEnter={() => setHoveredIndex(i)}

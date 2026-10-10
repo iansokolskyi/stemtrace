@@ -1,8 +1,9 @@
 """Integration tests for FastAPI components."""
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -41,7 +42,7 @@ class TestCreateRouter:
                 task_id="test-123",
                 name="tests.sample",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -86,7 +87,10 @@ class TestWebSocketEndpoint:
             with client.websocket_connect("/ws"):
                 assert ws_manager.connection_count == 1
 
-            # After disconnect
+            # The server handles the disconnect asynchronously; wait for it.
+            deadline = time.monotonic() + 2.0
+            while ws_manager.connection_count and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert ws_manager.connection_count == 0
 
     def test_store_listener_queues_events_for_broadcast(self) -> None:
@@ -111,7 +115,7 @@ class TestWebSocketEndpoint:
                 task_id="test-ws-123",
                 name="tests.sample",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
             ext.store.add_event(event)
 
@@ -237,7 +241,7 @@ class TestStemtraceExtension:
                 task_id="direct-event",
                 name="tests.direct",
                 state=TaskState.STARTED,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -264,7 +268,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-a",
                 name="tests.group_member",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, 0, 0, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -273,7 +277,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-b",
                 name="tests.group_member",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, 0, 0, 2, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -304,7 +308,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-1",
                 name="tests.t1",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -313,7 +317,7 @@ class TestSyntheticGroupNodes:
                 task_id="task-2",
                 name="tests.t2",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -341,7 +345,7 @@ class TestSyntheticGroupNodes:
                 task_id="test-task",
                 name="tests.sample",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -363,7 +367,7 @@ class TestSyntheticGroupNodes:
                 task_id="grouped-task",
                 name="tests.grouped",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id="my-group-id",
             )
         )
@@ -394,7 +398,7 @@ class TestGraphEdgeData:
                 task_id="parent",
                 name="tests.parent",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
         store.add_event(
@@ -402,7 +406,7 @@ class TestGraphEdgeData:
                 task_id="child-1",
                 name="tests.child",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 parent_id="parent",
             )
         )
@@ -433,7 +437,7 @@ class TestGraphEdgeData:
                 task_id="parent",
                 name="tests.parent",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
         store.add_event(
@@ -441,7 +445,7 @@ class TestGraphEdgeData:
                 task_id="child-1",
                 name="tests.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 parent_id="parent",
                 group_id=group_id,
             )
@@ -451,7 +455,7 @@ class TestGraphEdgeData:
                 task_id="child-2",
                 name="tests.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 parent_id="parent",
                 group_id=group_id,
             )
@@ -490,7 +494,7 @@ class TestGraphEdgeData:
                 task_id="header-1",
                 name="tests.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -501,7 +505,7 @@ class TestGraphEdgeData:
                 task_id="header-2",
                 name="tests.add",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
                 chord_id=group_id,
                 chord_callback_id=callback_id,
@@ -513,7 +517,7 @@ class TestGraphEdgeData:
                 task_id=callback_id,
                 name="tests.aggregate",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -544,7 +548,7 @@ class TestGraphEdgeData:
                 task_id="parent",
                 name="tests.parent",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
         for i in range(3):
@@ -553,7 +557,7 @@ class TestGraphEdgeData:
                     task_id=f"child-{i}",
                     name="tests.child",
                     state=TaskState.SUCCESS,
-                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                     parent_id="parent",
                 )
             )
@@ -584,7 +588,7 @@ class TestGraphEdgeData:
                 task_id="task-1",
                 name="tests.t1",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -593,7 +597,7 @@ class TestGraphEdgeData:
                 task_id="task-2",
                 name="tests.t2",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 group_id=group_id,
             )
         )
@@ -752,7 +756,7 @@ class TestRegistryWithWorkers:
                 task_id="task-1",
                 name=task_name,
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -801,7 +805,7 @@ class TestRegistryWithWorkers:
                 task_id="task-1",
                 name="tasks.executed_only",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 
@@ -811,7 +815,7 @@ class TestRegistryWithWorkers:
                 task_id="task-2",
                 name="tasks.active_task",
                 state=TaskState.SUCCESS,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
         )
 

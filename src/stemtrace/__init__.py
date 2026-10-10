@@ -16,9 +16,6 @@ Usage:
 """
 
 import os
-import secrets
-import urllib.parse
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -36,14 +33,15 @@ from stemtrace.server.fastapi import (
     require_api_key,
     require_basic_auth,
 )
-from stemtrace.server.fastapi.form_auth import FormAuthConfig, is_authenticated_cookie
+from stemtrace.server.fastapi.form_auth import FormAuthConfig, resolve_session_secret
+from stemtrace.server.fastapi.form_auth_middleware import create_form_auth_middleware
 from stemtrace.server.fastapi.login_routes import create_login_router
 
 if TYPE_CHECKING:
     from celery import Celery
     from fastapi import FastAPI
 
-__version__ = "0.3.1"
+__version__ = "0.3.7"
 __all__ = [
     "ConfigurationError",
     "StemtraceConfig",
@@ -92,6 +90,8 @@ def init_worker(
     scrub_sensitive_data: bool = True,
     additional_sensitive_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
+    max_data_size: int = 10240,
+    node_alias_from_arguments: str | None = None,
     capture_output: bool = False,
     max_output_size: int = 65536,
 ) -> None:
@@ -107,6 +107,10 @@ def init_worker(
         scrub_sensitive_data: Whether to scrub sensitive keys (default: True).
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
+        max_data_size: Maximum size in bytes for serialized data (default: 10KB).
+        node_alias_from_arguments: Derive node display name from task arguments.
+            Pass a digit string to use args[index], a string key for kwargs[key],
+            or None to use the task name (default).
         capture_output: Whether to capture task stdout/stderr (default: False).
         max_output_size: Maximum size in bytes for captured output (default: 64KB).
 
@@ -131,6 +135,8 @@ def init_worker(
         scrub_sensitive_data=scrub_sensitive_data,
         additional_sensitive_keys=additional_sensitive_keys or frozenset(),
         safe_keys=safe_keys or frozenset(),
+        max_data_size=max_data_size,
+        node_alias_from_arguments=node_alias_from_arguments,
         capture_output=capture_output,
         max_output_size=max_output_size,
     )
@@ -156,6 +162,7 @@ def init_app(
     login_password: str | None = None,
     login_secret: str | None = None,
     login_ttl_seconds: int = 86400,
+    node_alias_from_arguments: str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -175,8 +182,13 @@ def init_app(
         login_password: Enable built-in form login if set (password for login_username).
         login_secret: Secret used to sign session cookies. If not provided, uses
             STEMTRACE_LOGIN_SECRET env var. If still missing, a random secret is
-            generated (sessions invalidated on app restart).
+            generated per process and a warning is logged: sessions then only
+            work within one process (and are invalidated on restart), so set the
+            same long random value on every worker/replica of a multi-process
+            deployment.
         login_ttl_seconds: Session TTL in seconds (default: 24 hours).
+        node_alias_from_arguments: Derive graph node display name from task arguments.
+            Digit string for args[index], string for kwargs[key], or None (default).
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -203,10 +215,8 @@ def init_app(
     effective_login_username = login_username or os.getenv("STEMTRACE_LOGIN_USERNAME")
     effective_login_password = login_password or os.getenv("STEMTRACE_LOGIN_PASSWORD")
     if effective_login_username and effective_login_password:
-        effective_secret = (
-            login_secret
-            or os.getenv("STEMTRACE_LOGIN_SECRET")
-            or secrets.token_urlsafe(32)
+        effective_secret, secret_is_generated = resolve_session_secret(
+            login_secret or os.getenv("STEMTRACE_LOGIN_SECRET")
         )
         form_auth_config = FormAuthConfig(
             username=effective_login_username,
@@ -215,6 +225,7 @@ def init_app(
             ttl_seconds=login_ttl_seconds,
             cookie_name="stemtrace_session",
             cookie_path=mount_prefix,
+            secret_is_generated=secret_is_generated,
         )
 
         _install_stemtrace_form_auth(
@@ -233,6 +244,7 @@ def init_app(
         max_nodes=max_nodes,
         auth_dependency=auth_dependency,
         form_auth_config=form_auth_config,
+        node_alias_from_arguments=node_alias_from_arguments,
     )
     extension.init_app(fastapi_app, prefix=prefix)
 
@@ -250,51 +262,23 @@ def _install_stemtrace_form_auth(
     The login router must be added before stemtrace UI's SPA catch-all route,
     otherwise `/login` would be handled by the SPA fallback.
     """
-    from fastapi import Request
-    from fastapi.responses import JSONResponse, RedirectResponse
-    from starlette.responses import Response
-
     login_router = create_login_router(
         form_auth_config,
         default_next_path=f"{mount_prefix}/",
     )
     app.include_router(login_router, prefix=mount_prefix)
 
-    login_path = f"{mount_prefix}/login"
-    logout_path = f"{mount_prefix}/logout"
-
-    @app.middleware("http")
-    async def _stemtrace_form_auth_middleware(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        path = request.url.path
-        if not path.startswith(mount_prefix):
-            return await call_next(request)
-
-        # Allow login/logout without auth.
-        if path in (login_path, logout_path):
-            return await call_next(request)
-
-        cookie_value = request.cookies.get(form_auth_config.cookie_name)
-        if is_authenticated_cookie(
-            cookie_value,
-            secret=form_auth_config.secret,
-            expected_username=form_auth_config.username,
-        ):
-            return await call_next(request)
-
-        # Not authenticated.
-        if path.startswith(f"{mount_prefix}/api"):
-            return JSONResponse({"detail": "Authentication required"}, status_code=401)
-        if path.startswith(f"{mount_prefix}/assets"):
-            return JSONResponse({"detail": "Authentication required"}, status_code=401)
-
-        next_target = path
-        if request.url.query:
-            next_target = f"{path}?{request.url.query}"
-        next_qs = urllib.parse.urlencode({"next": next_target})
-        return RedirectResponse(url=f"{login_path}?{next_qs}", status_code=303)
+    app.middleware("http")(
+        create_form_auth_middleware(
+            form_auth_config,
+            login_path=f"{mount_prefix}/login",
+            logout_path=f"{mount_prefix}/logout",
+            api_prefix=f"{mount_prefix}/api",
+            assets_prefix=f"{mount_prefix}/assets",
+            protected_prefix=mount_prefix,
+            public_paths=(f"{mount_prefix}/api/health/live",),
+        )
+    )
 
 
 def _reset() -> None:

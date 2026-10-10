@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from celery.signals import task_retry
 
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
@@ -994,8 +995,8 @@ class TestTaskSentBranches:
 
 
 class TestTaskRetryBranches:
-    def test_task_retry_with_none_reason_has_no_exception(self) -> None:
-        """If task_retry reason is None, exception field should remain None."""
+    def test_task_retry_with_none_reason_uses_cancelled_message(self) -> None:
+        """If task_retry has no reason and no einfo, use Celery's cancel reason."""
         set_config(StemtraceConfig(transport_url="memory://"))
         connect_signals(MemoryTransport())
 
@@ -1014,7 +1015,31 @@ class TestTaskRetryBranches:
 
         event = MemoryTransport.events[0]
         assert event.state == TaskState.RETRY
-        assert event.exception is None
+        assert event.exception == "cancelled by Celery"
+        assert event.traceback is None
+
+    def test_task_retry_signal_without_reason_publishes_retry(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """Celery's cancel path sends task_retry without `reason`."""
+        request = SimpleNamespace(
+            id="task-123",
+            parent_id=None,
+            root_id=None,
+            group=None,
+            chord=None,
+            retries=2,
+        )
+
+        # Mirrors celery.worker.request.Request._announce_cancelled.
+        task_retry.send(mock_task, request=request, einfo=None)
+
+        assert len(MemoryTransport.events) == 1
+        event = MemoryTransport.events[0]
+        assert event.state == TaskState.RETRY
+        assert event.task_id == "task-123"
+        assert event.retries == 2
+        assert event.exception == "cancelled by Celery"
 
 
 class TestFailureTracebackFormatting:

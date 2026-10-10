@@ -19,6 +19,7 @@ from stemtrace.server.api.schemas import (
     GraphNodeResponse,
     GraphResponse,
     HealthResponse,
+    LivenessResponse,
     RegisteredTaskResponse,
     TaskDetailResponse,
     TaskEventResponse,
@@ -100,8 +101,8 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     Returns:
         TaskNodeResponse with timestamp and duration.
     """
-    first_seen = node.events[0].timestamp if node.events else None
-    last_updated = node.events[-1].timestamp if node.events else None
+    first_seen = node.first_seen
+    last_updated = node.last_updated
 
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
@@ -123,9 +124,45 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
     )
 
 
+def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
+    """Resolve display name for a graph node from task arguments.
+
+    When a key is configured, extracts a value from the args (if key is a
+    digit string) or kwargs (if key is a regular string) of the first event
+    that carries them. Not every event does (e.g. RECEIVED has no arguments),
+    so the leading event can't be relied on. Falls back to the node's
+    registered task name.
+
+    Args:
+        node: Task node containing events with args/kwargs.
+        key: Digit string for args[index], string for kwargs[key],
+            or None to use the task name.
+
+    Returns:
+        Resolved display name for the node.
+    """
+    if key is None:
+        return node.name
+
+    if key.isdigit():
+        index = int(key)
+        args = next((e.args for e in node.events if isinstance(e.args, list)), None)
+        if args is not None and index < len(args):
+            return str(args[index])
+    else:
+        kwargs = next(
+            (e.kwargs for e in node.events if isinstance(e.kwargs, dict)), None
+        )
+        if kwargs is not None and key in kwargs:
+            return str(kwargs[key])
+
+    return node.name
+
+
 def _node_to_graph_response(
     node: TaskNode,
     all_nodes: dict[str, TaskNode] | None = None,
+    node_alias_key: str | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -134,12 +171,13 @@ def _node_to_graph_response(
     Args:
         node: Task node from graph store.
         all_nodes: All nodes dict for child lookup.
+        node_alias_key: Key to resolve display name from task arguments.
 
     Returns:
         GraphNodeResponse with timing from children.
     """
-    first_seen = node.events[0].timestamp if node.events else None
-    last_updated = node.events[-1].timestamp if node.events else None
+    first_seen = node.first_seen
+    last_updated = node.last_updated
 
     # For synthetic nodes (GROUP/CHORD), compute timing from children
     if not node.events and node.children and all_nodes:
@@ -147,9 +185,9 @@ def _node_to_graph_response(
         child_last_updated: list[datetime] = []
         for child_id in node.children:
             child = all_nodes.get(child_id)
-            if child and child.events:
-                child_first_seen.append(child.events[0].timestamp)
-                child_last_updated.append(child.events[-1].timestamp)
+            if child and child.first_seen and child.last_updated:
+                child_first_seen.append(child.first_seen)
+                child_last_updated.append(child.last_updated)
         if child_first_seen:
             first_seen = min(child_first_seen)
         if child_last_updated:
@@ -159,15 +197,25 @@ def _node_to_graph_response(
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
 
+    # UI traversal is order-sensitive when callbacks can appear as both direct
+    # children and CHORD-linked nodes. Prefer TASK children first so callback
+    # branches render before synthetic containers.
+    children = node.children
+    if all_nodes is not None:
+        children = sorted(
+            node.children,
+            key=lambda c: getattr(all_nodes.get(c), "node_type", None) != "TASK",
+        )
+
     return GraphNodeResponse(
         task_id=node.task_id,
-        name=node.name,
+        name=_resolve_node_alias(node, node_alias_key),
         state=node.state,
         node_type=node.node_type,
         group_id=node.group_id,
         chord_id=node.chord_id,
         parent_id=node.parent_id,
-        children=node.children,
+        children=children,
         duration_ms=duration_ms,
         first_seen=first_seen,
         last_updated=last_updated,
@@ -283,12 +331,28 @@ def _refresh_worker_registry_from_inspect(
         )
 
 
+def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
+    """Whether a configured event consumer has failed, for both health endpoints.
+
+    Degraded when the consumer stopped unexpectedly (not running, yet neither
+    stopped on purpose nor finished normally) or can't read from the broker.
+    A disabled consumer (None) is never degraded.
+    """
+    if consumer is None:
+        return False
+    stopped_unexpectedly = not (
+        consumer.is_running or consumer.is_finished or consumer.is_stopped
+    )
+    return stopped_unexpectedly or consumer.is_connected is False
+
+
 def create_api_router(
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
     ws_manager: WebSocketManager | None = None,
     worker_registry: WorkerRegistry | None = None,
     broker_url: str | None = None,
+    node_alias_from_arguments: str | None = None,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -298,6 +362,8 @@ def create_api_router(
         ws_manager: Optional WebSocket manager.
         worker_registry: Optional worker registry for lifecycle tracking.
         broker_url: Optional Celery broker URL for on-demand inspection.
+        node_alias_from_arguments: Key to derive node display name from task
+            arguments. Digit string for args[index], string for kwargs[key].
 
     Returns:
         Configured API router.
@@ -351,16 +417,44 @@ def create_api_router(
 
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
-        """Return server health status and connection counts."""
+        """Return server health status and connection counts.
+
+        ``status`` is "degraded" when a configured consumer has stopped
+        unexpectedly or can't read from the broker, and "ok" otherwise (a
+        consumer whose event source finished normally, or that was stopped on
+        purpose, is not degraded). The response is always HTTP 200 so existing
+        health checks keep working.
+        """
         from stemtrace import __version__
 
+        running = consumer.is_running if consumer else False
+        connected = consumer.is_connected if consumer else None
+
         return HealthResponse(
-            status="ok",
+            status="degraded" if _is_consumer_degraded(consumer) else "ok",
             version=__version__,
-            consumer_running=consumer.is_running if consumer else False,
+            consumer_running=running,
+            consumer_connected=connected,
             websocket_connections=ws_manager.connection_count if ws_manager else 0,
             node_count=store.node_count,
         )
+
+    @router.get(
+        "/health/live",
+        response_model=LivenessResponse,
+    )
+    async def health_live() -> LivenessResponse:
+        """Process liveness probe for container health checks.
+
+        Always 200 while the app is serving, so a broker blip that stops the
+        consumer doesn't mark the container unhealthy for good. Served without
+        form-login authentication, so it exposes only an informational status,
+        decided by the same rule as ``/health``: "degraded" when the event
+        consumer stopped unexpectedly or can't read from the broker, "ok"
+        otherwise.
+        """
+        status = "degraded" if _is_consumer_degraded(consumer) else "ok"
+        return LivenessResponse(status=status)
 
     @router.get(
         "/tasks",
@@ -513,11 +607,11 @@ def create_api_router(
     )
     async def get_task(task_id: str) -> TaskDetailResponse:
         """Get detailed information for a specific task including children."""
-        node = store.get_node(task_id)
-        if node is None:
+        found = store.get_node_with_children(task_id)
+        if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        children = store.get_children(task_id)
+        node, children = found
         return TaskDetailResponse(
             task=_node_to_response(node),
             children=[_node_to_response(c) for c in children],
@@ -530,11 +624,11 @@ def create_api_router(
     )
     async def get_task_children(task_id: str) -> list[TaskNodeResponse]:
         """Get child tasks for a specific task."""
-        node = store.get_node(task_id)
-        if node is None:
+        found = store.get_node_with_children(task_id)
+        if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        children = store.get_children(task_id)
+        _, children = found
         return [_node_to_response(c) for c in children]
 
     @router.get("/graphs", response_model=GraphListResponse)
@@ -549,20 +643,20 @@ def create_api_router(
         ] = None,
     ) -> GraphListResponse:
         """List task execution graphs (root tasks) with pagination and date filtering."""
-        roots, total = store.get_root_nodes(
+        # Roots plus children (for synthetic node timing) from one snapshot
+        roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=from_date,
             to_date=to_date,
         )
-        # Build nodes dict for synthetic node timing computation
-        all_nodes: dict[str, TaskNode] = {}
-        for root in roots:
-            all_nodes[root.task_id] = root
-            for child in store.get_children(root.task_id):
-                all_nodes[child.task_id] = child
         return GraphListResponse(
-            graphs=[_node_to_graph_response(r, all_nodes) for r in roots],
+            graphs=[
+                _node_to_graph_response(
+                    r, all_nodes, node_alias_key=node_alias_from_arguments
+                )
+                for r in roots
+            ],
             total=total,
             limit=limit,
             offset=offset,
@@ -586,7 +680,10 @@ def create_api_router(
         return GraphResponse(
             root_id=root_id,
             nodes={
-                tid: _node_to_graph_response(n, all_nodes) for tid, n in graph.items()
+                tid: _node_to_graph_response(
+                    n, all_nodes, node_alias_key=node_alias_from_arguments
+                )
+                for tid, n in graph.items()
             },
         )
 

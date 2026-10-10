@@ -60,8 +60,12 @@ class TestRewriteHtmlForPrefix:
         rewritten = _rewrite_html_for_prefix(html, prefix, rewrite_assets=False)
         assert f"window.__STEMTRACE_BASE__={json.dumps(prefix)};" in rewritten
 
-    def test_injects_logout_when_enabled(self) -> None:
-        """Logout injection emits a fixed-position POST form wired to logout_path."""
+    def test_injects_logout_path_only_when_enabled(self) -> None:
+        """Logout is configured via the logout path; the SPA renders the control.
+
+        The server no longer injects a floating button (it overlapped the
+        header), only the path the SPA's header Logout form posts to.
+        """
         html = "<html><head></head><body>OK</body></html>"
         rewritten = _rewrite_html_for_prefix(
             html,
@@ -70,5 +74,36 @@ class TestRewriteHtmlForPrefix:
             show_logout=True,
             logout_path="/logout",
         )
-        assert 'window.__STEMTRACE_LOGOUT_PATH__="/logout";' in rewritten
-        assert "stemtrace-logout" in rewritten
+        assert rewritten == (
+            "<html><head><script>"
+            'window.__STEMTRACE_BASE__="/stemtrace";'
+            'window.__STEMTRACE_LOGOUT_PATH__="/logout";'
+            "</script></head><body>OK</body></html>"
+        )
+
+    def test_logout_path_defaults_to_prefix_logout(self) -> None:
+        """Without an explicit logout_path, the mount prefix's /logout is used."""
+        html = "<html><head></head><body>OK</body></html>"
+        rewritten = _rewrite_html_for_prefix(
+            html, "/stemtrace", rewrite_assets=False, show_logout=True
+        )
+        assert 'window.__STEMTRACE_LOGOUT_PATH__="/stemtrace/logout";' in rewritten
+
+    def test_logout_path_is_escaped_for_script_context(self) -> None:
+        """A logout path can't terminate the inline script tag."""
+        html = "<html><head></head><body>OK</body></html>"
+        rewritten = _rewrite_html_for_prefix(
+            html,
+            "",
+            rewrite_assets=False,
+            show_logout=True,
+            logout_path="/x</script><script>alert(1)//",
+        )
+        assert "</script><script>alert" not in rewritten
+        assert rewritten.count("</script>") == 1
+
+    def test_does_not_inject_logout_when_disabled(self) -> None:
+        """No logout path is exposed when form login is off."""
+        html = "<html><head></head><body>OK</body></html>"
+        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", rewrite_assets=False)
+        assert "__STEMTRACE_LOGOUT_PATH__" not in rewritten

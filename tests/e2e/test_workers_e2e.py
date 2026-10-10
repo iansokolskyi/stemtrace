@@ -165,7 +165,7 @@ class TestWorkersLifecycleE2E:
             assert task_id is not None
 
             redis_client: Redis[bytes] = Redis.from_url(
-                "redis://localhost:16379/0", decode_responses=False
+                _broker_url(), decode_responses=False
             )
             stream_key = "stemtrace:events"
             try:

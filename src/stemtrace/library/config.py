@@ -16,6 +16,9 @@ class StemtraceConfig(BaseModel):
         scrub_sensitive_data: Whether to scrub sensitive keys.
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
+        node_alias_from_arguments: Derive graph node display name from task
+            arguments. Pass a string key to use kwargs[key], a digit string
+            to use args[index], or None to use the task name (default).
         capture_output: Whether to capture task stdout/stderr.
         max_output_size: Maximum size in bytes for captured output.
     """
@@ -35,6 +38,9 @@ class StemtraceConfig(BaseModel):
     scrub_sensitive_data: bool = True
     additional_sensitive_keys: frozenset[str] = Field(default_factory=frozenset)
     safe_keys: frozenset[str] = Field(default_factory=frozenset)
+
+    # UI display options
+    node_alias_from_arguments: str | None = None
 
     # Output capture options (disabled by default)
     capture_output: bool = False

@@ -1,6 +1,6 @@
 [project]
 name = "stemtrace"
-version = "0.3.1"
+version = "0.3.7"
 description = "A lightweight Celery task flow visualizer"
 readme = "README.md"
 license = { text = "MIT" }
@@ -34,8 +34,9 @@ dependencies = [
     "celery>=5.0.0",
     "pydantic>=2.0.0",
     "typing_extensions>=4.0.0",
-    "redis>=4.0.0",
-    "fastapi>=0.100.0",
+    "redis>=4.1.0",  # lowest version verified by the test suite at release time; 4.0.x needs distutils (gone in Python 3.12)
+    "fastapi>=0.112.1",  # lowest version verified by the test suite at release time
+    "starlette>=0.38.6",  # imported directly; lowest version verified by the test suite at release time
     "typer>=0.9.0",
     "uvicorn[standard]>=0.20.0",
     "httpx>=0.24.0",  # Required for healthchecks in Docker
@@ -69,7 +70,7 @@ Changelog = "https://github.com/iansokolskyi/stemtrace/blob/main/CHANGELOG.md"
 stemtrace = "stemtrace.server.__main__:main"
 
 [build-system]
-requires = ["hatchling", "hatch-nodejs-version"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -112,10 +113,6 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "kombu.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "amqp.*"
 ignore_missing_imports = true
 
 # =============================================================================
@@ -181,6 +178,8 @@ markers = [
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:celery.*",
+    # Starlette 1.x TestClient prefers httpx2 but still supports httpx.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
 asyncio_mode = "auto"
 
@@ -201,6 +200,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@abstractmethod",
-    "\\.\\.\\.",  # Protocol method stubs
+    "^\\s*\\.\\.\\.\\s*$",  # Protocol method stubs (a bare `...` body line)
     "class.*Protocol.*:",
 ]

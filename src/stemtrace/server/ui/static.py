@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -16,74 +18,6 @@ logger = logging.getLogger(__name__)
 _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 _PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-
-_LOGOUT_INJECTION_JS_TEMPLATE = """
-window.__STEMTRACE_LOGOUT_PATH__=__LOGOUT_PATH__;
-document.addEventListener("DOMContentLoaded", () => {
-  try {
-    const action = window.__STEMTRACE_LOGOUT_PATH__;
-    if (!action) return;
-
-    const style = document.createElement("style");
-    style.textContent = `
-      #stemtrace-logout {
-        position: fixed;
-        top: 12px;
-        right: 12px;
-        z-index: 9999;
-        margin: 0;
-        padding: 0;
-      }
-
-      #stemtrace-logout button {
-        all: unset;
-        cursor: pointer;
-        user-select: none;
-        padding: 6px 10px;
-        border-radius: 999px;
-        font: 600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
-          Arial;
-        letter-spacing: 0.01em;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: rgba(255, 255, 255, 0.92);
-        background: rgba(17, 24, 39, 0.7);
-        backdrop-filter: blur(8px);
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
-        transition: filter 0.12s ease, transform 0.12s ease, background 0.12s ease;
-      }
-
-      #stemtrace-logout button:hover {
-        filter: brightness(1.06);
-      }
-
-      #stemtrace-logout button:active {
-        transform: translateY(1px);
-      }
-
-      @media (prefers-color-scheme: light) {
-        #stemtrace-logout button {
-          border: 1px solid rgba(0, 0, 0, 0.1);
-          color: rgba(17, 24, 39, 0.92);
-          background: rgba(255, 255, 255, 0.85);
-        }
-      }
-    `;
-    document.head.appendChild(style);
-
-    const form = document.createElement("form");
-    form.id = "stemtrace-logout";
-    form.method = "post";
-    form.action = action;
-
-    const btn = document.createElement("button");
-    btn.type = "submit";
-    btn.textContent = "Logout";
-
-    form.appendChild(btn);
-    document.body.appendChild(form);
-  } catch {}
-});
-"""
 
 
 def _sanitize_derived_prefix(prefix: str) -> str:
@@ -131,7 +65,9 @@ def _rewrite_html_for_prefix(
         html: The HTML content to rewrite.
         prefix: The base path prefix (e.g., "/stemtrace").
         rewrite_assets: If True, rewrite asset paths. If False, only inject API base.
-        show_logout: If True, inject a small Logout button into the UI.
+        show_logout: If True, inject ``window.__STEMTRACE_LOGOUT_PATH__`` so the
+            SPA renders a Logout control in its header (and knows form login is
+            enabled, e.g. to redirect to the login page on 401).
         logout_path: Absolute logout endpoint path. If None and show_logout=True,
             defaults to f"{prefix}/logout" (or "/logout" if prefix is empty).
     """
@@ -149,15 +85,64 @@ def _rewrite_html_for_prefix(
     if show_logout:
         effective_logout = logout_path or (f"{prefix}/logout" if prefix else "/logout")
         logout_js = json.dumps(effective_logout).replace("</", "<\\/")
-        logout_injection = _LOGOUT_INJECTION_JS_TEMPLATE.replace(
-            "__LOGOUT_PATH__", logout_js
-        )
+        logout_injection = f"window.__STEMTRACE_LOGOUT_PATH__={logout_js};"
     else:
         logout_injection = ""
 
     script = f"{head_open}{base_config}{logout_injection}</script>"
 
     return html.replace("<head>", script)
+
+
+def _contained_frontend_path(path: str) -> str | None:
+    """Confine a request path to the frontend directory, lexically.
+
+    The request path is user-controlled. It is joined onto the resolved
+    frontend directory and normalized as a string (dot-segments collapsed,
+    no symlink resolution), then accepted only if the result is still under
+    that directory. The filesystem is never touched for the candidate before
+    this check passes. Symlinks inside the frontend directory are trusted and
+    followed when the file is served (they come from the installed package,
+    e.g. symlink-mode installs), since only the request path is untrusted.
+
+    Args:
+        path: Path parameter taken from the request URL.
+
+    Returns:
+        The normalized absolute path if it lies under the frontend directory
+        (it may not exist), or None if it escapes the directory.
+    """
+    base = os.path.realpath(_FRONTEND_DIR)
+    candidate = os.path.normpath(Path(base) / path)
+    # Plain string prefix check: an absolute request path, a drive change or
+    # a UNC path (Windows) all produce a candidate outside this prefix.
+    base_prefix = base if base.endswith(os.sep) else base + os.sep
+    if candidate != base and not candidate.startswith(base_prefix):
+        return None
+    return candidate
+
+
+def _is_under_assets(candidate: str) -> bool:
+    """Return True if a contained, normalized path lies in the assets directory.
+
+    Paths under ``assets/`` are served without a login session (they are the
+    public UI bundle), so anything there that is not a real file must 404
+    rather than fall back to the SPA shell.
+    """
+    assets_dir = str(Path(os.path.realpath(_FRONTEND_DIR)) / "assets")
+    return candidate == assets_dir or candidate.startswith(assets_dir + os.sep)
+
+
+def _is_regular_file(path: str) -> bool:
+    """Return True if path is an existing regular file (symlinks followed).
+
+    Any error while inspecting the path (missing file, name too long,
+    embedded NUL byte, permission denied) is treated as "not a file".
+    """
+    try:
+        return stat.S_ISREG(Path(path).stat().st_mode)
+    except (OSError, ValueError):
+        return False
 
 
 def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
@@ -187,9 +172,18 @@ def get_static_router_with_base(
         return None
 
     router = APIRouter(tags=["stemtrace-ui"])
+    # follow_symlink: per-file symlinked installs (e.g. uv --link-mode symlink)
+    # ship assets as links into a cache outside dist/. Starlette still confines
+    # the *request* path to the directory lexically before following links.
+    # The directory is resolved up front because older Starlette compares the
+    # unresolved request path against the resolved directory, which would 404
+    # every asset when the install path itself contains a symlink.
     router.mount(
         "/assets",
-        StaticFiles(directory=_FRONTEND_DIR / "assets"),
+        StaticFiles(
+            directory=os.path.realpath(_FRONTEND_DIR / "assets"),
+            follow_symlink=True,
+        ),
         name="stemtrace-assets",
     )
 
@@ -220,10 +214,22 @@ def get_static_router_with_base(
 
     @router.get("/{path:path}", response_model=None)
     async def serve_spa(path: str, request: Request) -> FileResponse | HTMLResponse:
-        """Serve static files or fall back to index.html for SPA routing."""
-        file_path = _FRONTEND_DIR / path
-        if file_path.exists() and file_path.is_file():
+        """Serve static files or fall back to index.html for SPA routing.
+
+        Only regular files under the frontend directory are served. Paths
+        that normalize to a location outside of it get a 404, and so do
+        non-file paths under ``assets/`` (served without a session, so they
+        must not return the app shell); any other path that is not a servable
+        file (missing, a directory, or not inspectable) falls back to
+        index.html so client-side routes keep working.
+        """
+        file_path = _contained_frontend_path(path)
+        if file_path is None:
+            return HTMLResponse("<h1>Not found</h1>", status_code=404)
+        if _is_regular_file(file_path):
             return FileResponse(file_path)
+        if _is_under_assets(file_path):
+            return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
