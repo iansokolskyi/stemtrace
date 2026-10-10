@@ -71,8 +71,9 @@ PUBLISH_FAILURES_TO_OPEN = 3
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
 # RECONNECT_MAX_BACKOFF; straight to the maximum after two unconfirmed
 # attempts in a row, i.e. while the broker blocks publishers) and resets once
-# a publish succeeds. Publish failures are logged
-# at most this often.
+# a publish succeeds. Publish logging is rate-limited per this interval: at
+# most one line each for a failure while closed, an outage starting, an outage
+# ending, and a report of losses still unreported (see PublishBreaker).
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
 
 
@@ -220,10 +221,11 @@ class RabbitMQTransport:
         publish), so a broker outage costs
         tasks about one bounded attempt per cooldown instead of one per event.
         Only one retry (probe) runs at a time, and failures of attempts that
-        were already in flight don't lengthen the cooldown. Failures are
-        logged at most once per PUBLISH_FAILURE_LOG_INTERVAL (with the number
-        of events lost since the previous line), recovery once; each dropped
-        event gets a DEBUG line.
+        were already in flight don't lengthen the cooldown. Per
+        PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written
+        (a failure while closed, an outage starting, an outage ending, and a
+        report of losses still unreported), each with the number of events
+        lost since the previous line; each dropped event gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -357,11 +359,14 @@ class RabbitMQTransport:
         """Create a kombu connection for the URL, set to start at host ``first``.
 
         It switches hosts the way kombu's own failover does, so every entry
-        gets exactly the parameters kombu resolves for it: later entries take
-        what they leave out (credentials, port, virtual host, TLS options)
-        from the first one. Rebuilding the URL with a different first entry
-        would resolve them differently (e.g. a bare ``;rabbit2`` would lose
-        the first entry's credentials and vhost). No I/O happens here.
+        gets exactly the parameters kombu resolves for it: a bare host
+        (``;rabbit2``) takes credentials, port, virtual host and TLS options
+        from the first entry; a URL-form entry (``;amqp://rabbit2``) gets no
+        credentials (guest/guest) unless it names them, and takes port and
+        virtual host from the previous entry only when it omits them.
+        Rebuilding the URL with a different first entry would resolve them
+        differently (e.g. a bare ``;rabbit2`` would lose the first entry's
+        credentials and vhost). No I/O happens here.
         """
         conn = connection_cls(self._url, connect_timeout=CONNECT_TIMEOUT)
         for _ in range(first):

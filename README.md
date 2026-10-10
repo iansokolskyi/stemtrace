@@ -316,14 +316,18 @@ again once events are re-consumed.
   - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
-    about a minute even when the broker flaps.
+    about 1.5 minutes even when the broker flaps.
   - Limitation: a broker that answers but slowly (say, close to the 2s timeout for each step)
     still costs every event several seconds, because publishes that eventually succeed don't
     open the breaker.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
-    consume those events from any of them. Later entries take what they leave out (user,
-    password, port, virtual host, TLS options) from the first one, as in kombu.
+    consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)
+    takes user, password, port, virtual host and TLS options from the first entry, while a
+    URL-form entry (`;amqp://h2`) gets guest/guest unless it names credentials, and takes port
+    and virtual host from the previous entry only when it omits them (`//` means `/`). A host
+    that refuses the login ends that publish attempt without trying the later hosts, as in
+    kombu.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
