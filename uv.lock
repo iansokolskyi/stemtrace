@@ -1810,7 +1810,7 @@ wheels = [
 
 [[package]]
 name = "stemtrace"
-version = "0.3.8"
+version = "0.3.9"
 source = { editable = "." }
 dependencies = [
     { name = "celery" },
