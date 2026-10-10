@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-10
+
 ### Fixed
 - `node_alias_from_arguments` can now be set on the standalone server and Docker image: `stemtrace server --node-alias-from-arguments <key>` or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS=<key>` (a kwarg name or a positional index). `init_app()` reads the same env var when the argument isn't passed (#69).
 - RabbitMQ: publishing from workers no longer blocks tasks while the broker is down, stalled or in a memory/disk alarm. Each publish tries every host of the URL once with a 2s timeout; repeated or slow failures open a circuit breaker that drops events (instead of queueing them) until the broker answers again, and the worker logs at most four warnings a minute with counts of dropped events. The README's broker section has the details and limits.
