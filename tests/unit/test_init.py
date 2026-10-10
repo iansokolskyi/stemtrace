@@ -151,7 +151,6 @@ class TestInit:
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
                 del prefix
-                return None
 
         monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
 
@@ -204,7 +203,6 @@ class TestInit:
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
                 del prefix
-                return None
 
         monkeypatch.setenv(
             "STEMTRACE_BROKER_URL", "amqp://guest:guest@localhost:5672//"

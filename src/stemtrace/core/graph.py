@@ -522,10 +522,9 @@ class TaskGraph(BaseModel):
                 for member_id in members:
                     if member_id in parent_node.children:
                         parent_node.children.remove(member_id)
-        else:
+        elif group_node_id not in self.root_ids:
             # GROUP is a root node
-            if group_node_id not in self.root_ids:
-                self.root_ids.append(group_node_id)
+            self.root_ids.append(group_node_id)
 
         # Update member nodes to point to group as parent
         for member_id in members:

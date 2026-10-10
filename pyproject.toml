@@ -139,6 +139,19 @@ select = [
     "PTH",    # flake8-use-pathlib
     "RUF",    # Ruff-specific
     "D",      # pydocstyle
+    "C90",    # mccabe complexity
+    "PLR0911", # too many return statements
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR0917", # too many positional arguments (make extra params keyword-only)
+    "BLE",    # blind except (allowed only with `# noqa: BLE001  <reason>`)
+    "ERA",    # commented-out code
+    "RET",    # flake8-return
+    "PT",     # flake8-pytest-style
+    "PLR0402", # manual from-import
+    "PLR1711", # useless return
+    "PLR1714", # repeated equality comparison
+    "PLR5501", # collapsible else-if
 ]
 ignore = [
     "E501",   # Line too long (handled by formatter)
@@ -146,6 +159,16 @@ ignore = [
     "D104",   # Missing docstring in public package
     "D107",   # Missing docstring in __init__
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+# pylint defaults, written down so the limits are visible
+max-branches = 12
+max-returns = 6
+max-statements = 50
+max-positional-args = 5
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -156,6 +179,28 @@ known-first-party = ["stemtrace"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D", "ARG"]  # No docstrings required in tests
 "examples/**/*.py" = ["ARG001", "D417"]  # bind=True tasks have unused self
+# Baseline: existing violations, to be removed by refactors — do not add new entries.
+# New code is held to every rule above. When a refactor fixes a file, delete its
+# codes here in the same change; this list only shrinks.
+"src/stemtrace/core/graph.py" = ["C901", "PLR0911", "PLR0912", "PLR0915", "PLR1714"]
+"src/stemtrace/library/signals.py" = ["PLR0917"]
+"src/stemtrace/library/transports/rabbitmq.py" = ["BLE001", "C901", "PLR0915"]
+"src/stemtrace/library/transports/redis.py" = ["C901", "PLR0912", "PLR0915"]
+"src/stemtrace/server/__main__.py" = ["PLR0917"]
+"src/stemtrace/server/api/routes.py" = ["C901", "PLR0915", "PLR0917"]
+"src/stemtrace/server/consumer.py" = ["C901"]
+"src/stemtrace/server/fastapi/form_auth.py" = ["BLE001", "PLR0911"]
+"src/stemtrace/server/fastapi/form_auth_middleware.py" = ["C901"]
+"src/stemtrace/server/fastapi/router.py" = ["PLR0917"]
+"src/stemtrace/server/ui/static.py" = ["C901"]
+"src/stemtrace/server/websocket.py" = ["BLE001"]
+"tests/integration/test_rabbitmq_transport.py" = ["BLE001"]
+"tests/integration/test_redis_transport.py" = ["BLE001"]
+"tests/unit/test_form_login.py" = ["PT012"]
+"tests/unit/test_init.py" = ["PT030", "PT031"]
+"tests/unit/test_store.py" = ["BLE001"]
+"tests/unit/test_transports.py" = ["C901", "PT011"]
+# End of baseline.
 
 # =============================================================================
 # import-linter (architecture boundaries, see CONTRIBUTING.md)
