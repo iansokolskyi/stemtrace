@@ -250,11 +250,15 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
 `SUCCESS`/`FAILURE`.
 
 - **What's captured**: `print()` to stdout and stderr, exactly as printed
-  (whether or not Celery redirects stdout to its log), and log records from any
-  logger (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the
-  task runs, in one chronological stream. Log levels still apply to log records:
-  one your logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`)
-  isn't captured. stemtrace's own logs and Celery/kombu internals are left out.
+  (whether or not Celery redirects stdout to its log), and log records
+  (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the task
+  runs, in one chronological stream. Records are captured when they reach the
+  root logger or `celery.task`, or when a handler writes them to stdout/stderr
+  after stemtrace is set up. A logger with `propagate=False` whose handlers were
+  set up at worker startup (writing to the real stream or a file) isn't
+  captured. Log levels still apply to log records: one your logging config
+  filters out (e.g. `DEBUG` under `--loglevel=INFO`) isn't captured.
+  stemtrace's own logs and Celery/kombu internals are left out.
   What the worker prints to its console or log file is unchanged (when no
   logging handlers are configured, warnings still print as Python's
   `logging.lastResort` would). One side effect: from the first task on, the root

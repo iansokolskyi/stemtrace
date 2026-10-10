@@ -224,8 +224,11 @@ def _has_other_handlers(record: logging.LogRecord) -> bool | None:
 
 _HANDLE_CODE = logging.Handler.handle.__code__
 # Frames that mean "this write is text the user sees, not a handler's copy of
-# a record": the "--- Logging error ---" report of a broken log call, and
-# prints made while a message is formatted (e.g. a __str__ that prints).
+# a record": the "--- Logging error ---" report of a broken log call
+# (Handler.handleError), and prints made while a message is formatted (e.g. a
+# __str__ that prints) under the base LogRecord.getMessage / Formatter.format.
+# Matched by code object, so subclass overrides of format() and Filters don't
+# count: a print from those, while a handler writes to the tee, may be dropped.
 _USER_TEXT_CODES = frozenset(
     {
         logging.Handler.handleError.__code__,
@@ -243,8 +246,10 @@ def _record_being_emitted() -> logging.LogRecord | None:
 
     Called from :meth:`TeeStream.write`; looks a few frames up for
     ``logging.Handler.handle`` and returns its ``record``. Returns None for
-    writes made while reporting a logging error or formatting a message,
-    which are user-visible text rather than a handler's copy of a record.
+    writes made under the base ``Handler.handleError``,
+    ``LogRecord.getMessage`` or ``Formatter.format`` (a logging error report,
+    or a print while formatting), which are user-visible text rather than a
+    handler's copy of a record.
 
     Cost: at most ``_HANDLER_FRAME_DEPTH`` frame hops per write, and only while
     a task's output is being captured; writes outside tasks never get here.
@@ -441,11 +446,14 @@ def _tee(stream: TextIO) -> TextIO:
 def install_capture() -> None:
     """Install the logging handler and, if needed, the stdout/stderr tee.
 
-    Idempotent and cheap, so it's called at every ``task_prerun``: Celery's
-    worker logging setup (``worker_hijack_root_logger``) clears root and
-    ``celery.task`` handlers *after* ``init_worker`` has run, and user logging
-    config may do the same. Re-adding at prerun also means it runs in the
-    process that executes tasks (the prefork child).
+    Idempotent, and called at every ``task_prerun``: Celery's worker logging
+    setup (``worker_hijack_root_logger``) clears root and ``celery.task``
+    handlers *after* ``init_worker`` has run, and user logging config may do
+    the same. Re-adding at prerun also means it runs in the process that
+    executes tasks (the prefork child). Cost per call: a few list lookups plus
+    one pass over all loggers and their handlers (see
+    :func:`_repoint_tee_stream_handlers`), about 100 microseconds with 500
+    loggers.
     """
     with _install_lock:
         for target in _capture_loggers():
@@ -453,17 +461,35 @@ def install_capture() -> None:
                 target.addHandler(_handler)
         sys.stdout = _tee(sys.stdout)
         sys.stderr = _tee(sys.stderr)
-        _repoint_tee_stream_handlers()
+    # Outside the lock: re-pointing is idempotent and handlers lock themselves.
+    _repoint_tee_stream_handlers()
+
+
+def _chain_has_our_handler(start: logging.Logger) -> bool:
+    """Whether records logged on ``start`` reach a TaskOutputHandler."""
+    current: logging.Logger | None = start
+    while current is not None:
+        if any(isinstance(h, TaskOutputHandler) for h in current.handlers):
+            return True
+        current = current.parent if current.propagate else None
+    return False
 
 
 def _repoint_tee_stream_handlers() -> None:
     """Point StreamHandlers that write to a tee at the stream it wraps.
 
     A ``StreamHandler()`` created after the tee was installed binds the tee as
-    its stream, so the tee would copy its records into the output. Writing to
-    the wrapped stream instead leaves its console output unchanged, and our
-    handler captures the record. Runs at every install (each task's prerun), so
-    handlers added since the last task are caught too.
+    its stream, so the tee would copy its records into the output. When our
+    handler sees those records too (it's in the chain of every logger the
+    handler is attached to), writing to the wrapped stream instead leaves the
+    console output unchanged and our handler captures each record once. A
+    handler on a chain our handler doesn't reach (a library logger with
+    ``propagate=False``) stays on the tee: it is the only way those records
+    get captured. Runs at every install (each task's prerun), so handlers added
+    since the last task are caught too.
+
+    Cost: one pass over ``logging.Logger.manager.loggerDict`` and each
+    logger's handler list, plus a parent-chain walk per tee-bound handler.
     """
     loggers: list[logging.Logger] = [logging.root]
     loggers.extend(
@@ -471,16 +497,23 @@ def _repoint_tee_stream_handlers() -> None:
         for lg in list(logging.Logger.manager.loggerDict.values())
         if isinstance(lg, logging.Logger)
     )
+    on_tee: dict[
+        logging.StreamHandler[TextIO], tuple[TeeStream, list[logging.Logger]]
+    ] = {}
     for target in loggers:
         for handler in list(target.handlers):
             if not isinstance(handler, logging.StreamHandler):
                 continue
             stream = getattr(handler, "stream", None)
             if isinstance(stream, TeeStream):
-                try:
-                    handler.setStream(stream.wrapped)
-                except Exception:
-                    logger.debug("Could not re-point %r", handler, exc_info=True)
+                on_tee.setdefault(handler, (stream, []))[1].append(target)
+    for handler, (tee, attached_to) in on_tee.items():
+        if not all(_chain_has_our_handler(target) for target in attached_to):
+            continue
+        try:
+            handler.setStream(tee.wrapped)
+        except Exception:
+            logger.debug("Could not re-point %r", handler, exc_info=True)
 
 
 def _is_installed() -> bool:

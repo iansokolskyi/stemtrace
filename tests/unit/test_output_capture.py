@@ -837,6 +837,50 @@ class TestRepointStreamHandlers:
         finally:
             lib.removeHandler(late)
 
+    def test_non_propagating_logger_handler_stays_on_the_tee(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A library logger with propagate=False keeps being captured, every task.
+
+        Its StreamHandler (created during task 1, bound to the tee) is the only
+        way its records reach the output: our handler isn't in that chain, so
+        re-pointing it at the real stream would lose tasks 2+.
+        """
+        console = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", console)
+        outputs: list[str | None] = []
+        lib: logging.Logger | None = None
+        try:
+            for n in range(1, 4):
+                install_capture()  # this task's prerun
+                start_capture(f"t{n}", max_bytes=1000)
+                if lib is None:
+                    lib = _quiet_logger("tests.nonprop_lib", logging.StreamHandler())
+                lib.warning("task %d says hi", n)
+                outputs.append(stop_capture(f"t{n}"))
+        finally:
+            if lib is not None:
+                _reset_logger(lib)
+        assert outputs == [f"task {n} says hi" for n in range(1, 4)]
+        assert console.getvalue() == "".join(f"task {n} says hi\n" for n in range(1, 4))
+
+    def test_handler_shared_with_a_non_propagating_logger_stays_on_the_tee(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One handler on a propagating and a non-propagating logger isn't moved."""
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        shared = logging.StreamHandler()
+        quiet = _quiet_logger("tests.shared_quiet", shared)
+        loud = logging.getLogger("tests.shared_loud")
+        loud.addHandler(shared)
+        try:
+            install_capture()
+            assert isinstance(shared.stream, TeeStream)
+        finally:
+            loud.removeHandler(shared)
+            _reset_logger(quiet)
+
     def test_handler_overriding_handle_is_captured_once_after_repoint(
         self, monkeypatch: pytest.MonkeyPatch, info_logging: None
     ) -> None:
