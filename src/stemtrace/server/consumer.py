@@ -131,7 +131,7 @@ class EventConsumer:
         self._transport = None
         logger.info("Event consumer stopped")
 
-    def _consume_loop(self) -> None:  # noqa: C901
+    def _consume_loop(self) -> None:
         if self._transport is None:
             return
 
@@ -149,17 +149,8 @@ class EventConsumer:
                         )
                         self._failures = 0
                         backoff = RESTART_INITIAL_BACKOFF
-
-                    try:
-                        self._process_event(event)
-                        self._maybe_check_stale_workers()
-                    except Exception:
-                        logger.exception("Error processing event")
-                if not self._stop_event.is_set():
-                    # The iterator ended on its own (e.g. MemoryTransport).
-                    self._finished = True
-                    self._failures = 0
-                    logger.info("Event source exhausted; consumer finished")
+                    self._handle_event(event)
+                self._on_iterator_end()
                 return
             except Exception as exc:
                 if self._stop_event.is_set():
@@ -181,6 +172,31 @@ class EventConsumer:
                     )
                 self._stop_event.wait(backoff)
                 backoff = min(backoff * 2, RESTART_MAX_BACKOFF)
+
+    def _handle_event(self, event: TaskEvent | WorkerEvent) -> None:
+        """Apply one event; an error is logged and skips only this event.
+
+        A failure here must not restart the consume loop: that would
+        reconnect to the broker over a bad event or a store bug.
+        """
+        try:
+            self._process_event(event)
+            self._maybe_check_stale_workers()
+        except Exception:
+            logger.exception("Error processing event")
+
+    def _on_iterator_end(self) -> None:
+        """Record that the transport's iterator ended without an error.
+
+        Either stop() was called (the transport saw the bound stop event), or
+        the event source ran out on its own (e.g. MemoryTransport), which
+        leaves the consumer finished rather than failed.
+        """
+        if self._stop_event.is_set():
+            return
+        self._finished = True
+        self._failures = 0
+        logger.info("Event source exhausted; consumer finished")
 
     def _maybe_check_stale_workers(self) -> None:
         """Periodically check for and mark stale workers as offline.
