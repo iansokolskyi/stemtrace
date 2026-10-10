@@ -28,6 +28,7 @@ Stemtrace captures your task executions as a graph — visualize parent→child 
 - **Task Flow Graphs** — Visualize chains, groups, and chords as interactive DAGs
 - **Execution Timeline** — Track queued → started → retried → finished states
 - **Arguments & Results** — Inspect inputs, outputs, and exceptions
+- **Task Output** — See what each attempt printed and logged, next to the task (opt-in)
 - **Retry Chains** — Understand exactly when and why retries happened
 
 **Canvas Support**
@@ -202,6 +203,10 @@ stemtrace.init_worker(
     # UI display
     node_alias_from_arguments="operator_type", # Use kwargs["operator_type"] as node name
     # node_alias_from_arguments="0",           # Or use args[0] (digit string = positional index)
+
+    # Task output (disabled by default, see "Task Output" below)
+    capture_output=False,                      # Capture what each attempt prints/logs
+    max_output_size=16384,                     # Max bytes kept per attempt (the end is kept)
 )
 
 # Introspection (after init)
@@ -219,6 +224,53 @@ By default, stemtrace scrubs common sensitive keys from task arguments:
 - Session: `cookie`, `session`, `csrf`
 
 Scrubbed values appear as `[Filtered]` in the UI.
+
+#### Task Output (print and logging)
+
+Turn on `capture_output` on the worker to see what each task attempt printed and
+logged on its task page, instead of searching interleaved worker logs:
+
+```python
+stemtrace.init_worker(app, capture_output=True)
+```
+
+```python
+from celery.utils.log import get_task_logger
+import logging
+
+task_logger = get_task_logger(__name__)
+log = logging.getLogger("myapp.billing")
+
+@app.task(bind=True, max_retries=3)
+def charge(self, order_id):
+    print(f"charging {order_id}")           # -> charging 42
+    task_logger.info("calling gateway")     # -> INFO myapp.tasks: calling gateway
+    log.warning("gateway slow")             # -> WARNING myapp.billing: gateway slow
+    ...
+```
+
+The task page shows an **Output** section with one block per attempt (latest
+first): the output of a retried attempt is on its `RETRY` event, the final one on
+`SUCCESS`/`FAILURE`.
+
+- **What's captured**: `print()` to stdout and stderr, and log records from any
+  logger (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the
+  task runs, in one chronological stream. Log levels still apply: a record your
+  logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`) isn't
+  captured. stemtrace's own logs and Celery/kombu internals are left out.
+- **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
+  keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
+  Output is sent with the task's terminal event and kept by the server like the
+  rest of the event, so large values add up across `max_nodes` tasks.
+- **Pools**: each task's output is collected in a `ContextVar` (per thread, and
+  per greenlet under gevent/eventlet), so concurrent tasks never mix output.
+  Output from threads a task starts itself isn't captured.
+- **Not captured**: anything after the task ends, and output of a task whose
+  worker process was killed (hard time limit, OOM), since no terminal event is
+  sent from that process.
+- **Not scrubbed**: output is free text, so the key-based scrubbing above can't
+  apply. That's why it's off by default: only enable it if your tasks don't print
+  or log secrets.
 
 ### Canvas Graph Visualization
 
@@ -522,6 +574,7 @@ What is detected depends on the transport:
 - ✅ **Full lifecycle tracking** — PENDING → RECEIVED → STARTED → SUCCESS/FAILURE
 - ✅ **Canvas awareness** — Automatic GROUP/CHORD node visualization
 - ✅ **Arguments & results** — View inputs, outputs, and exceptions
+- ✅ **Task output** — What each attempt printed and logged (opt-in)
 - ✅ **Sensitive data scrubbing** — Passwords and API keys filtered automatically
 - ✅ **Real-time updates** — WebSocket-powered live dashboard
 - ✅ **FastAPI integration** — Mount into your existing app

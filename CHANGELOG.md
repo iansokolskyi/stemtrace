@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task output in the UI: with `init_worker(app, capture_output=True)`, what each task attempt prints (`print()`, stdout and stderr) and logs (`logging.getLogger(...)`, `get_task_logger(...)`) is attached to its `SUCCESS`, `FAILURE` or `RETRY` event as one chronological `output` string and shown on the task page in an "Output" section, one block per attempt with the latest first. Off by default because output is free text and isn't scrubbed. Each attempt keeps at most `max_output_size` bytes (default 16 KB, UTF-8); longer output keeps its end after a `[… N bytes truncated]` line. Capture is per task context (a `ContextVar`), so concurrent tasks in a threads pool (or greenlets under gevent/eventlet) never mix output, and it works whether or not Celery redirects stdout to logging. Output is returned by `GET /api/tasks/{id}` (for the task itself) and over the WebSocket, but not by list endpoints. Events without `output` (older workers) and servers that don't know the field (older servers) keep working. (thanks @JonatanMartens for the original implementation — #49; requested by @ohadmata — #47)
+
 ## [0.3.7] - 2026-10-10
 
 ### Changed
