@@ -113,9 +113,11 @@ def server(
     # Blank or padded values (e.g. from env files) count as unset / are trimmed.
     # Blank means unset, as in init_app(): an explicit empty flag falls back to
     # the env var.
-    node_alias = (node_alias_from_arguments or "").strip() or (
-        os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or ""
-    ).strip() or None
+    node_alias = (
+        (node_alias_from_arguments or "").strip()
+        or (os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or "").strip()
+        or None
+    )
     if node_alias is not None:
         typer.echo(f"Node alias: {node_alias}")
 
