@@ -1,5 +1,6 @@
 """Tests for per-task output capture (buffer, logging handler, tee)."""
 
+import copy
 import io
 import logging
 import sys
@@ -528,6 +529,98 @@ class TestTee:
         with TeeStream(proxy) as tee:
             assert tee.isatty() is False
         assert proxy.closed is False
+
+    def test_stream_handler_on_the_tee_is_captured_once(
+        self, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """A StreamHandler created after the tee writes through it: one copy only.
+
+        Its record would otherwise be captured by the handler and again by the
+        tee; the tee's copy (formatted as that handler formats it) wins.
+        """
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        lib = logging.getLogger("somelib")
+        lib_handler = logging.StreamHandler()  # binds the current sys.stderr: the tee
+        lib.addHandler(lib_handler)
+        try:
+            start_capture("t1", max_bytes=1000)
+            lib.warning("hello from lib")
+            assert stop_capture("t1") == "hello from lib"
+        finally:
+            lib.removeHandler(lib_handler)
+
+    def test_stream_handler_on_the_tee_filtering_by_level_leaves_record_to_us(
+        self, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """If that StreamHandler drops the record by level, we still capture it."""
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        lib = logging.getLogger("somelib")
+        lib_handler = logging.StreamHandler()
+        lib_handler.setLevel(logging.ERROR)
+        lib.addHandler(lib_handler)
+        try:
+            start_capture("t1", max_bytes=1000)
+            lib.warning("only via the handler")
+            assert stop_capture("t1") == "WARNING somelib: only via the handler"
+        finally:
+            lib.removeHandler(lib_handler)
+
+    def test_missing_streams_are_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sys.stdout can be None (closed fd, pythonw); print() must keep working."""
+        monkeypatch.setattr(sys, "stdout", None)
+        install_capture()
+        assert sys.stdout is None
+        start_capture("t1", max_bytes=1000)
+        print("goes nowhere")  # print() ignores a None sys.stdout
+        assert stop_capture("t1") is None
+
+    def test_non_writable_streams_are_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A stream that can't be written isn't wrapped."""
+        path = tmp_path / "in.txt"
+        path.write_text("x", encoding="utf-8")
+        with path.open(encoding="utf-8") as read_only:
+            monkeypatch.setattr(sys, "stdout", read_only)
+            install_capture()
+            assert sys.stdout is read_only
+
+    @pytest.mark.parametrize("kind", ["no-write", "closed"])
+    def test_unusable_streams_are_left_alone(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Objects without write() and closed streams aren't wrapped."""
+        stream: object
+        if kind == "no-write":
+            stream = object()
+        else:
+            closed = io.StringIO()
+            closed.close()
+            stream = closed
+        monkeypatch.setattr(sys, "stdout", stream)
+        install_capture()
+        assert sys.stdout is stream
+
+    def test_tee_can_be_copied(self) -> None:
+        """copy.copy() works (no recursion through __getattr__)."""
+        original = io.StringIO()
+        clone = copy.copy(TeeStream(original))
+        assert clone.wrapped is original
+        clone.write("via clone")
+        assert original.getvalue() == "via clone"
+
+    def test_tee_does_not_forward_dunder_lookups(self) -> None:
+        """Missing dunders raise AttributeError instead of hitting the stream."""
+        tee = TeeStream(io.StringIO())
+        with pytest.raises(AttributeError):
+            tee.__getattr__("__reduce_ex_missing__")
+        bare = TeeStream.__new__(TeeStream)
+        with pytest.raises(AttributeError):
+            bare.__getattr__("encoding")
 
     def test_tee_capture_failure_still_writes_original(self) -> None:
         """If buffering fails, the write still reaches the real stream."""

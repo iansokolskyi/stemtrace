@@ -187,12 +187,11 @@ def stop_capture(task_id: str) -> str | None:
     return buffer.render()
 
 
-def _has_other_handlers(record: logging.LogRecord) -> bool | None:
-    """Whether the record's logger chain has a handler other than ours.
+def _handler_chain(record: logging.LogRecord) -> list[logging.Handler] | None:
+    """Handlers a record reaches, as ``Logger.callHandlers`` walks them.
 
-    Mirrors ``Logger.callHandlers``: walk up while ``propagate`` is set and
-    count handlers regardless of their level. Returns None when the record's
-    logger doesn't exist (the record didn't come through a logger chain).
+    Walks up from the record's logger while ``propagate`` is set. Returns None
+    when the record's logger doesn't exist (it didn't come through a logger).
     """
     if record.name == logging.root.name:
         current: logging.Logger | None = logging.root
@@ -201,10 +200,39 @@ def _has_other_handlers(record: logging.LogRecord) -> bool | None:
         if not isinstance(found, logging.Logger):
             return None
         current = found
+    handlers: list[logging.Handler] = []
     while current is not None:
-        if any(not isinstance(h, TaskOutputHandler) for h in current.handlers):
-            return True
+        handlers.extend(current.handlers)
         current = current.parent if current.propagate else None
+    return handlers
+
+
+def _has_other_handlers(record: logging.LogRecord) -> bool | None:
+    """Whether the record's logger chain has a handler other than ours.
+
+    Counts handlers regardless of their level, like ``Logger.callHandlers``
+    does when deciding whether to fall back to ``logging.lastResort``.
+    """
+    chain = _handler_chain(record)
+    if chain is None:
+        return None
+    return any(not isinstance(h, TaskOutputHandler) for h in chain)
+
+
+def _written_to_tee(record: logging.LogRecord) -> bool:
+    """Whether a StreamHandler in the chain writes this record to a tee.
+
+    A StreamHandler created after the tee was installed holds the tee as its
+    stream, so the tee captures its output; capturing the record here as well
+    would duplicate it.
+    """
+    for handler in _handler_chain(record) or ():
+        if (
+            isinstance(handler, logging.StreamHandler)
+            and isinstance(handler.stream, TeeStream)
+            and record.levelno >= handler.level
+        ):
+            return True
     return False
 
 
@@ -237,7 +265,7 @@ class TaskOutputHandler(logging.Handler):
         buffer = _active_buffer.get()
         if buffer is None or getattr(record, _CAPTURED_ATTR, False):
             return
-        if not _should_capture(record.name):
+        if not _should_capture(record.name) or _written_to_tee(record):
             return
         text = self.format(record)
         setattr(record, _CAPTURED_ATTR, True)
@@ -314,7 +342,14 @@ class TeeStream:
             exit_(*exc_info)
 
     def __getattr__(self, name: str) -> Any:
-        """Forward everything else (encoding, fileno, isatty, ...) to the original."""
+        """Forward everything else (encoding, fileno, isatty, ...) to the original.
+
+        ``_wrapped`` itself and dunder names are never forwarded: ``copy`` and
+        ``pickle`` probe them on a half-built instance, where forwarding would
+        recurse.
+        """
+        if name == "_wrapped" or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
         return getattr(self._wrapped, name)
 
 
@@ -326,9 +361,25 @@ def _capture_loggers() -> tuple[logging.Logger, logging.Logger]:
     return logging.getLogger(), logging.getLogger("celery.task")
 
 
+def _can_tee(stream: object) -> bool:
+    """Whether ``stream`` is a writable stream we haven't wrapped yet."""
+    if stream is None or isinstance(stream, TeeStream):
+        return False
+    if not callable(getattr(stream, "write", None)):
+        return False
+    writable = getattr(stream, "writable", None)
+    if not callable(writable):
+        return True
+    try:
+        return bool(writable())
+    except (OSError, ValueError):
+        return False
+
+
 def _tee(stream: TextIO) -> TextIO:
-    already_teed = isinstance(stream, TeeStream)
-    if already_teed:
+    # None (closed fd, pythonw) and read-only streams are left as they are, so
+    # print() behaves exactly as without stemtrace.
+    if not _can_tee(stream):
         return stream
     # TeeStream implements the parts of TextIO that print()/logging use and
     # forwards the rest; it isn't a TextIO subclass.
