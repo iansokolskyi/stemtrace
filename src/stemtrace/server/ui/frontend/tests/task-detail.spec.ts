@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import { createFailedTask, createMockEvent, createSuccessTask } from './fixtures/mock-data'
@@ -418,6 +418,39 @@ test.describe('Task Detail - Output', () => {
     await expect(page.getByTestId('output-text')).toHaveText(
       'attempt 1\nERROR app.tasks: giving up',
     )
+  })
+
+  test('refetches the open task only for its own live events', async ({ page }) => {
+    let socket: WebSocketRoute | null = null
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      socket = ws
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    const sibling = createSuccessTask('test.unrelated', 'done')
+    mockApi.addTask(task)
+    mockApi.addTask(sibling)
+    let detailRequests = 0
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.endsWith(`/tasks/${task.task_id}`)) {
+        detailRequests += 1
+      }
+    })
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await expect(page.getByTestId('output-attempt')).toHaveCount(2)
+    await expect.poll(() => socket !== null).toBe(true)
+    const ws = socket as unknown as WebSocketRoute
+    const initial = detailRequests
+
+    // An event for another task must not refetch this task's detail (and output).
+    ws.send(JSON.stringify({ task_id: sibling.task_id, state: 'STARTED' }))
+    await page.waitForTimeout(1000)
+    expect(detailRequests).toBe(initial)
+
+    // An event for this task does.
+    ws.send(JSON.stringify({ task_id: task.task_id, state: 'FAILURE' }))
+    await expect.poll(() => detailRequests).toBe(initial + 1)
   })
 
   test('copies an attempt output to the clipboard', async ({ page }) => {

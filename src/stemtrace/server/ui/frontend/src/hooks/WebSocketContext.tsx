@@ -100,16 +100,21 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           setEvents((prev) => [data, ...prev].slice(0, 100)) // Keep last 100
 
           // Invalidate queries to refresh data
-          // Invalidate both regular and infinite queries
-          queryClient.invalidateQueries({ queryKey: ['tasks'] })
+          // Invalidate both regular and infinite queries. ['tasks', params] is
+          // a list; ['tasks', taskId] is a task detail (with its captured
+          // output), refetched only for an event of that task or of one of
+          // its children (the detail page lists children with their state).
+          queryClient.invalidateQueries({
+            queryKey: ['tasks'],
+            predicate: (query) => {
+              const key = query.queryKey[1]
+              if (typeof key !== 'string') return true
+              return key === data.task_id || (!!data.parent_id && key === data.parent_id)
+            },
+          })
           queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] })
           queryClient.invalidateQueries({ queryKey: ['graphs'] })
           queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
-
-          // Also invalidate the specific task detail if we have the task_id
-          if (data.task_id) {
-            queryClient.invalidateQueries({ queryKey: ['tasks', data.task_id] })
-          }
         } catch (e) {
           console.error('[WebSocket] Failed to parse message:', e)
         }
