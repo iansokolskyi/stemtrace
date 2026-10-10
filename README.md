@@ -257,7 +257,9 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
   logger (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the
   task runs, in one chronological stream. Log levels still apply: a record your
   logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`) isn't
-  captured. stemtrace's own logs and Celery/kombu internals are left out.
+  captured. That includes `print()`: Celery logs it at
+  `worker_redirect_stdouts_level` (`WARNING` by default), so it's missed under
+  `--loglevel=ERROR`. stemtrace's own logs and Celery/kombu internals are left out.
 - **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
   keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
   Output is sent with the task's terminal event and kept by the server like the
