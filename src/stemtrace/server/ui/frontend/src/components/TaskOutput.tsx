@@ -31,7 +31,7 @@ export function TaskOutput({ events }: TaskOutputProps) {
       <div className="space-y-3">
         {attempts.map((event, index) => (
           <OutputAttempt
-            key={`${event.state}-${event.timestamp}-${index}`}
+            key={`${event.state}-${event.retries}-${event.timestamp}`}
             event={event}
             defaultExpanded={index === 0}
           />
