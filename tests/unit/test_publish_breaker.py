@@ -167,20 +167,41 @@ class TestPublishBreakerOpening:
 
         assert breaker.is_open is False
 
-    def test_unconfirmed_failure_opens_with_max_cooldown(self) -> None:
+    def test_two_unconfirmed_failures_in_a_row_set_max_cooldown(self) -> None:
         clock = FakeClock()
         breaker = _make_breaker(clock)
 
         _attempt_fails(breaker, unconfirmed=True)
-
         assert breaker.is_open is True
+        assert breaker.cooldown == 1.0
+        clock.advance(1.0)
+        _attempt_fails(breaker, unconfirmed=True)
+
         assert breaker.cooldown == 30.0
         clock.advance(29.9)
         assert breaker.allow() is None
         clock.advance(0.1)
-        assert breaker.allow() is not None
+        _attempt_fails(breaker, unconfirmed=True)
+        assert breaker.cooldown == 30.0
+        # The opening line reported the first one.
+        assert breaker.unconfirmed == 2
 
-    def test_unconfirmed_probe_failure_keeps_max_cooldown(self) -> None:
+    def test_single_unconfirmed_failure_then_stall_recovers_quickly(self) -> None:
+        # A brief broker pause: an in-flight close times out (unconfirmed),
+        # the probe's connect times out, the next probe succeeds.
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker, unconfirmed=True)
+        clock.advance(1.0)
+        _attempt_fails(breaker)
+        assert breaker.cooldown == 2.0
+        clock.advance(2.0)
+
+        _attempt_succeeds(breaker)
+
+        assert breaker.is_open is False
+
+    def test_unconfirmed_probe_after_plain_failure_only_doubles(self) -> None:
         clock = FakeClock()
         breaker = _make_breaker(clock)
         _attempt_fails(breaker)
@@ -188,11 +209,7 @@ class TestPublishBreakerOpening:
 
         _attempt_fails(breaker, unconfirmed=True)
 
-        assert breaker.cooldown == 30.0
-        clock.advance(30.0)
-        _attempt_fails(breaker, unconfirmed=True)
-        assert breaker.cooldown == 30.0
-        assert breaker.unconfirmed == 2
+        assert breaker.cooldown == 2.0
 
 
 class TestPublishBreakerOpen:
@@ -295,7 +312,7 @@ class TestPublishBreakerOpen:
         messages = [r.getMessage() for r in _records(caplog)]
         assert messages[0] == (
             "Failed to publish event t-blocked to TestBroker; dropping events for "
-            "30.0s before trying again (0 event(s) dropped, 1 sent but "
+            "1.0s before trying again (0 event(s) dropped, 1 sent but "
             "unconfirmed since the last report)"
         )
         assert messages[-1] == (

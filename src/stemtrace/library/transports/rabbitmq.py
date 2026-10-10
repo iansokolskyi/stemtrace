@@ -69,8 +69,9 @@ PUBLISH_FAILURES_TO_OPEN = 3
 
 # While the breaker is open, events are dropped without connecting for a
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
-# RECONNECT_MAX_BACKOFF; straight to the maximum while the broker blocks
-# publishers) and resets once a publish succeeds. Publish failures are logged
+# RECONNECT_MAX_BACKOFF; straight to the maximum after two unconfirmed
+# attempts in a row, i.e. while the broker blocks publishers) and resets once
+# a publish succeeds. Publish failures are logged
 # at most this often.
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
 
@@ -215,8 +216,9 @@ class RabbitMQTransport:
         one, or PUBLISH_FAILURES_TO_OPEN fast failures in a row open a circuit
         breaker; a single fast failure drops only its own event. While open,
         events are dropped without connecting for a cooldown (1s, doubling per
-        failed retry up to 30s; 30s at once while the broker blocks
-        publishers; reset by a successful publish), so a broker outage costs
+        failed retry up to 30s; 30s after two unconfirmed attempts in a row,
+        i.e. while the broker blocks publishers; reset by a successful
+        publish), so a broker outage costs
         tasks about one bounded attempt per cooldown instead of one per event.
         Only one retry (probe) runs at a time, and failures of attempts that
         were already in flight don't lengthen the cooldown. Failures are

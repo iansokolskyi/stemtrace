@@ -43,16 +43,18 @@ class PublishBreaker:
             it was the ``failures_to_open``-th failure in a row. Otherwise
             only that event is dropped, so sporadic failures on a healthy
             broker don't cost whole cooldowns of events.
-        Open: attempts are dropped until the cooldown expires (the initial
-            cooldown, or the maximum after an unconfirmed failure, which
-            usually means the broker is blocking publishers). Then a single
+        Open: attempts are dropped until the cooldown expires. Then a single
             caller is let through as the probe; no other probe is admitted
             while it is outstanding (up to ``probe_timeout``, after which it
             is presumed lost and a new probe may start). Only the probe's
             outcome changes the state: a failed probe doubles the cooldown
-            (capped at ``max_cooldown``; straight to the cap if unconfirmed)
-            and restarts it; a successful one closes the breaker and resets
-            the cooldown.
+            (capped at ``max_cooldown``) and restarts it; a successful one
+            closes the breaker and resets the cooldown. A probe that fails
+            unconfirmed right after an unconfirmed failure (the one that
+            opened the breaker or the previous probe) sets the cooldown
+            straight to the cap and keeps it there: two in a row usually
+            mean the broker is blocking publishers, which can last minutes,
+            while a single one may just be a brief stall.
 
     Attempts that were already in flight when the breaker opened (other
     threads of the same process) only count as lost when they fail and
@@ -142,6 +144,8 @@ class PublishBreaker:
         self._opened_at = 0.0
         self._outage_reported = False
         self._consecutive_failures = 0
+        # Whether the last failure that changed the open state was unconfirmed.
+        self._last_unconfirmed = False
 
     def _check_fork(self) -> None:
         """Start over with a fresh lock and closed state in a forked child."""
@@ -252,8 +256,8 @@ class PublishBreaker:
             unconfirmed: The event was sent but the broker never acknowledged
                 it (e.g. a RabbitMQ that blocks publishers during a memory or
                 disk alarm stops reading, so the connection close times out).
-                It counts as unconfirmed rather than dropped and sets the
-                cooldown to the maximum.
+                It counts as unconfirmed rather than dropped; two in a row
+                set the cooldown to the maximum.
         """
         self._check_fork()
         with self._lock:
@@ -336,16 +340,16 @@ class PublishBreaker:
             self._epoch += 1
             self._consecutive_failures = 0
             self._opened_at = now
-            if unconfirmed:
-                self._cooldown = self._max_cooldown
+            self._last_unconfirmed = unconfirmed
             self._open_until = now + self._cooldown
             return "opened"
         if self._probe_ticket is None or ticket != self._probe_ticket:
             return None
         self._probe_ticket = None
-        if unconfirmed:
+        if unconfirmed and self._last_unconfirmed:
             self._cooldown = self._max_cooldown
         else:
             self._cooldown = min(self._cooldown * 2, self._max_cooldown)
+        self._last_unconfirmed = unconfirmed
         self._open_until = now + self._cooldown
         return "probe"

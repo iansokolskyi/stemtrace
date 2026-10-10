@@ -326,17 +326,21 @@ class TestRabbitMQPublishClose:
         assert len(warnings) == 1
         assert warnings[0].getMessage() == (
             "Failed to publish event t-blocked to RabbitMQ; dropping events for "
-            "30.0s before trying again (0 event(s) dropped, 1 sent but "
+            "1.0s before trying again (0 event(s) dropped, 1 sent but "
             "unconfirmed since the last report)"
         )
-        # A blocking broker is retried only every 30s: each probe leaves a
-        # blocked connection on the broker until the alarm clears.
+        # The probe is unconfirmed too: the broker is blocking publishers, so
+        # it's retried only every 30s (each probe leaves a blocked connection
+        # on the broker until the alarm clears).
+        clock.advance(1.0)
+        transport.publish(_event("t-probe-1"))
+        assert len(broker.connections) == 2
         clock.advance(29.9)
         transport.publish(_event("t-skipped"))
-        assert len(broker.connections) == 1
-        clock.advance(0.1)
-        transport.publish(_event("t-probe"))
         assert len(broker.connections) == 2
+        clock.advance(0.1)
+        transport.publish(_event("t-probe-2"))
+        assert len(broker.connections) == 3
 
     def test_publish_failure_after_connect_drops_socket_without_close_wait(
         self, broker: FakeBroker, clock: FakeClock
