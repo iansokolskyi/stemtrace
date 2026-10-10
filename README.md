@@ -270,7 +270,9 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
   Output from threads a task starts itself isn't captured.
 - **Not captured**: anything after the task ends, and output of a task whose
   worker process was killed (hard time limit, OOM), since no terminal event is
-  sent from that process.
+  sent from that process. Capture of a failed or retried attempt stops when
+  Celery reports the failure/retry, so `on_failure`/`on_retry` output is included
+  but `after_return` output is included only on success.
 - **Not scrubbed**: output is free text, so the key-based scrubbing above can't
   apply. That's why it's off by default: only enable it if your tasks don't print
   or log secrets.
