@@ -359,74 +359,166 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
     return stopped_unexpectedly or consumer.is_connected is False
 
 
-def create_api_router(  # noqa: C901, PLR0915, PLR0917
-    store: GraphStore,
-    consumer: AsyncEventConsumer | None = None,
-    ws_manager: WebSocketManager | None = None,
-    worker_registry: WorkerRegistry | None = None,
-    broker_url: str | None = None,
-    node_alias_from_arguments: str | None = None,
-) -> APIRouter:
-    """Create REST API router with task and graph endpoints.
+# The UI requests workers and the registry in quick succession on page load;
+# one inspect round trip serves both.
+_INSPECT_REFRESH_MIN_INTERVAL_SECONDS = 2.0
+_INSPECT_TIMEOUT_SECONDS = 0.5
 
-    Args:
-        store: Graph store for task/graph data.
-        consumer: Optional async event consumer.
-        ws_manager: Optional WebSocket manager.
-        worker_registry: Optional worker registry for lifecycle tracking.
-        broker_url: Optional Celery broker URL for on-demand inspection.
-        node_alias_from_arguments: Key to derive node display name from task
-            arguments. Digit string for args[index], string for kwargs[key].
 
-    Returns:
-        Configured API router.
+class _InspectRefresher:
+    """Rate-limited, non-blocking worker registry refresh from Celery inspect.
+
+    Runs at most one refresh at a time and at most one per
+    ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
+    in progress, or a recent one, returns at once instead of waiting. Failures
+    are swallowed (the refresh is best-effort) and don't count as a refresh,
+    so the next request retries. State is per router instance.
     """
-    router = APIRouter(prefix="/api", tags=["stemtrace"])
 
-    # Avoid stampeding Celery inspect on page loads where the UI requests both
-    # workers + registry in quick succession. This cache is per-router instance.
-    inspect_refresh_lock = threading.Lock()
-    last_inspect_refresh: float = 0.0
-    inspect_refresh_min_interval_seconds = 2.0
-    inspect_timeout_seconds = 0.5
+    def __init__(
+        self, worker_registry: WorkerRegistry | None, broker_url: str | None
+    ) -> None:
+        """Bind the registry to refresh and the broker to inspect (either None disables)."""
+        self._worker_registry = worker_registry
+        self._broker_url = broker_url
+        self._lock = threading.Lock()
+        self._last_refresh: float = 0.0
 
-    async def _maybe_refresh_worker_registry_from_inspect() -> None:
-        """Refresh the worker registry from Celery inspect with rate limiting."""
-        nonlocal last_inspect_refresh
+    def _refreshed_recently(self) -> bool:
+        return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
+    async def maybe_refresh(self) -> None:
+        """Refresh the worker registry unless disabled, recent, or in progress."""
+        worker_registry = self._worker_registry
+        broker_url = self._broker_url
         if worker_registry is None or broker_url is None:
             return
-
-        now = _monotonic()
-        if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
+        if self._refreshed_recently():
             return
-
-        # Only allow one refresh at a time, and don't block requests waiting for
-        # an in-progress refresh.
-        if not inspect_refresh_lock.acquire(blocking=False):
+        # Don't block requests waiting for an in-progress refresh.
+        if not self._lock.acquire(blocking=False):
             return
         try:
-            now = _monotonic()
-            if now - last_inspect_refresh < inspect_refresh_min_interval_seconds:
+            if self._refreshed_recently():
                 return
-
             inspector = await asyncio.to_thread(
                 _get_inspector,
                 broker_url,
-                timeout_seconds=inspect_timeout_seconds,
+                timeout_seconds=_INSPECT_TIMEOUT_SECONDS,
             )
             if inspector is None:
                 return
-
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(
                     _refresh_worker_registry_from_inspect,
                     worker_registry,
                     inspector,
                 )
-                last_inspect_refresh = _monotonic()
+                self._last_refresh = _monotonic()
         finally:
-            inspect_refresh_lock.release()
+            self._lock.release()
+
+
+def _hostnames_by_registered_task(
+    worker_registry: WorkerRegistry | None,
+) -> dict[str, set[str]]:
+    """Map each task name registered by a worker to the hostnames registering it.
+
+    Sets, because one hostname can appear as several workers (restarts).
+    """
+    hostnames: dict[str, set[str]] = {}
+    if worker_registry is None:
+        return hostnames
+    for worker in worker_registry.get_all_workers():
+        for task_name in worker.registered_tasks:
+            hostnames.setdefault(task_name, set()).add(worker.hostname)
+    return hostnames
+
+
+def _registry_status(execution_count: int, registered_by: list[str]) -> TaskStatus:
+    """Classify a task by whether it has run and whether any worker registers it."""
+    if not registered_by:
+        return TaskStatus.NOT_REGISTERED
+    return TaskStatus.ACTIVE if execution_count > 0 else TaskStatus.NEVER_RUN
+
+
+def _registered_task_response(
+    name: str,
+    *,
+    store: GraphStore,
+    worker_registry: WorkerRegistry | None,
+    execution_count: int,
+    registered_by: list[str],
+    status: TaskStatus,
+) -> RegisteredTaskResponse:
+    """Describe one task, preferring worker-reported metadata.
+
+    The module comes from the worker's task definition when it has one, else
+    from the dotted task name (``app.tasks.add`` -> ``app.tasks``).
+    """
+    definition = worker_registry.get_task_definition(name) if worker_registry else None
+    parts = name.rsplit(".", 1)
+    fallback_module = parts[0] if len(parts) > 1 else None
+    return RegisteredTaskResponse(
+        name=name,
+        module=definition.module
+        if definition and definition.module
+        else fallback_module,
+        signature=definition.signature if definition else None,
+        docstring=definition.docstring if definition else None,
+        bound=definition.bound if definition else False,
+        execution_count=execution_count,
+        registered_by=registered_by,
+        last_run=store.get_last_execution_time(name),
+        status=status,
+    )
+
+
+def _build_task_registry(
+    store: GraphStore,
+    worker_registry: WorkerRegistry | None,
+    *,
+    query: str | None,
+    status: str | None,
+) -> list[RegisteredTaskResponse]:
+    """List every known task: executed ones and ones registered by workers.
+
+    Sorted by name. ``query`` filters by case-insensitive name substring and
+    ``status`` by :class:`TaskStatus` value; an unknown status matches nothing.
+    """
+    observed_names = store.get_unique_task_names()
+    hostnames_by_task = _hostnames_by_registered_task(worker_registry)
+
+    tasks: list[RegisteredTaskResponse] = []
+    for name in sorted(observed_names | set(hostnames_by_task)):
+        if query and query.lower() not in name.lower():
+            continue
+        execution_count = store.get_task_execution_count(name)
+        registered_by = sorted(hostnames_by_task.get(name, ()))
+        task_status = _registry_status(execution_count, registered_by)
+        if status and task_status.value != status:
+            continue
+        tasks.append(
+            _registered_task_response(
+                name,
+                store=store,
+                worker_registry=worker_registry,
+                execution_count=execution_count,
+                registered_by=registered_by,
+                status=task_status,
+            )
+        )
+    return tasks
+
+
+def _add_health_routes(
+    router: APIRouter,
+    *,
+    store: GraphStore,
+    consumer: AsyncEventConsumer | None,
+    ws_manager: WebSocketManager | None,
+) -> None:
+    """Register ``/health`` (full status) and ``/health/live`` (liveness probe)."""
 
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -469,12 +561,28 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         status = "degraded" if _is_consumer_degraded(consumer) else "ok"
         return LivenessResponse(status=status)
 
+
+def _add_task_routes(
+    router: APIRouter,
+    *,
+    store: GraphStore,
+    worker_registry: WorkerRegistry | None,
+    refresher: _InspectRefresher,
+) -> None:
+    """Register the task list, task registry, task detail and children routes.
+
+    ``/tasks/registry`` is registered before ``/tasks/{task_id}``: routes match
+    in registration order, so the other way round "registry" would be taken
+    for a task id.
+    """
+
     @router.get(
         "/tasks",
         response_model=TaskListResponse,
         responses={400: {"model": ErrorResponse}},
     )
-    async def list_tasks(  # noqa: PLR0917
+    async def list_tasks(
+        *,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
         state: Annotated[str | None, Query(description="Filter by task state")] = None,
@@ -515,7 +623,7 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         "/tasks/registry",
         response_model=TaskRegistryResponse,
     )
-    async def get_task_registry(  # noqa: C901
+    async def get_task_registry(
         query: Annotated[
             str | None, Query(description="Filter by task name substring")
         ] = None,
@@ -540,77 +648,9 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         - not_registered: Executed but no worker has it registered
         """
         if refresh and worker_registry is not None:
-            await _maybe_refresh_worker_registry_from_inspect()
+            await refresher.maybe_refresh()
 
-        # Get all observed task names (from executions)
-        observed_names = store.get_unique_task_names()
-
-        # Get all registered task names (from workers)
-        # Use sets to avoid duplicates when same hostname has multiple workers (restarts)
-        registered_tasks_by_worker: dict[str, set[str]] = {}
-        if worker_registry is not None:
-            workers = worker_registry.get_all_workers()
-            for worker in workers:
-                for task_name in worker.registered_tasks:
-                    if task_name not in registered_tasks_by_worker:
-                        registered_tasks_by_worker[task_name] = set()
-                    registered_tasks_by_worker[task_name].add(worker.hostname)
-
-        # Combine observed and registered tasks
-        all_task_names = observed_names | set(registered_tasks_by_worker.keys())
-
-        tasks: list[RegisteredTaskResponse] = []
-        for name in sorted(all_task_names):
-            # Apply text search filter
-            if query and query.lower() not in name.lower():
-                continue
-
-            # Get execution count and last run time
-            execution_count = store.get_task_execution_count(name)
-            last_run = store.get_last_execution_time(name)
-
-            # Get workers that registered this task (convert set to sorted list)
-            registered_by_set = registered_tasks_by_worker.get(name, set())
-            registered_by = sorted(registered_by_set) if registered_by_set else []
-
-            # Compute status
-            if execution_count > 0 and registered_by:
-                task_status = TaskStatus.ACTIVE
-            elif execution_count == 0 and registered_by:
-                task_status = TaskStatus.NEVER_RUN
-            else:
-                task_status = TaskStatus.NOT_REGISTERED
-
-            # Apply status filter
-            if status and task_status.value != status:
-                continue
-
-            definition = (
-                worker_registry.get_task_definition(name) if worker_registry else None
-            )
-
-            parts = name.rsplit(".", 1)
-            fallback_module = parts[0] if len(parts) > 1 else None
-            module = (
-                definition.module
-                if definition and definition.module
-                else fallback_module
-            )
-
-            tasks.append(
-                RegisteredTaskResponse(
-                    name=name,
-                    module=module,
-                    signature=definition.signature if definition else None,
-                    docstring=definition.docstring if definition else None,
-                    bound=definition.bound if definition else False,
-                    execution_count=execution_count,
-                    registered_by=registered_by,
-                    last_run=last_run,
-                    status=task_status,
-                )
-            )
-
+        tasks = _build_task_registry(store, worker_registry, query=query, status=status)
         return TaskRegistryResponse(tasks=tasks, total=len(tasks))
 
     @router.get(
@@ -644,6 +684,15 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         _, children = found
         return [_node_to_response(c) for c in children]
 
+
+def _add_graph_routes(
+    router: APIRouter,
+    *,
+    store: GraphStore,
+    node_alias_key: str | None,
+) -> None:
+    """Register the graph list and graph detail routes."""
+
     @router.get("/graphs", response_model=GraphListResponse)
     async def list_graphs(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -665,9 +714,7 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         )
         return GraphListResponse(
             graphs=[
-                _node_to_graph_response(
-                    r, all_nodes, node_alias_key=node_alias_from_arguments
-                )
+                _node_to_graph_response(r, all_nodes, node_alias_key=node_alias_key)
                 for r in roots
             ],
             total=total,
@@ -686,19 +733,28 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
         if not graph:
             raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
 
-        all_nodes: dict[str, TaskNode] = {}
-        for node_id, node in graph.items():
-            all_nodes[node_id] = node
-
+        all_nodes: dict[str, TaskNode] = dict(graph)
         return GraphResponse(
             root_id=root_id,
             nodes={
                 tid: _node_to_graph_response(
-                    n, all_nodes, node_alias_key=node_alias_from_arguments
+                    n, all_nodes, node_alias_key=node_alias_key
                 )
                 for tid, n in graph.items()
             },
         )
+
+
+def _add_worker_routes(
+    router: APIRouter,
+    *,
+    worker_registry: WorkerRegistry | None,
+    refresher: _InspectRefresher,
+) -> None:
+    """Register the worker list and per-hostname worker routes.
+
+    Without a worker registry both answer with an empty list.
+    """
 
     @router.get(
         "/workers",
@@ -719,7 +775,7 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
 
         # On-demand worker status refresh using Celery inspect
         if refresh:
-            await _maybe_refresh_worker_registry_from_inspect()
+            await refresher.maybe_refresh()
 
         workers = worker_registry.get_all_workers()
         return WorkerListResponse(
@@ -746,4 +802,38 @@ def create_api_router(  # noqa: C901, PLR0915, PLR0917
             total=len(workers),
         )
 
+
+def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): positional callers must keep working
+    store: GraphStore,
+    consumer: AsyncEventConsumer | None = None,
+    ws_manager: WebSocketManager | None = None,
+    worker_registry: WorkerRegistry | None = None,
+    broker_url: str | None = None,
+    node_alias_from_arguments: str | None = None,
+) -> APIRouter:
+    """Create REST API router with task and graph endpoints.
+
+    Args:
+        store: Graph store for task/graph data.
+        consumer: Optional async event consumer.
+        ws_manager: Optional WebSocket manager.
+        worker_registry: Optional worker registry for lifecycle tracking.
+        broker_url: Optional Celery broker URL for on-demand inspection.
+        node_alias_from_arguments: Key to derive node display name from task
+            arguments. Digit string for args[index], string for kwargs[key].
+
+    Returns:
+        Configured API router.
+    """
+    router = APIRouter(prefix="/api", tags=["stemtrace"])
+    # One refresher for both /tasks/registry and /workers, so they share the
+    # rate limit.
+    refresher = _InspectRefresher(worker_registry, broker_url)
+
+    _add_health_routes(router, store=store, consumer=consumer, ws_manager=ws_manager)
+    _add_task_routes(
+        router, store=store, worker_registry=worker_registry, refresher=refresher
+    )
+    _add_graph_routes(router, store=store, node_alias_key=node_alias_from_arguments)
+    _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
     return router
