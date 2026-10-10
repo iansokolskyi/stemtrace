@@ -13,9 +13,15 @@ interface TaskOutputProps {
  * when no attempt has output.
  */
 export function TaskOutput({ events }: TaskOutputProps) {
+  // Newest attempt first, by retry number, then time: attempts can run on
+  // workers whose clocks disagree. Events carrying output always come from the
+  // process that ran the attempt, so their retry number is reliable (unlike
+  // main-process failures, which report retries=0 but never carry output).
   const attempts = sortEventsChronologically(events)
     .filter((event) => event.output)
-    .reverse()
+    .map((event, order) => ({ event, order }))
+    .sort((a, b) => (b.event.retries ?? 0) - (a.event.retries ?? 0) || b.order - a.order)
+    .map(({ event }) => event)
 
   if (attempts.length === 0) return null
 

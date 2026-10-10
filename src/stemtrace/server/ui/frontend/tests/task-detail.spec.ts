@@ -400,6 +400,26 @@ test.describe('Task Detail - Output', () => {
     )
   })
 
+  test('orders attempts by retry number when worker clocks disagree', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    const [, retry, , failure] = task.events
+    // Attempt 1 ran on a worker whose clock is behind: its FAILURE is stamped
+    // before attempt 0's RETRY.
+    failure.timestamp = new Date(Date.parse(retry.timestamp) - 60_000).toISOString()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const attempts = page.getByTestId('output-attempt')
+    await expect(attempts).toHaveCount(2)
+    await expect(attempts.nth(0)).toContainText('FAILURE')
+    await expect(page.getByTestId('output-text')).toHaveText(
+      'attempt 1\nERROR app.tasks: giving up',
+    )
+  })
+
   test('copies an attempt output to the clipboard', async ({ page }) => {
     await page.addInitScript(() => {
       const copied: string[] = []
