@@ -1,6 +1,6 @@
 """Print one version's section of CHANGELOG.md, for use as GitHub release notes.
 
-Usage: python scripts/changelog_section.py <version|Unreleased> [changelog_path]
+Usage: python scripts/changelog_section.py <version|Unreleased>
 
 Exits with status 1 when the section is missing or empty, so a release can't be
 published without notes.
@@ -9,6 +9,8 @@ published without notes.
 import re
 import sys
 from pathlib import Path
+
+CHANGELOG = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
 
 
 def changelog_section(text: str, version: str) -> str:
@@ -41,12 +43,11 @@ def changelog_section(text: str, version: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """Print the requested section; return 1 if it's missing or empty."""
-    if len(argv) not in (2, 3):
+    """Print the requested section of the repo's CHANGELOG.md; 1 if empty."""
+    if len(argv) != 2:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
-    path = Path(argv[2]) if len(argv) == 3 else Path("CHANGELOG.md")
-    section = changelog_section(path.read_text(encoding="utf-8"), argv[1])
+    section = changelog_section(CHANGELOG.read_text(encoding="utf-8"), argv[1])
     if not section:
         print(f"No CHANGELOG.md entries for [{argv[1]}]", file=sys.stderr)
         return 1

@@ -71,16 +71,23 @@ def test_version_dots_are_not_regex_wildcards() -> None:
 
 
 def test_main_prints_section_and_fails_when_empty(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / "CHANGELOG.md"
     path.write_text(CHANGELOG, encoding="utf-8")
+    monkeypatch.setattr(changelog_section, "CHANGELOG", path)
 
-    assert changelog_section.main(["x", "0.2.0", str(path)]) == 0
+    assert changelog_section.main(["x", "0.2.0"]) == 0
     assert capsys.readouterr().out == "### Added\n- New thing.\n"
 
-    assert changelog_section.main(["x", "Unreleased", str(path)]) == 1
+    assert changelog_section.main(["x", "Unreleased"]) == 1
     assert "No CHANGELOG.md entries for [Unreleased]" in capsys.readouterr().err
+
+
+def test_main_rejects_extra_arguments() -> None:
+    assert changelog_section.main(["x", "0.2.0", "/etc/passwd"]) == 2
 
 
 def test_every_released_version_in_repo_changelog_has_notes() -> None:
