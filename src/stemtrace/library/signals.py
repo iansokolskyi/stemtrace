@@ -606,7 +606,7 @@ def on_worker_ready(sender: Any, **_: Any) -> None:
         if _transport is not None:
             _transport.publish(event)
             logger.info(
-                "Worker ready event published: %s:%d (%d tasks)",
+                "Worker ready event sent to transport: %s:%d (%d tasks)",
                 hostname,
                 pid,
                 len(registered_tasks),
@@ -645,7 +645,7 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 
         if _transport is not None:
             _transport.publish(event)
-            logger.info("Worker shutdown event published: %s:%d", hostname, pid)
+            logger.info("Worker shutdown event sent to transport: %s:%d", hostname, pid)
         else:
             logger.warning(
                 "No transport configured, worker_shutdown event not published"
