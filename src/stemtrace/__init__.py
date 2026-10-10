@@ -15,6 +15,7 @@ Usage:
     stemtrace.get_transport()   # -> EventTransport | None
 """
 
+import logging
 import os
 import warnings
 from typing import TYPE_CHECKING, Any
@@ -63,6 +64,18 @@ __all__ = [
 ]
 
 _transport: EventTransport | None = None
+_node_alias_deprecation_logged = False
+
+logger = logging.getLogger(__name__)
+
+_NODE_ALIAS_WORKER_DEPRECATION = (
+    "init_worker(node_alias_from_arguments=...) has no effect on workers: "
+    "node aliases are resolved by the stemtrace server. Pass "
+    "node_alias_from_arguments to stemtrace.init_app(), or use "
+    "`stemtrace server --node-alias-from-arguments` / the "
+    "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var. This parameter will be "
+    "removed in a future major release."
+)
 
 
 def is_initialized() -> bool:
@@ -111,25 +124,22 @@ def init_worker(
             aliases are resolved by the server: pass ``node_alias_from_arguments``
             to ``init_app()``, or use ``stemtrace server
             --node-alias-from-arguments`` / ``STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS``.
-            A non-None value emits a ``DeprecationWarning``; the parameter will
-            be removed in a future major release.
+            A non-None value emits a ``DeprecationWarning`` (and a one-time
+            log warning, since Celery workers hide deprecation warnings); the
+            parameter will be removed in a future major release.
 
     Raises:
         ConfigurationError: If no broker URL can be determined.
     """
-    global _transport
+    global _transport, _node_alias_deprecation_logged
 
     if node_alias_from_arguments is not None:
-        warnings.warn(
-            "init_worker(node_alias_from_arguments=...) has no effect on workers: "
-            "node aliases are resolved by the stemtrace server. Pass "
-            "node_alias_from_arguments to stemtrace.init_app(), or use "
-            "`stemtrace server --node-alias-from-arguments` / the "
-            "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var. This parameter will be "
-            "removed in a future major release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warnings.warn(_NODE_ALIAS_WORKER_DEPRECATION, DeprecationWarning, stacklevel=2)
+        # Python's default filters hide DeprecationWarning unless it's raised from
+        # __main__, so under `celery worker` nobody would see it. Log it once too.
+        if not _node_alias_deprecation_logged:
+            _node_alias_deprecation_logged = True
+            logger.warning("%s", _NODE_ALIAS_WORKER_DEPRECATION)
 
     url = transport_url or app.conf.broker_url
     if not url:
@@ -300,6 +310,7 @@ def _install_stemtrace_form_auth(
 
 def _reset() -> None:
     """Reset module state. For testing only."""
-    global _transport
+    global _transport, _node_alias_deprecation_logged
     _transport = None
+    _node_alias_deprecation_logged = False
     _reset_config()
