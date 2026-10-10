@@ -396,9 +396,10 @@ graph shows an argument instead:
 
 If the argument is missing, the task name is shown. This is a **server** setting: set it on
 `stemtrace server` (flag or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`, e.g. in Docker) or pass
-`node_alias_from_arguments` to `stemtrace.init_app(...)`. Workers need `capture_args=True`
-(the default) so the arguments are available. Passing it to `stemtrace.init_worker(...)` has no
-effect and is deprecated.
+`node_alias_from_arguments` to `stemtrace.init_app(...)`. Surrounding whitespace is ignored, and
+`stemtrace server` prints `Node alias: <key>` at startup when it is set. Workers need
+`capture_args=True` (the default) so the arguments are available. Passing it to
+`stemtrace.init_worker(...)` has no effect and is deprecated.
 
 #### Protecting the Server (Built-in Login Page)
 
