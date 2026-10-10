@@ -475,6 +475,17 @@ class TestRabbitMQPublishFailoverResolution:
                 ],
             ),
             (
+                # A URL-form entry doesn't inherit credentials (pyamqp then
+                # uses guest/guest); port and vhost come from the previous
+                # entry when omitted, and "//" means vhost "/".
+                "amqp://app:secret@rabbit1:5673/prod;amqp://h2;amqp://h3:5674//",
+                [
+                    ("rabbit1", 5673, "app", "secret", "prod"),
+                    ("h2", 5673, None, None, "prod"),
+                    ("h3", 5674, None, None, "/"),
+                ],
+            ),
+            (
                 "amqp://app:secret@rabbit1:5673/prod;rabbit2;amqp://u:p@h3/other",
                 [
                     ("rabbit1", 5673, "app", "secret", "prod"),
@@ -485,7 +496,7 @@ class TestRabbitMQPublishFailoverResolution:
         ],
     )
     def test_publish_connection_resolves_each_entry_like_kombu_failover(
-        self, url: str, expected: list[tuple[str, int, str, str, str]]
+        self, url: str, expected: list[tuple[str, int, str | None, str | None, str]]
     ) -> None:
         transport = RabbitMQTransport(url, prefix="test", ttl=60)
 

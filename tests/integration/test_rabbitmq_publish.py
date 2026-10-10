@@ -290,7 +290,7 @@ class TestRabbitMQPublishFailoverBroker:
     reason="RabbitMQ with management API not available",
 )
 class TestRabbitMQPublishFailoverCredentials:
-    """Later failover entries keep the first entry's credentials and vhost."""
+    """Bare-host failover entries keep the first entry's credentials and vhost."""
 
     @pytest.fixture
     def app_account(self) -> Iterator[tuple[str, str, str]]:
@@ -304,6 +304,9 @@ class TestRabbitMQPublishFailoverCredentials:
             f"permissions/{vhost}/{user}",
             {"configure": ".*", "write": ".*", "read": ".*"},
         )
+        # RabbitMQ grants the creating user (guest) access to a new vhost;
+        # revoke it, so a publish that fell back to guest can't succeed.
+        _management_request("DELETE", f"permissions/{vhost}/guest")
         yield vhost, user, password
         with contextlib.suppress(Exception):
             _management_request("DELETE", f"vhosts/{vhost}")
@@ -315,19 +318,19 @@ class TestRabbitMQPublishFailoverCredentials:
     ) -> None:
         vhost, user, password = app_account
         broker = Connection(RABBITMQ_URL)
-        refused_port = int(urllib.parse.urlsplit(_refused_url()).port or 0)
-        # The second entry names only host and port: kombu takes the user,
-        # password and vhost from the first entry.
+        # The first host doesn't resolve; the second entry is a bare host,
+        # which kombu completes with the first entry's user, password, port
+        # and vhost.
         url = (
-            f"amqp://{user}:{password}@127.0.0.1:{refused_port}/{vhost};"
-            f"amqp://{broker.hostname}:{broker.port}"
+            f"amqp://{user}:{password}@stemtrace-unresolvable.invalid:"
+            f"{broker.port}/{vhost};{broker.hostname}"
         )
         direct = f"amqp://{user}:{password}@{broker.hostname}:{broker.port}/{vhost}"
         consumer = RabbitMQTransport(direct, prefix="cred", ttl=60)
         consumer._declare_exchange_and_queue()
         transport = RabbitMQTransport(url, prefix="cred", ttl=60)
 
-        transport.publish(_event("cred-1"))  # h1 refused, delivered via h2
+        transport.publish(_event("cred-1"))  # h1 doesn't resolve; via h2
         transport.publish(_event("cred-2"))  # starts with h2
         transport.publish(_event("cred-3"))
 
