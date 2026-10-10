@@ -115,10 +115,6 @@ ignore_missing_imports = true
 module = "kombu.*"
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-module = "amqp.*"
-ignore_missing_imports = true
-
 # =============================================================================
 # ruff
 # =============================================================================
