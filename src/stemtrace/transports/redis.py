@@ -6,7 +6,7 @@ import inspect
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -141,8 +141,9 @@ class _ReadHealth:
     failures: int = 0
     # Consecutive XREAD read timeouts.
     read_timeouts: int = 0
-    # Delay before the next reconnect attempt.
-    backoff: float = RECONNECT_INITIAL_BACKOFF
+    # Delay before the next reconnect attempt. Read when consume() starts,
+    # not at import, so a patched constant applies to the first wait too.
+    backoff: float = field(default_factory=lambda: RECONNECT_INITIAL_BACKOFF)
     # Monotonic time of the last read-timeout warning, for rate limiting.
     last_timeout_warning: float | None = None
 

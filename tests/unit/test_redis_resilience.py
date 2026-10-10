@@ -14,6 +14,7 @@ from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.transports import redis as redis_transport_module
 from stemtrace.transports.redis import (
     READ_TIMEOUT_WARN_AFTER,
     READ_TIMEOUT_WARN_INTERVAL,
@@ -500,3 +501,14 @@ class TestFailureBookkeeping:
             "Redis consumer on test:events reconnected after 2 failure(s)"
         )
         assert recovery.exc_info is None
+
+
+def test_consume_first_backoff_reads_initial_constant_at_consume_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(redis_transport_module, "RECONNECT_INITIAL_BACKOFF", 0.25)
+    transport, _, sleeper, _ = _make([CONNECTION_CLOSED, _entry("1-0", _event("a"))])
+
+    _take(transport.consume(), 1)
+
+    assert sleeper.delays == [0.25]

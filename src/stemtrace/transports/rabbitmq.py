@@ -20,7 +20,7 @@ import logging
 import socket
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
@@ -98,8 +98,9 @@ class _ReconnectHealth:
 
     # Consecutive failed connections (each a full pass over the URL's hosts).
     failures: int = 0
-    # Delay before the next reconnect attempt.
-    backoff: float = RECONNECT_INITIAL_BACKOFF
+    # Delay before the next reconnect attempt. Read when consume() starts,
+    # not at import, so a patched constant applies to the first wait too.
+    backoff: float = field(default_factory=lambda: RECONNECT_INITIAL_BACKOFF)
 
 
 def _normalize_prefix(prefix: str) -> str:
