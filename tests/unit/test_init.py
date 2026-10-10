@@ -1,5 +1,6 @@
 """Tests for public API."""
 
+import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from unittest.mock import MagicMock
@@ -213,6 +214,33 @@ class TestInit:
 
         assert captured["broker_url"] == "amqp://guest:guest@localhost:5672//"
         assert captured["transport_url"] == "redis://localhost:6379/0"
+
+    def test_init_worker_with_node_alias_warns_deprecated(self) -> None:
+        """node_alias_from_arguments on init_worker warns: it has no worker effect."""
+        app = MagicMock()
+
+        with pytest.warns(DeprecationWarning, match="no effect on workers") as record:
+            init_worker(
+                app,
+                transport_url="memory://",
+                node_alias_from_arguments="operator_type",
+            )
+
+        assert len(record) == 1
+        assert record[0].filename == __file__
+        assert "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS" in str(record[0].message)
+
+    def test_init_worker_without_node_alias_does_not_warn(self) -> None:
+        """init_worker() emits no DeprecationWarning when the option is omitted."""
+        app = MagicMock()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            init_worker(app, transport_url="memory://")
+
+        config = get_config()
+        assert config is not None
+        assert config.node_alias_from_arguments is None
 
 
 class TestInitAppNodeAlias:

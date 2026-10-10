@@ -16,6 +16,7 @@ Usage:
 """
 
 import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -106,14 +107,29 @@ def init_worker(
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
         max_data_size: Maximum size in bytes for serialized data (default: 10KB).
-        node_alias_from_arguments: Derive node display name from task arguments.
-            Pass a digit string to use args[index], a string key for kwargs[key],
-            or None to use the task name (default).
+        node_alias_from_arguments: Deprecated, has no effect on workers. Node
+            aliases are resolved by the server: pass ``node_alias_from_arguments``
+            to ``init_app()``, or use ``stemtrace server
+            --node-alias-from-arguments`` / ``STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS``.
+            A non-None value emits a ``DeprecationWarning``; the parameter will
+            be removed in a future major release.
 
     Raises:
         ConfigurationError: If no broker URL can be determined.
     """
     global _transport
+
+    if node_alias_from_arguments is not None:
+        warnings.warn(
+            "init_worker(node_alias_from_arguments=...) has no effect on workers: "
+            "node aliases are resolved by the stemtrace server. Pass "
+            "node_alias_from_arguments to stemtrace.init_app(), or use "
+            "`stemtrace server --node-alias-from-arguments` / the "
+            "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var. This parameter will be "
+            "removed in a future major release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     url = transport_url or app.conf.broker_url
     if not url:
