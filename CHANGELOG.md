@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Docker image: the UI is built once on the build machine's native platform instead of under emulation for each architecture, which also makes release builds faster. Building the image from source now needs BuildKit (the default since Docker 23 and in `docker compose`).
 - Development: ruff now also enforces complexity, function-size, blind-`except` and dead-code rules, and [import-linter](https://import-linter.readthedocs.io/) checks the `core`/`library`/`server` import boundaries in `make lint` and CI (see CONTRIBUTING.md). No runtime change.
+- The broker transports moved from `stemtrace.library.transports` to `stemtrace.transports`, so the Celery integration and the server share them without importing each other. The old module paths (`stemtrace.library.transports` and its `redis`, `rabbitmq`, `memory` and `breaker` submodules) still work but emit a `DeprecationWarning`, and will be removed in 1.0. The transports' loggers are renamed to match (e.g. `stemtrace.transports.rabbitmq`); logging configured for the `stemtrace` logger is unaffected.
 
 ## [0.3.9] - 2026-10-10
 

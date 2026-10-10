@@ -66,16 +66,18 @@ except is accepted only at a fire-and-forget boundary, with
 [import-linter](https://import-linter.readthedocs.io/) checks the architecture
 boundaries (`uv run lint-imports`, part of `make lint` and CI):
 
-- `stemtrace.core` imports nothing from `stemtrace.library` or `stemtrace.server`,
-  and no broker, Celery or web library (`celery`, `kombu`, `amqp`, `redis`,
-  `fastapi`, `starlette`, `uvicorn`, `typer`, `httpx`)
+- `stemtrace.core` imports nothing from `stemtrace.library`, `stemtrace.server` or
+  `stemtrace.transports`, and no broker, Celery or web library (`celery`, `kombu`,
+  `amqp`, `redis`, `fastapi`, `starlette`, `uvicorn`, `typer`, `httpx`)
+- `stemtrace.transports` imports nothing from `stemtrace.library` or
+  `stemtrace.server` (both of them use it)
 - `stemtrace.library` does not import `stemtrace.server`
 - `stemtrace.server` does not import `stemtrace.library`
 
 **Baseline policy.** Code that predates these rules carries a per-line
-`# noqa: <codes>` comment with no reason (added with `ruff check --add-noqa`), and
-the one known import violation is listed under `ignore_imports` in
-`pyproject.toml`. The baseline only shrinks:
+`# noqa: <codes>` comment with no reason (added with `ruff check --add-noqa`).
+Known import violations, if any, are listed under `ignore_imports` in
+`pyproject.toml` (there are none at the moment). The baseline only shrinks:
 
 - New code follows the rules. If a suppression is really needed, it names the
   code and gives a reason: `# noqa: BLE001  fire-and-forget: <why>`. Never add a
@@ -155,8 +157,9 @@ uv lock --upgrade
 ### Key Principles
 
 - **core/** - Pure Python, no external dependencies
-- **library/** - Celery integration, imports only from core/
-- **server/** - Web server, imports only from core/
+- **transports/** - Broker adapters (Redis, RabbitMQ, memory), imports only from core/
+- **library/** - Celery integration, imports only from core/ and transports/
+- **server/** - Web server, imports only from core/ and transports/
 - Never import sideways (library ↔ server)
 
 ### Code Quality
