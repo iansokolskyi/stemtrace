@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
     outputs:
@@ -89,6 +90,7 @@ jobs:
   pypi:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write
@@ -105,6 +107,7 @@ jobs:
   docker:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: write
@@ -147,6 +150,7 @@ jobs:
   github-release:
     needs: [build, pypi, docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

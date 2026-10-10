@@ -15,6 +15,7 @@ jobs:
   lint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.12"
       STEMTRACE_SKIP_UI_BUILD: "1"
@@ -43,6 +44,7 @@ jobs:
   type-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.12"
       STEMTRACE_SKIP_UI_BUILD: "1"
@@ -68,6 +70,7 @@ jobs:
   test:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       STEMTRACE_SKIP_UI_BUILD: "1"
@@ -104,6 +107,7 @@ jobs:
   audit:
     name: Audit runtime dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.12"
     steps:
@@ -128,6 +132,7 @@ jobs:
   frontend:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: src/stemtrace/server/ui/frontend
@@ -153,6 +158,7 @@ jobs:
   build:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
     needs: [lint, type-check, test, frontend]
@@ -200,6 +206,7 @@ jobs:
     # actual default-branch commit after merges (or direct pushes / releases).
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
       STEMTRACE_SKIP_UI_BUILD: "1"
