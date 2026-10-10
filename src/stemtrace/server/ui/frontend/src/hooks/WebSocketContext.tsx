@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { isRedirectingToLogin, type TaskEvent } from '@/api/client'
+import { isRedirectingToLogin, type TaskDetailResponse, type TaskEvent } from '@/api/client'
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 
@@ -35,6 +35,20 @@ const getWsUrl = (): string => {
   return `${protocol}//${window.location.host}${base}/ws`
 }
 const WS_URL = getWsUrl()
+
+/**
+ * Whether a live event changes what the task detail page for `taskId` shows:
+ * the task itself, a child of it (the page lists children with their state),
+ * or, for a synthetic GROUP/CHORD page (`group:<group_id>`), a member (by
+ * group_id) or the chord callback (listed among the node's children).
+ */
+function detailAffectedBy(taskId: string, detail: unknown, event: TaskEvent): boolean {
+  if (taskId === event.task_id) return true
+  if (event.parent_id && taskId === event.parent_id) return true
+  if (event.group_id && taskId === `group:${event.group_id}`) return true
+  const children = (detail as TaskDetailResponse | undefined)?.task?.children
+  return Array.isArray(children) && children.includes(event.task_id)
+}
 
 // Reconnect with exponential backoff: 3s for quick recovery, doubling up to 60s.
 // A denied handshake (e.g. expired session) is indistinguishable from the server
@@ -100,16 +114,20 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           setEvents((prev) => [data, ...prev].slice(0, 100)) // Keep last 100
 
           // Invalidate queries to refresh data
-          // Invalidate both regular and infinite queries
-          queryClient.invalidateQueries({ queryKey: ['tasks'] })
+          // Invalidate both regular and infinite queries. ['tasks', params] is
+          // a list; ['tasks', taskId] is a task detail (with its captured
+          // output), refetched only when the event concerns that page.
+          queryClient.invalidateQueries({
+            queryKey: ['tasks'],
+            predicate: (query) => {
+              const key = query.queryKey[1]
+              if (typeof key !== 'string') return true
+              return detailAffectedBy(key, query.state.data, data)
+            },
+          })
           queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] })
           queryClient.invalidateQueries({ queryKey: ['graphs'] })
           queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
-
-          // Also invalidate the specific task detail if we have the task_id
-          if (data.task_id) {
-            queryClient.invalidateQueries({ queryKey: ['tasks', data.task_id] })
-          }
         } catch (e) {
           console.error('[WebSocket] Failed to parse message:', e)
         }

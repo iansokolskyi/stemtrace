@@ -4,7 +4,7 @@
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.3.8-darklime)](https://pypi.org/project/stemtrace)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.3.9-darklime)](https://pypi.org/project/stemtrace)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
@@ -28,6 +28,7 @@ Stemtrace captures your task executions as a graph — visualize parent→child 
 - **Task Flow Graphs** — Visualize chains, groups, and chords as interactive DAGs
 - **Execution Timeline** — Track queued → started → retried → finished states
 - **Arguments & Results** — Inspect inputs, outputs, and exceptions
+- **Task Output** — See what each attempt printed and logged, next to the task (opt-in)
 - **Retry Chains** — Understand exactly when and why retries happened
 
 **Canvas Support**
@@ -198,6 +199,10 @@ stemtrace.init_worker(
     scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
+
+    # Task output (disabled by default, see "Task Output" below)
+    capture_output=False,                      # Capture what each attempt prints/logs
+    max_output_size=16384,                     # Max bytes kept per attempt (the end is kept)
 )
 
 # Introspection (after init)
@@ -215,6 +220,75 @@ By default, stemtrace scrubs common sensitive keys from task arguments:
 - Session: `cookie`, `session`, `csrf`
 
 Scrubbed values appear as `[Filtered]` in the UI.
+
+#### Task Output (print and logging)
+
+Turn on `capture_output` on the worker to see what each task attempt printed and
+logged on its task page, instead of searching interleaved worker logs:
+
+```python
+stemtrace.init_worker(app, capture_output=True)
+```
+
+```python
+from celery.utils.log import get_task_logger
+import logging
+
+task_logger = get_task_logger(__name__)
+log = logging.getLogger("myapp.billing")
+
+@app.task(bind=True, max_retries=3)
+def charge(self, order_id):
+    print(f"charging {order_id}")           # -> charging 42
+    task_logger.info("calling gateway")     # -> INFO myapp.tasks: calling gateway
+    log.warning("gateway slow")             # -> WARNING myapp.billing: gateway slow
+    ...
+```
+
+The task page shows an **Output** section with one block per attempt (latest
+first): the output of a retried attempt is on its `RETRY` event, the final one on
+`SUCCESS`/`FAILURE`.
+
+- **What's captured**: `print()` to stdout and stderr, exactly as printed
+  (whether or not Celery redirects stdout to its log), and log records
+  (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the task
+  runs, in one chronological stream. Records are captured when they reach the
+  root logger or `celery.task`, or when a handler writes them to stdout/stderr
+  after stemtrace is set up. A logger with `propagate=False` whose handlers were
+  set up at worker startup (writing to the real stream or a file) isn't
+  captured. Log levels still apply to log records: one your logging config
+  filters out (e.g. `DEBUG` under `--loglevel=INFO`) isn't captured.
+  stemtrace's own logs and Celery/kombu internals are left out.
+  What the worker prints to its console or log file is unchanged (when no
+  logging handlers are configured, warnings still print as Python's
+  `logging.lastResort` would). One side effect: from the first task on, the root
+  logger has stemtrace's handler, so `logging.getLogger().hasHandlers()` is
+  `True` and a later `logging.basicConfig()` call without `force=True` does
+  nothing. Configure logging at startup (or pass `force=True`). Logging
+  handlers added while a task runs, ones that override `handle()`, or ones
+  that write to stdout/stderr in unusual ways may show a record twice or show
+  Celery/kombu lines in that task's output; handlers set up at worker startup
+  don't.
+- **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
+  keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
+  Output travels with the task's terminal event, so it is stored wherever events
+  are: by the server (up to `max_nodes` tasks) and, with the Redis transport, in
+  the stemtrace stream on your broker, which keeps the last `max(ttl, 10000)`
+  events (86,400 with the default `ttl`). At 16 KB per attempt that can add up to
+  more than a GB of Redis memory on busy workers, so consider a lower
+  `max_output_size` or `ttl` there. It isn't sent over the UI's WebSocket; the
+  task page fetches it.
+- **Pools**: each task's output is collected in a `ContextVar` (per thread, and
+  per greenlet under gevent/eventlet), so concurrent tasks never mix output.
+  Output from threads a task starts itself isn't captured.
+- **Not captured**: anything after the task ends, and output of a task whose
+  worker process was killed (hard time limit, OOM), since no terminal event is
+  sent from that process. Capture of a failed or retried attempt stops when
+  Celery reports the failure/retry, so `on_failure`/`on_retry` output is included
+  but `after_return` output is included only on success.
+- **Not scrubbed**: output is free text, so the key-based scrubbing above can't
+  apply. That's why it's off by default: only enable it if your tasks don't print
+  or log secrets.
 
 ### Canvas Graph Visualization
 
@@ -576,6 +650,7 @@ What is detected depends on the transport:
 - ✅ **Full lifecycle tracking** — PENDING → RECEIVED → STARTED → SUCCESS/FAILURE
 - ✅ **Canvas awareness** — Automatic GROUP/CHORD node visualization
 - ✅ **Arguments & results** — View inputs, outputs, and exceptions
+- ✅ **Task output** — What each attempt printed and logged (opt-in)
 - ✅ **Sensitive data scrubbing** — Passwords and API keys filtered automatically
 - ✅ **Real-time updates** — WebSocket-powered live dashboard
 - ✅ **FastAPI integration** — Mount into your existing app

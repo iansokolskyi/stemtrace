@@ -20,6 +20,10 @@ class StemtraceConfig(BaseModel):
             backward compatibility only; node aliases are resolved by the
             server (``init_app()`` / ``stemtrace server
             --node-alias-from-arguments``).
+        capture_output: Whether to capture what each task attempt prints and
+            logs and attach it to the attempt's terminal event.
+        max_output_size: Maximum UTF-8 bytes of output kept per attempt (the
+            end of the output is kept).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -40,6 +44,10 @@ class StemtraceConfig(BaseModel):
 
     # Deprecated: unused on the worker side (resolved by the server)
     node_alias_from_arguments: str | None = None
+
+    # Output capture options (disabled by default)
+    capture_output: bool = False
+    max_output_size: int = Field(default=16384, gt=0)  # 16 KB
 
 
 _config: StemtraceConfig | None = None

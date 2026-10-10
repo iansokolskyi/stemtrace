@@ -21,6 +21,11 @@ from celery.signals import (
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.ports import EventTransport
 from stemtrace.library.config import get_config
+from stemtrace.library.output_capture import (
+    install_capture,
+    start_capture,
+    stop_capture,
+)
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     safe_serialize,
@@ -122,6 +127,35 @@ def _get_scrub_config() -> tuple[
     )
 
 
+def _start_output_capture(task_id: str) -> None:
+    """Start capturing the task's output if ``capture_output`` is enabled.
+
+    Fire-and-forget: a capture problem never affects the task.
+    """
+    config = get_config()
+    if config is None or not config.capture_output:
+        return
+    try:
+        install_capture()
+        start_capture(task_id, max_bytes=config.max_output_size)
+    except Exception:
+        logger.debug("Failed to start output capture for %s", task_id, exc_info=True)
+
+
+def _finish_output_capture(task_id: str) -> str | None:
+    """Stop capturing the task's output and return it (None if none).
+
+    Called by every terminal handler. Celery sends ``task_failure`` /
+    ``task_retry`` *before* ``task_postrun``, so the first call for an attempt
+    gets the output and the postrun call is a no-op.
+    """
+    try:
+        return stop_capture(task_id)
+    except Exception:
+        logger.debug("Failed to stop output capture for %s", task_id, exc_info=True)
+        return None
+
+
 def _scrub_and_serialize_args(
     args: tuple[Any, ...],
 ) -> list[Any] | None:
@@ -203,6 +237,7 @@ def _on_task_prerun(
     kwargs: dict[str, Any],
     **_: Any,
 ) -> None:
+    """Handle task_prerun: publish STARTED and start capturing output."""
     chord_id, chord_callback_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
@@ -222,6 +257,8 @@ def _on_task_prerun(
             kwargs=_scrub_and_serialize_kwargs(kwargs),
         )
     )
+    # Started after publishing so the publish itself is never part of the output.
+    _start_output_capture(task_id)
 
 
 def _on_task_postrun(
@@ -233,7 +270,15 @@ def _on_task_postrun(
     state: str,
     **_: Any,
 ) -> None:
+    """Handle task_postrun: publish SUCCESS with the attempt's output.
+
+    Other states were already published by the failure/retry handlers (which
+    run first); for those, and for REJECTED/IGNORED, this only frees the
+    output buffer.
+    """
     del args, kwargs
+
+    output = _finish_output_capture(task_id)
     if state != "SUCCESS":
         return
 
@@ -256,6 +301,7 @@ def _on_task_postrun(
             chord_callback_id=chord_callback_id,
             retries=task.request.retries or 0,
             result=_scrub_and_serialize_result(retval),
+            output=output,
         )
     )
 
@@ -270,7 +316,10 @@ def _on_task_failure(
     sender: "Task",
     **_: Any,
 ) -> None:
+    """Handle task_failure: publish FAILURE with the attempt's output."""
     del args, kwargs, traceback
+
+    output = _finish_output_capture(task_id)
 
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
@@ -292,6 +341,7 @@ def _on_task_failure(
             retries=sender.request.retries or 0,
             exception=_format_exception(exception),
             traceback=_format_traceback(einfo),
+            output=output,
         )
     )
 
@@ -303,6 +353,9 @@ def _on_task_retry(
     einfo: Any = None,
     **_: Any,
 ) -> None:
+    """Handle task_retry: publish RETRY with the failed attempt's output."""
+    output = _finish_output_capture(request.id)
+
     # reason can be an exception or string. Celery's cancel path calls
     # send_retry(task, request=..., einfo=None) without a reason.
     exc_message: str | None
@@ -330,6 +383,7 @@ def _on_task_retry(
             retries=request.retries or 0,
             exception=exc_message,
             traceback=_format_traceback(einfo),
+            output=output,
         )
     )
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-10
+
+### Added
+- Task output: with `init_worker(app, capture_output=True)`, what each task attempt prints and logs is shown on its task page, one block per attempt (latest first). Off by default because output isn't scrubbed; each attempt keeps the last `max_output_size` bytes (default 16 KB). Works with prefork, thread and gevent pools (thanks @JonatanMartens for the original implementation — #49; requested by @ohadmata — #47).
+
 ## [0.3.8] - 2026-10-10
 
 ### Fixed
@@ -181,7 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...v0.3.6

@@ -33,6 +33,8 @@ export interface MockEvent {
   result: unknown | null
   exception: string | null
   traceback: string | null
+  /** Captured output of the attempt (terminal events, worker capture_output=True) */
+  output?: string | null
   retry_count: number
   /** Retry attempt the event belongs to (field name used by the real API) */
   retries?: number
