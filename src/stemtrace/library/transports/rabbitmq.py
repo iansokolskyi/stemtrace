@@ -55,6 +55,11 @@ DRAIN_TIMEOUT = 1.0
 # declare, publish, close) times out after PUBLISH_IO_TIMEOUT.
 PUBLISH_IO_TIMEOUT = 2.0
 
+# Seconds after which a breaker probe that never reported back (e.g. its
+# thread was interrupted by a BaseException) is presumed lost. Far longer than
+# any real attempt.
+PUBLISH_PROBE_TIMEOUT = 60.0
+
 # After a failed publish, events are dropped without connecting for a cooldown
 # that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
 # RECONNECT_MAX_BACKOFF) and resets once a publish succeeds. While that lasts,
@@ -120,6 +125,7 @@ class RabbitMQTransport:
             initial_cooldown=RECONNECT_INITIAL_BACKOFF,
             max_cooldown=RECONNECT_MAX_BACKOFF,
             log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
+            probe_timeout=PUBLISH_PROBE_TIMEOUT,
             monotonic=monotonic,
         )
 
@@ -183,23 +189,30 @@ class RabbitMQTransport:
         after that. When an attempt fails, a circuit breaker drops events
         without connecting for a cooldown (1s, doubling per failed retry up to
         30s, reset by a successful publish), so a broker outage costs tasks
-        about one bounded attempt per cooldown instead of one per event. The
-        first failure is logged with a traceback, then at most one summary
-        line per PUBLISH_FAILURE_LOG_INTERVAL, and one line with the dropped
-        count once publishing recovers.
+        about one bounded attempt per cooldown instead of one per event. Only one
+        retry (probe) runs at a time, and failures of attempts that were
+        already in flight don't lengthen the cooldown. The first failure is
+        logged with a traceback, then at most one summary line per
+        PUBLISH_FAILURE_LOG_INTERVAL, and one line with the dropped count once
+        publishing recovers; each dropped event gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
         """
         breaker = self._publish_breaker
-        if not breaker.allow():
+        ticket = breaker.allow()
+        if ticket is None:
+            logger.debug(
+                "RabbitMQ publishing paused after failures; dropped event %s",
+                self._event_identifier(event),
+            )
             return
         try:
             self._publish_payload(event.model_dump(mode="json"))
         except Exception as exc:
-            breaker.record_failure(self._event_identifier(event), exc)
+            breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:
-            breaker.record_success()
+            breaker.record_success(ticket)
 
     def _publish_payload(self, payload: dict[str, Any]) -> None:
         """Publish a JSON-serializable payload via kombu.

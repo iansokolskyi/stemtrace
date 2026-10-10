@@ -8,9 +8,11 @@ reaches ``max_retries`` *before* calling the errback, sleeping for the
 interval only after a full round of hosts has failed).
 """
 
+import contextlib
 import logging
 import socket
 import sys
+import threading
 import types
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
@@ -49,6 +51,11 @@ class FakeBroker:
     def __init__(self) -> None:
         self.down: set[str] = set()
         self.publish_error: Exception | None = None
+        # Raised by the AMQP close handshake, e.g. socket.timeout while a
+        # blocked broker (memory/disk alarm) never sends Close-Ok.
+        self.close_error: Exception | None = None
+        # When set, Producer.publish waits here first (concurrent attempts).
+        self.publish_gate: threading.Barrier | None = None
         self.connections: list[Any] = []
         self.published: list[tuple[str, Any, dict[str, Any]]] = []
 
@@ -64,8 +71,26 @@ def _install_fake_kombu_for_publish(
             self.sock, self.peer = socket.socketpair()
 
     class FakeAmqpConnection:
+        """py-amqp Connection: close() waits for Close-Ok, collect() doesn't."""
+
         def __init__(self) -> None:
             self.transport = FakeAmqpTransport()
+            self.calls: list[str] = []
+            self._open = True
+
+        def close(self) -> None:
+            if not self._open:
+                return  # py-amqp: already closed
+            self.calls.append("close")
+            if broker.close_error is not None:
+                # py-amqp collects the connection, then re-raises.
+                self._open = False
+                raise broker.close_error
+            self._open = False
+
+        def collect(self) -> None:
+            self.calls.append("collect")
+            self._open = False
 
     class FakeChannel:
         def __init__(self, connection: "Connection") -> None:
@@ -93,6 +118,10 @@ def _install_fake_kombu_for_publish(
         def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
             del exc_type, exc, tb
             self.closed = True
+            # kombu's release() closes the AMQP connection and swallows
+            # socket errors (including a Close-Ok timeout).
+            with contextlib.suppress(OSError):
+                self.connection.close()
             self.connection.transport.sock.close()
             self.connection.transport.peer.close()
 
@@ -155,6 +184,8 @@ def _install_fake_kombu_for_publish(
             self.channel = channel
 
         def publish(self, body: Any, **kwargs: Any) -> None:
+            if broker.publish_gate is not None:
+                broker.publish_gate.wait(timeout=5.0)
             if broker.publish_error is not None:
                 raise broker.publish_error
             host = self.channel.connection.host
@@ -259,6 +290,25 @@ class TestRabbitMQPublishFailFast:
             )
         )
         assert warnings[0].exc_info is not None
+
+
+class TestRabbitMQPublishDrops:
+    """Dropped events are visible at DEBUG level."""
+
+    def test_publish_dropped_event_logs_debug_line(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        broker.down = {H1}
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-0"))
+
+        transport.publish(_event("t-dropped"))
+
+        debug = [r.getMessage() for r in _records(caplog, logging.DEBUG)]
+        assert debug == [
+            "RabbitMQ publishing paused after failures; dropped event t-dropped"
+        ]
 
 
 class TestRabbitMQPublishFailover:
@@ -401,6 +451,34 @@ class TestRabbitMQPublishBreaker:
         assert len(broker.connections) == 1
         assert broker.connections[0].closed is True
         assert len(_records(caplog, logging.WARNING)) == 1
+
+    def test_publish_concurrent_failures_open_breaker_once_for_initial_cooldown(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Eight task threads are mid-publish when the broker stops answering.
+        broker.publish_gate = threading.Barrier(8)
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+        threads = [
+            threading.Thread(target=transport.publish, args=(_event(f"t-{i}"),))
+            for i in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+        broker.publish_gate = None
+        broker.publish_error = None
+
+        warnings = _records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert "dropping events for 1.0s" in warnings[0].getMessage()
+        # The cooldown wasn't escalated: one second later a probe goes out
+        # and, with the broker healthy again, publishing resumes.
+        clock.advance(1.0)
+        transport.publish(_event("t-probe"))
+        assert len(broker.connections) == 9
+        assert [body["task_id"] for _, body, _ in broker.published] == ["t-probe"]
 
     def test_publish_long_outage_logs_bounded_lines(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
