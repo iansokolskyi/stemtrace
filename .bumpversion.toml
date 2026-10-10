@@ -24,6 +24,21 @@ filename = "src/stemtrace/server/ui/frontend/package.json"
 search = '"version": "{current_version}"'
 replace = '"version": "{new_version}"'
 
+# Frontend package-lock.json: root version and the root package entry
+[[tool.bumpversion.files]]
+filename = "src/stemtrace/server/ui/frontend/package-lock.json"
+search = """"name": "stemtrace-ui",
+  "version": "{current_version}\""""
+replace = """"name": "stemtrace-ui",
+  "version": "{new_version}\""""
+
+[[tool.bumpversion.files]]
+filename = "src/stemtrace/server/ui/frontend/package-lock.json"
+search = """"name": "stemtrace-ui",
+      "version": "{current_version}\""""
+replace = """"name": "stemtrace-ui",
+      "version": "{new_version}\""""
+
 # uv.lock - keep workspace lockfile in sync (uv stores the local project version)
 [[tool.bumpversion.files]]
 filename = "uv.lock"
