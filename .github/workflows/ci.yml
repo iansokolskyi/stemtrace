@@ -40,6 +40,9 @@ jobs:
       - name: Check formatting
         run: uv run --locked --no-build ruff format --check src/ tests/
 
+      - name: Check import contracts
+        run: uv run --locked --no-build lint-imports
+
   type-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
