@@ -58,7 +58,7 @@ coverage:
 
 # Clean build artifacts
 clean:
-	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage dist/
+	rm -rf .pytest_cache .mypy_cache .ruff_cache .import_linter_cache htmlcov .coverage dist/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # =============================================================================
