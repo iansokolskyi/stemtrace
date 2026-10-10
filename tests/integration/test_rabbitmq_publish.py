@@ -7,6 +7,7 @@ are skipped when it isn't available.
 Run with: pytest tests/integration/test_rabbitmq_publish.py -v
 """
 
+import base64
 import contextlib
 import json
 import logging
@@ -14,6 +15,8 @@ import os
 import socket
 import threading
 import time
+import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +29,9 @@ from stemtrace.library.transports import rabbitmq
 from stemtrace.library.transports.rabbitmq import RabbitMQTransport
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
+RABBITMQ_MANAGEMENT_URL = os.environ.get(
+    "RABBITMQ_MANAGEMENT_URL", "http://guest:guest@localhost:15672"
+)
 LOGGER_NAME = "stemtrace.library.transports.rabbitmq"
 
 
@@ -34,6 +40,31 @@ def rabbitmq_available() -> bool:
     try:
         with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
             conn.connect()
+        return True
+    except Exception:
+        return False
+
+
+def _management_request(method: str, path: str, body: Any = None) -> Any:
+    """Call the RabbitMQ management HTTP API and return the decoded JSON body."""
+    parsed = urllib.parse.urlsplit(RABBITMQ_MANAGEMENT_URL)
+    base = f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 15672}"
+    credentials = f"{parsed.username or 'guest'}:{parsed.password or 'guest'}"
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(f"{base}/api/{path}", data=data, method=method)
+    request.add_header(
+        "Authorization", "Basic " + base64.b64encode(credentials.encode()).decode()
+    )
+    request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=5) as response:
+        raw = response.read()
+    return json.loads(raw) if raw else None
+
+
+def management_api_available() -> bool:
+    """Check if the RabbitMQ management API is reachable."""
+    try:
+        _management_request("GET", "overview")
         return True
     except Exception:
         return False
@@ -252,3 +283,64 @@ class TestRabbitMQPublishFailoverBroker:
         # Later publishes start with the broker that worked.
         assert max(rest) < 0.25
         assert silent_listener.accepted == 1
+
+
+@pytest.mark.skipif(
+    not rabbitmq_available() or not management_api_available(),
+    reason="RabbitMQ with management API not available",
+)
+class TestRabbitMQPublishFailoverCredentials:
+    """Later failover entries keep the first entry's credentials and vhost."""
+
+    @pytest.fixture
+    def app_account(self) -> Iterator[tuple[str, str, str]]:
+        """A vhost and a non-guest user that may only use that vhost."""
+        suffix = int(time.time() * 1000)
+        vhost, user, password = f"stemtrace_vh_{suffix}", f"app_{suffix}", "s3cret"
+        _management_request("PUT", f"vhosts/{vhost}", {})
+        _management_request("PUT", f"users/{user}", {"password": password, "tags": ""})
+        _management_request(
+            "PUT",
+            f"permissions/{vhost}/{user}",
+            {"configure": ".*", "write": ".*", "read": ".*"},
+        )
+        yield vhost, user, password
+        with contextlib.suppress(Exception):
+            _management_request("DELETE", f"vhosts/{vhost}")
+        with contextlib.suppress(Exception):
+            _management_request("DELETE", f"users/{user}")
+
+    def test_publish_after_failover_keeps_first_entry_credentials_and_vhost(
+        self, app_account: tuple[str, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        vhost, user, password = app_account
+        broker = Connection(RABBITMQ_URL)
+        refused_port = int(urllib.parse.urlsplit(_refused_url()).port or 0)
+        # The second entry names only host and port: kombu takes the user,
+        # password and vhost from the first entry.
+        url = (
+            f"amqp://{user}:{password}@127.0.0.1:{refused_port}/{vhost};"
+            f"amqp://{broker.hostname}:{broker.port}"
+        )
+        direct = f"amqp://{user}:{password}@{broker.hostname}:{broker.port}/{vhost}"
+        consumer = RabbitMQTransport(direct, prefix="cred", ttl=60)
+        consumer._declare_exchange_and_queue()
+        transport = RabbitMQTransport(url, prefix="cred", ttl=60)
+
+        transport.publish(_event("cred-1"))  # h1 refused, delivered via h2
+        transport.publish(_event("cred-2"))  # starts with h2
+        transport.publish(_event("cred-3"))
+
+        bodies: list[Any] = []
+        deadline = time.monotonic() + 5.0
+        with Connection(direct, connect_timeout=1) as conn:
+            channel = conn.channel()
+            while len(bodies) < 3 and time.monotonic() < deadline:
+                message = channel.basic_get(consumer.queue_name, no_ack=True)
+                if message is None:
+                    time.sleep(0.05)
+                    continue
+                bodies.append(json.loads(message.body))
+        assert [body["task_id"] for body in bodies] == ["cred-1", "cred-2", "cred-3"]
+        assert _warnings(caplog) == []
+        assert password not in caplog.text

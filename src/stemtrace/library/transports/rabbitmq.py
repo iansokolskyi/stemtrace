@@ -134,9 +134,8 @@ class RabbitMQTransport:
         self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
 
-        # Publish path: failover hosts, the index of the one to try first (the
-        # last that worked) and the breaker that skips publishing in outages.
-        self._publish_hosts = url.split(";")
+        # Publish path: the index of the failover host to try first (the last
+        # that worked) and the breaker that skips publishing in outages.
         self._publish_first_host = 0
         self._publish_breaker = PublishBreaker(
             "RabbitMQ",
@@ -277,10 +276,6 @@ class RabbitMQTransport:
         # Publish persistent messages so the broker can retain them in queues.
         delivery_mode = 2
 
-        # Start with the host that worked last, so a dead first host doesn't
-        # cost every event a connect timeout.
-        first = self._publish_first_host % len(self._publish_hosts)
-        hosts = self._publish_hosts[first:] + self._publish_hosts[:first]
         failed_hosts = 0
 
         def on_host_error(exc: Exception, interval: float) -> None:
@@ -293,20 +288,31 @@ class RabbitMQTransport:
                 exc,
             )
 
-        with Connection(";".join(hosts), connect_timeout=CONNECT_TIMEOUT) as conn:
+        # Start with the host that worked last, so a dead first host doesn't
+        # cost every event a connect timeout.
+        hosts = self._publish_host_count()
+        first = self._publish_first_host % hosts
+        with self._publish_connection(Connection, first) as conn:
             # One connection attempt per host, without sleeping: kombu raises
             # once retries reach max_retries (before switching hosts), so
             # max_retries=0 would never try the alternates of a failover URL.
             # The zero intervals keep kombu from sleeping after a full round.
-            conn.ensure_connection(
-                errback=on_host_error,
-                max_retries=max(len(conn.alt) - 1, 0),
-                interval_start=0,
-                interval_step=0,
-                interval_max=0,
-                reraise_as_library_errors=False,
-            )
-            self._publish_first_host = (first + failed_hosts) % len(hosts)
+            try:
+                conn.ensure_connection(
+                    errback=on_host_error,
+                    max_retries=max(len(conn.alt) - 1, 0),
+                    interval_start=0,
+                    interval_step=0,
+                    interval_max=0,
+                    reraise_as_library_errors=False,
+                )
+            except BaseException:
+                # Every host failed, or one failed in a way kombu doesn't
+                # retry on another host (e.g. a refused login): start from the
+                # URL's own order next time instead of sticking to this host.
+                self._publish_first_host = 0
+                raise
+            self._publish_first_host = (first + failed_hosts) % hosts
             # The py-amqp connection (connected, so this doesn't reconnect).
             amqp_conn = conn.connection
             self._bound_publish_io(amqp_conn)
@@ -340,8 +346,27 @@ class RabbitMQTransport:
                     amqp_conn.collect()
                 # The fault may be local to this node: start with the next
                 # host of a failover URL next time.
-                self._publish_first_host = (first + failed_hosts + 1) % len(hosts)
+                self._publish_first_host = (first + failed_hosts + 1) % hosts
                 raise
+
+    def _publish_host_count(self) -> int:
+        """Number of hosts in the URL (``;``-separated failover entries)."""
+        return max(len(self._url.split(";")), 1)
+
+    def _publish_connection(self, connection_cls: Any, first: int) -> Any:
+        """Create a kombu connection for the URL, set to start at host ``first``.
+
+        It switches hosts the way kombu's own failover does, so every entry
+        gets exactly the parameters kombu resolves for it: later entries take
+        what they leave out (credentials, port, virtual host, TLS options)
+        from the first one. Rebuilding the URL with a different first entry
+        would resolve them differently (e.g. a bare ``;rabbit2`` would lose
+        the first entry's credentials and vhost). No I/O happens here.
+        """
+        conn = connection_cls(self._url, connect_timeout=CONNECT_TIMEOUT)
+        for _ in range(first):
+            conn.maybe_switch_next()
+        return conn
 
     @staticmethod
     def _bound_publish_io(amqp_conn: Any) -> None:

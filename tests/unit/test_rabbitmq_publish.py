@@ -2,10 +2,12 @@
 
 A fake kombu module stands in for the broker. Its Connection models the parts
 of kombu's connect path the transport relies on: a ``;``-separated URL becomes
-``alt`` (one entry per host), and ``ensure_connection`` walks the hosts
-round-robin like kombu's ``retry_over_time`` does (raising once ``retries``
-reaches ``max_retries`` *before* calling the errback, sleeping for the
-interval only after a full round of hosts has failed).
+``alt`` (one entry per host), ``maybe_switch_next()`` moves to the next
+host, and ``ensure_connection`` walks the hosts round-robin from the current
+one like kombu's ``retry_over_time`` does (raising once ``retries`` reaches
+``max_retries`` *before* calling the errback, sleeping for the interval only
+after a full round of hosts has failed). Errors kombu doesn't treat as
+recoverable (such as an authentication failure) are raised at once.
 """
 
 import contextlib
@@ -19,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 import pytest
+from kombu import Connection as KombuConnection
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.transports.rabbitmq import (
@@ -51,6 +54,8 @@ class FakeBroker:
     def __init__(self, clock: FakeClock) -> None:
         self.clock = clock
         self.down: set[str] = set()
+        # Hosts that refuse the login (not a recoverable error for kombu).
+        self.auth_refused: set[str] = set()
         self.publish_error: Exception | None = None
         # Hosts where publish_error applies (None: every host).
         self.publish_error_hosts: set[str] | None = None
@@ -108,6 +113,8 @@ def _install_fake_kombu_for_publish(
             self.url = url
             self.kwargs = kwargs
             self.alt = url.split(";") if ";" in url else []
+            self.switches = 0
+            self._index = 0
             self.ensure_calls: list[dict[str, Any]] = []
             self.attempted: list[str] = []
             self.sleeps: list[float] = []
@@ -129,6 +136,11 @@ def _install_fake_kombu_for_publish(
                 self.connection.close()
             self.connection.transport.sock.close()
             self.connection.transport.peer.close()
+
+        def maybe_switch_next(self) -> None:
+            self.switches += 1
+            if self.alt:
+                self._index = (self._index + 1) % len(self.alt)
 
         def ensure_connection(
             self,
@@ -154,8 +166,10 @@ def _install_fake_kombu_for_publish(
             hosts = self.alt or [self.url]
             retries = 0
             while True:
-                host = hosts[retries % len(hosts)]
+                host = hosts[(self._index + retries) % len(hosts)]
                 self.attempted.append(host)
+                if host in broker.auth_refused:
+                    raise PermissionError(f"ACCESS_REFUSED on {host}")
                 if host not in broker.down:
                     self.host = host
                     return self
@@ -417,7 +431,9 @@ class TestRabbitMQPublishFailover:
         transport.publish(_event("t-2"))
 
         second = broker.connections[1]
-        assert second.url == f"{H2};{H1}"
+        # Same URL; kombu's own failover switch moves to the second host.
+        assert second.url == f"{H1};{H2}"
+        assert second.switches == 1
         assert second.attempted == [H2]
         assert [host for host, _, _ in broker.published] == [H2, H2]
 
@@ -433,9 +449,84 @@ class TestRabbitMQPublishFailover:
         transport.publish(_event("t-3"))
 
         assert broker.connections[1].attempted == [H2, H1]
-        assert broker.connections[2].url == f"{H1};{H2}"
+        assert broker.connections[2].switches == 0
         assert broker.connections[2].attempted == [H1]
         assert [host for host, _, _ in broker.published] == [H2, H1, H1]
+
+
+class TestRabbitMQPublishFailoverResolution:
+    """Starting from a later host keeps the parameters kombu resolves for it."""
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "amqp://app:secret@rabbit1:5673/prod;rabbit2",
+                [
+                    ("rabbit1", 5673, "app", "secret", "prod"),
+                    ("rabbit2", 5673, "app", "secret", "prod"),
+                ],
+            ),
+            (
+                "amqp://app:secret@rabbit1:5673/prod;amqp://u:p@h2:5674",
+                [
+                    ("rabbit1", 5673, "app", "secret", "prod"),
+                    ("h2", 5674, "u", "p", "prod"),
+                ],
+            ),
+            (
+                "amqp://app:secret@rabbit1:5673/prod;rabbit2;amqp://u:p@h3/other",
+                [
+                    ("rabbit1", 5673, "app", "secret", "prod"),
+                    ("rabbit2", 5673, "app", "secret", "prod"),
+                    ("h3", 5673, "u", "p", "other"),
+                ],
+            ),
+        ],
+    )
+    def test_publish_connection_resolves_each_entry_like_kombu_failover(
+        self, url: str, expected: list[tuple[str, int, str, str, str]]
+    ) -> None:
+        transport = RabbitMQTransport(url, prefix="test", ttl=60)
+
+        resolved = []
+        for first in range(len(expected)):
+            conn = transport._publish_connection(KombuConnection, first)
+            resolved.append(
+                (
+                    conn.hostname,
+                    conn.port,
+                    conn.userid,
+                    conn.password,
+                    conn.virtual_host,
+                )
+            )
+            assert conn.connect_timeout == CONNECT_TIMEOUT
+
+        assert resolved == expected
+
+    def test_publish_auth_failure_on_later_host_returns_to_url_order(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.down = {H1}
+        transport = _transport(f"{H1};{H2}", clock)
+        transport.publish(_event("t-1"))
+        assert broker.connections[0].attempted == [H1, H2]
+        # h1 comes back; h2 now refuses the login, which kombu doesn't retry
+        # on another host.
+        broker.down = set()
+        broker.auth_refused = {H2}
+
+        transport.publish(_event("t-2"))
+        transport.publish(_event("t-3"))
+
+        assert broker.connections[1].attempted == [H2]
+        assert broker.connections[2].switches == 0
+        assert broker.connections[2].attempted == [H1]
+        assert [(host, body["task_id"]) for host, body, _ in broker.published] == [
+            (H2, "t-1"),
+            (H1, "t-3"),
+        ]
 
 
 class TestRabbitMQPublishBreaker:
@@ -549,7 +640,7 @@ class TestRabbitMQPublishBreaker:
         transport.publish(_event("t-0"))
         transport.publish(_event("t-1"))
 
-        assert broker.connections[1].url == f"{H2};{H1}"
+        assert broker.connections[1].attempted == [H2]
         assert [(host, body["task_id"]) for host, body, _ in broker.published] == [
             (H2, "t-1")
         ]
