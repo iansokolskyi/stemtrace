@@ -62,6 +62,10 @@ PUBLISH_IO_TIMEOUT = 2.0
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
 
 
+class _StopRequestedError(Exception):
+    """Raised between failover hosts to abandon a connect pass on stop."""
+
+
 def _normalize_prefix(prefix: str) -> str:
     """Normalize an arbitrary prefix into an AMQP-safe name fragment.
 
@@ -309,8 +313,8 @@ class RabbitMQTransport:
         backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
         reconnects on a new connection, declaring the exchange and queue
         again. Each attempt tries every host of a failover URL
-        (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host and
-        no sleep between hosts. Messages kombu can't decode (e.g. not JSON)
+        (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host, no
+        sleep between hosts, and the stop event checked between hosts. Messages kombu can't decode (e.g. not JSON)
         are rejected without requeueing and logged once. The backoff
         resets once a connection has been established and read from (a drain
         returned or timed out); connections that fail before that keep the
@@ -386,10 +390,13 @@ class RabbitMQTransport:
                     # raises once max_retries is reached, before switching
                     # host, and doesn't sleep between hosts within a pass.
                     # Its default connect path retries with sleeps that ignore
-                    # the stop event; retries are this loop's job.
+                    # the stop event; retries are this loop's job. kombu calls
+                    # `callback` before moving on to the next host, which lets
+                    # a stop end the pass instead of waiting for every host.
                     conn.ensure_connection(
                         max_retries=max(len(conn.alt) - 1, 0),
                         reraise_as_library_errors=False,
+                        callback=self._raise_if_stopping,
                     )
                     channel = conn.channel()
                     # Bind fresh copies to this connection's channel. kombu
@@ -418,7 +425,9 @@ class RabbitMQTransport:
                         # (the drain returned or timed out), so the outage,
                         # if any, is over.
                         if failures:
-                            logger.info(
+                            # WARNING, like the failures it ends, so operators
+                            # who see the outage also see the recovery.
+                            logger.warning(
                                 "RabbitMQ consume loop reconnected after %d failure(s)",
                                 failures,
                             )
@@ -438,6 +447,16 @@ class RabbitMQTransport:
                     return
                 failures += 1
                 backoff = self._back_off(failures, backoff, exc)
+
+    def _raise_if_stopping(self) -> None:
+        """Abort a multi-host connect pass once a stop has been requested.
+
+        Raises:
+            _StopRequestedError: If the bound stop event is set. consume()
+                treats any error raised while stopping as a quiet exit.
+        """
+        if self._stopping():
+            raise _StopRequestedError
 
     def _close_consumer_connection(self, conn: Any) -> None:
         """Close a consumer connection without letting shutdown hang.

@@ -198,10 +198,6 @@ stemtrace.init_worker(
     scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
-
-    # UI display
-    node_alias_from_arguments="operator_type", # Use kwargs["operator_type"] as node name
-    # node_alias_from_arguments="0",           # Or use args[0] (digit string = positional index)
 )
 
 # Introspection (after init)
@@ -281,6 +277,7 @@ stemtrace.init_app(
 |----------|-------------|---------|
 | `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
+| `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node Names from Task Arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 
 ### Supported Brokers
 
@@ -337,6 +334,15 @@ docker run -p 8000:8000 \
     ghcr.io/iansokolskyi/stemtrace
 ```
 
+Show a task argument as the graph node name (here `kwargs["operator_type"]`):
+
+```bash
+docker run -p 8000:8000 \
+    -e STEMTRACE_BROKER_URL=redis://host.docker.internal:6379/0 \
+    -e STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS=operator_type \
+    ghcr.io/iansokolskyi/stemtrace
+```
+
 Or with Docker Compose:
 
 ```yaml
@@ -380,8 +386,25 @@ stemtrace server \
     --transport-url redis://myredis:6379/0 \
     --host 0.0.0.0 \
     --port 8000 \
+    --node-alias-from-arguments operator_type \
     --reload  # For development
 ```
+
+#### Node Names from Task Arguments
+
+By default, graph nodes are labeled with the task name. Generic tasks (e.g. one `run_operator`
+task that does different things depending on its arguments) are easier to tell apart when the
+graph shows an argument instead:
+
+- `--node-alias-from-arguments operator_type` uses `kwargs["operator_type"]`
+- `--node-alias-from-arguments 0` uses `args[0]` (a digit string is a positional index)
+
+If the argument is missing, the task name is shown. This is a **server** setting: set it on
+`stemtrace server` (flag or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`, e.g. in Docker) or pass
+`node_alias_from_arguments` to `stemtrace.init_app(...)`. Surrounding whitespace is ignored, and
+`stemtrace server` prints `Node alias: <key>` at startup when it is set. Workers need
+`capture_args=True` (the default) so the arguments are available. Passing it to
+`stemtrace.init_worker(...)` has no effect and is deprecated.
 
 #### Protecting the Server (Built-in Login Page)
 
@@ -436,6 +459,7 @@ extension = stemtrace.init_app(
     embedded_consumer=True,     # Run consumer in FastAPI process
     serve_ui=True,              # Serve React dashboard
     auth_dependency=None,       # Optional auth (see below)
+    node_alias_from_arguments=None,  # e.g. "operator_type" or "0"; see Node Names from Task Arguments
 )
 ```
 

@@ -1,5 +1,7 @@
 """Tests for public API."""
 
+import logging
+import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from unittest.mock import MagicMock
@@ -21,6 +23,8 @@ from stemtrace import (
 )
 from stemtrace.library.signals import disconnect_signals
 from stemtrace.library.transports.memory import MemoryTransport
+
+_INIT_LOGGER = "stemtrace"
 
 
 @pytest.fixture(autouse=True)
@@ -213,6 +217,171 @@ class TestInit:
 
         assert captured["broker_url"] == "amqp://guest:guest@localhost:5672//"
         assert captured["transport_url"] == "redis://localhost:6379/0"
+
+    def test_init_worker_with_node_alias_warns_deprecated(self) -> None:
+        """node_alias_from_arguments on init_worker warns: it has no worker effect."""
+        app = MagicMock()
+
+        with pytest.warns(DeprecationWarning, match="no effect on workers") as record:
+            init_worker(
+                app,
+                transport_url="memory://",
+                node_alias_from_arguments="operator_type",
+            )
+
+        assert len(record) == 1
+        assert record[0].filename == __file__
+        assert "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS" in str(record[0].message)
+
+    def test_init_worker_with_node_alias_logs_warning_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A log warning is emitted once, since Celery workers hide the warning."""
+        app = MagicMock()
+        caplog.set_level(logging.WARNING, logger=_INIT_LOGGER)
+
+        with pytest.warns(DeprecationWarning) as record:
+            for _ in range(2):
+                init_worker(
+                    app,
+                    transport_url="memory://",
+                    node_alias_from_arguments="operator_type",
+                )
+
+        assert len(record) == 2
+        logged = [r for r in caplog.records if r.name == _INIT_LOGGER]
+        assert len(logged) == 1
+        assert logged[0].levelno == logging.WARNING
+        message = logged[0].getMessage()
+        assert "no effect on workers" in message
+        assert "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS" in message
+        assert "--node-alias-from-arguments" in message
+
+    def test_init_worker_without_node_alias_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """init_worker() emits no warning or log when the option is omitted."""
+        app = MagicMock()
+        caplog.set_level(logging.WARNING, logger=_INIT_LOGGER)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            init_worker(app, transport_url="memory://")
+
+        assert [r for r in caplog.records if r.name == _INIT_LOGGER] == []
+        config = get_config()
+        assert config is not None
+        assert config.node_alias_from_arguments is None
+
+
+class TestInitAppNodeAlias:
+    """Tests for node_alias_from_arguments resolution in init_app()."""
+
+    @pytest.fixture
+    def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        """Swap StemtraceExtension for a fake that records its kwargs."""
+        recorded: dict[str, object] = {}
+
+        class _FakeExtension:
+            def __init__(self, broker_url: str, **kwargs: object) -> None:
+                recorded["broker_url"] = broker_url
+                recorded.update(kwargs)
+
+            def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
+                del prefix
+
+        monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
+        monkeypatch.delenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", raising=False)
+        return recorded
+
+    def test_init_app_without_kwarg_uses_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS is used when the kwarg is omitted."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    def test_init_app_with_kwarg_overrides_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit node_alias_from_arguments wins over the env var."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments="0")
+
+        assert captured["node_alias_from_arguments"] == "0"
+
+    def test_init_app_with_empty_env_var_passes_none(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty env var counts as unset."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_with_padded_env_var_strips_whitespace(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Surrounding whitespace in the env var is stripped."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", " operator_type ")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    def test_init_app_with_blank_env_var_passes_none(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A whitespace-only env var counts as unset."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "  ")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_with_padded_kwarg_strips_whitespace(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Surrounding whitespace in an explicit kwarg is stripped."""
+        init_app(
+            FastAPI(),
+            broker_url="memory://",
+            node_alias_from_arguments=" operator_type ",
+        )
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    @pytest.mark.parametrize("value", ["", "  "])
+    def test_init_app_with_blank_kwarg_passes_none(
+        self, captured: dict[str, object], value: str
+    ) -> None:
+        """An empty or whitespace-only kwarg counts as unset."""
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments=value)
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_with_blank_kwarg_falls_back_to_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blank kwarg is treated like an omitted one, so the env var applies."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments="")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    def test_init_app_without_kwarg_or_env_var_passes_none(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Without kwarg or env var the extension gets None (task names are shown)."""
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
 
 
 class TestIntrospection:
