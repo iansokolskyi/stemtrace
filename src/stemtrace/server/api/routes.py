@@ -425,7 +425,7 @@ def create_api_router(
         purpose, is not degraded). The response is always HTTP 200 so existing
         health checks keep working.
         """
-        from stemtrace import __version__
+        from stemtrace._version import __version__
 
         running = consumer.is_running if consumer else False
         connected = consumer.is_connected if consumer else None

@@ -229,10 +229,6 @@ forbidden_modules = ["stemtrace.library"]
 ignore_imports = [
     # Removed when transports move to a neutral package both sides may import.
     "stemtrace.server.consumer -> stemtrace.library.transports",
-    # `from stemtrace import __version__` pulls in the package root, which imports
-    # library/. Removed when the version is read from a module with no such imports.
-    "stemtrace.server.__main__ -> stemtrace",
-    "stemtrace.server.api.routes -> stemtrace",
 ]
 
 # =============================================================================

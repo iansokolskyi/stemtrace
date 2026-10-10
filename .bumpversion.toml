@@ -12,9 +12,9 @@ filename = "pyproject.toml"
 search = 'version = "{current_version}"'
 replace = 'version = "{new_version}"'
 
-# Python __version__ in package __init__.py
+# Python __version__ (leaf module, re-exported by the package __init__.py)
 [[tool.bumpversion.files]]
-filename = "src/stemtrace/__init__.py"
+filename = "src/stemtrace/_version.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
 

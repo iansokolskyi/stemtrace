@@ -234,7 +234,7 @@ def consume(
 @app.command()
 def version() -> None:
     """Show version information."""
-    from stemtrace import __version__
+    from stemtrace._version import __version__
 
     typer.echo(f"stemtrace {__version__}")
 
