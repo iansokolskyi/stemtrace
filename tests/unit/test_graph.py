@@ -2337,3 +2337,87 @@ class TestGraphLinkingCharacterization:
         assert graph.get_group_members("n") == ["n1", "n2"]
         assert {n.state for n in graph.nodes.values()} == {TaskState.SUCCESS}
         assert graph.nodes["group:g"].chord_callback_id == "cb"
+
+
+_T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _graph_with_states(*states: TaskState) -> tuple[TaskGraph, list[str]]:
+    graph = TaskGraph()
+    ids = []
+    for i, state in enumerate(states):
+        task_id = f"m{i}"
+        graph.add_event(
+            TaskEvent(
+                task_id=task_id,
+                name="tests.member",
+                state=state,
+                timestamp=_T0 + timedelta(seconds=i),
+            )
+        )
+        ids.append(task_id)
+    return graph, ids
+
+
+class TestGroupStatePriority:
+    """Pin each adjacent pair of the group-state priority, in both member orders."""
+
+    @pytest.mark.parametrize(
+        ("higher", "lower"),
+        [
+            (TaskState.FAILURE, TaskState.STARTED),
+            (TaskState.STARTED, TaskState.PENDING),
+            (TaskState.PENDING, TaskState.RETRY),
+            (TaskState.RETRY, TaskState.REVOKED),
+            (TaskState.REVOKED, TaskState.SUCCESS),
+        ],
+    )
+    def test_group_state_with_adjacent_states_picks_higher_priority(
+        self, higher: TaskState, lower: TaskState
+    ) -> None:
+        for order in ((higher, lower), (lower, higher)):
+            graph, ids = _graph_with_states(*order)
+            assert graph._compute_group_state(ids) == higher, order
+
+    def test_group_state_with_received_member_counts_as_started(self) -> None:
+        graph, ids = _graph_with_states(TaskState.SUCCESS, TaskState.RECEIVED)
+        assert graph._compute_group_state(ids) == TaskState.STARTED
+
+
+class TestRealParentIsKept:
+    def test_add_event_reporting_other_real_parent_keeps_original_parent(
+        self,
+    ) -> None:
+        graph = TaskGraph()
+        for task_id in ("p1", "p2"):
+            graph.add_event(
+                TaskEvent(
+                    task_id=task_id,
+                    name="tests.parent",
+                    state=TaskState.STARTED,
+                    timestamp=_T0,
+                )
+            )
+        graph.add_event(
+            TaskEvent(
+                task_id="child",
+                name="tests.child",
+                state=TaskState.STARTED,
+                timestamp=_T0 + timedelta(seconds=1),
+                parent_id="p1",
+            )
+        )
+        graph.add_event(
+            TaskEvent(
+                task_id="child",
+                name="tests.child",
+                state=TaskState.SUCCESS,
+                timestamp=_T0 + timedelta(seconds=2),
+                parent_id="p2",
+            )
+        )
+
+        assert graph.nodes["child"].parent_id == "p1"
+        assert graph.nodes["p1"].children == ["child"]
+        assert graph.nodes["p2"].children == []
+        assert graph.nodes["child"].state == TaskState.SUCCESS
