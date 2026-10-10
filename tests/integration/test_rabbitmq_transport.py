@@ -8,6 +8,7 @@ Run with: pytest tests/integration/test_rabbitmq_transport.py -v
 
 import base64
 import contextlib
+import http.client
 import json
 import logging
 import os
@@ -21,7 +22,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from amqp.exceptions import AMQPError
 from kombu import Connection, Exchange, Producer
+from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.transports import get_transport
@@ -36,12 +39,10 @@ RABBITMQ_MANAGEMENT_URL = os.environ.get(
 def rabbitmq_available() -> bool:
     """Check if RabbitMQ is available."""
     try:
-        from kombu import Connection
-
         with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
             conn.connect()
         return True
-    except Exception:  # noqa: BLE001
+    except (OSError, AMQPError, KombuError):
         return False
 
 
@@ -64,7 +65,7 @@ def management_api_available() -> bool:
     try:
         _management_request("GET", "overview")
         return True
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, http.client.HTTPException):
         return False
 
 
@@ -117,14 +118,14 @@ def rabbitmq_transport() -> Iterator[RabbitMQTransport]:
     yield transport
 
     # Cleanup: delete the queue/exchange created by the transport.
-    with contextlib.suppress(Exception):
-        from kombu import Connection
-
-        with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
-            channel = conn.channel()
-            # Best-effort cleanup; ignore failures.
-            channel.queue_delete(transport.queue_name)
-            channel.exchange_delete(transport.exchange_name)
+    with (
+        contextlib.suppress(Exception),
+        Connection(RABBITMQ_URL, connect_timeout=1) as conn,
+    ):
+        channel = conn.channel()
+        # Best-effort cleanup; ignore failures.
+        channel.queue_delete(transport.queue_name)
+        channel.exchange_delete(transport.exchange_name)
 
 
 class TestRabbitMQTransportIntegration:
