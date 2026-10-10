@@ -249,17 +249,22 @@ The task page shows an **Output** section with one block per attempt (latest
 first): the output of a retried attempt is on its `RETRY` event, the final one on
 `SUCCESS`/`FAILURE`.
 
-- **What's captured**: `print()` to stdout and stderr, and log records from any
+- **What's captured**: `print()` to stdout and stderr, exactly as printed
+  (whether or not Celery redirects stdout to its log), and log records from any
   logger (`logging.getLogger(...)`, `get_task_logger(...)`) emitted while the
-  task runs, in one chronological stream. Log levels still apply: a record your
-  logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`) isn't
-  captured. That includes `print()`: Celery logs it at
-  `worker_redirect_stdouts_level` (`WARNING` by default), so it's missed under
-  `--loglevel=ERROR`. stemtrace's own logs and Celery/kombu internals are left out.
+  task runs, in one chronological stream. Log levels still apply to log records:
+  one your logging config filters out (e.g. `DEBUG` under `--loglevel=INFO`)
+  isn't captured. stemtrace's own logs and Celery/kombu internals are left out.
+  The worker's own console/log output is unchanged.
 - **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
   keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
-  Output is sent with the task's terminal event and kept by the server like the
-  rest of the event, so large values add up across `max_nodes` tasks.
+  Output travels with the task's terminal event, so it is stored wherever events
+  are: by the server (up to `max_nodes` tasks) and, with the Redis transport, in
+  the stemtrace stream on your broker, which keeps the last `max(ttl, 10000)`
+  events (86,400 with the default `ttl`). At 16 KB per attempt that can add up to
+  more than a GB of Redis memory on busy workers, so consider a lower
+  `max_output_size` or `ttl` there. It isn't sent over the UI's WebSocket; the
+  task page fetches it.
 - **Pools**: each task's output is collected in a `ContextVar` (per thread, and
   per greenlet under gevent/eventlet), so concurrent tasks never mix output.
   Output from threads a task starts itself isn't captured.
