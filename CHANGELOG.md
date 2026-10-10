@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task output: with `init_worker(app, capture_output=True)`, what each task attempt prints and logs is shown on its task page, one block per attempt (latest first). Off by default because output isn't scrubbed; each attempt keeps the last `max_output_size` bytes (default 16 KB). Works with prefork, thread and gevent pools (thanks @JonatanMartens for the original implementation — #49; requested by @ohadmata — #47).
+
 ## [0.3.8] - 2026-10-10
 
 ### Fixed

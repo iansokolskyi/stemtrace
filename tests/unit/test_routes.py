@@ -49,6 +49,7 @@ class MakeEvent:
         state: TaskState = TaskState.STARTED,
         name: str = "tests.sample",
         parent_id: str | None = None,
+        output: str | None = None,
     ) -> TaskEvent:
         cls._counter += 1
         return TaskEvent(
@@ -57,6 +58,7 @@ class MakeEvent:
             state=state,
             timestamp=cls._base_time + timedelta(seconds=cls._counter),
             parent_id=parent_id,
+            output=output,
         )
 
 
@@ -221,6 +223,18 @@ class TestTaskListEndpoint:
         assert data["tasks"] == []
         assert data["total"] == 0
 
+    def test_list_tasks_omits_output(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        """Output can be large; only the task detail endpoint returns it."""
+        store.add_event(
+            make_event.create("task-1", TaskState.SUCCESS, output="x" * 100)
+        )
+
+        data = client.get("/api/tasks").json()
+
+        assert [e["output"] for e in data["tasks"][0]["events"]] == [None]
+
     def test_list_tasks(
         self, client: TestClient, store: GraphStore, make_event: type
     ) -> None:
@@ -296,6 +310,32 @@ class TestTaskDetailEndpoint:
     def test_get_task_not_found(self, client: TestClient) -> None:
         response = client.get("/api/tasks/nonexistent")
         assert response.status_code == 404
+
+    def test_get_task_includes_output_per_attempt(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1"))
+        store.add_event(make_event.create("task-1", TaskState.RETRY, output="try 0"))
+        store.add_event(make_event.create("task-1", TaskState.SUCCESS, output="try 1"))
+
+        data = client.get("/api/tasks/task-1").json()
+
+        outputs = [(e["state"], e["output"]) for e in data["task"]["events"]]
+        assert outputs == [("STARTED", None), ("RETRY", "try 0"), ("SUCCESS", "try 1")]
+
+    def test_get_task_omits_output_of_children(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("parent"))
+        store.add_event(
+            make_event.create(
+                "child-1", TaskState.SUCCESS, parent_id="parent", output="child out"
+            )
+        )
+
+        data = client.get("/api/tasks/parent").json()
+
+        assert [e["output"] for e in data["children"][0]["events"]] == [None]
 
     def test_get_task_with_children(
         self, client: TestClient, store: GraphStore, make_event: type

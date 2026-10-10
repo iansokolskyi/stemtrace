@@ -190,6 +190,44 @@ class TestTaskEventEquality:
 
 
 class TestTaskEventSerialization:
+    def test_output_defaults_to_none(self) -> None:
+        """Events from workers without output capture validate unchanged."""
+        event = TaskEvent.model_validate(
+            {
+                "task_id": "abc-123",
+                "name": "myapp.tasks.send_email",
+                "state": "SUCCESS",
+                "timestamp": "2024-01-01T12:00:00Z",
+            }
+        )
+        assert event.output is None
+
+    def test_output_roundtrips_through_json(self) -> None:
+        """Captured output survives the wire format."""
+        event = TaskEvent(
+            task_id="abc-123",
+            name="myapp.tasks.send_email",
+            state=TaskState.FAILURE,
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            output="hello\nWARNING myapp: careful",
+        )
+        restored = TaskEvent.model_validate_json(event.model_dump_json())
+        assert restored.output == "hello\nWARNING myapp: careful"
+
+    def test_unknown_fields_are_ignored(self) -> None:
+        """Older servers ignore fields added by newer workers (like output)."""
+        event = TaskEvent.model_validate(
+            {
+                "task_id": "abc-123",
+                "name": "myapp.tasks.send_email",
+                "state": "SUCCESS",
+                "timestamp": "2024-01-01T12:00:00Z",
+                "field_from_the_future": "x",
+            }
+        )
+        assert event.task_id == "abc-123"
+        assert not hasattr(event, "field_from_the_future")
+
     def test_to_dict(self) -> None:
         event = TaskEvent(
             task_id="abc-123",
