@@ -2,9 +2,9 @@
 .git
 .gitignore
 
-# Python
-__pycache__
-*.py[cod]
+# Python (patterns without **/ only match at the context root)
+**/__pycache__
+**/*.py[cod]
 *$py.class
 *.so
 .Python
@@ -37,13 +37,23 @@ ENV/
 
 # Testing
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 .tox/
 .nox/
 
 # Node (rebuilt in container)
-node_modules/
+**/node_modules/
+
+# Frontend build output and test artifacts (the UI is built in the
+# frontend stage; a local dist/ would be merged into the image's copy)
+src/stemtrace/server/ui/frontend/dist/
+src/stemtrace/server/ui/frontend/test-results/
+src/stemtrace/server/ui/frontend/playwright-report/
+src/stemtrace/server/ui/frontend/.tanstack/
+src/stemtrace/server/ui/frontend/tsconfig.tsbuildinfo
 
 # Documentation
 docs/_build/
@@ -53,9 +63,10 @@ docs/_build/
 .env.local
 *.log
 
-# Cursor/Editor
+# Cursor/Editor/agent tooling
 .cursor/
 .context/
+.claude/
 
 # Keep these (they're built in Dockerfile)
 !src/stemtrace/server/ui/frontend/package*.json
