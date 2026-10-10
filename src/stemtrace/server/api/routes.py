@@ -359,7 +359,7 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
     return stopped_unexpectedly or consumer.is_connected is False
 
 
-def create_api_router(
+def create_api_router(  # noqa: C901, PLR0915, PLR0917
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
     ws_manager: WebSocketManager | None = None,
@@ -474,7 +474,7 @@ def create_api_router(
         response_model=TaskListResponse,
         responses={400: {"model": ErrorResponse}},
     )
-    async def list_tasks(
+    async def list_tasks(  # noqa: PLR0917
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
         state: Annotated[str | None, Query(description="Filter by task state")] = None,
@@ -515,7 +515,7 @@ def create_api_router(
         "/tasks/registry",
         response_model=TaskRegistryResponse,
     )
-    async def get_task_registry(
+    async def get_task_registry(  # noqa: C901
         query: Annotated[
             str | None, Query(description="Filter by task name substring")
         ] = None,

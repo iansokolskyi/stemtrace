@@ -48,7 +48,7 @@ def _has_dot_segment(path: str) -> bool:
     return True  # Still encoded after several rounds: treat as suspicious.
 
 
-def create_form_auth_middleware(
+def create_form_auth_middleware(  # noqa: C901
     config: FormAuthConfig,
     *,
     login_path: str,

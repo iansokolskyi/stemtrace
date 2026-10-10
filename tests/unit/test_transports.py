@@ -600,7 +600,7 @@ class TestRedisTransport:
         self, transport: RedisTransport
     ) -> None:
         """_parse_event should raise when payload lacks both event_type and task_id."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             transport._parse_event('{"unexpected": "value"}')
 
     def test_consume_skips_empty_reads_and_logs_parse_errors(
@@ -642,7 +642,7 @@ class TestRedisTransport:
         assert "Failed to parse event from Redis stream" in caplog.text
 
 
-def _install_fake_kombu_for_consume(
+def _install_fake_kombu_for_consume(  # noqa: C901
     monkeypatch: Any, *, drain_handler: Any
 ) -> type[Any]:
     """Install a fake kombu consumer stack into sys.modules (no broker required).
@@ -1012,7 +1012,7 @@ class TestRabbitMQTransport:
         assert received.task_id == "consume-1"
         assert seen["msg"].acked is True
 
-    def test_declare_exchange_and_queue_uses_queue_arguments(
+    def test_declare_exchange_and_queue_uses_queue_arguments(  # noqa: C901
         self, monkeypatch: Any
     ) -> None:
         """_declare_exchange_and_queue declares durable exchange + queue with TTL args."""
@@ -1169,7 +1169,7 @@ class TestRabbitMQTransport:
 
     def test_parse_event_raises_for_unknown_payload(self) -> None:
         """_parse_event raises for payloads missing task_id and event_type."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             RabbitMQTransport._parse_event({"unexpected": "value"})
 
     def test_publish_logs_worker_event_identifier_on_exception(

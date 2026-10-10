@@ -437,7 +437,7 @@ class TestFormLoginProtection:
 
         with TestClient(app) as client:
             accepted = False
-            with (
+            with (  # noqa: PT012
                 pytest.raises(WebSocketDisconnect) as exc_info,
                 client.websocket_connect("/stemtrace/ws") as ws,
             ):

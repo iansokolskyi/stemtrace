@@ -217,7 +217,7 @@ class RedisTransport:
             return event.task_id
         return f"{event.hostname}:{event.pid}:{event.event_type}"
 
-    def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:
+    def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:  # noqa: C901, PLR0912, PLR0915
         """Blocking iterator that yields events as they arrive.
 
         Detects event type from JSON and yields appropriate model

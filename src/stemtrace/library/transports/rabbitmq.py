@@ -249,7 +249,7 @@ class RabbitMQTransport:
                 elapsed=self._monotonic() - started,
                 unconfirmed=True,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
             breaker.record_failure(
                 ticket,
                 self._event_identifier(event),
@@ -427,7 +427,7 @@ class RabbitMQTransport:
             return event.task_id
         return f"{event.hostname}:{event.pid}:{event.event_type}"
 
-    def consume(self) -> Iterator[StreamEvent]:
+    def consume(self) -> Iterator[StreamEvent]:  # noqa: C901, PLR0915
         """Blocking iterator that yields events as they arrive.
 
         Connection and channel errors never end the iterator: the transport
@@ -477,7 +477,7 @@ class RabbitMQTransport:
                 # Drop malformed messages to avoid poison-pill loops.
                 try:
                     message.reject(requeue=False)
-                except Exception:
+                except Exception:  # noqa: BLE001  best effort: the message is already logged as malformed
                     logger.debug("Failed to reject malformed RabbitMQ message")
 
         def on_decode_error(message: Any, exc: Exception) -> None:
@@ -564,7 +564,7 @@ class RabbitMQTransport:
                             yield pending.popleft()
                 finally:
                     self._close_consumer_connection(conn)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  consume loop survives any error: back off and reconnect
                 if self._stopping():
                     return
                 failures += 1

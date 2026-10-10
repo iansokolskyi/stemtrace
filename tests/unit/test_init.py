@@ -272,7 +272,7 @@ class TestInit:
         app = MagicMock()
         caplog.set_level(logging.WARNING, logger=_INIT_LOGGER)
 
-        with pytest.warns(DeprecationWarning) as record:
+        with pytest.warns(DeprecationWarning) as record:  # noqa: PT030, PT031
             for _ in range(2):
                 init_worker(
                     app,
