@@ -13,7 +13,8 @@ app = typer.Typer(
 
 
 @app.command()
-def server(  # noqa: PLR0917
+def server(
+    *,
     broker_url: Annotated[
         str,
         typer.Option(

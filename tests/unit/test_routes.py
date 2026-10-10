@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
@@ -1685,3 +1686,32 @@ class TestResolveNodeAlias:
         node = self._make_node(kwargs={"operator_type": "sync_table"})
         resp = routes._node_to_graph_response(node)
         assert resp.name == "myapp.tasks.process"
+
+
+class TestApiRouteTable:
+    """The router exposes the same routes, in the same order."""
+
+    def test_create_api_router_registers_routes_in_order(self) -> None:
+        # Order matters: /tasks/registry must precede /tasks/{task_id}, or
+        # "registry" would be captured as a task id.
+        router = create_api_router(GraphStore(), worker_registry=WorkerRegistry())
+
+        table = [
+            (route.path, sorted(route.methods))
+            for route in router.routes
+            if isinstance(route, APIRoute)
+        ]
+
+        assert table == [
+            ("/api/health", ["GET"]),
+            ("/api/health/live", ["GET"]),
+            ("/api/tasks", ["GET"]),
+            ("/api/tasks/registry", ["GET"]),
+            ("/api/tasks/{task_id}", ["GET"]),
+            ("/api/tasks/{task_id}/children", ["GET"]),
+            ("/api/graphs", ["GET"]),
+            ("/api/graphs/{root_id}", ["GET"]),
+            ("/api/workers", ["GET"]),
+            ("/api/workers/{hostname}", ["GET"]),
+        ]
+        assert len(table) == len(router.routes)
