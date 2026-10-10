@@ -216,7 +216,8 @@ class RabbitMQTransport:
         reconnects on a new connection, declaring the exchange and queue
         again. Each attempt tries every host of a failover URL
         (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host and
-        no sleep between hosts. The backoff
+        no sleep between hosts. Messages kombu can't decode (e.g. not JSON)
+        are rejected without requeueing and logged once. The backoff
         resets once a connection has been established and read from (a drain
         returned or timed out); connections that fail before that keep the
         delay growing. The iterator ends once a stop event bound with
@@ -259,6 +260,24 @@ class RabbitMQTransport:
                 except Exception:
                     logger.debug("Failed to reject malformed RabbitMQ message")
 
+        def on_decode_error(message: Any, exc: Exception) -> None:
+            """Drop a message kombu can't decode (e.g. not JSON) instead of failing.
+
+            Without this kombu raises from drain_events, the connection is
+            torn down, and the broker redelivers the same message forever.
+            """
+            logger.warning(
+                "Dropping undecodable message from RabbitMQ queue %s: %s",
+                self._queue_name,
+                exc,
+            )
+            try:
+                message.reject(requeue=False)
+            except Exception:
+                logger.debug(
+                    "Failed to reject undecodable RabbitMQ message", exc_info=True
+                )
+
         # Unknown until this iterator's first drain completes.
         self._connected = None
         failures = 0
@@ -292,6 +311,7 @@ class RabbitMQTransport:
                         channel,
                         queues=[bound_queue],
                         callbacks=[on_message],
+                        on_decode_error=on_decode_error,
                         accept=["json"],
                     )
                     consumer.consume()

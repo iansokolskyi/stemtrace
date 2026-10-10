@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from kombu import Connection, Exchange, Producer
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.transports import get_transport
@@ -272,7 +273,7 @@ def _stop_consumer(stop: threading.Event, thread: threading.Thread) -> None:
 
 
 class TestRabbitMQTransportResilience:
-    """Failover URLs against a real broker."""
+    """Failover URLs and undecodable messages against a real broker."""
 
     @staticmethod
     def _event(task_id: str) -> TaskEvent:
@@ -303,3 +304,39 @@ class TestRabbitMQTransportResilience:
             assert failover.connected is True
         finally:
             _stop_consumer(stop, thread)
+
+    def test_consume_drops_non_json_message_and_stays_connected(
+        self,
+        rabbitmq_transport: RabbitMQTransport,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A text/plain message is dropped once; the next event still arrives."""
+        caplog.set_level(
+            logging.WARNING, logger="stemtrace.library.transports.rabbitmq"
+        )
+        rabbitmq_transport._declare_exchange_and_queue()
+        with Connection(RABBITMQ_URL, connect_timeout=2) as conn:
+            Producer(conn.channel()).publish(
+                "not json",
+                exchange=Exchange(
+                    rabbitmq_transport.exchange_name, type="fanout", durable=True
+                ),
+                routing_key="",
+                content_type="text/plain",
+                content_encoding="utf-8",
+                retry=False,
+            )
+        rabbitmq_transport.publish(self._event("after-bad-message"))
+
+        events, stop, thread = _start_consumer(rabbitmq_transport)
+        try:
+            received = events.get(timeout=10)
+            assert isinstance(received, TaskEvent)
+            assert received.task_id == "after-bad-message"
+            assert rabbitmq_transport.connected is True
+        finally:
+            _stop_consumer(stop, thread)
+        warnings = [r.getMessage() for r in caplog.records]
+        assert len(warnings) == 1
+        assert "Dropping undecodable message" in warnings[0]
+        assert "text/plain" in warnings[0]

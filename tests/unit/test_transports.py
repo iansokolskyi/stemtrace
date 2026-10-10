@@ -1676,6 +1676,49 @@ class TestRabbitMQConsumeBackoff:
         assert conn.released is True
         assert conn.collected is False
 
+    def test_consume_drops_undecodable_message_and_stays_connected(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A message kombu can't decode is rejected once, not retried as an outage."""
+        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        sleeper = _BoundedSleep()
+        bad: dict[str, Any] = {}
+        conn_ref: dict[str, Any] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count == 1:
+                msg = sys.modules["kombu"].FakeMessage(  # type: ignore[attr-defined]
+                    reject_raises=True
+                )
+                bad["msg"] = msg
+                channel = conn_ref["cls"].instances[-1].channel()
+                channel.on_decode_error(
+                    msg,
+                    ValueError("Refusing to deserialize content of type text/plain"),
+                )
+                return
+            self._deliver(callbacks)
+
+        conn_ref["cls"] = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert bad["msg"].rejected is True
+        assert sleeper.delays == []
+        assert transport.connected is True
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Dropping undecodable message" in warnings[0].getMessage()
+        assert "text/plain" in warnings[0].getMessage()
+        assert "Failed to reject undecodable RabbitMQ message" in caplog.text
+
     def test_consume_when_closing_connection_fails_logs_debug_and_continues(
         self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
