@@ -67,14 +67,24 @@ def make_event() -> type[MakeEvent]:
     return MakeEvent
 
 
-class _FakeConsumer:
-    """Stand-in for AsyncEventConsumer exposing only ``is_running``."""
+class FakeHealthConsumer:
+    """Consumer stand-in exposing only what the health endpoints read."""
 
-    def __init__(self, *, running: bool) -> None:
+    def __init__(
+        self,
+        *,
+        running: bool,
+        connected: bool | None = None,
+        finished: bool = False,
+        stopped: bool = False,
+    ) -> None:
         self.is_running = running
+        self.is_connected = connected
+        self.is_finished = finished
+        self.is_stopped = stopped
 
 
-def _live_client(store: GraphStore, consumer: _FakeConsumer | None) -> TestClient:
+def _live_client(store: GraphStore, consumer: FakeHealthConsumer | None) -> TestClient:
     app = FastAPI()
     app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # duck-typed fake
     return TestClient(app)
@@ -87,16 +97,48 @@ class TestLivenessEndpoint:
         assert resp.json() == {"status": "ok"}
 
     def test_live_with_running_consumer_returns_ok(self, store: GraphStore) -> None:
-        resp = _live_client(store, _FakeConsumer(running=True)).get("/api/health/live")
+        resp = _live_client(store, FakeHealthConsumer(running=True)).get(
+            "/api/health/live"
+        )
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
     def test_live_with_stopped_consumer_returns_200_degraded(
         self, store: GraphStore
     ) -> None:
-        resp = _live_client(store, _FakeConsumer(running=False)).get("/api/health/live")
+        resp = _live_client(store, FakeHealthConsumer(running=False)).get(
+            "/api/health/live"
+        )
         assert resp.status_code == 200
         assert resp.json() == {"status": "degraded"}
+
+
+class TestHealthStatusAgreement:
+    """``/health`` and ``/health/live`` report the same consumer status."""
+
+    @pytest.mark.parametrize("path", ["/api/health", "/api/health/live"])
+    @pytest.mark.parametrize(
+        ("consumer", "expected_status"),
+        [
+            (FakeHealthConsumer(running=True, connected=True), "ok"),
+            (FakeHealthConsumer(running=True, connected=False), "degraded"),
+            (FakeHealthConsumer(running=False), "degraded"),
+            (FakeHealthConsumer(running=False, stopped=True), "ok"),
+            (FakeHealthConsumer(running=False, finished=True), "ok"),
+        ],
+        ids=["connected", "broker-down", "crashed", "stopped", "finished"],
+    )
+    def test_health_status_with_consumer_state_matches_on_both_endpoints(
+        self,
+        store: GraphStore,
+        path: str,
+        consumer: FakeHealthConsumer,
+        expected_status: str,
+    ) -> None:
+        resp = _live_client(store, consumer).get(path)
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == expected_status
 
 
 class TestHealthEndpoint:
@@ -168,18 +210,6 @@ class TestHealthEndpoint:
         assert response.json()["status"] == expected_status
         assert response.json()["consumer_running"] is running
         assert response.json()["consumer_connected"] is connected
-
-
-class FakeHealthConsumer:
-    """Consumer stand-in exposing only what the health endpoint reads."""
-
-    def __init__(
-        self, *, running: bool, connected: bool | None, finished: bool = False
-    ) -> None:
-        self.is_running = running
-        self.is_connected = connected
-        self.is_finished = finished
-        self.is_stopped = False
 
 
 class TestTaskListEndpoint:

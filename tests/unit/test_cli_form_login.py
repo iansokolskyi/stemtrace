@@ -163,14 +163,14 @@ class TestCliFormLogin:
         app = build_cli_app("--login-secret", "shared")
 
         # The CLI always embeds a consumer; with the memory:// transport its
-        # thread exits once the (empty) stream is drained, so it is degraded,
-        # but the process is alive, so the probe still answers 200.
+        # thread either still runs or has finished draining the (empty)
+        # stream normally. Neither is degraded, the same rule as /health.
         with TestClient(app) as client:
             live = client.get("/stemtrace/api/health/live")
             health = client.get("/stemtrace/api/health")
 
         assert live.status_code == 200
-        assert live.json() == {"status": "degraded"}
+        assert live.json() == {"status": "ok"}
         assert health.status_code == 401
 
 

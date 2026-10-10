@@ -465,8 +465,8 @@ This serves a sign-in page at `/stemtrace/login` and protects the UI, API and We
 `/stemtrace`. The static JS/CSS bundle under `/stemtrace/assets/` is the public UI build and is
 served without a session. So is `/stemtrace/api/health/live`, a liveness probe for load
 balancers and container health checks: it always answers 200 while the process is serving,
-with only `{"status": "ok"}`, or `{"status": "degraded"}` when the embedded consumer isn't
-running.
+with only `{"status": "ok"}`, or `{"status": "degraded"}` when the embedded consumer stopped
+unexpectedly or can't read from the broker (the same rule as `/stemtrace/api/health`).
 
 For any multi-process deployment (`uvicorn --workers N`, gunicorn, or several replicas behind
 a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) to the same long

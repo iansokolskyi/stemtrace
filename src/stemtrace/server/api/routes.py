@@ -331,9 +331,19 @@ def _refresh_worker_registry_from_inspect(
         )
 
 
-def _is_consumer_healthy(consumer: AsyncEventConsumer | None) -> bool:
-    """Whether the event consumer is fine: disabled, or enabled with a live thread."""
-    return consumer is None or consumer.is_running
+def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
+    """Whether a configured event consumer has failed, for both health endpoints.
+
+    Degraded when the consumer stopped unexpectedly (not running, yet neither
+    stopped on purpose nor finished normally) or can't read from the broker.
+    A disabled consumer (None) is never degraded.
+    """
+    if consumer is None:
+        return False
+    stopped_unexpectedly = not (
+        consumer.is_running or consumer.is_finished or consumer.is_stopped
+    )
+    return stopped_unexpectedly or consumer.is_connected is False
 
 
 def create_api_router(
@@ -419,14 +429,9 @@ def create_api_router(
 
         running = consumer.is_running if consumer else False
         connected = consumer.is_connected if consumer else None
-        finished = consumer.is_finished if consumer else False
-        stopped = consumer.is_stopped if consumer else False
-        degraded = consumer is not None and (
-            (not running and not finished and not stopped) or connected is False
-        )
 
         return HealthResponse(
-            status="degraded" if degraded else "ok",
+            status="degraded" if _is_consumer_degraded(consumer) else "ok",
             version=__version__,
             consumer_running=running,
             consumer_connected=connected,
@@ -443,11 +448,12 @@ def create_api_router(
 
         Always 200 while the app is serving, so a broker blip that stops the
         consumer doesn't mark the container unhealthy for good. Served without
-        form-login authentication, so it exposes only an informational status:
-        "ok", or "degraded" when the embedded event consumer is enabled but its
-        thread is not running.
+        form-login authentication, so it exposes only an informational status,
+        decided by the same rule as ``/health``: "degraded" when the event
+        consumer stopped unexpectedly or can't read from the broker, "ok"
+        otherwise.
         """
-        status = "ok" if _is_consumer_healthy(consumer) else "degraded"
+        status = "degraded" if _is_consumer_degraded(consumer) else "ok"
         return LivenessResponse(status=status)
 
     @router.get(
