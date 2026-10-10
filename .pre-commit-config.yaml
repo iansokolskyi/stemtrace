@@ -11,13 +11,15 @@ repos:
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.0
+    rev: v0.16.10
     hooks:
       # Linter (auto-fix enabled)
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
-      # Formatter
+      # Formatter (Python only: the hook also formats Markdown code blocks,
+      # which would undo the hand-aligned comments in the README examples)
       - id: ruff-format
+        types_or: [python, pyi]
 
   # Local hooks use project environment (uv) for proper dependency access
   - repo: local
