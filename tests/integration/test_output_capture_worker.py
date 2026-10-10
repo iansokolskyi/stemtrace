@@ -137,7 +137,9 @@ def _start_worker(
             proc.kill()
             proc.wait()
         log_file.close()
-        run.client.delete(run.stream_key)
+        # The event stream plus the queue list and kombu's binding set the
+        # worker left in the broker database.
+        run.client.delete(run.stream_key, run.queue, f"_kombu.binding.{run.queue}")
 
 
 @pytest.fixture(scope="module", params=_MODES)
