@@ -324,6 +324,57 @@ class TestInitAppNodeAlias:
 
         assert captured["node_alias_from_arguments"] is None
 
+    def test_init_app_with_padded_env_var_strips_whitespace(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Surrounding whitespace in the env var is stripped."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", " operator_type ")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    def test_init_app_with_blank_env_var_passes_none(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A whitespace-only env var counts as unset."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "  ")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_with_padded_kwarg_strips_whitespace(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Surrounding whitespace in an explicit kwarg is stripped."""
+        init_app(
+            FastAPI(),
+            broker_url="memory://",
+            node_alias_from_arguments=" operator_type ",
+        )
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    @pytest.mark.parametrize("value", ["", "  "])
+    def test_init_app_with_blank_kwarg_passes_none(
+        self, captured: dict[str, object], value: str
+    ) -> None:
+        """An empty or whitespace-only kwarg counts as unset."""
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments=value)
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_with_blank_kwarg_falls_back_to_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blank kwarg is treated like an omitted one, so the env var applies."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments="")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
     def test_init_app_without_kwarg_or_env_var_passes_none(
         self, captured: dict[str, object]
     ) -> None:

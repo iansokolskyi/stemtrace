@@ -51,12 +51,13 @@ def captured_alias(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
     return captured
 
 
-def _invoke(*args: str, env: dict[str, str] | None = None) -> None:
-    """Run ``stemtrace server`` with a memory broker and assert it exits cleanly."""
+def _invoke(*args: str, env: dict[str, str] | None = None) -> str:
+    """Run ``stemtrace server`` with a memory broker, assert success, return output."""
     result = CliRunner().invoke(
         cli.app, ["server", "--broker-url", "memory://", *args], env=env
     )
     assert result.exit_code == 0, result.output
+    return result.output
 
 
 def test_server_with_node_alias_flag_passes_alias(
@@ -110,4 +111,52 @@ def test_server_with_empty_node_alias_flag_passes_none(
     """An empty flag value counts as unset."""
     _invoke("--node-alias-from-arguments", "")
 
+    assert captured_alias == [None]
+
+
+def test_server_with_padded_node_alias_env_var_strips_whitespace(
+    captured_alias: list[str | None],
+) -> None:
+    """Surrounding whitespace (common in env files) is stripped."""
+    _invoke(env={_ENV_VAR: " operator_type "})
+
+    assert captured_alias == ["operator_type"]
+
+
+def test_server_with_padded_node_alias_flag_strips_whitespace(
+    captured_alias: list[str | None],
+) -> None:
+    """Surrounding whitespace in the flag value is stripped."""
+    _invoke("--node-alias-from-arguments", " 0 ")
+
+    assert captured_alias == ["0"]
+
+
+def test_server_with_blank_node_alias_env_var_passes_none(
+    captured_alias: list[str | None],
+) -> None:
+    """A whitespace-only env var counts as unset."""
+    _invoke(env={_ENV_VAR: "  "})
+
+    assert captured_alias == [None]
+
+
+def test_server_with_node_alias_echoes_it_at_startup(
+    captured_alias: list[str | None],
+) -> None:
+    """The resolved alias is printed with the other startup settings."""
+    output = _invoke(env={_ENV_VAR: " operator_type "})
+
+    assert "Node alias: operator_type\n" in output
+    assert captured_alias == ["operator_type"]
+
+
+def test_server_without_node_alias_does_not_echo_it(
+    captured_alias: list[str | None],
+) -> None:
+    """No alias line is printed when the option is unset."""
+    output = _invoke(env={_ENV_VAR: "  "})
+
+    assert "Node alias" not in output
+    assert "Broker: memory://" in output
     assert captured_alias == [None]
