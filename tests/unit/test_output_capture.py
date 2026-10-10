@@ -9,10 +9,12 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TextIO, cast
 
 import pytest
 from celery.utils.log import LoggingProxy, get_task_logger
 
+from stemtrace.library import output_capture
 from stemtrace.library.output_capture import (
     OutputBuffer,
     TaskOutputHandler,
@@ -711,6 +713,178 @@ class TestTee:
         buffer.append = broken_append  # type: ignore[method-assign]  # simulate failure
         assert tee.write("still here\n") == len("still here\n")
         assert original.getvalue() == "still here\n"
+
+
+def _quiet_logger(name: str, *handlers: logging.Handler) -> logging.Logger:
+    """A non-propagating logger with exactly ``handlers`` (call in the test body).
+
+    pytest attaches its capture handler to non-propagating loggers when a test
+    phase starts, so this must run inside the test, not in a fixture.
+    """
+    target = logging.getLogger(name)
+    for handler in list(target.handlers):
+        target.removeHandler(handler)
+    target.propagate = False
+    target.setLevel(logging.DEBUG)
+    for handler in handlers:
+        target.addHandler(handler)
+    return target
+
+
+def _reset_logger(target: logging.Logger) -> None:
+    for handler in list(target.handlers):
+        target.removeHandler(handler)
+    target.propagate = True
+    target.setLevel(logging.NOTSET)
+
+
+class TestTeeUserVisibleWrites:
+    """Text a user would see on the console during logging is still captured."""
+
+    def test_logging_error_diagnostic_is_captured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken log call's "--- Logging error ---" report lands in the output."""
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        monkeypatch.setattr(logging, "raiseExceptions", True)
+        install_capture()
+        console = logging.StreamHandler(io.StringIO())
+        broken = _quiet_logger("tests.broken", console, TaskOutputHandler())
+        try:
+            start_capture("t1", max_bytes=10_000)
+            broken.info("%d", "abc")
+            out = stop_capture("t1")
+        finally:
+            _reset_logger(broken)
+        assert out is not None
+        assert out.startswith(
+            "--- Logging error ---\nTraceback (most recent call last):"
+        )
+        assert "TypeError" in out
+        assert "--- Logging error ---" in sys.stderr.getvalue()
+
+    def test_prints_during_message_formatting_are_captured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A __str__ that prints while a record is formatted is user output too."""
+
+        class Noisy:
+            def __str__(self) -> str:
+                print("side effect")
+                return "noisy"
+
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+        install_capture()
+        lib = _quiet_logger("tests.noisy", TaskOutputHandler())
+        try:
+            start_capture("t1", max_bytes=10_000)
+            lib.warning("value %s", Noisy())
+            out = stop_capture("t1")
+        finally:
+            _reset_logger(lib)
+        assert out == "side effect\nWARNING tests.noisy: value noisy"
+
+
+class TestTeeFailsOpen:
+    """If working out who wrote to the tee fails, the text is captured."""
+
+    def test_record_without_a_name_is_captured(self) -> None:
+        """A malformed record (name None) doesn't break or drop the write."""
+        original = io.StringIO()
+        tee = TeeStream(original)
+        handler = logging.StreamHandler(tee)
+        record = logging.LogRecord("x", logging.WARNING, __file__, 1, "odd", None, None)
+        record.name = None  # type: ignore[assignment]  # malformed on purpose
+        start_capture("t1", max_bytes=1000)
+        handler.handle(record)
+        assert stop_capture("t1") == "odd"
+        assert original.getvalue() == "odd\n"
+
+    def test_frame_lookup_failure_is_captured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sys._getframe raising (a shallow stack) still captures the write."""
+
+        def no_frames(depth: int = 0) -> object:
+            raise ValueError("call stack is not deep enough")
+
+        original = io.StringIO()
+        tee = TeeStream(original)
+        start_capture("t1", max_bytes=1000)
+        monkeypatch.setattr(output_capture.sys, "_getframe", no_frames)
+        tee.write("still captured")
+        monkeypatch.undo()
+        assert stop_capture("t1") == "still captured"
+
+
+class TestRepointStreamHandlers:
+    """StreamHandlers created after the tee are pointed at the real stream."""
+
+    def test_install_repoints_handlers_bound_to_the_tee(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The next install (each task's prerun) re-points a late StreamHandler."""
+        original = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", original)
+        install_capture()
+        late = logging.StreamHandler()  # binds sys.stderr: the tee
+        assert isinstance(late.stream, TeeStream)
+        lib = logging.getLogger("tests.repoint")
+        lib.addHandler(late)
+        try:
+            install_capture()
+            assert late.stream is original
+        finally:
+            lib.removeHandler(late)
+
+    def test_handler_overriding_handle_is_captured_once_after_repoint(
+        self, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """A handler the frame walk can't see through no longer duplicates or leaks."""
+
+        class DirectHandler(logging.StreamHandler):  # type: ignore[type-arg]
+            def handle(self, record: logging.LogRecord) -> bool:
+                self.emit(record)  # no Handler.handle frame on the stack
+                return True
+
+        original = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", original)
+        install_capture()
+        direct = DirectHandler()
+        logging.getLogger().addHandler(direct)
+        try:
+            install_capture()  # next task's prerun
+            start_capture("t1", max_bytes=1000)
+            logging.getLogger("somelib").warning("from lib")
+            logging.getLogger("kombu.connection").warning("broker hiccup")
+            out = stop_capture("t1")
+        finally:
+            logging.getLogger().removeHandler(direct)
+        assert out == "WARNING somelib: from lib"
+        assert "broker hiccup" in original.getvalue()
+
+    def test_handler_with_read_only_stream_is_left_alone(self) -> None:
+        """A handler whose stream can't be reassigned doesn't break install."""
+
+        class PropertyStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
+            @property  # type: ignore[override]
+            def stream(self) -> TextIO:
+                return cast("TextIO", sys.stdout)
+
+            @stream.setter
+            def stream(self, value: TextIO) -> None:
+                raise AttributeError("read-only")
+
+        install_capture()
+        odd = PropertyStreamHandler.__new__(PropertyStreamHandler)
+        logging.Handler.__init__(odd)
+        lib = logging.getLogger("tests.readonly")
+        lib.addHandler(odd)
+        try:
+            install_capture()
+            assert isinstance(odd.stream, TeeStream)
+        finally:
+            lib.removeHandler(odd)
 
 
 class TestLastResort:

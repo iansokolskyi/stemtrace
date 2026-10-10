@@ -223,6 +223,16 @@ def _has_other_handlers(record: logging.LogRecord) -> bool | None:
 
 
 _HANDLE_CODE = logging.Handler.handle.__code__
+# Frames that mean "this write is text the user sees, not a handler's copy of
+# a record": the "--- Logging error ---" report of a broken log call, and
+# prints made while a message is formatted (e.g. a __str__ that prints).
+_USER_TEXT_CODES = frozenset(
+    {
+        logging.Handler.handleError.__code__,
+        logging.LogRecord.getMessage.__code__,
+        logging.Formatter.format.__code__,
+    }
+)
 # How far up from a tee write to look for logging.Handler.handle: a handler's
 # emit (possibly a subclass calling super().emit) writes to the stream.
 _HANDLER_FRAME_DEPTH = 8
@@ -232,12 +242,19 @@ def _record_being_emitted() -> logging.LogRecord | None:
     """The log record whose handler is writing to the tee right now, if any.
 
     Called from :meth:`TeeStream.write`; looks a few frames up for
-    ``logging.Handler.handle`` and returns its ``record``.
+    ``logging.Handler.handle`` and returns its ``record``. Returns None for
+    writes made while reporting a logging error or formatting a message,
+    which are user-visible text rather than a handler's copy of a record.
+
+    Cost: at most ``_HANDLER_FRAME_DEPTH`` frame hops per write, and only while
+    a task's output is being captured; writes outside tasks never get here.
     """
     # The caller of TeeStream.write (which always has one).
     frame: FrameType | None = sys._getframe(2)
     for _ in range(_HANDLER_FRAME_DEPTH):
         if frame is None:
+            return None
+        if frame.f_code in _USER_TEXT_CODES:
             return None
         if frame.f_code is _HANDLE_CODE:
             record = frame.f_locals.get("record")
@@ -340,11 +357,19 @@ class TeeStream:
         finally:
             _tee_suppressed.reset(token)
         buffer = _active_buffer.get()
-        if buffer is not None:
+        if buffer is None:
+            return written
+        # Fallback for handlers still writing to the tee (created mid-task, or
+        # not attached to a logger): drop their copies of records. Fails open:
+        # if the lookup breaks, the text is captured.
+        try:
+            record = _record_being_emitted()
+            skip = record is not None and _tee_should_skip(record)
+        except Exception:
+            skip = False
+        if not skip:
             try:
-                record = _record_being_emitted()
-                if record is None or not _tee_should_skip(record):
-                    buffer.append(text)
+                buffer.append(text)
             except Exception:
                 logger.debug("Failed to capture stream write", exc_info=True)
         return written
@@ -428,6 +453,34 @@ def install_capture() -> None:
                 target.addHandler(_handler)
         sys.stdout = _tee(sys.stdout)
         sys.stderr = _tee(sys.stderr)
+        _repoint_tee_stream_handlers()
+
+
+def _repoint_tee_stream_handlers() -> None:
+    """Point StreamHandlers that write to a tee at the stream it wraps.
+
+    A ``StreamHandler()`` created after the tee was installed binds the tee as
+    its stream, so the tee would copy its records into the output. Writing to
+    the wrapped stream instead leaves its console output unchanged, and our
+    handler captures the record. Runs at every install (each task's prerun), so
+    handlers added since the last task are caught too.
+    """
+    loggers: list[logging.Logger] = [logging.root]
+    loggers.extend(
+        lg
+        for lg in list(logging.Logger.manager.loggerDict.values())
+        if isinstance(lg, logging.Logger)
+    )
+    for target in loggers:
+        for handler in list(target.handlers):
+            if not isinstance(handler, logging.StreamHandler):
+                continue
+            stream = getattr(handler, "stream", None)
+            if isinstance(stream, TeeStream):
+                try:
+                    handler.setStream(stream.wrapped)
+                except Exception:
+                    logger.debug("Could not re-point %r", handler, exc_info=True)
 
 
 def _is_installed() -> bool:

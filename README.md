@@ -260,7 +260,11 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
   `logging.lastResort` would). One side effect: from the first task on, the root
   logger has stemtrace's handler, so `logging.getLogger().hasHandlers()` is
   `True` and a later `logging.basicConfig()` call without `force=True` does
-  nothing. Configure logging at startup (or pass `force=True`).
+  nothing. Configure logging at startup (or pass `force=True`). Logging
+  handlers added while a task runs, ones that override `handle()`, or ones
+  that write to stdout/stderr in unusual ways may show a record twice or show
+  Celery/kombu lines in that task's output; handlers set up at worker startup
+  don't.
 - **Size**: at most `max_output_size` bytes (UTF-8) per attempt. Longer output
   keeps its end, where failures usually are, after a `[… N bytes truncated]` line.
   Output travels with the task's terminal event, so it is stored wherever events
