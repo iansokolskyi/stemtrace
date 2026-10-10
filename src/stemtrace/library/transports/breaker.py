@@ -62,15 +62,23 @@ class PublishBreaker:
     failures opens the breaker once, with the initial cooldown.
 
     Logging is rate-limited independently of the state, so a flapping broker
-    can't flood the logs. Failures while the breaker stays closed are logged
-    (WARNING with traceback) at most once per ``log_interval``; outage lines
-    (the failure that opens the breaker, with traceback, or a summary without
-    traceback when a probe fails) also at most once per ``log_interval``. A
-    recovery line is written when the breaker closes, but only if an outage
-    line was written for that outage. So at most three lines per interval,
-    however the broker behaves. Every line reports the events dropped (and
-    sent but unconfirmed) since the previous line, so no loss goes
-    unreported. Nothing is logged per dropped event.
+    can't flood the logs, and every line reports the events dropped (and
+    sent but unconfirmed) since the previous line. Per ``log_interval``, at
+    most:
+
+    - one line for a failure while the breaker stays closed (WARNING with
+      traceback);
+    - one line for a failure that opens the breaker (with traceback);
+    - one recovery line for an outage whose opening line was written;
+    - one report line otherwise: a summary when a probe fails, a recovery
+      line for an outage whose opening line was suppressed, or, once
+      publishing works again, a line with the losses still unreported.
+      It is written once an interval has passed since the last line that
+      reported losses, so no loss stays unreported for much longer than
+      one interval while events keep being published.
+
+    So at most four lines per interval, however the broker behaves. Nothing
+    is logged per dropped event.
 
     The state is guarded by a lock, so it can be shared by the threads of a
     threads/gevent/eventlet pool. A process that forks (Celery's prefork
@@ -130,9 +138,13 @@ class PublishBreaker:
         # Losses since the last log line (reported by the next one).
         self._dropped = 0
         self._unconfirmed = 0
-        # When a failure-while-closed line / an outage line was last written.
+        # When a failure-while-closed line / an opening line / a recovery line
+        # paired with an opening line / any line that reported losses was
+        # last written.
         self._last_closed_log: float | None = None
-        self._last_outage_log: float | None = None
+        self._last_open_log: float | None = None
+        self._last_recovery_log: float | None = None
+        self._last_report: float | None = None
         self._close()
 
     def _close(self) -> None:
@@ -218,24 +230,55 @@ class PublishBreaker:
         self._check_fork()
         if not self.is_open:
             self._consecutive_failures = 0
+            if self._dropped or self._unconfirmed:
+                self._report_pending()
             return
         with self._lock:
             if self._probe_ticket is None or ticket != self._probe_ticket:
                 return
-            outage = self._monotonic() - self._opened_at
-            reported = self._outage_reported
-            dropped, unconfirmed = self._dropped, self._unconfirmed
-            if reported:
-                self._dropped = self._unconfirmed = 0
+            now = self._monotonic()
+            outage = now - self._opened_at
+            # Paired with a written opening line (rate-limited on its own),
+            # or a report line if due; otherwise the losses stay pending for
+            # a later report.
+            paired = self._outage_reported and self._log_due(
+                self._last_recovery_log, now
+            )
+            log = paired or self._log_due(self._last_report, now)
+            if paired:
+                self._last_recovery_log = now
+            if log:
+                losses = self._take_losses(now)
             self._epoch += 1
             self._close()
-        if reported:
+        if log:
             self._logger.warning(
                 "Publishing to %s recovered after %.1fs (%s since the last report)",
                 self._name,
                 outage,
-                _losses(dropped, unconfirmed),
+                losses,
             )
+
+    def _report_pending(self) -> None:
+        """Report losses still unreported once a report line is due."""
+        with self._lock:
+            now = self._monotonic()
+            pending = self._dropped or self._unconfirmed
+            if not pending or not self._log_due(self._last_report, now):
+                return
+            losses = self._take_losses(now)
+        self._logger.warning(
+            "Publishing to %s continues (%s since the last report)",
+            self._name,
+            losses,
+        )
+
+    def _take_losses(self, now: float) -> str:
+        """Describe and reset the unreported losses (lock held)."""
+        losses = _losses(self._dropped, self._unconfirmed)
+        self._dropped = self._unconfirmed = 0
+        self._last_report = now
+        return losses
 
     def record_failure(
         self,
@@ -273,13 +316,14 @@ class PublishBreaker:
                 if not self._log_due(self._last_closed_log, now):
                     return
                 self._last_closed_log = now
-            else:
-                if not self._log_due(self._last_outage_log, now):
+            elif kind == "opened":
+                if not self._log_due(self._last_open_log, now):
                     return
-                self._last_outage_log = now
+                self._last_open_log = now
                 self._outage_reported = True
-            losses = _losses(self._dropped, self._unconfirmed)
-            self._dropped = self._unconfirmed = 0
+            elif not self._log_due(self._last_report, now):
+                return
+            losses = self._take_losses(now)
             cooldown = self._cooldown
             outage = now - self._opened_at
 

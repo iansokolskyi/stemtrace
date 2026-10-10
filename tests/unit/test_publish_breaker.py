@@ -404,8 +404,10 @@ class TestPublishBreakerFlakyBroker:
         assert delivered == 1200
         records = _records(caplog)
         assert 2 <= len(records) <= 3
-        assert all(r.exc_info is not None for r in records)
-        # Everything since the first line, about 60s at 10 failures per second.
+        assert records[0].exc_info is not None
+        # The next line (a failure line or a loss report, whichever comes due
+        # first) reports everything since the first one: about 60s at 10
+        # failures per second.
         match = re.search(r"\((\d+) event\(s\) dropped", records[1].getMessage())
         assert match is not None
         assert 599 <= int(match.group(1)) <= 601
@@ -449,6 +451,105 @@ class TestPublishBreakerFlakyBroker:
         assert all(r.exc_info is None for r in records[1:])
         assert "TestBroker still unavailable" in records[1].getMessage()
         assert "next attempt in 30.0s" in records[-1].getMessage()
+
+
+class TestPublishBreakerLossReporting:
+    """Every loss is reported within one interval, however the broker flaps."""
+
+    def test_second_brief_outage_is_reported_within_one_interval(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _attempt_succeeds(breaker)
+        assert len(_records(caplog)) == 2
+        # A second outage 10s later: its opening line is rate-limited, and
+        # so is the line when it recovers.
+        clock.advance(9.0)
+        _attempt_fails(breaker, "second")
+        for _ in range(5):
+            breaker.allow()
+        clock.advance(1.0)
+        _attempt_succeeds(breaker)
+        assert breaker.dropped == 6
+        assert len(_records(caplog)) == 2
+
+        # Healthy publishing goes on; once an interval has passed since the
+        # last report, the pending losses are reported.
+        for _ in range(60):
+            clock.advance(1.0)
+            _attempt_succeeds(breaker)
+
+        assert breaker.dropped == 0
+        messages = [r.getMessage() for r in _records(caplog)]
+        assert messages[2:] == [
+            "Publishing to TestBroker continues "
+            "(6 event(s) dropped since the last report)"
+        ]
+
+    def test_nothing_pending_writes_no_report(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+
+        for _ in range(200):
+            clock.advance(1.0)
+            _attempt_succeeds(breaker)
+
+        assert _records(caplog) == []
+
+    @pytest.mark.parametrize("elapsed", [FAST, SLOW])
+    def test_flapping_broker_writes_at_most_four_lines_per_interval(
+        self, elapsed: float
+    ) -> None:
+        clock = FakeClock()
+        logger = logging.getLogger(f"{LOGGER_NAME}.flapping")
+        logger.propagate = False
+        stamps: list[float] = []
+
+        class Stamp(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                stamps.append(clock.now)
+
+        handler = Stamp()
+        logger.addHandler(handler)
+        try:
+            breaker = PublishBreaker(
+                "TestBroker",
+                logger=logger,
+                initial_cooldown=1.0,
+                max_cooldown=30.0,
+                log_interval=60.0,
+                probe_timeout=60.0,
+                slow_attempt=0.5,
+                failures_to_open=3,
+                monotonic=clock,
+            )
+            rng = random.Random(99)
+            # Bursts of failures and successes in random lengths.
+            pattern = [rng.random() < 0.5 for _ in range(12000)]
+            _simulate(
+                breaker,
+                clock,
+                seconds=600.0,
+                rate=20.0,
+                fails=lambda i: pattern[i],
+                elapsed=elapsed,
+            )
+        finally:
+            logger.removeHandler(handler)
+
+        start = 1000.0
+        for window in range(10):
+            lo = start + window * 60.0
+            assert sum(lo <= t < lo + 60.0 for t in stamps) <= 4
+        # Losses never stay unreported for long.
+        assert breaker.dropped < 20 * 60
 
 
 class TestPublishBreakerInFlightAttempts:
