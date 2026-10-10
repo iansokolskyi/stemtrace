@@ -30,6 +30,7 @@ exit(1) if missing else print('✓ All public APIs have docstrings') \
 lint:
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
+	uv run lint-imports
 
 format:
 	uv run ruff format src/ tests/

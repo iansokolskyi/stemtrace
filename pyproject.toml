@@ -57,6 +57,7 @@ dev = [
     "websockets>=12.0",  # For WebSocket E2E tests
     "build>=1.0.0",  # For local package builds
     "twine>=5.0.0",  # For package verification
+    "import-linter>=2.0",  # Enforces the core/library/server import boundaries (make lint, CI)
 ]
 
 [project.urls]
@@ -155,6 +156,39 @@ known-first-party = ["stemtrace"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D", "ARG"]  # No docstrings required in tests
 "examples/**/*.py" = ["ARG001", "D417"]  # bind=True tasks have unused self
+
+# =============================================================================
+# import-linter (architecture boundaries, see CONTRIBUTING.md)
+# =============================================================================
+[tool.importlinter]
+root_package = "stemtrace"
+
+[[tool.importlinter.contracts]]
+name = "core is independent of library and server"
+type = "forbidden"
+source_modules = ["stemtrace.core"]
+forbidden_modules = ["stemtrace.library", "stemtrace.server"]
+
+[[tool.importlinter.contracts]]
+name = "library does not import server"
+type = "forbidden"
+source_modules = ["stemtrace.library"]
+forbidden_modules = ["stemtrace.server"]
+
+[[tool.importlinter.contracts]]
+name = "server does not import library"
+type = "forbidden"
+source_modules = ["stemtrace.server"]
+forbidden_modules = ["stemtrace.library"]
+# Baseline: existing violations, to be removed by refactors — do not add new entries.
+ignore_imports = [
+    # Removed when transports move to a neutral package both sides may import.
+    "stemtrace.server.consumer -> stemtrace.library.transports",
+    # `from stemtrace import __version__` pulls in the package root, which imports
+    # library/. Removed when the version is read from a module with no such imports.
+    "stemtrace.server.__main__ -> stemtrace",
+    "stemtrace.server.api.routes -> stemtrace",
+]
 
 # =============================================================================
 # pytest
