@@ -182,7 +182,9 @@ def init_app(
             deployment.
         login_ttl_seconds: Session TTL in seconds (default: 24 hours).
         node_alias_from_arguments: Derive graph node display name from task arguments.
-            Digit string for args[index], string for kwargs[key], or None (default).
+            Digit string for args[index], string for kwargs[key], or None (default)
+            to show task names. If None, uses the
+            STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var (empty means unset).
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -200,6 +202,11 @@ def init_app(
 
     if transport_url is None:
         transport_url = os.getenv("STEMTRACE_TRANSPORT_URL") or broker_url
+
+    if node_alias_from_arguments is None:
+        node_alias_from_arguments = (
+            os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or None
+        )
 
     mount_prefix = f"/{prefix.strip('/')}"
 

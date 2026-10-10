@@ -215,6 +215,65 @@ class TestInit:
         assert captured["transport_url"] == "redis://localhost:6379/0"
 
 
+class TestInitAppNodeAlias:
+    """Tests for node_alias_from_arguments resolution in init_app()."""
+
+    @pytest.fixture
+    def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        """Swap StemtraceExtension for a fake that records its kwargs."""
+        recorded: dict[str, object] = {}
+
+        class _FakeExtension:
+            def __init__(self, broker_url: str, **kwargs: object) -> None:
+                recorded["broker_url"] = broker_url
+                recorded.update(kwargs)
+
+            def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
+                del prefix
+
+        monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
+        monkeypatch.delenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", raising=False)
+        return recorded
+
+    def test_init_app_without_kwarg_uses_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS is used when the kwarg is omitted."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] == "operator_type"
+
+    def test_init_app_with_kwarg_overrides_env_var(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit node_alias_from_arguments wins over the env var."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "operator_type")
+
+        init_app(FastAPI(), broker_url="memory://", node_alias_from_arguments="0")
+
+        assert captured["node_alias_from_arguments"] == "0"
+
+    def test_init_app_with_empty_env_var_passes_none(
+        self, captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty env var counts as unset."""
+        monkeypatch.setenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS", "")
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
+
+    def test_init_app_without_kwarg_or_env_var_passes_none(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Without kwarg or env var the extension gets None (task names are shown)."""
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["node_alias_from_arguments"] is None
+
+
 class TestIntrospection:
     """Tests for introspection functions."""
 
