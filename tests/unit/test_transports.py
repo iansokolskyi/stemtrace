@@ -1,11 +1,14 @@
 """Tests for transport implementations."""
 
+import copy
+import itertools
 import logging
 import socket
 import sys
+import threading
 import types
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,9 +16,22 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
+from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
 from stemtrace.library.transports import get_transport
 from stemtrace.library.transports.memory import MemoryTransport
-from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+from stemtrace.library.transports.rabbitmq import (
+    CONNECT_TIMEOUT,
+    DRAIN_TIMEOUT,
+    RECONNECT_INITIAL_BACKOFF,
+    RECONNECT_MAX_BACKOFF,
+    RabbitMQTransport,
+)
+from stemtrace.library.transports.redis import (
+    RECONNECT_INITIAL_BACKOFF as REDIS_RECONNECT_INITIAL_BACKOFF,
+)
+from stemtrace.library.transports.redis import (
+    RECONNECT_MAX_BACKOFF as REDIS_RECONNECT_MAX_BACKOFF,
+)
 from stemtrace.library.transports.redis import (
     RedisTransport,
     _normalize_redis_ssl_params,
@@ -631,13 +647,20 @@ def _install_fake_kombu_for_consume(
 ) -> type[Any]:
     """Install a fake kombu consumer stack into sys.modules (no broker required).
 
+    The fake models the kombu behaviour the transport depends on: an entity
+    (Exchange/Queue) binds to a channel only once (``maybe_bind`` is a no-op
+    when already bound, and ``entity(channel)`` copies the entity, keeping an
+    existing binding), declaring an unbound entity fails, and declaring on a
+    channel whose connection has been closed fails like kombu does.
+
     Args:
         monkeypatch: pytest monkeypatch fixture.
         drain_handler: Callable invoked from Connection.drain_events with signature:
             (drain_count: int, callbacks: list[Any]) -> None
 
     Returns:
-        The fake Connection class so tests can inject behavior if needed.
+        The fake Connection class. ``Connection.instances`` lists every
+        connection opened, so tests can inspect their arguments and calls.
     """
     fake_kombu = types.ModuleType("kombu")
     fake_kombu_messaging = types.ModuleType("kombu.messaging")
@@ -658,41 +681,104 @@ def _install_fake_kombu_for_consume(
                 raise RuntimeError("reject failed")
 
     class FakeChannel:
-        def __init__(self) -> None:
+        def __init__(self, connection: "Connection") -> None:
+            self.connection = connection
             self.callbacks: list[Any] = []
+            self.on_decode_error: Any = None
 
     class Connection:
-        def __init__(self, url: str, **_: Any) -> None:
+        instances: ClassVar[list["Connection"]] = []
+        # Hosts that refuse connections; tests mutate this to simulate outages.
+        down_hosts: ClassVar[set[str]] = set()
+        # Optional hook called with each host as it is tried.
+        on_attempt: ClassVar[Any] = None
+
+        def __init__(self, url: str, **kwargs: Any) -> None:
             self.url = url
-            self._channel = FakeChannel()
+            self.kwargs = kwargs
+            # kombu splits ";"-separated URLs into failover alternates.
+            self.alt: list[str] = url.split(";") if ";" in url else []
+            self.attempted_hosts: list[str] = []
+            self.connected_host: str | None = None
+            self.closed = False
+            self.released = False
+            self.collected = False
+            self.ensure_calls: list[dict[str, Any]] = []
+            self.drain_timeouts: list[float] = []
+            self._channel = FakeChannel(self)
             self._drain_count = 0
+            Connection.instances.append(self)
 
-        def __enter__(self) -> "Connection":
-            return self
+        @property
+        def connected(self) -> bool:
+            return self.connected_host is not None and not self.closed
 
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            del exc_type, exc, tb
+        def ensure_connection(self, **kwargs: Any) -> "Connection":
+            """Mimic kombu's retry_over_time: raise before switching hosts."""
+            self.ensure_calls.append(kwargs)
+            max_retries = kwargs.get("max_retries")
+            hosts = self.alt or [self.url]
+            for retries in itertools.count():
+                host = hosts[retries % len(hosts)]
+                self.attempted_hosts.append(host)
+                if Connection.on_attempt is not None:
+                    Connection.on_attempt(host)
+                if host not in Connection.down_hosts:
+                    self.connected_host = host
+                    return self
+                if max_retries is not None and retries >= max_retries:
+                    raise ConnectionRefusedError(f"{host} is down")
+                # kombu calls `callback` before moving on to the next host.
+                callback = kwargs.get("callback")
+                if callback is not None:
+                    callback()
+            raise AssertionError("unreachable")
 
         def channel(self) -> FakeChannel:
+            if not self.connected:
+                raise AssertionError("channel() before ensure_connection()")
             return self._channel
 
-        def drain_events(self, *, timeout: int) -> None:
-            del timeout
+        def release(self) -> None:
+            self.released = True
+            self.closed = True
+
+        def collect(self) -> None:
+            self.collected = True
+            self.closed = True
+
+        def drain_events(self, *, timeout: float) -> None:
+            self.drain_timeouts.append(timeout)
             self._drain_count += 1
             drain_handler(self._drain_count, self._channel.callbacks)
 
-    class Exchange:
+    class _Entity:
+        def __init__(self) -> None:
+            self.channel: FakeChannel | None = None
+
+        def maybe_bind(self, channel: FakeChannel) -> Any:
+            # kombu binds only once: a bound entity ignores later channels.
+            if self.channel is None and channel:
+                self.channel = channel
+            return self
+
+        def __call__(self, channel: FakeChannel) -> Any:
+            # kombu's bind(): copy, then maybe_bind (keeps an existing binding).
+            return copy.copy(self).maybe_bind(channel)
+
+        def declare(self) -> None:
+            if self.channel is None:
+                raise RuntimeError("entity is not bound to a channel")
+            if self.channel.connection.closed:
+                raise ConnectionError("connection already closed")
+
+    class Exchange(_Entity):
         def __init__(self, name: str, *, type: str, durable: bool) -> None:
+            super().__init__()
             self.name = name
             del type, durable
 
-        def maybe_bind(self, channel: FakeChannel) -> None:
-            del channel
-
-        def declare(self) -> None:
-            return None
-
-    class Queue:
+    class Queue(_Entity):
         def __init__(
             self,
             *,
@@ -702,14 +788,9 @@ def _install_fake_kombu_for_consume(
             durable: bool,
             queue_arguments: dict[str, Any],
         ) -> None:
+            super().__init__()
             self.name = name
             del exchange, routing_key, durable, queue_arguments
-
-        def maybe_bind(self, channel: FakeChannel) -> None:
-            del channel
-
-        def declare(self) -> None:
-            return None
 
     class Consumer:
         def __init__(
@@ -718,19 +799,17 @@ def _install_fake_kombu_for_consume(
             *,
             queues: list[Queue],
             callbacks: list[Any],
+            on_decode_error: Any = None,
             accept: list[str],
         ) -> None:
             del queues, accept
             self._channel = channel
             self._callbacks = callbacks
+            self._on_decode_error = on_decode_error
 
-        def __enter__(self) -> "Consumer":
+        def consume(self) -> None:
             self._channel.callbacks = self._callbacks
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            del exc_type, exc, tb
-            self._channel.callbacks = []
+            self._channel.on_decode_error = self._on_decode_error
 
     fake_kombu.Connection = Connection
     fake_kombu.Exchange = Exchange
@@ -741,6 +820,23 @@ def _install_fake_kombu_for_consume(
     monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
     monkeypatch.setitem(sys.modules, "kombu.messaging", fake_kombu_messaging)
     return Connection
+
+
+class _RunawayLoopError(BaseException):
+    """Raised by _BoundedSleep to break a reconnect loop that never recovers."""
+
+
+class _BoundedSleep:
+    """Injectable sleep that records delays and aborts a runaway reconnect loop."""
+
+    def __init__(self, limit: int = 20) -> None:
+        self.delays: list[float] = []
+        self._limit = limit
+
+    def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        if len(self.delays) >= self._limit:
+            raise _RunawayLoopError(f"still reconnecting after {self._limit} sleeps")
 
 
 class TestRabbitMQTransport:
@@ -1054,9 +1150,18 @@ class TestRabbitMQTransport:
         class FakeChannel:
             pass
 
+        class FakeAmqpConnection:
+            def close(self) -> None:
+                published["closed"] = True
+
+            def collect(self) -> None:
+                published["collected"] = True
+
         class Connection:
-            def __init__(self, url: str) -> None:
+            def __init__(self, url: str, **_: Any) -> None:
                 self.url = url
+                self.alt: list[str] = []
+                self.connection = FakeAmqpConnection()
                 self._channel = FakeChannel()
 
             def __enter__(self) -> "Connection":
@@ -1064,6 +1169,9 @@ class TestRabbitMQTransport:
 
             def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
                 del exc_type, exc, tb
+
+            def ensure_connection(self, **_: Any) -> "Connection":
+                return self
 
             def channel(self) -> FakeChannel:
                 return self._channel
@@ -1101,3 +1209,615 @@ class TestRabbitMQTransport:
         assert published["body"]["task_id"] == "t4"
         assert published["serializer"] == "json"
         assert published["delivery_mode"] == 2
+        assert published["closed"] is True
+        assert "collected" not in published
+
+
+class _RecordingStopEvent(threading.Event):
+    """Stop event that records wait() timeouts and sets itself on the first wait."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        self.set()
+        return True
+
+
+class TestRabbitMQConsumeBackoff:
+    """Reconnect backoff, stop handling and connectivity of RabbitMQTransport.consume()."""
+
+    @staticmethod
+    def _event_body() -> dict[str, Any]:
+        return TaskEvent(
+            task_id="backoff-1",
+            name="tests.backoff",
+            state=TaskState.RECEIVED,
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ).model_dump(mode="json")
+
+    @classmethod
+    def _deliver(cls, callbacks: list[Any]) -> None:
+        msg = sys.modules["kombu"].FakeMessage()  # type: ignore[attr-defined]
+        for cb in callbacks:
+            cb(cls._event_body(), msg)
+
+    def test_backoff_constants_match_redis_transport(self) -> None:
+        """Both transports back off with the same initial delay and cap."""
+        assert RECONNECT_INITIAL_BACKOFF == REDIS_RECONNECT_INITIAL_BACKOFF
+        assert RECONNECT_MAX_BACKOFF == REDIS_RECONNECT_MAX_BACKOFF
+
+    def test_transport_implements_stoppable_and_connection_aware(self) -> None:
+        """The consumer can bind a stop event and read connectivity."""
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        assert isinstance(transport, StoppableTransport)
+        assert isinstance(transport, ConnectionAwareTransport)
+        assert transport.connected is None
+
+    def test_consume_when_broker_down_backs_off_exponentially_and_logs_once(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Failures sleep 1,2,4,...,30s; only the first failure logs a traceback."""
+        failures_before_success = 7
+        attempts = {"n": 0}
+        sleeper = _BoundedSleep()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_ensure = conn_cls.ensure_connection
+
+        def flaky_ensure(conn: Any, **kwargs: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] <= failures_before_success:
+                raise ConnectionRefusedError("broker down")
+            return original_ensure(conn, **kwargs)
+
+        monkeypatch.setattr(conn_cls, "ensure_connection", flaky_ensure)
+
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            received = next(gen)
+            gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeper.delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        # One per failure, plus the recovery line.
+        assert len(warnings) == failures_before_success + 1
+        assert warnings[0].exc_info is not None
+        assert all(r.exc_info is None for r in warnings[1:])
+        assert "still failing (attempt 7): broker down" in warnings[-2].getMessage()
+        assert "reconnected after 7 failure(s)" in warnings[-1].getMessage()
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_consume_when_connection_drops_before_first_read_keeps_backing_off(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Connections dropped before their first drain completes don't reset backoff."""
+        sleeper = _BoundedSleep()
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] <= 3:
+                raise ConnectionResetError("dropped")
+            self._deliver(callbacks)
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            received = next(gen)
+            gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeper.delays == [1.0, 2.0, 4.0]
+        assert "reconnected after 3 failure(s)" in caplog.text
+
+    def test_consume_after_drain_timeout_resets_backoff(self, monkeypatch: Any) -> None:
+        """A drain that times out proves the connection is alive and resets backoff."""
+        sleeper = _BoundedSleep()
+        attempts = {"n": 0}
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] == 1:
+                raise TimeoutError
+            if drains["n"] == 2:
+                raise ConnectionResetError("dropped")
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_channel = conn_cls.channel
+
+        def flaky_channel(conn: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] <= 2:
+                raise ConnectionRefusedError("broker down")
+            return original_channel(conn)
+
+        monkeypatch.setattr(conn_cls, "channel", flaky_channel)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeper.delays == [1.0, 2.0, 1.0]
+
+    def test_consume_when_stop_event_set_during_backoff_wakes_and_ends(
+        self, monkeypatch: Any
+    ) -> None:
+        """The backoff waits on the bound stop event, not sleep, and then ends."""
+        sleeper = _BoundedSleep()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            raise AssertionError("must not connect")
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+
+        def broken_channel(conn: Any) -> Any:
+            del conn
+            raise ConnectionRefusedError("broker down")
+
+        monkeypatch.setattr(conn_cls, "channel", broken_channel)
+        stop = _RecordingStopEvent()
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+        assert stop.waits == [1.0]
+        assert sleeper.delays == []
+        assert transport.connected is False
+
+    def test_consume_when_stop_event_set_while_connected_ends(
+        self, monkeypatch: Any
+    ) -> None:
+        """Setting the stop event ends the drain loop without reconnecting."""
+        stop = threading.Event()
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            drains["n"] += 1
+            stop.set()
+            raise TimeoutError
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+        assert drains["n"] == 1
+
+    def test_consume_with_stop_event_already_set_never_connects(
+        self, monkeypatch: Any
+    ) -> None:
+        """consume() ends immediately when the stop event is already set."""
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=lambda _n, _cb: None
+        )
+
+        def unexpected_channel(conn: Any) -> Any:
+            del conn
+            raise AssertionError("must not connect")
+
+        monkeypatch.setattr(conn_cls, "channel", unexpected_channel)
+        stop = threading.Event()
+        stop.set()
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+
+    def test_connected_tracks_failures_and_successful_drains(
+        self, monkeypatch: Any
+    ) -> None:
+        """connected is False while failing and True after a drain (timeouts count)."""
+        observed: list[bool | None] = []
+        attempts = {"n": 0}
+        transport_ref: dict[str, RabbitMQTransport] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            observed.append(transport_ref["t"].connected)
+            if drain_count == 1:
+                raise TimeoutError
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_channel = conn_cls.channel
+
+        def flaky_channel(conn: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ConnectionRefusedError("broker down")
+            return original_channel(conn)
+
+        monkeypatch.setattr(conn_cls, "channel", flaky_channel)
+        transport = RabbitMQTransport(
+            "amqp://localhost",
+            prefix="test",
+            ttl=60,
+            sleep=lambda _s: observed.append(transport.connected),
+        )
+        transport_ref["t"] = transport
+
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        # sleep after the failure, first drain (still failing), second drain
+        # (after a timed-out drain proved the connection alive).
+        assert observed == [False, False, True]
+        assert transport.connected is True
+
+    def test_consume_called_again_resets_connected_until_first_drain(
+        self, monkeypatch: Any
+    ) -> None:
+        """A new consume() reports unknown connectivity until its first drain."""
+        observed: list[bool | None] = []
+        transport_ref: dict[str, RabbitMQTransport] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            observed.append(transport_ref["t"].connected)
+            self._deliver(callbacks)
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport_ref["t"] = transport
+
+        for _ in range(2):
+            gen = transport.consume()
+            next(gen)
+            gen.close()
+
+        assert observed == [None, None]
+        assert transport.connected is True
+
+    def test_consume_when_error_follows_stop_ends_without_backoff(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A connection error raised after stop was requested ends quietly."""
+        sleeper = _BoundedSleep()
+        stop = threading.Event()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            stop.set()
+            raise ConnectionResetError("closed during shutdown")
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        transport.bind_stop_event(stop)
+
+        with caplog.at_level(logging.WARNING):
+            assert list(transport.consume()) == []
+
+        assert sleeper.delays == []
+        assert caplog.records == []
+
+    def test_consume_after_connection_drop_declares_on_new_channel(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """After a drop the exchange and queue are declared on the new connection."""
+        sleeper = _BoundedSleep()
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] == 2:
+                raise ConnectionResetError("broker restarted")
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            first = next(gen)
+            second = next(gen)
+            gen.close()
+
+        assert [first.task_id, second.task_id] == ["backoff-1", "backoff-1"]
+        assert len(conn_cls.instances) == 2
+        assert conn_cls.instances[0].released is True
+        assert sleeper.delays == [1.0]
+        assert "reconnected after 1 failure(s)" in caplog.text
+
+    def test_consume_connects_without_kombu_retry_and_with_bounded_timeouts(
+        self, monkeypatch: Any
+    ) -> None:
+        """Each attempt connects once (no hidden kombu retry) with short timeouts."""
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count == 1:
+                raise TimeoutError
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        next(gen)
+        gen.close()
+
+        assert CONNECT_TIMEOUT <= 2.0
+        assert DRAIN_TIMEOUT <= 1.0
+        (conn,) = conn_cls.instances
+        assert conn.kwargs == {"connect_timeout": CONNECT_TIMEOUT}
+        assert conn.ensure_calls == [
+            {
+                "max_retries": 0,
+                "reraise_as_library_errors": False,
+                "callback": transport._raise_if_stopping,
+            }
+        ]
+        assert conn.drain_timeouts == [DRAIN_TIMEOUT, DRAIN_TIMEOUT]
+
+    def test_consume_with_failover_url_uses_next_host_without_backoff(
+        self, monkeypatch: Any
+    ) -> None:
+        """With h1 down, one attempt tries h1 then h2 (no sleep) and consumes from h2."""
+        sleeper = _BoundedSleep()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        conn_cls.down_hosts.add("amqp://h1//")
+        transport = RabbitMQTransport(
+            "amqp://h1//;amqp://h2//", prefix="test", ttl=60, sleep=sleeper
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeper.delays == []
+        (conn,) = conn_cls.instances
+        assert conn.ensure_calls == [
+            {
+                "max_retries": 1,
+                "reraise_as_library_errors": False,
+                "callback": transport._raise_if_stopping,
+            }
+        ]
+        assert conn.attempted_hosts == ["amqp://h1//", "amqp://h2//"]
+        assert conn.connected_host == "amqp://h2//"
+
+    def test_consume_with_failover_url_all_hosts_down_backs_off_per_round(
+        self, monkeypatch: Any
+    ) -> None:
+        """When every host is down, each attempt tries all of them, then backs off."""
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        conn_cls.down_hosts.update({"amqp://h1//", "amqp://h2//"})
+        delays: list[float] = []
+
+        def sleep(delay: float) -> None:
+            delays.append(delay)
+            if len(delays) == 2:
+                conn_cls.down_hosts.discard("amqp://h2//")
+
+        transport = RabbitMQTransport(
+            "amqp://h1//;amqp://h2//", prefix="test", ttl=60, sleep=sleep
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert delays == [1.0, 2.0]
+        assert [c.attempted_hosts for c in conn_cls.instances] == [
+            ["amqp://h1//", "amqp://h2//"]
+        ] * 3
+
+    def test_consume_when_stopped_abandons_connection_without_close_handshake(
+        self, monkeypatch: Any
+    ) -> None:
+        """On stop the socket is dropped (collect), not closed gracefully."""
+        stop = threading.Event()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            stop.set()
+            raise TimeoutError
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+        (conn,) = conn_cls.instances
+        assert conn.collected is True
+        assert conn.released is False
+
+    def test_consume_closed_by_caller_releases_connection(
+        self, monkeypatch: Any
+    ) -> None:
+        """Closing the iterator without a stop closes the connection gracefully."""
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        next(gen)
+        gen.close()
+
+        (conn,) = conn_cls.instances
+        assert conn.released is True
+        assert conn.collected is False
+
+    def test_consume_drops_undecodable_message_and_stays_connected(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A message kombu can't decode is rejected once, not retried as an outage."""
+        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        sleeper = _BoundedSleep()
+        bad: dict[str, Any] = {}
+        conn_ref: dict[str, Any] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count == 1:
+                msg = sys.modules["kombu"].FakeMessage(  # type: ignore[attr-defined]
+                    reject_raises=True
+                )
+                bad["msg"] = msg
+                channel = conn_ref["cls"].instances[-1].channel()
+                channel.on_decode_error(
+                    msg,
+                    ValueError("Refusing to deserialize content of type text/plain"),
+                )
+                return
+            self._deliver(callbacks)
+
+        conn_ref["cls"] = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert bad["msg"].rejected is True
+        assert sleeper.delays == []
+        assert transport.connected is True
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Dropping undecodable message" in warnings[0].getMessage()
+        assert "text/plain" in warnings[0].getMessage()
+        assert "Failed to reject undecodable RabbitMQ message" in caplog.text
+
+    def test_consume_when_closing_connection_fails_logs_debug_and_continues(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing close never escapes; the consumer reconnects as usual."""
+        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        sleeper = _BoundedSleep()
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] == 1:
+                raise ConnectionResetError("dropped")
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+
+        def broken_release(conn: Any) -> None:
+            conn.closed = True
+            raise OSError("socket already closed")
+
+        monkeypatch.setattr(conn_cls, "release", broken_release)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeper
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeper.delays == [1.0]
+        assert "Failed to close RabbitMQ consumer connection" in caplog.text
+
+    def test_consume_when_stopped_during_failover_pass_skips_remaining_hosts(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stop requested while trying one host ends before trying the next."""
+        sleeper = _BoundedSleep()
+        stop = threading.Event()
+        hosts = ["amqp://h1//", "amqp://h2//", "amqp://h3//"]
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=lambda _n, _cb: None
+        )
+        conn_cls.down_hosts.update(hosts)
+        monkeypatch.setattr(
+            conn_cls,
+            "on_attempt",
+            lambda host: stop.set() if host == hosts[0] else None,
+        )
+        transport = RabbitMQTransport(
+            ";".join(hosts), prefix="test", ttl=60, sleep=sleeper
+        )
+        transport.bind_stop_event(stop)
+
+        with caplog.at_level(logging.WARNING):
+            assert list(transport.consume()) == []
+
+        (conn,) = conn_cls.instances
+        assert conn.attempted_hosts == [hosts[0]]
+        assert conn.ensure_calls[0]["max_retries"] == 2
+        assert sleeper.delays == []
+        assert caplog.records == []

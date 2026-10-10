@@ -4,7 +4,7 @@
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.3.7-darklime)](https://pypi.org/project/stemtrace)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.3.8-darklime)](https://pypi.org/project/stemtrace)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
@@ -198,10 +198,6 @@ stemtrace.init_worker(
     scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
-
-    # UI display
-    node_alias_from_arguments="operator_type", # Use kwargs["operator_type"] as node name
-    # node_alias_from_arguments="0",           # Or use args[0] (digit string = positional index)
 )
 
 # Introspection (after init)
@@ -281,6 +277,7 @@ stemtrace.init_app(
 |----------|-------------|---------|
 | `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
+| `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node Names from Task Arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 
 ### Supported Brokers
 
@@ -301,6 +298,36 @@ again once events are re-consumed.
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
+  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker, and a
+    broker outage doesn't slow tasks down. Each publish tries every host of the broker URL once
+    (2s connect timeout, 2s per read or write after that). A single quick failure, such as a
+    refused connection, drops only that event; a failure that took 0.5s or more (a timeout) or
+    three quick failures in a row make the worker skip publishing for a cooldown that grows from
+    1s to 30s and resets on the next successful publish.
+  - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
+    from publishers, so a publish is sent but never confirmed. The worker counts such events as
+    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); after two
+    unconfirmed attempts in a row it retries only every 30s. Each attempt leaves one blocked
+    connection on the broker until the alarm clears, so expect 2 to 3 connections per worker
+    process in the first minute of an alarm and about 2 per minute after that, all released
+    when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
+    from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
+    notice arriving while the connection closes.
+  - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
+    an outage starting, an outage ending, and a summary). Each reports the number of events
+    dropped, and sent but unconfirmed, since the previous one, and losses are reported within
+    about 1.5 minutes even when the broker flaps.
+  - Limitation: a broker that answers but slowly (say, close to the 2s timeout for each step)
+    still costs every event several seconds, because publishes that eventually succeed don't
+    open the breaker.
+  - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
+    cluster: workers keep publishing to whichever host last worked, so the server must be able to
+    consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)
+    takes user, password, port, virtual host and TLS options from the first entry, while a
+    URL-form entry (`;amqp://h2`) gets guest/guest unless it names credentials, and takes port
+    and virtual host from the previous entry only when it omits them (`//` means `/`). A host
+    that refuses the login ends that publish attempt without trying the later hosts, as in
+    kombu.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
@@ -329,6 +356,15 @@ RabbitMQ broker + Redis event transport (recommended if you want history across 
 docker run -p 8000:8000 \
     -e STEMTRACE_BROKER_URL=amqp://guest:guest@host.docker.internal:5672// \
     -e STEMTRACE_TRANSPORT_URL=redis://host.docker.internal:6379/0 \
+    ghcr.io/iansokolskyi/stemtrace
+```
+
+Show a task argument as the graph node name (here `kwargs["operator_type"]`):
+
+```bash
+docker run -p 8000:8000 \
+    -e STEMTRACE_BROKER_URL=redis://host.docker.internal:6379/0 \
+    -e STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS=operator_type \
     ghcr.io/iansokolskyi/stemtrace
 ```
 
@@ -375,8 +411,25 @@ stemtrace server \
     --transport-url redis://myredis:6379/0 \
     --host 0.0.0.0 \
     --port 8000 \
+    --node-alias-from-arguments operator_type \
     --reload  # For development
 ```
+
+#### Node Names from Task Arguments
+
+By default, graph nodes are labeled with the task name. Generic tasks (e.g. one `run_operator`
+task that does different things depending on its arguments) are easier to tell apart when the
+graph shows an argument instead:
+
+- `--node-alias-from-arguments operator_type` uses `kwargs["operator_type"]`
+- `--node-alias-from-arguments 0` uses `args[0]` (a digit string is a positional index)
+
+If the argument is missing, the task name is shown. This is a **server** setting: set it on
+`stemtrace server` (flag or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`, e.g. in Docker) or pass
+`node_alias_from_arguments` to `stemtrace.init_app(...)`. Surrounding whitespace is ignored, and
+`stemtrace server` prints `Node alias: <key>` at startup when it is set. Workers need
+`capture_args=True` (the default) so the arguments are available. Passing it to
+`stemtrace.init_worker(...)` has no effect and is deprecated.
 
 #### Protecting the Server (Built-in Login Page)
 
@@ -431,6 +484,7 @@ extension = stemtrace.init_app(
     embedded_consumer=True,     # Run consumer in FastAPI process
     serve_ui=True,              # Serve React dashboard
     auth_dependency=None,       # Optional auth (see below)
+    node_alias_from_arguments=None,  # e.g. "operator_type" or "0"; see Node Names from Task Arguments
 )
 ```
 
@@ -512,7 +566,7 @@ Because the status code stays 200, check `status` in the body if you want monito
 What is detected depends on the transport:
 
 - **Redis:** refused or reset connections, connect timeouts, repeated read timeouts, and consumer loop failures. On redis-py < 8 the default socket timeout is unbounded, so a half-open or hung broker connection may go unnoticed; add `?socket_timeout=…` or `?health_check_interval=…` to the broker URL if you need that.
-- **RabbitMQ:** connectivity isn't reported (`consumer_connected` is `null`), so `"degraded"` only reflects consumer loop failures.
+- **RabbitMQ:** refused or dropped connections and channel errors while connecting or draining, and consumer loop failures. The consumer connection is read about once a second and a read that times out counts as connected, so a half-open connection, or a broker that is frozen but keeps the socket open, may go unnoticed. Messages the consumer can't decode (not JSON) are dropped with a warning and don't count as failures.
 
 ## 🗺️ Roadmap
 

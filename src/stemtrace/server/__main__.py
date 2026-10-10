@@ -1,5 +1,6 @@
 """CLI entry point for stemtrace server."""
 
+import os
 from typing import Annotated
 
 import typer
@@ -78,6 +79,18 @@ def server(
             help="Login session TTL in seconds.",
         ),
     ] = 86400,
+    node_alias_from_arguments: Annotated[
+        str | None,
+        typer.Option(
+            "--node-alias-from-arguments",
+            envvar="STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS",
+            help=(
+                "Show a task argument as the graph node name instead of the task "
+                "name: a kwarg name (e.g. operator_type) or a positional index "
+                "(e.g. 0). Falls back to the task name when the argument is missing."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
@@ -97,6 +110,16 @@ def server(
     typer.echo(f"Starting stemtrace server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
     typer.echo(f"Transport: {transport_url or broker_url}")
+    # Blank or padded values (e.g. from env files) count as unset / are trimmed.
+    # Blank means unset, as in init_app(): an explicit empty flag falls back to
+    # the env var.
+    node_alias = (
+        (node_alias_from_arguments or "").strip()
+        or (os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or "").strip()
+        or None
+    )
+    if node_alias is not None:
+        typer.echo(f"Node alias: {node_alias}")
 
     form_auth_config: FormAuthConfig | None = None
     if (login_username is None) != (login_password is None):
@@ -122,6 +145,7 @@ def server(
         transport_url=transport_url,
         serve_ui=False,
         form_auth_config=form_auth_config,
+        node_alias_from_arguments=node_alias,
     )
     fastapi_app = FastAPI(
         title="stemtrace",

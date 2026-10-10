@@ -1,4 +1,4 @@
-.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major release
+.PHONY: install check types lint format test coverage clean ui-install ui-dev ui-build e2e e2e-api e2e-playwright build release-check version bump-dry bump-patch bump-minor bump-major release release-pr release-tag
 
 # Install all dependencies
 install:
@@ -99,6 +99,8 @@ build:
 # Full pre-release checklist
 release-check:
 	@echo "=== Pre-release Checklist ==="
+	@echo "0. Checking CHANGELOG.md has [Unreleased] entries..."
+	@uv run python scripts/changelog_section.py Unreleased > /dev/null
 	@echo "1. Running all checks..."
 	$(MAKE) check
 	@echo ""
@@ -107,7 +109,6 @@ release-check:
 	@echo ""
 	@echo "✅ Ready to release!"
 	@echo ""
-	@echo "Next: make release"
 
 # =============================================================================
 # Versioning (bump-my-version)
@@ -126,7 +127,7 @@ bump-patch:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
@@ -134,7 +135,7 @@ bump-minor:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
@@ -142,20 +143,54 @@ bump-major:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: make release"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Tag and push to trigger release workflow
 release:
-	@VERSION=$$(uv run bump-my-version show current_version); \
-	TAG="v$$VERSION"; \
-	echo "Tagging $$TAG..."; \
-	git tag -a "$$TAG" -m "Release $$TAG"; \
-	echo "Pushing to origin..."; \
-	git push origin main; \
-	git push origin "$$TAG"; \
+	@echo "Releases go through a PR: make release-pr BUMP=patch|minor|major, then make release-tag."
+	@exit 1
+
+# Open a release PR: preflight, checks, release/vX.Y.Z branch, version bump, PR with notes.
+# Usage: make release-pr BUMP=patch|minor|major
+release-pr:
+	@set -e; \
+	case "$(BUMP)" in patch|minor|major) ;; *) echo "Usage: make release-pr BUMP=patch|minor|major"; exit 1;; esac; \
+	test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "❌ Run from main"; exit 1; }; \
+	test -z "$$(git status --porcelain)" || { echo "❌ Working tree not clean"; exit 1; }; \
+	gh auth status >/dev/null 2>&1 || { echo "❌ gh is not authenticated (gh auth login)"; exit 1; }; \
+	git fetch -q --tags origin main; \
+	test -z "$$(git log HEAD..origin/main --oneline)" || { echo "❌ main is behind origin/main"; exit 1; }; \
+	NEW=$$(uv run bump-my-version show new_version --increment $(BUMP)); \
+	! git rev-parse -q --verify "refs/heads/release/v$$NEW" >/dev/null || { echo "❌ Local branch release/v$$NEW exists"; exit 1; }; \
+	test -z "$$(git ls-remote --heads origin "release/v$$NEW")" || { echo "❌ Remote branch release/v$$NEW exists"; exit 1; }; \
+	! git rev-parse -q --verify "refs/tags/v$$NEW" >/dev/null || { echo "❌ Tag v$$NEW exists"; exit 1; }; \
+	$(MAKE) release-check; \
+	git switch -c "release/v$$NEW"; \
+	uv run bump-my-version bump $(BUMP); \
+	NOTES=$$(mktemp); trap 'rm -f "$$NOTES"' EXIT; \
+	uv run python scripts/changelog_section.py "$$NEW" > "$$NOTES"; \
+	git push -u origin "release/v$$NEW" || { echo "❌ Push failed; local branch release/v$$NEW holds the bump commit"; exit 1; }; \
+	gh pr create --base main --head "release/v$$NEW" --title "chore: release v$$NEW" --body-file "$$NOTES" \
+		|| { echo "❌ PR creation failed; release/v$$NEW is pushed, open the PR manually"; exit 1; }; \
 	echo ""; \
-	echo "✅ Released $$TAG"; \
-	echo "   → GitHub Actions will publish to PyPI and Docker"
+	echo "✅ Release PR opened for v$$NEW"; \
+	echo "Next: gh pr checks --watch, merge with a merge commit, then make release-tag"
+
+# Tag the merged release on main; the tag push triggers the Release workflow.
+release-tag:
+	@set -e; \
+	git switch -q main; \
+	git pull -q --ff-only origin main; \
+	VERSION=$$(uv run bump-my-version show current_version); \
+	TAG="v$$VERSION"; \
+	SUBJECT=$$(git log -1 --format=%s); \
+	test "$$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 || { echo "❌ HEAD of main is not a merge commit (merge the release PR with a merge commit)"; exit 1; }; \
+	case "$$SUBJECT" in *"/release/$$TAG"|*"release $$TAG"|*"release $$TAG "*) ;; *) echo "❌ HEAD of main is not the $$TAG release PR merge: $$SUBJECT"; exit 1;; esac; \
+	git fetch -q --tags origin; \
+	! git rev-parse -q --verify "refs/tags/$$TAG" >/dev/null || { echo "❌ $$TAG already exists"; exit 1; }; \
+	git tag -a "$$TAG" -m "Release $$TAG"; \
+	git push origin "$$TAG"; \
+	echo "✅ Tagged $$TAG → Release workflow publishes PyPI, GHCR and the GitHub Release"
 
 # =============================================================================
 # E2E Testing

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-10
+
+### Fixed
+- `node_alias_from_arguments` can now be set on the standalone server and Docker image: `stemtrace server --node-alias-from-arguments <key>` or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS=<key>` (a kwarg name or a positional index). `init_app()` reads the same env var when the argument isn't passed (#69).
+- RabbitMQ: publishing from workers no longer blocks tasks while the broker is down, stalled or in a memory/disk alarm. Each publish tries every host of the URL once with a 2s timeout; repeated or slow failures open a circuit breaker that drops events (instead of queueing them) until the broker answers again, and the worker logs at most four warnings a minute with counts of dropped events. The README's broker section has the details and limits.
+- RabbitMQ: the server's consumer now reconnects after the broker restarts or drops the connection; it used to retry forever on a dead channel.
+- RabbitMQ: a broker outage no longer floods the server log with one ERROR traceback per second; reconnects back off from 1s to 30s and log one line per attempt, plus one when the connection is back (thanks @ohadmata — #70, #71).
+- RabbitMQ: a message the consumer can't decode is dropped with a warning instead of blocking the queue forever.
+- RabbitMQ: stopping the server no longer waits out the reconnect delay or hangs on a frozen broker.
+
+### Added
+- Health endpoint: `consumer_connected` is now reported for RabbitMQ, so `/api/health` shows `degraded` while the server can't read from the broker.
+
+### Deprecated
+- `init_worker(node_alias_from_arguments=...)` has no effect (node names are resolved by the server) and now logs a deprecation warning; it will be removed in a future major release.
+
 ## [0.3.7] - 2026-10-10
 
 ### Changed
@@ -165,7 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.2...v0.3.3
