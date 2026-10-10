@@ -1,4 +1,4 @@
-import { expect, test, type WebSocketRoute } from '@playwright/test'
+import { expect, type Page, type Request, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import {
@@ -312,6 +312,54 @@ test.describe('Task Detail - Mock Scenarios', () => {
   })
 })
 
+/**
+ * Opens the detail page of `taskId` with the live socket mocked, and counts the
+ * page's detail API requests (not the navigation to `/tasks/<id>`, which ends in
+ * the same path). Returns once the first detail response has rendered and the
+ * app's socket is live, so the count is settled before any event is sent.
+ */
+async function openLiveTaskPage(page: Page, taskId: string) {
+  const sockets: WebSocketRoute[] = []
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    sockets.push(ws)
+  })
+  const isDetailRequest = (request: Request) =>
+    request.resourceType() === 'fetch' &&
+    decodeURIComponent(new URL(request.url()).pathname).endsWith(`/api/tasks/${taskId}`)
+  let detailRequests = 0
+  page.on('request', (request) => {
+    if (isDetailRequest(request)) detailRequests += 1
+  })
+
+  await page.goto(`/tasks/${taskId}`)
+  await expect(page.getByText(taskId, { exact: true })).toBeVisible()
+  await expect(page.getByText('Live', { exact: true })).toBeVisible()
+  expect(detailRequests).toBe(1)
+  // StrictMode (dev) opens and drops a socket before the one that goes live.
+  const ws = sockets[sockets.length - 1]
+  let expected = detailRequests
+
+  return {
+    /** Sends an event the page must ignore; the next `expectRefetch` proves it did. */
+    sendIgnored(event: object) {
+      ws.send(JSON.stringify(event))
+    },
+    /**
+     * Sends an event and expects exactly one detail refetch for it (and none for
+     * events sent before it). Waits for the response instead of sleeping: a
+     * refetch an earlier event started is issued before this one, so it is
+     * already counted when this response arrives.
+     */
+    async expectRefetch(event: object) {
+      const response = page.waitForResponse((r) => isDetailRequest(r.request()))
+      ws.send(JSON.stringify(event))
+      await response
+      expected += 1
+      expect(detailRequests).toBe(expected)
+    },
+  }
+}
+
 test.describe('Task Detail - Output', () => {
   test.skip(isRealMode, 'Mock-only test')
 
@@ -395,44 +443,22 @@ test.describe('Task Detail - Output', () => {
   })
 
   test('refetches the open task only for its own live events', async ({ page }) => {
-    let socket: WebSocketRoute | null = null
-    await page.routeWebSocket(/\/ws$/, (ws) => {
-      socket = ws
-    })
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const task = retriedTask()
     const sibling = createSuccessTask('test.unrelated', 'done')
     mockApi.addTask(task)
     mockApi.addTask(sibling)
-    let detailRequests = 0
-    page.on('request', (request) => {
-      if (new URL(request.url()).pathname.endsWith(`/tasks/${task.task_id}`)) {
-        detailRequests += 1
-      }
-    })
 
-    await page.goto(`/tasks/${task.task_id}`)
-    await page.waitForLoadState('networkidle')
+    const live = await openLiveTaskPage(page, task.task_id)
     await expect(page.getByTestId('output-attempt')).toHaveCount(2)
-    await expect.poll(() => socket !== null).toBe(true)
-    const ws = socket as unknown as WebSocketRoute
-    const initial = detailRequests
 
     // An event for another task must not refetch this task's detail (and output).
-    ws.send(JSON.stringify({ task_id: sibling.task_id, state: 'STARTED' }))
-    await page.waitForTimeout(1000)
-    expect(detailRequests).toBe(initial)
-
+    live.sendIgnored({ task_id: sibling.task_id, state: 'STARTED' })
     // An event for this task does.
-    ws.send(JSON.stringify({ task_id: task.task_id, state: 'FAILURE' }))
-    await expect.poll(() => detailRequests).toBe(initial + 1)
+    await live.expectRefetch({ task_id: task.task_id, state: 'FAILURE' })
   })
 
   test('refetches a chord page for its members and callback', async ({ page }) => {
-    let socket: WebSocketRoute | null = null
-    await page.routeWebSocket(/\/ws$/, (ws) => {
-      socket = ws
-    })
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const [chordNode, ...rest] = createGroup(2, { withCallback: true })
     const callback = rest[rest.length - 1]
@@ -440,49 +466,30 @@ test.describe('Task Detail - Output', () => {
     // The server lists the callback among the CHORD node's children.
     chordNode.children.push(callback.task_id)
     for (const task of [chordNode, ...rest]) mockApi.addTask(task)
-    let detailRequests = 0
-    page.on('request', (request) => {
-      const path = decodeURIComponent(new URL(request.url()).pathname)
-      if (path.endsWith(`/tasks/${chordNode.task_id}`)) detailRequests += 1
-    })
 
-    await page.goto(`/tasks/${chordNode.task_id}`)
-    await page.waitForLoadState('networkidle')
-    await expect.poll(() => socket !== null).toBe(true)
-    await expect.poll(() => detailRequests).toBeGreaterThan(0)
-    const ws = socket as unknown as WebSocketRoute
-    const initial = detailRequests
+    const live = await openLiveTaskPage(page, chordNode.task_id)
 
-    ws.send(JSON.stringify({ task_id: 'unrelated-task', state: 'STARTED', group_id: null }))
-    await page.waitForTimeout(1000)
-    expect(detailRequests).toBe(initial)
+    live.sendIgnored({ task_id: 'unrelated-task', state: 'STARTED', group_id: null })
 
     // A header task joining or changing state (matched by group_id).
-    ws.send(JSON.stringify({ task_id: 'new-member', state: 'STARTED', group_id: groupId }))
-    await expect.poll(() => detailRequests).toBe(initial + 1)
+    await live.expectRefetch({ task_id: 'new-member', state: 'STARTED', group_id: groupId })
 
     // The callback as Celery 5.6 sends it: frozen with the chord's group_id.
-    ws.send(
-      JSON.stringify({
-        task_id: callback.task_id,
-        state: 'STARTED',
-        group_id: groupId,
-        parent_id: null,
-      }),
-    )
-    await expect.poll(() => detailRequests).toBe(initial + 2)
+    await live.expectRefetch({
+      task_id: callback.task_id,
+      state: 'STARTED',
+      group_id: groupId,
+      parent_id: null,
+    })
 
     // Fallback: a callback event without group_id still matches, because the
     // server lists the callback among the CHORD node's children.
-    ws.send(
-      JSON.stringify({
-        task_id: callback.task_id,
-        state: 'SUCCESS',
-        group_id: null,
-        parent_id: null,
-      }),
-    )
-    await expect.poll(() => detailRequests).toBe(initial + 3)
+    await live.expectRefetch({
+      task_id: callback.task_id,
+      state: 'SUCCESS',
+      group_id: null,
+      parent_id: null,
+    })
   })
 
   test('copies an attempt output to the clipboard', async ({ page }) => {
