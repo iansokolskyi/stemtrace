@@ -14,11 +14,13 @@ Design goals:
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import socket
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
@@ -88,6 +90,16 @@ class _PublishUnconfirmedError(Exception):
 
 class _StopRequestedError(Exception):
     """Raised between failover hosts to abandon a connect pass on stop."""
+
+
+@dataclass
+class _ReconnectHealth:
+    """Reconnect bookkeeping for one consume() iterator."""
+
+    # Consecutive failed connections (each a full pass over the URL's hosts).
+    failures: int = 0
+    # Delay before the next reconnect attempt.
+    backoff: float = RECONNECT_INITIAL_BACKOFF
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -427,7 +439,7 @@ class RabbitMQTransport:
             return event.task_id
         return f"{event.hostname}:{event.pid}:{event.event_type}"
 
-    def consume(self) -> Iterator[StreamEvent]:  # noqa: C901, PLR0915
+    def consume(self) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
         Connection and channel errors never end the iterator: the transport
@@ -448,6 +460,8 @@ class RabbitMQTransport:
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
         """
+        # Imported here, outside the retry loop, so a missing kombu fails the
+        # first next() instead of being retried as a connection error.
         from kombu import Connection, Exchange, Queue
         from kombu.messaging import Consumer
 
@@ -463,112 +477,140 @@ class RabbitMQTransport:
         # Buffered handoff from kombu callback -> generator.
         pending: deque[StreamEvent] = deque()
 
-        def on_message(body: Any, message: Any) -> None:
-            """Convert broker payload to events, acknowledge/reject messages."""
-            try:
-                pending.append(self._parse_event(body))
-                message.ack()
-            except Exception:
-                logger.warning(
-                    "Failed to parse event from RabbitMQ queue %s",
-                    self._queue_name,
-                    exc_info=True,
-                )
-                # Drop malformed messages to avoid poison-pill loops.
-                try:
-                    message.reject(requeue=False)
-                except Exception:  # noqa: BLE001  best effort: the message is already logged as malformed
-                    logger.debug("Failed to reject malformed RabbitMQ message")
-
-        def on_decode_error(message: Any, exc: Exception) -> None:
-            """Drop a message kombu can't decode (e.g. not JSON) instead of failing.
-
-            Without this kombu raises from drain_events, the connection is
-            torn down, and the broker redelivers the same message forever.
-            """
-            logger.warning(
-                "Dropping undecodable message from RabbitMQ queue %s: %s",
-                self._queue_name,
-                exc,
-            )
-            try:
-                message.reject(requeue=False)
-            except Exception:
-                logger.debug(
-                    "Failed to reject undecodable RabbitMQ message", exc_info=True
-                )
-
         # Unknown until this iterator's first drain completes.
         self._connected = None
-        failures = 0
-        backoff = RECONNECT_INITIAL_BACKOFF
+        health = _ReconnectHealth()
 
         while not self._stopping():
             try:
                 conn = Connection(self._url, connect_timeout=CONNECT_TIMEOUT)
                 try:
-                    # One pass over the URL's hosts (";"-separated failover
-                    # alternates), nothing more: kombu's retry_over_time
-                    # raises once max_retries is reached, before switching
-                    # host, and doesn't sleep between hosts within a pass.
-                    # Its default connect path retries with sleeps that ignore
-                    # the stop event; retries are this loop's job. kombu calls
-                    # `callback` before moving on to the next host, which lets
-                    # a stop end the pass instead of waiting for every host.
-                    conn.ensure_connection(
-                        max_retries=max(len(conn.alt) - 1, 0),
-                        reraise_as_library_errors=False,
-                        callback=self._raise_if_stopping,
+                    self._start_consuming(
+                        conn, exchange, queue, pending, consumer_cls=Consumer
                     )
-                    channel = conn.channel()
-                    # Bind fresh copies to this connection's channel. kombu
-                    # binds an entity only once, so re-binding the shared
-                    # templates would keep declaring on the first (dead)
-                    # channel after a reconnect.
-                    bound_exchange = exchange(channel)
-                    bound_queue = queue(channel)
-                    bound_exchange.declare()
-                    bound_queue.declare()
-
-                    consumer = Consumer(
-                        channel,
-                        queues=[bound_queue],
-                        callbacks=[on_message],
-                        on_decode_error=on_decode_error,
-                        accept=["json"],
-                    )
-                    consumer.consume()
-                    while True:
-                        # Periodic wakeup to allow outer loops to run.
-                        with contextlib.suppress(TimeoutError, socket.timeout):
-                            conn.drain_events(timeout=DRAIN_TIMEOUT)
-
-                        # The connection is established and was read from
-                        # (the drain returned or timed out), so the outage,
-                        # if any, is over.
-                        if failures:
-                            # WARNING, like the failures it ends, so operators
-                            # who see the outage also see the recovery.
-                            logger.warning(
-                                "RabbitMQ consume loop reconnected after %d failure(s)",
-                                failures,
-                            )
-                        failures = 0
-                        backoff = RECONNECT_INITIAL_BACKOFF
-                        self._connected = True
-
-                        if self._stopping():
-                            return
-
-                        while pending:
-                            yield pending.popleft()
+                    yield from self._drain_until_stopped(conn, pending, health)
+                    return  # It returns only once a stop was requested.
                 finally:
                     self._close_consumer_connection(conn)
             except Exception as exc:  # noqa: BLE001  consume loop survives any error: back off and reconnect
                 if self._stopping():
                     return
-                failures += 1
-                backoff = self._back_off(failures, backoff, exc)
+                health.failures += 1
+                health.backoff = self._back_off(health.failures, health.backoff, exc)
+
+    def _start_consuming(
+        self,
+        conn: Any,
+        exchange: Any,
+        queue: Any,
+        pending: deque[StreamEvent],
+        *,
+        consumer_cls: Any,
+    ) -> None:
+        """Connect ``conn``, declare the exchange and queue on it, and subscribe.
+
+        Delivered events are appended to ``pending``. Raises whatever kombu
+        raises (or _StopRequestedError); consume() backs off and reconnects.
+        """
+        # One pass over the URL's hosts (";"-separated failover alternates),
+        # nothing more: kombu's retry_over_time raises once max_retries is
+        # reached, before switching host, and doesn't sleep between hosts
+        # within a pass. Its default connect path retries with sleeps that
+        # ignore the stop event; retries are consume()'s job. kombu calls
+        # `callback` before moving on to the next host, which lets a stop end
+        # the pass instead of waiting for every host.
+        conn.ensure_connection(
+            max_retries=max(len(conn.alt) - 1, 0),
+            reraise_as_library_errors=False,
+            callback=self._raise_if_stopping,
+        )
+        channel = conn.channel()
+        # Bind fresh copies to this connection's channel. kombu binds an
+        # entity only once, so re-binding the shared templates would keep
+        # declaring on the first (dead) channel after a reconnect.
+        bound_exchange = exchange(channel)
+        bound_queue = queue(channel)
+        bound_exchange.declare()
+        bound_queue.declare()
+
+        consumer = consumer_cls(
+            channel,
+            queues=[bound_queue],
+            callbacks=[functools.partial(self._accept_message, pending)],
+            on_decode_error=self._reject_undecodable,
+            accept=["json"],
+        )
+        consumer.consume()
+
+    def _drain_until_stopped(
+        self, conn: Any, pending: deque[StreamEvent], health: _ReconnectHealth
+    ) -> Iterator[StreamEvent]:
+        """Yield events from a subscribed connection until a stop is requested.
+
+        Returns only once the stop event is set (checked after every drain,
+        so within DRAIN_TIMEOUT); connection errors propagate to consume().
+        """
+        while True:
+            # Periodic wakeup to allow outer loops to run.
+            with contextlib.suppress(TimeoutError, socket.timeout):
+                conn.drain_events(timeout=DRAIN_TIMEOUT)
+            self._on_drained(health)
+            if self._stopping():
+                return
+            while pending:
+                yield pending.popleft()
+
+    def _on_drained(self, health: _ReconnectHealth) -> None:
+        """Record a drain that returned or timed out on a live connection.
+
+        The connection is established and was read from, so the outage, if
+        any, is over: the backoff resets here and nowhere earlier.
+        """
+        if health.failures:
+            # WARNING, like the failures it ends, so operators who see the
+            # outage also see the recovery.
+            logger.warning(
+                "RabbitMQ consume loop reconnected after %d failure(s)",
+                health.failures,
+            )
+        health.failures = 0
+        health.backoff = RECONNECT_INITIAL_BACKOFF
+        self._connected = True
+
+    def _accept_message(
+        self, pending: deque[StreamEvent], body: Any, message: Any
+    ) -> None:
+        """Convert broker payload to events, acknowledge/reject messages."""
+        try:
+            pending.append(self._parse_event(body))
+            message.ack()
+        except Exception:
+            logger.warning(
+                "Failed to parse event from RabbitMQ queue %s",
+                self._queue_name,
+                exc_info=True,
+            )
+            # Drop malformed messages to avoid poison-pill loops.
+            try:
+                message.reject(requeue=False)
+            except Exception:  # noqa: BLE001  best effort: the message is already logged as malformed
+                logger.debug("Failed to reject malformed RabbitMQ message")
+
+    def _reject_undecodable(self, message: Any, exc: Exception) -> None:
+        """Drop a message kombu can't decode (e.g. not JSON) instead of failing.
+
+        Without this kombu raises from drain_events, the connection is
+        torn down, and the broker redelivers the same message forever.
+        """
+        logger.warning(
+            "Dropping undecodable message from RabbitMQ queue %s: %s",
+            self._queue_name,
+            exc,
+        )
+        try:
+            message.reject(requeue=False)
+        except Exception:
+            logger.debug("Failed to reject undecodable RabbitMQ message", exc_info=True)
 
     def _raise_if_stopping(self) -> None:
         """Abort a multi-host connect pass once a stop has been requested.
