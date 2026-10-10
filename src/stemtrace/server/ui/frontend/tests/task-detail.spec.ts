@@ -30,12 +30,7 @@ test.describe('Task Detail Page', () => {
   test('displays task timeline', async ({ page }) => {
     // Find and click a task
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -49,12 +44,7 @@ test.describe('Task Detail Page', () => {
 
   test('shows task metadata', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -68,12 +58,7 @@ test.describe('Task Detail Page', () => {
 
   test('displays parameters section for tasks with args', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -91,12 +76,7 @@ test.describe('Task Detail Page', () => {
 
   test('displays result section for completed tasks', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -115,13 +95,7 @@ test.describe('Task Detail Page', () => {
   test('shows error details for failed tasks', async ({ page }) => {
     // Try to find a failed task - look for FAILURE badge or red-colored indicators
     const failedLink = page.locator('a[href*="/tasks/"]:has-text("FAILURE")').first()
-    const isVisible = await failedLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      // No failed tasks visible, skip the test
-      test.skip()
-      return
-    }
+    await expect(failedLink).toBeVisible()
 
     await failedLink.click()
     await page.waitForLoadState('networkidle')
@@ -138,12 +112,7 @@ test.describe('Task Detail Page', () => {
 
   test('can navigate back to tasks list', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
