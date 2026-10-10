@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `node_alias_from_arguments` (show a task argument as the graph node name) can now be set on the standalone server and the Docker image: `stemtrace server --node-alias-from-arguments <key>` or the `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` env var, where `<key>` is a kwarg name (e.g. `operator_type`) or a positional index (e.g. `0`). `stemtrace.init_app()` also reads the env var when `node_alias_from_arguments` isn't passed (an explicit argument wins). An empty value means unset. Before, it could only be passed to `init_app()`, and the README showed it on `init_worker()`, where it has no effect. The README now documents it with the server and `init_app()` options, with a Docker example (#69).
+
+### Deprecated
+- `stemtrace.init_worker(node_alias_from_arguments=...)`: node aliases are resolved by the server, so the worker-side value was never used. Passing it now emits a `DeprecationWarning` pointing to `init_app()`, `--node-alias-from-arguments` or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`. The parameter (and the `StemtraceConfig.node_alias_from_arguments` field) will be removed in a future major release.
+
 ## [0.3.7] - 2026-10-10
 
 ### Changed
