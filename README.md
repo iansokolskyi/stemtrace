@@ -313,12 +313,17 @@ again once events are re-consumed.
     when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
     from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
     notice arriving while the connection closes.
-  - Failures are logged at most once a minute (plus a line when an outage starts and when it
-    ends), each line with the number of events dropped, and sent but unconfirmed, since the
-    previous one.
+  - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
+    an outage starting, an outage ending, and a summary). Each reports the number of events
+    dropped, and sent but unconfirmed, since the previous one, and losses are reported within
+    about a minute even when the broker flaps.
+  - Limitation: a broker that answers but slowly (say, close to the 2s timeout for each step)
+    still costs every event several seconds, because publishes that eventually succeed don't
+    open the breaker.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
-    consume those events from any of them.
+    consume those events from any of them. Later entries take what they leave out (user,
+    password, port, virtual host, TLS options) from the first one, as in kombu.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
