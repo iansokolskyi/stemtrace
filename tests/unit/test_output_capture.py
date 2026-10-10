@@ -4,6 +4,7 @@ import io
 import logging
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -123,6 +124,39 @@ class TestOutputBuffer:
         for _ in range(100):
             buffer.append("ab")
         assert buffer.render() == "[… 195 bytes truncated]\nbabab"
+
+
+class TestOutputBufferScaling:
+    """Many tiny writes (print() is two writes) must stay cheap at any cap."""
+
+    def test_tiny_writes_at_large_cap_are_fast_and_bounded(self) -> None:
+        """400k two-byte writes at a 400 KB cap: linear time, bounded memory.
+
+        Dropping the oldest output one tiny chunk at a time made every write
+        cost O(cap) once the buffer was full (about a minute for this loop).
+        """
+        cap = 400_000
+        buffer = OutputBuffer("t1", max_bytes=cap)
+        started = time.perf_counter()
+        for _ in range(400_000):
+            buffer.append("ab")
+            assert buffer.size_bytes <= 2 * cap
+        elapsed = time.perf_counter() - started
+        rendered = buffer.render()
+        assert elapsed < 5
+        assert rendered is not None
+        marker, kept = rendered.split("\n", 1)
+        assert marker == "[… 400000 bytes truncated]"
+        assert len(kept.encode()) == cap
+        assert buffer.size_bytes == cap
+
+    def test_slack_trim_keeps_character_boundaries(self) -> None:
+        """Trimming after the slack is used up never splits a character."""
+        buffer = OutputBuffer("t1", max_bytes=5)
+        for _ in range(10):
+            buffer.append("é")  # 2 bytes each: 20 bytes total
+        # 5-byte tail would start inside an "é"; keep the 4 bytes after it.
+        assert buffer.render() == "[… 16 bytes truncated]\néé"
 
 
 class TestStartStop:

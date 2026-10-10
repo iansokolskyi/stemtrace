@@ -75,9 +75,10 @@ def _should_capture(logger_name: str) -> bool:
 class OutputBuffer:
     """Output of one task attempt, capped to its last ``max_bytes`` UTF-8 bytes.
 
-    The end of the output is kept (that's where a failure shows up); the start
-    is dropped as writes come in, so memory stays bounded even for one huge
-    write.
+    The end of the output is kept (that's where a failure shows up). Bytes
+    live in one ``bytearray``; the start is dropped once it holds twice the
+    cap, so trimming is amortized O(1) per written byte even for many tiny
+    writes, and memory stays under ``2 * max_bytes`` plus the latest write.
     """
 
     def __init__(
@@ -93,8 +94,7 @@ class OutputBuffer:
         self.task_id = task_id
         self.previous = previous
         self._max_bytes = max_bytes
-        self._chunks: list[bytes] = []
-        self._size = 0
+        self._data = bytearray()
         self._truncated = 0
         # Free-threaded builds can inherit the context into threads a task
         # starts, so two threads may append to one buffer.
@@ -102,36 +102,28 @@ class OutputBuffer:
 
     @property
     def size_bytes(self) -> int:
-        """Bytes currently kept (never more than ``max_bytes``)."""
-        return self._size
+        """Bytes currently held (at most ``2 * max_bytes`` until rendered)."""
+        return len(self._data)
 
     def append(self, text: str) -> None:
-        """Add text, dropping the oldest bytes beyond the cap."""
+        """Add text, dropping the oldest bytes once well beyond the cap."""
         data = text.encode("utf-8", errors="replace")
         if not data:
             return
         with self._lock:
-            self._chunks.append(data)
-            self._size += len(data)
-            if self._size > self._max_bytes:
-                self._drop_oldest(self._size - self._max_bytes)
+            self._data += data
+            if len(self._data) > 2 * self._max_bytes:
+                self._trim_to_cap()
 
-    def _drop_oldest(self, excess: int) -> None:
-        while excess > 0 and self._chunks:
-            head = self._chunks[0]
-            if len(head) <= excess:
-                self._chunks.pop(0)
-                dropped = len(head)
-            else:
-                cut = excess
-                # Don't start the kept text in the middle of a UTF-8 sequence.
-                while cut < len(head) and (head[cut] & 0xC0) == 0x80:
-                    cut += 1
-                self._chunks[0] = head[cut:]
-                dropped = cut
-            self._size -= dropped
-            self._truncated += dropped
-            excess -= dropped
+    def _trim_to_cap(self) -> None:
+        cut = len(self._data) - self._max_bytes
+        if cut <= 0:
+            return
+        # Don't start the kept text in the middle of a UTF-8 sequence.
+        while cut < len(self._data) and (self._data[cut] & 0xC0) == 0x80:
+            cut += 1
+        del self._data[:cut]
+        self._truncated += cut
 
     def render(self) -> str | None:
         """Return the captured text, or None if the task wrote nothing.
@@ -140,7 +132,8 @@ class OutputBuffer:
         ``[… N bytes truncated]`` line.
         """
         with self._lock:
-            text = b"".join(self._chunks).decode("utf-8", errors="replace")
+            self._trim_to_cap()
+            text = self._data.decode("utf-8", errors="replace")
             truncated = self._truncated
         text = text.rstrip("\n")
         if truncated:
