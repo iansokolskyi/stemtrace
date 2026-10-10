@@ -1,5 +1,6 @@
 """CLI entry point for stemtrace server."""
 
+import os
 from typing import Annotated
 
 import typer
@@ -110,7 +111,11 @@ def server(
     typer.echo(f"Broker: {broker_url}")
     typer.echo(f"Transport: {transport_url or broker_url}")
     # Blank or padded values (e.g. from env files) count as unset / are trimmed.
-    node_alias = (node_alias_from_arguments or "").strip() or None
+    # Blank means unset, as in init_app(): an explicit empty flag falls back to
+    # the env var.
+    node_alias = (node_alias_from_arguments or "").strip() or (
+        os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or ""
+    ).strip() or None
     if node_alias is not None:
         typer.echo(f"Node alias: {node_alias}")
 

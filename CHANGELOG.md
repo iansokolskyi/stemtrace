@@ -181,7 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.2...v0.3.3

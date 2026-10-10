@@ -60,3 +60,10 @@ replace = """## [Unreleased]
 filename = "README.md"
 search = "[![PyPI version](https://img.shields.io/badge/pypi-v{current_version}-darklime)](https://pypi.org/project/stemtrace)"
 replace = "[![PyPI version](https://img.shields.io/badge/pypi-v{new_version}-darklime)](https://pypi.org/project/stemtrace)"
+
+# CHANGELOG compare links: advance [unreleased], add the new version's link
+[[tool.bumpversion.files]]
+filename = "CHANGELOG.md"
+search = "[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...HEAD"
+replace = """[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{new_version}...HEAD
+[{new_version}]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...v{new_version}"""

@@ -127,7 +127,7 @@ bump-patch:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: push the release branch and open the PR (see make release-pr)"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Bump minor version (0.1.0 -> 0.2.0)
 bump-minor:
@@ -135,7 +135,7 @@ bump-minor:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: push the release branch and open the PR (see make release-pr)"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Bump major version (0.1.0 -> 1.0.0)
 bump-major:
@@ -143,7 +143,7 @@ bump-major:
 	@NEW_VER=$$(uv run bump-my-version show current_version); \
 	echo "✅ Version bumped to $$NEW_VER"; \
 	echo ""; \
-	echo "Next: push the release branch and open the PR (see make release-pr)"
+	echo "Note: releases use make release-pr, which runs the bump itself; this target is for manual use only"
 
 # Tag and push to trigger release workflow
 release:
@@ -185,7 +185,7 @@ release-tag:
 	TAG="v$$VERSION"; \
 	SUBJECT=$$(git log -1 --format=%s); \
 	test "$$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 || { echo "❌ HEAD of main is not a merge commit (merge the release PR with a merge commit)"; exit 1; }; \
-	case "$$SUBJECT" in *"/release/$$TAG") ;; *) echo "❌ HEAD of main is not the $$TAG release PR merge: $$SUBJECT"; exit 1;; esac; \
+	case "$$SUBJECT" in *"/release/$$TAG"|*"release $$TAG"|*"release $$TAG "*) ;; *) echo "❌ HEAD of main is not the $$TAG release PR merge: $$SUBJECT"; exit 1;; esac; \
 	git fetch -q --tags origin; \
 	! git rev-parse -q --verify "refs/tags/$$TAG" >/dev/null || { echo "❌ $$TAG already exists"; exit 1; }; \
 	git tag -a "$$TAG" -m "Release $$TAG"; \
