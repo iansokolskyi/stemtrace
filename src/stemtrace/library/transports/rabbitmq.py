@@ -308,12 +308,16 @@ class RabbitMQTransport:
         logs a warning (with a traceback only for the first failure in a row),
         backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
         reconnects on a new connection, declaring the exchange and queue
-        again. Each attempt connects once, with CONNECT_TIMEOUT. The backoff
+        again. Each attempt tries every host of a failover URL
+        (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host and
+        no sleep between hosts. Messages kombu can't decode (e.g. not JSON)
+        are rejected without requeueing and logged once. The backoff
         resets once a connection has been established and read from (a drain
         returned or timed out); connections that fail before that keep the
         delay growing. The iterator ends once a stop event bound with
         bind_stop_event() is set; that event also interrupts the backoff wait,
-        and the stop is noticed within DRAIN_TIMEOUT on a live connection.
+        the stop is noticed within DRAIN_TIMEOUT on a live connection, and the
+        connection is then dropped without the AMQP close handshake.
 
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
@@ -350,6 +354,24 @@ class RabbitMQTransport:
                 except Exception:
                     logger.debug("Failed to reject malformed RabbitMQ message")
 
+        def on_decode_error(message: Any, exc: Exception) -> None:
+            """Drop a message kombu can't decode (e.g. not JSON) instead of failing.
+
+            Without this kombu raises from drain_events, the connection is
+            torn down, and the broker redelivers the same message forever.
+            """
+            logger.warning(
+                "Dropping undecodable message from RabbitMQ queue %s: %s",
+                self._queue_name,
+                exc,
+            )
+            try:
+                message.reject(requeue=False)
+            except Exception:
+                logger.debug(
+                    "Failed to reject undecodable RabbitMQ message", exc_info=True
+                )
+
         # Unknown until this iterator's first drain completes.
         self._connected = None
         failures = 0
@@ -357,12 +379,17 @@ class RabbitMQTransport:
 
         while not self._stopping():
             try:
-                with Connection(self._url, connect_timeout=CONNECT_TIMEOUT) as conn:
-                    # Connect exactly once: kombu's default connect path
-                    # retries internally with sleeps that ignore the stop
-                    # event. Retries are this loop's job (with backoff).
+                conn = Connection(self._url, connect_timeout=CONNECT_TIMEOUT)
+                try:
+                    # One pass over the URL's hosts (";"-separated failover
+                    # alternates), nothing more: kombu's retry_over_time
+                    # raises once max_retries is reached, before switching
+                    # host, and doesn't sleep between hosts within a pass.
+                    # Its default connect path retries with sleeps that ignore
+                    # the stop event; retries are this loop's job.
                     conn.ensure_connection(
-                        max_retries=0, reraise_as_library_errors=False
+                        max_retries=max(len(conn.alt) - 1, 0),
+                        reraise_as_library_errors=False,
                     )
                     channel = conn.channel()
                     # Bind fresh copies to this connection's channel. kombu
@@ -374,40 +401,60 @@ class RabbitMQTransport:
                     bound_exchange.declare()
                     bound_queue.declare()
 
-                    with Consumer(
+                    consumer = Consumer(
                         channel,
                         queues=[bound_queue],
                         callbacks=[on_message],
+                        on_decode_error=on_decode_error,
                         accept=["json"],
-                    ):
-                        while True:
-                            # Periodic wakeup to allow outer loops to run.
-                            with contextlib.suppress(TimeoutError, socket.timeout):
-                                conn.drain_events(timeout=DRAIN_TIMEOUT)
+                    )
+                    consumer.consume()
+                    while True:
+                        # Periodic wakeup to allow outer loops to run.
+                        with contextlib.suppress(TimeoutError, socket.timeout):
+                            conn.drain_events(timeout=DRAIN_TIMEOUT)
 
-                            # The connection is established and was read from
-                            # (the drain returned or timed out), so the outage,
-                            # if any, is over.
-                            if failures:
-                                logger.info(
-                                    "RabbitMQ consume loop reconnected after "
-                                    "%d failure(s)",
-                                    failures,
-                                )
-                            failures = 0
-                            backoff = RECONNECT_INITIAL_BACKOFF
-                            self._connected = True
+                        # The connection is established and was read from
+                        # (the drain returned or timed out), so the outage,
+                        # if any, is over.
+                        if failures:
+                            logger.info(
+                                "RabbitMQ consume loop reconnected after %d failure(s)",
+                                failures,
+                            )
+                        failures = 0
+                        backoff = RECONNECT_INITIAL_BACKOFF
+                        self._connected = True
 
-                            if self._stopping():
-                                return
+                        if self._stopping():
+                            return
 
-                            while pending:
-                                yield pending.popleft()
+                        while pending:
+                            yield pending.popleft()
+                finally:
+                    self._close_consumer_connection(conn)
             except Exception as exc:
                 if self._stopping():
                     return
                 failures += 1
                 backoff = self._back_off(failures, backoff, exc)
+
+    def _close_consumer_connection(self, conn: Any) -> None:
+        """Close a consumer connection without letting shutdown hang.
+
+        When stopping, the socket is dropped without the AMQP cancel/close
+        handshake: those wait for the broker's reply with no timeout, so a
+        frozen broker would block shutdown. The broker discards the consumer
+        when the socket closes. Otherwise the connection is closed normally.
+        Errors are logged at debug level and never raised.
+        """
+        try:
+            if self._stopping() and conn.connected:
+                conn.collect()
+            else:
+                conn.release()
+        except Exception:
+            logger.debug("Failed to close RabbitMQ consumer connection", exc_info=True)
 
     def _back_off(self, failures: int, backoff: float, exc: Exception) -> float:
         """Log a consume failure, wait, and return the next backoff delay.
