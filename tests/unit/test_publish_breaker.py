@@ -149,7 +149,7 @@ class TestPublishBreaker:
         assert breaker.allow() is True
         records = _records(caplog)
         assert len(records) == 2
-        assert records[1].levelno == logging.INFO
+        assert records[1].levelno == logging.WARNING
         assert records[1].getMessage() == (
             "Publishing to TestBroker recovered after 1.0s; dropped 5 event(s) "
             "during the outage"

@@ -347,7 +347,6 @@ class TestRabbitMQPublishBreaker:
     def test_publish_probes_after_cooldown_and_recovers(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
         broker.down = {H1}
         transport = _transport(H1, clock)
         transport.publish(_event("t-0"))
@@ -370,11 +369,13 @@ class TestRabbitMQPublishBreaker:
             "t-probe-2",
             "t-after",
         ]
-        infos = _records(caplog, logging.INFO)
-        assert [r.getMessage() for r in infos] == [
+        # Warning level, so it shows at Celery's default worker log level.
+        warnings = _records(caplog, logging.WARNING)
+        assert len(warnings) == 2
+        assert warnings[1].getMessage() == (
             "Publishing to RabbitMQ recovered after 3.0s; dropped 3 event(s) "
             "during the outage"
-        ]
+        )
 
     def test_publish_failover_failure_does_not_open_breaker_for_other_host(
         self, broker: FakeBroker, clock: FakeClock

@@ -36,7 +36,7 @@ class PublishBreaker:
 
     Logging is bounded: one WARNING with a traceback when the breaker opens,
     at most one summary WARNING per ``log_interval`` while it stays open
-    (written when a probe fails), and one INFO line with the dropped count
+    (written when a probe fails), and one WARNING line with the dropped count
     when it closes. Nothing is logged per dropped event.
 
     The state is guarded by a lock, so it can be shared by the threads of a
@@ -142,7 +142,7 @@ class PublishBreaker:
             outage = self._monotonic() - self._opened_at
             dropped = self._dropped
             self._reset()
-        self._logger.info(
+        self._logger.warning(
             "Publishing to %s recovered after %.1fs; dropped %d event(s) "
             "during the outage",
             self._name,
