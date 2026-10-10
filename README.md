@@ -306,10 +306,11 @@ again once events are re-consumed.
     1s to 30s and resets on the next successful publish.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
     from publishers, so a publish is sent but never confirmed. The worker counts such events as
-    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears) and retries
-    only every 30s. Each retry leaves one blocked connection on the broker until the alarm
-    clears, so expect up to about 2 connections per minute per worker process, released when
-    the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
+    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); after two
+    unconfirmed attempts in a row it retries only every 30s. Each attempt leaves one blocked
+    connection on the broker until the alarm clears, so expect 2 to 3 connections per worker
+    process in the first minute of an alarm and about 2 per minute after that, all released
+    when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
     from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
     notice arriving while the connection closes.
   - Failures are logged at most once a minute (plus a line when an outage starts and when it
