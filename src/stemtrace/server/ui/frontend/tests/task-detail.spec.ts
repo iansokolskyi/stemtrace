@@ -1,7 +1,12 @@
 import { expect, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
-import { createFailedTask, createMockEvent, createSuccessTask } from './fixtures/mock-data'
+import {
+  createFailedTask,
+  createGroup,
+  createMockEvent,
+  createSuccessTask,
+} from './fixtures/mock-data'
 
 /**
  * Tests for the Task Detail page.
@@ -451,6 +456,51 @@ test.describe('Task Detail - Output', () => {
     // An event for this task does.
     ws.send(JSON.stringify({ task_id: task.task_id, state: 'FAILURE' }))
     await expect.poll(() => detailRequests).toBe(initial + 1)
+  })
+
+  test('refetches a chord page for its members and callback', async ({ page }) => {
+    let socket: WebSocketRoute | null = null
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      socket = ws
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+    const callback = rest[rest.length - 1]
+    const groupId = chordNode.group_id as string
+    // The server lists the callback among the CHORD node's children.
+    chordNode.children.push(callback.task_id)
+    for (const task of [chordNode, ...rest]) mockApi.addTask(task)
+    let detailRequests = 0
+    page.on('request', (request) => {
+      const path = decodeURIComponent(new URL(request.url()).pathname)
+      if (path.endsWith(`/tasks/${chordNode.task_id}`)) detailRequests += 1
+    })
+
+    await page.goto(`/tasks/${chordNode.task_id}`)
+    await page.waitForLoadState('networkidle')
+    await expect.poll(() => socket !== null).toBe(true)
+    await expect.poll(() => detailRequests).toBeGreaterThan(0)
+    const ws = socket as unknown as WebSocketRoute
+    const initial = detailRequests
+
+    ws.send(JSON.stringify({ task_id: 'unrelated-task', state: 'STARTED', group_id: null }))
+    await page.waitForTimeout(1000)
+    expect(detailRequests).toBe(initial)
+
+    // A header task joining or changing state (matched by group_id).
+    ws.send(JSON.stringify({ task_id: 'new-member', state: 'STARTED', group_id: groupId }))
+    await expect.poll(() => detailRequests).toBe(initial + 1)
+
+    // The callback: its events carry no group_id; it's among the children.
+    ws.send(
+      JSON.stringify({
+        task_id: callback.task_id,
+        state: 'STARTED',
+        group_id: null,
+        parent_id: null,
+      }),
+    )
+    await expect.poll(() => detailRequests).toBe(initial + 2)
   })
 
   test('copies an attempt output to the clipboard', async ({ page }) => {
