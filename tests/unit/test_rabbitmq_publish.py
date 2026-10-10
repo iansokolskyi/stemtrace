@@ -534,6 +534,22 @@ class TestRabbitMQPublishBreaker:
         assert [body["task_id"] for _, body, _ in broker.published] == ["t-1"]
         assert len(_records(caplog, logging.WARNING)) == 1
 
+    def test_publish_failure_after_connect_rotates_to_next_host(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        # h1 accepts connections but its publishes fail (a node-local fault).
+        broker.publish_error = RuntimeError("channel error")
+        broker.publish_error_hosts = {H1}
+        transport = _transport(f"{H1};{H2}", clock)
+
+        transport.publish(_event("t-0"))
+        transport.publish(_event("t-1"))
+
+        assert broker.connections[1].url == f"{H2};{H1}"
+        assert [(host, body["task_id"]) for host, body, _ in broker.published] == [
+            (H2, "t-1")
+        ]
+
     def test_publish_concurrent_failures_open_breaker_once_for_initial_cooldown(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -336,6 +336,9 @@ class RabbitMQTransport:
                 # close handshake, which would wait out another timeout.
                 with contextlib.suppress(Exception):
                     amqp_conn.collect()
+                # The fault may be local to this node: start with the next
+                # host of a failover URL next time.
+                self._publish_first_host = (first + failed_hosts + 1) % len(hosts)
                 raise
 
     @staticmethod
