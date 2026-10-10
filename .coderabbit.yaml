@@ -19,7 +19,8 @@ reviews:
     - "!**/package-lock.json"
     - "!src/stemtrace/server/ui/frontend/src/routeTree.gen.ts"
     - "!src/stemtrace/server/ui/frontend/dist/**"
-  # Most specific paths first; the general src/stemtrace/** entry comes last.
+  # Most specific paths first, the general Python entry last. The server and
+  # general globs match only *.py, so frontend files get just the frontend entry.
   path_instructions:
     - path: "src/stemtrace/core/**"
       instructions: |
@@ -43,7 +44,7 @@ reviews:
         No `any`, explicit return types on exported functions, props interfaces
         for components. routeTree.gen.ts is generated and must not be edited by
         hand. Graph or UI behavior changes need Playwright coverage in tests/.
-    - path: "src/stemtrace/server/**"
+    - path: "src/stemtrace/server/**/*.py"
       instructions: |
         Web server and consumer. Imports core only, never stemtrace.library. The
         server is read-only toward the broker and the user's Celery app. Check
@@ -68,7 +69,7 @@ reviews:
         - Imports at the top of the file. Names follow
           test_<action>_<condition>_<result>. Tests needing Redis or RabbitMQ
           are marked integration; Docker-based ones e2e.
-    - path: "src/stemtrace/**"
+    - path: "src/stemtrace/**/*.py"
       instructions: |
         - Does each new class or function hide a decision or remove work from its
           callers? Flag pass-through wrappers and options with no current caller.
