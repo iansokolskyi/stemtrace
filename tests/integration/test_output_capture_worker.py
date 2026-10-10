@@ -1,13 +1,15 @@
-"""Output capture against a real Celery worker (prefork/threads, default redirect).
+"""Output capture against a real Celery worker.
 
 Starts ``celery worker`` as a subprocess on ``tests/integration/output_worker_app.py``
 and reads the events it publishes to Redis. This is the path unit tests can't
 cover: a prefork child process, Celery's own logging setup (which clears root
-handlers after ``init_worker``) and ``print()`` going through Celery's
-``LoggingProxy``.
+handlers after ``init_worker``), ``print()`` going through Celery's
+``LoggingProxy`` (or not, with the redirect off), and a worker with no logging
+handlers at all.
 
 Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``).
-Pools default to prefork and threads; set ``OUTPUT_TEST_POOLS`` to try others,
+Worker modes default to prefork and threads with Celery's redirect, plus prefork
+without it; set ``OUTPUT_TEST_POOLS`` to try other pools (with the redirect),
 e.g. ``OUTPUT_TEST_POOLS=gevent uv run --with gevent pytest <this file>``.
 """
 
@@ -16,7 +18,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -83,25 +85,26 @@ class WorkerRun:
         )
 
 
-@pytest.fixture(
-    scope="module",
-    params=os.environ.get("OUTPUT_TEST_POOLS", "prefork,threads").split(","),
-)
-def worker(
-    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+_DEFAULT_MODES = ["prefork", "threads", "prefork-no-redirect"]
+_MODES = os.environ.get("OUTPUT_TEST_POOLS", ",".join(_DEFAULT_MODES)).split(",")
+
+
+def _start_worker(
+    pool: str, extra_env: Mapping[str, str], log_dir: Path
 ) -> Iterator[WorkerRun]:
-    """Start a worker (per pool type) for the test module and stop it afterwards."""
+    """Run a worker subprocess until the generator is closed."""
     suffix = uuid.uuid4().hex[:8]
     run = WorkerRun(
         queue=f"output-test-{suffix}",
         prefix=f"output_test_{suffix}",
-        log_path=tmp_path_factory.mktemp("worker") / "worker.log",
+        log_path=log_dir / "worker.log",
     )
     env = {
         **os.environ,
         "REDIS_URL": REDIS_URL,
         "OUTPUT_TEST_QUEUE": run.queue,
         "OUTPUT_TEST_PREFIX": run.stream_key.removesuffix(":events"),
+        **extra_env,
     }
     log_file = run.log_path.open("wb")
     proc = subprocess.Popen(
@@ -112,7 +115,7 @@ def worker(
             "-A",
             "tests.integration.output_worker_app",
             "worker",
-            f"--pool={request.param}",
+            f"--pool={pool}",
             "--concurrency=2",
             "--loglevel=INFO",
             "--without-gossip",
@@ -135,6 +138,29 @@ def worker(
             proc.wait()
         log_file.close()
         run.client.delete(run.stream_key)
+
+
+@pytest.fixture(scope="module", params=_MODES)
+def worker(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[WorkerRun]:
+    """Start a worker per mode (pool, redirect on/off) and stop it afterwards."""
+    mode: str = request.param
+    pool, _, variant = mode.partition("-")
+    extra_env = {"OUTPUT_TEST_REDIRECT": "0"} if variant == "no-redirect" else {}
+    yield from _start_worker(pool, extra_env, tmp_path_factory.mktemp("worker"))
+
+
+@pytest.fixture(scope="module")
+def unconfigured_logging_worker(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[WorkerRun]:
+    """A prefork worker whose setup_logging receiver configures no handlers."""
+    yield from _start_worker(
+        "prefork",
+        {"OUTPUT_TEST_NOOP_LOGGING": "1"},
+        tmp_path_factory.mktemp("worker-nolog"),
+    )
 
 
 def test_print_and_loggers_are_captured_on_success(worker: WorkerRun) -> None:
@@ -180,3 +206,44 @@ def test_concurrent_tasks_keep_their_own_output(worker: WorkerRun) -> None:
         events = worker.wait_for(task_id, TaskState.SUCCESS)
         success = next(e for e in events if e.state == TaskState.SUCCESS)
         assert success.output == "\n".join(f"{tag} {i}" for i in range(5))
+
+
+def test_print_chunks_are_captured_as_written(worker: WorkerRun) -> None:
+    """Multi-argument print(), end="" and sep= come out as one would see them.
+
+    With the redirect on, Celery's LoggingProxy logs each write() chunk as its
+    own record; the captured output must still be the printed text.
+    """
+    task_id = worker.send("output_test.print_variants")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    success = next(e for e in events if e.state == TaskState.SUCCESS)
+    assert success.output == "value: 42\nno newline then the rest\nerr-line"
+
+
+def test_unconfigured_logging_still_prints_warnings(
+    unconfigured_logging_worker: WorkerRun,
+) -> None:
+    """With no logging handlers, warnings still reach stderr (lastResort).
+
+    Before and after the task's capture window, and inside it, where the
+    warning is also captured exactly once.
+    """
+    worker = unconfigured_logging_worker
+    task_id = worker.send("output_test.warn", "tag-1")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    success = next(e for e in events if e.state == TaskState.SUCCESS)
+    assert success.output == "WARNING output_worker_lib: in-task warning tag-1"
+    deadline = time.monotonic() + 10
+    expected = ["in-task warning tag-1", f"after-task warning {task_id}"]
+    log = ""
+    while time.monotonic() < deadline:
+        log = worker.log_path.read_text(errors="replace")
+        if all(line in log for line in expected):
+            break
+        time.sleep(0.2)
+    for line in expected:
+        assert log.count(line) == 1, f"{line!r} not printed once; worker log:\n{log}"

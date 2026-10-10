@@ -1,7 +1,12 @@
 """Celery app run as a real worker by ``test_output_capture_worker.py``.
 
 Configured through environment variables so each test run uses its own
-queue and stemtrace stream.
+queue and stemtrace stream:
+
+- ``OUTPUT_TEST_REDIRECT=0`` turns off Celery's stdout/stderr redirect.
+- ``OUTPUT_TEST_NOOP_LOGGING=1`` connects a ``setup_logging`` receiver that
+  configures nothing, so the worker has no logging handlers and Python falls
+  back to ``logging.lastResort`` (WARNING+ to stderr).
 """
 
 import logging
@@ -10,6 +15,7 @@ import sys
 import time
 
 from celery import Celery, Task
+from celery.signals import setup_logging, task_postrun
 from celery.utils.log import get_task_logger
 
 import stemtrace
@@ -22,7 +28,15 @@ app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     worker_hijack_root_logger=True,
+    worker_redirect_stdouts=os.environ.get("OUTPUT_TEST_REDIRECT", "1") != "0",
 )
+
+if os.environ.get("OUTPUT_TEST_NOOP_LOGGING") == "1":
+
+    @setup_logging.connect
+    def _leave_logging_unconfigured(**_: object) -> None:
+        """Take over logging setup and configure nothing."""
+
 
 stemtrace.init_worker(
     app,
@@ -63,3 +77,26 @@ def tagged(tag: str) -> None:
     for i in range(5):
         print(f"{tag} {i}")
         time.sleep(0.05)
+
+
+@app.task(name="output_test.print_variants")
+def print_variants() -> None:
+    """print() with several arguments and with end="" (several write chunks)."""
+    print("value:", 42)
+    print("no newline", end="")
+    print(" then the rest")
+    print("err", "line", sep="-", file=sys.stderr)
+
+
+@app.task(name="output_test.warn")
+def warn(tag: str) -> None:
+    """Log one warning from a plain module logger."""
+    module_logger.warning("in-task warning %s", tag)
+
+
+if os.environ.get("OUTPUT_TEST_NOOP_LOGGING") == "1":
+
+    @task_postrun.connect
+    def _warn_after_task(task_id: str, **_: object) -> None:
+        """Log a warning after stemtrace stopped capturing (outside the task)."""
+        module_logger.warning("after-task warning %s", task_id)

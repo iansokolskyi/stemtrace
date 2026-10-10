@@ -4,7 +4,8 @@ import io
 import logging
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
 from celery.utils.log import LoggingProxy, get_task_logger
@@ -20,6 +21,19 @@ from stemtrace.library.output_capture import (
     stop_capture,
     uninstall_capture,
 )
+
+
+class ListHandler(logging.Handler):
+    """Logging handler that records formatted messages (a test fake)."""
+
+    def __init__(self, level: int = logging.NOTSET) -> None:
+        """Start with no messages."""
+        super().__init__(level)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Remember the record's message."""
+        self.messages.append(record.getMessage())
 
 
 @pytest.fixture(autouse=True)
@@ -215,13 +229,14 @@ class TestTaskOutputHandler:
         finally:
             task_root.propagate = saved
 
-    def test_redirected_print_is_captured_without_prefix(
-        self, info_logging: None
-    ) -> None:
-        """print() under Celery's stdout redirect reads like console output."""
+    def test_redirected_records_are_left_to_the_tee(self, info_logging: None) -> None:
+        """celery.redirected records (one per write chunk) aren't captured here.
+
+        The tee captures print() text as written; capturing the per-chunk
+        records too would garble multi-argument prints and duplicate them.
+        """
         install_capture()
-        out = self._capture_warning(logging.getLogger("celery.redirected"))
-        assert out == "hello world"
+        assert self._capture_warning(logging.getLogger("celery.redirected")) is None
 
     @pytest.mark.parametrize(
         "name",
@@ -240,6 +255,12 @@ class TestTaskOutputHandler:
         """stemtrace, Celery and kombu internals don't pollute task output."""
         install_capture()
         assert self._capture_warning(logging.getLogger(name)) is None
+
+    def test_celery_task_logger_itself_is_captured(self, info_logging: None) -> None:
+        """Records on the celery.task logger are task output, not internals."""
+        install_capture()
+        out = self._capture_warning(logging.getLogger("celery.task"))
+        assert out == "WARNING celery.task: hello world"
 
     def test_lookalike_logger_names_are_captured(self, info_logging: None) -> None:
         """Only exact package prefixes are ignored (celery_app is user code)."""
@@ -371,17 +392,64 @@ class TestTee:
         print("out again")
         assert stop_capture("t1") == "out\nerr\nout again"
 
-    def test_redirected_stdout_is_not_teed(
+    def test_redirected_stdout_is_teed_over_the_proxy(
         self, monkeypatch: pytest.MonkeyPatch, info_logging: None
     ) -> None:
-        """Under Celery's redirect, print() is captured once, via logging."""
-        proxy = LoggingProxy(logging.getLogger("celery.redirected"), logging.WARNING)
+        """Under Celery's redirect, print() text is captured as written, once.
+
+        LoggingProxy turns each write() chunk into a record, so
+        ``print("value:", 42)`` is four records; the tee sees the text itself.
+        The proxy still gets every write, so the worker log is unchanged.
+        """
+        redirected = logging.getLogger("celery.redirected")
+        proxy_records = ListHandler()
+        redirected.addHandler(proxy_records)
+        monkeypatch.setattr(sys, "stdout", LoggingProxy(redirected, logging.WARNING))
+        try:
+            install_capture()
+            assert isinstance(sys.stdout, TeeStream)
+            start_capture("t1", max_bytes=1000)
+            print("value:", 42)
+            print("no newline", end="")
+            print(" then the rest")
+            assert stop_capture("t1") == "value: 42\nno newline then the rest"
+        finally:
+            redirected.removeHandler(proxy_records)
+        # One record per write chunk, as Celery logs them to the worker log.
+        assert proxy_records.messages == [
+            "value:",
+            " ",
+            "42",
+            "no newline",
+            " then the rest",
+        ]
+
+    def test_redirect_recursion_is_not_captured_twice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A handler writing back to the redirected stream doesn't duplicate output.
+
+        Without Celery's handlers, a redirected record reaches logging.lastResort,
+        which writes to sys.stderr: the tee again. That inner write is the same
+        text and must not be captured a second time.
+        """
+        redirected = logging.getLogger("celery.redirected")
+        proxy = LoggingProxy(redirected, logging.WARNING)
         monkeypatch.setattr(sys, "stdout", proxy)
+        monkeypatch.setattr(sys, "stderr", proxy)
+        monkeypatch.setattr(redirected, "propagate", False)
+        monkeypatch.setattr(
+            logging, "lastResort", logging._StderrHandler(logging.WARNING)
+        )
         install_capture()
-        assert sys.stdout is proxy
-        start_capture("t1", max_bytes=1000)
-        print("hello")
-        assert stop_capture("t1") == "hello"
+        redirected.addHandler(TaskOutputHandler())
+        try:
+            start_capture("t1", max_bytes=1000)
+            print("once")
+            assert stop_capture("t1") == "once"
+        finally:
+            for handler in list(redirected.handlers):
+                redirected.removeHandler(handler)
 
     def test_tee_writes_outside_task_are_forwarded_only(
         self, monkeypatch: pytest.MonkeyPatch
@@ -405,6 +473,28 @@ class TestTee:
         assert tee.getvalue() == "ab\n"
         assert stop_capture("t1") == "ab"
 
+    def test_tee_behaves_like_the_wrapped_text_stream(self, tmp_path: Path) -> None:
+        """Common stream checks and the context manager reach the real stream."""
+        with (tmp_path / "out.txt").open("w", encoding="utf-8") as original:
+            tee = TeeStream(original)
+            assert tee.isatty() is False
+            assert tee.fileno() == original.fileno()
+            assert tee.encoding == "utf-8"
+            assert tee.writable() is True
+            assert tee.closed is False
+            with tee as entered:
+                assert entered is tee
+                print("inside", file=entered)
+            assert original.closed is True
+        assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "inside\n"
+
+    def test_tee_over_logging_proxy_supports_with(self) -> None:
+        """A wrapped stream without __exit__ (LoggingProxy) still works in `with`."""
+        proxy = LoggingProxy(logging.getLogger("celery.redirected"), logging.WARNING)
+        with TeeStream(proxy) as tee:
+            assert tee.isatty() is False
+        assert proxy.closed is False
+
     def test_tee_capture_failure_still_writes_original(self) -> None:
         """If buffering fails, the write still reaches the real stream."""
         original = io.StringIO()
@@ -417,3 +507,152 @@ class TestTee:
         buffer.append = broken_append  # type: ignore[method-assign]  # simulate failure
         assert tee.write("still here\n") == len("still here\n")
         assert original.getvalue() == "still here\n"
+
+
+class TestLastResort:
+    """The handler must not hide logs that Python would print via lastResort.
+
+    A logger chain with no handlers falls back to ``logging.lastResort``
+    (WARNING+ to stderr). Our handler on root would count as a handler and
+    silence that, so it forwards such records itself, exactly once.
+    """
+
+    @pytest.fixture
+    def last_resort(self, monkeypatch: pytest.MonkeyPatch) -> ListHandler:
+        """Replace logging.lastResort with a recording handler."""
+        fake = ListHandler(level=logging.WARNING)
+        monkeypatch.setattr(logging, "lastResort", fake)
+        return fake
+
+    @pytest.fixture
+    def isolate(self) -> Iterator[Callable[..., logging.Logger]]:
+        """Make a non-propagating logger (standing in for root) with only our handler.
+
+        Call it in the test body: pytest attaches its capture handler to
+        non-propagating loggers when each test phase starts, and that handler
+        would count as "another handler".
+        """
+        made: list[logging.Logger] = []
+
+        def make(name: str = "tests.lastresort") -> logging.Logger:
+            target = logging.getLogger(name)
+            for handler in list(target.handlers):
+                target.removeHandler(handler)
+            target.propagate = False
+            target.setLevel(logging.DEBUG)
+            target.addHandler(TaskOutputHandler())
+            made.append(target)
+            return target
+
+        yield make
+        for target in made:
+            for handler in list(target.handlers):
+                target.removeHandler(handler)
+            target.propagate = True
+            target.setLevel(logging.NOTSET)
+
+    def test_warning_without_other_handlers_reaches_last_resort(
+        self, last_resort: ListHandler, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """Outside a task, a WARNING still reaches lastResort as before."""
+        isolate().warning("visible %s", "still")
+        assert last_resort.messages == ["visible still"]
+
+    def test_info_below_last_resort_level_is_not_forwarded(
+        self, last_resort: ListHandler, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """lastResort only prints WARNING and above; so do we."""
+        isolate().info("quiet")
+        assert last_resort.messages == []
+
+    def test_other_handler_in_chain_means_no_forwarding(
+        self, last_resort: ListHandler, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """When a real handler exists, Python wouldn't use lastResort either."""
+        isolated = isolate()
+        isolated.addHandler(ListHandler(level=logging.CRITICAL))  # counts anyway
+        isolated.warning("handled elsewhere")
+        assert last_resort.messages == []
+
+    def test_forwarded_once_with_our_handler_twice_in_chain(
+        self, last_resort: ListHandler, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """Our handler on both celery.task and root still forwards once."""
+        isolate()
+        child = logging.getLogger("tests.lastresort.child")
+        child.addHandler(TaskOutputHandler())
+        try:
+            child.error("once")
+        finally:
+            for handler in list(child.handlers):
+                child.removeHandler(handler)
+        assert last_resort.messages == ["once"]
+
+    def test_no_last_resort_configured_is_a_no_op(
+        self, monkeypatch: pytest.MonkeyPatch, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """Apps that set logging.lastResort = None keep their behavior."""
+        monkeypatch.setattr(logging, "lastResort", None)
+        isolated = isolate()
+        start_capture("t1", max_bytes=1000)
+        isolated.warning("captured, not printed")
+        assert stop_capture("t1") == "WARNING tests.lastresort: captured, not printed"
+
+    def test_internal_logger_records_are_forwarded_too(
+        self, last_resort: ListHandler, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """Forwarding doesn't depend on the capture filter (stemtrace's logs too)."""
+        internal = isolate("stemtrace.tests_lastresort")
+        start_capture("t1", max_bytes=1000)
+        internal.warning("publish failed")
+        assert stop_capture("t1") is None
+        assert last_resort.messages == ["publish failed"]
+
+    def test_inside_task_output_is_captured_once_and_still_printed(
+        self, monkeypatch: pytest.MonkeyPatch, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """lastResort writes to sys.stderr (our tee) without duplicating output."""
+        stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        monkeypatch.setattr(
+            logging, "lastResort", logging._StderrHandler(logging.WARNING)
+        )
+        install_capture()
+        isolated = isolate()
+        start_capture("t1", max_bytes=1000)
+        isolated.warning("careful")
+        assert stop_capture("t1") == "WARNING tests.lastresort: careful"
+        assert stderr.getvalue() == "careful\n"
+
+    def test_broken_last_resort_never_raises(
+        self, monkeypatch: pytest.MonkeyPatch, isolate: Callable[..., logging.Logger]
+    ) -> None:
+        """A failing lastResort can't break the task that logged."""
+
+        class BrokenHandler(logging.Handler):
+            def handle(self, record: logging.LogRecord) -> bool:
+                raise RuntimeError("stderr gone")
+
+        monkeypatch.setattr(logging, "lastResort", BrokenHandler(logging.WARNING))
+        isolated = isolate()
+        start_capture("t1", max_bytes=1000)
+        isolated.warning("still captured")
+        assert stop_capture("t1") == "WARNING tests.lastresort: still captured"
+
+    def test_records_from_unknown_loggers_are_not_forwarded(
+        self, last_resort: ListHandler
+    ) -> None:
+        """A record handed to the handler directly has no chain to check."""
+        record = logging.LogRecord(
+            "tests.never.created.logger", logging.ERROR, __file__, 1, "m", None, None
+        )
+        TaskOutputHandler().handle(record)
+        assert last_resort.messages == []
+
+    def test_root_logger_record_is_checked_from_root(
+        self, last_resort: ListHandler
+    ) -> None:
+        """Records logged on root itself look at root's handlers (pytest's here)."""
+        record = logging.LogRecord("root", logging.ERROR, __file__, 1, "m", None, None)
+        TaskOutputHandler().handle(record)
+        assert last_resort.messages == []

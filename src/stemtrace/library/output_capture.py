@@ -10,15 +10,20 @@ How it works:
 - One process-wide :class:`TaskOutputHandler` is attached to the root logger
   **and** to ``celery.task`` (Celery sets ``propagate=False`` on it, so
   ``get_task_logger`` records never reach root). It appends records to the
-  active buffer, if there is one. Under Celery's default
-  ``worker_redirect_stdouts=True``, ``print()`` goes through the
-  ``celery.redirected`` logger, so the handler sees it too.
-- When ``sys.stdout``/``sys.stderr`` are *not* Celery's ``LoggingProxy``
-  (redirect disabled, eager runs), a :class:`TeeStream` is installed once that
-  forwards to the original stream and also appends to the active buffer.
+  active buffer, if there is one.
+- A :class:`TeeStream` wraps ``sys.stdout`` and ``sys.stderr`` (installed once):
+  it forwards every write to the stream it wraps and appends the text to the
+  active buffer. Under Celery's default ``worker_redirect_stdouts=True`` that
+  stream is Celery's ``LoggingProxy``, which still logs each write chunk to
+  ``celery.redirected`` for the worker log; the handler ignores those records,
+  so ``print()`` is captured once, as written (``print("a", 1)`` would be four
+  records but is one line of text).
 
-Output is one combined, chronological string: with the redirect on, stdout and
-stderr both arrive as ``celery.redirected`` records and can't be told apart.
+Output is one combined, chronological string of stdout, stderr and log records.
+
+The handler also stands in for ``logging.lastResort``: Python prints WARNING+
+records to stderr when a logger chain has no handlers, and our handler on root
+would otherwise count as one and silence them.
 
 Limitations: output from threads the task starts itself isn't captured (new
 threads start with an empty context), and output is free text, so it isn't
@@ -33,22 +38,27 @@ import threading
 from contextvars import ContextVar
 from typing import Any, TextIO, cast
 
-from celery.utils.log import LoggingProxy
-
 logger = logging.getLogger(__name__)
 
-# Records from these loggers are always captured, even though they sit under
-# "celery": print() under Celery's redirect, and task loggers.
-_INCLUDED_LOGGERS = ("celery.redirected", "celery.task")
-# stemtrace's own logs and Celery/kombu internals aren't task output.
+# Task loggers sit under "celery" but are user output.
+_INCLUDED_LOGGERS = ("celery.task",)
+# stemtrace's own logs and Celery/kombu internals aren't task output. This also
+# covers celery.redirected: print() text is captured by the tee instead.
 _EXCLUDED_LOGGERS = ("stemtrace", "celery", "kombu", "amqp", "billiard")
-_REDIRECT_LOGGER = "celery.redirected"
-# Set on a record once appended, so a record reaching the handler twice (via
-# celery.task and, if it propagates, root) is captured once.
+# Set on a record once appended / forwarded, so a record reaching the handler
+# twice (via celery.task and, if it propagates, root) is handled once.
 _CAPTURED_ATTR = "_stemtrace_output_captured"
+_LAST_RESORT_ATTR = "_stemtrace_last_resort_done"
 
 _active_buffer: ContextVar[OutputBuffer | None] = ContextVar(
     "stemtrace_output_buffer", default=None
+)
+# True while a tee is writing to the stream it wraps, or while the handler is
+# printing through lastResort: writes that come back into a tee from there
+# (LoggingProxy -> logging -> lastResort -> sys.stderr) are the same text, so
+# they're forwarded but not captured again.
+_tee_suppressed: ContextVar[bool] = ContextVar(
+    "stemtrace_tee_suppressed", default=False
 )
 
 
@@ -184,12 +194,33 @@ def stop_capture(task_id: str) -> str | None:
     return buffer.render()
 
 
+def _has_other_handlers(record: logging.LogRecord) -> bool | None:
+    """Whether the record's logger chain has a handler other than ours.
+
+    Mirrors ``Logger.callHandlers``: walk up while ``propagate`` is set and
+    count handlers regardless of their level. Returns None when the record's
+    logger doesn't exist (the record didn't come through a logger chain).
+    """
+    if record.name == logging.root.name:
+        current: logging.Logger | None = logging.root
+    else:
+        found = logging.Logger.manager.loggerDict.get(record.name)
+        if not isinstance(found, logging.Logger):
+            return None
+        current = found
+    while current is not None:
+        if any(not isinstance(h, TaskOutputHandler) for h in current.handlers):
+            return True
+        current = current.parent if current.propagate else None
+    return False
+
+
 class TaskOutputHandler(logging.Handler):
     """Logging handler that appends records to the active task's buffer.
 
-    Formats records as ``LEVEL logger: message`` (with tracebacks). Records
-    from Celery's stdout redirect are appended as the bare message, so
-    ``print()`` output reads as it would on a console.
+    Formats records as ``LEVEL logger: message`` (with tracebacks). When it is
+    the only handler a record reaches, it also passes WARNING+ records to
+    ``logging.lastResort``, as Python would if the handler weren't installed.
     """
 
     def __init__(self) -> None:
@@ -200,27 +231,48 @@ class TaskOutputHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         """Append the record to the active buffer. Never raises."""
         try:
-            buffer = _active_buffer.get()
-            if buffer is None or getattr(record, _CAPTURED_ATTR, False):
-                return
-            if not _should_capture(record.name):
-                return
-            if record.name == _REDIRECT_LOGGER and not record.exc_info:
-                text = record.getMessage()
-            else:
-                text = self.format(record)
-            setattr(record, _CAPTURED_ATTR, True)
-            buffer.append(text + "\n")
+            self._capture(record)
         except Exception:
             # Logged under "stemtrace", which this handler ignores: no recursion.
             logger.debug("Failed to capture log record", exc_info=True)
+        try:
+            self._forward_to_last_resort(record)
+        except Exception:
+            logger.debug("Failed to forward log record to lastResort", exc_info=True)
+
+    def _capture(self, record: logging.LogRecord) -> None:
+        buffer = _active_buffer.get()
+        if buffer is None or getattr(record, _CAPTURED_ATTR, False):
+            return
+        if not _should_capture(record.name):
+            return
+        text = self.format(record)
+        setattr(record, _CAPTURED_ATTR, True)
+        buffer.append(text + "\n")
+
+    @staticmethod
+    def _forward_to_last_resort(record: logging.LogRecord) -> None:
+        last_resort = logging.lastResort
+        if last_resort is None or record.levelno < last_resort.level:
+            return
+        if getattr(record, _LAST_RESORT_ATTR, False):
+            return
+        if _has_other_handlers(record) is not False:
+            return
+        setattr(record, _LAST_RESORT_ATTR, True)
+        token = _tee_suppressed.set(True)
+        try:
+            last_resort.handle(record)
+        finally:
+            _tee_suppressed.reset(token)
 
 
 class TeeStream:
     """Stream wrapper that forwards writes and copies them to the active buffer.
 
-    Only installed when Celery isn't redirecting the stream to logging, so
-    output is never captured twice.
+    Wraps the real stream, or Celery's ``LoggingProxy`` when Celery redirects
+    stdout/stderr to logging. Anything not defined here (``encoding``,
+    ``fileno``, ``isatty``, ...) is forwarded to the wrapped stream.
     """
 
     def __init__(self, wrapped: TextIO) -> None:
@@ -233,8 +285,14 @@ class TeeStream:
         return self._wrapped
 
     def write(self, text: str) -> int:
-        """Write to the original stream, then to the active buffer, if any."""
-        written = self._wrapped.write(text)
+        """Write to the wrapped stream, then to the active buffer, if any."""
+        if _tee_suppressed.get():
+            return self._wrapped.write(text)
+        token = _tee_suppressed.set(True)
+        try:
+            written = self._wrapped.write(text)
+        finally:
+            _tee_suppressed.reset(token)
         buffer = _active_buffer.get()
         if buffer is not None:
             try:
@@ -252,6 +310,16 @@ class TeeStream:
         """Flush the original stream."""
         self._wrapped.flush()
 
+    def __enter__(self) -> TeeStream:
+        """Support ``with stream:`` like the wrapped stream."""
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Leave the context the way the wrapped stream would (files close)."""
+        exit_ = getattr(self._wrapped, "__exit__", None)
+        if exit_ is not None:
+            exit_(*exc_info)
+
     def __getattr__(self, name: str) -> Any:
         """Forward everything else (encoding, fileno, isatty, ...) to the original."""
         return getattr(self._wrapped, name)
@@ -266,9 +334,8 @@ def _capture_loggers() -> tuple[logging.Logger, logging.Logger]:
 
 
 def _tee(stream: TextIO) -> TextIO:
-    # Under Celery's redirect, print() already reaches the logging handler.
-    already_captured = isinstance(stream, LoggingProxy | TeeStream)
-    if already_captured:
+    already_teed = isinstance(stream, TeeStream)
+    if already_teed:
         return stream
     # TeeStream implements the parts of TextIO that print()/logging use and
     # forwards the rest; it isn't a TextIO subclass.
