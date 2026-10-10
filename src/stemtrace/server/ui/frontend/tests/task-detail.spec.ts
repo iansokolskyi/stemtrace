@@ -1,4 +1,4 @@
-import { expect, test, type WebSocketRoute } from '@playwright/test'
+import { expect, type Page, type Response, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import {
@@ -30,12 +30,7 @@ test.describe('Task Detail Page', () => {
   test('displays task timeline', async ({ page }) => {
     // Find and click a task
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -49,12 +44,7 @@ test.describe('Task Detail Page', () => {
 
   test('shows task metadata', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -68,12 +58,7 @@ test.describe('Task Detail Page', () => {
 
   test('displays parameters section for tasks with args', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -91,12 +76,7 @@ test.describe('Task Detail Page', () => {
 
   test('displays result section for completed tasks', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -115,13 +95,7 @@ test.describe('Task Detail Page', () => {
   test('shows error details for failed tasks', async ({ page }) => {
     // Try to find a failed task - look for FAILURE badge or red-colored indicators
     const failedLink = page.locator('a[href*="/tasks/"]:has-text("FAILURE")').first()
-    const isVisible = await failedLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      // No failed tasks visible, skip the test
-      test.skip()
-      return
-    }
+    await expect(failedLink).toBeVisible()
 
     await failedLink.click()
     await page.waitForLoadState('networkidle')
@@ -138,12 +112,7 @@ test.describe('Task Detail Page', () => {
 
   test('can navigate back to tasks list', async ({ page }) => {
     const taskLink = page.locator('a[href*="/tasks/"]').first()
-    const isVisible = await taskLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
-      test.skip()
-      return
-    }
+    await expect(taskLink).toBeVisible()
 
     await taskLink.click()
     await page.waitForLoadState('networkidle')
@@ -343,6 +312,82 @@ test.describe('Task Detail - Mock Scenarios', () => {
   })
 })
 
+// Fake time given to a delayed or debounced refetch to show up after an event.
+// The page clock is paused while events are sent, so this costs no real time.
+const QUIET_MS = 2000
+
+interface DetailFetchCounter {
+  __detailFetches: number
+}
+
+/**
+ * Opens the detail page of `taskId` with the live socket mocked. Returns once
+ * the first detail response has rendered and the app's socket is live, with
+ * the page clock paused, so the fetch count is settled before any event.
+ */
+async function openLiveTaskPage(page: Page, taskId: string) {
+  const sockets: WebSocketRoute[] = []
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    sockets.push(ws)
+  })
+  // Count detail fetches in the page: a fetch starts synchronously inside the
+  // message handler or timer that causes it, so reading the count after
+  // `clock.runFor` sees every refetch due by then. (The navigation to
+  // /tasks/<id> ends in the same path but is not a fetch.)
+  await page.addInitScript((id) => {
+    const counter = window as unknown as DetailFetchCounter
+    counter.__detailFetches = 0
+    const nativeFetch = window.fetch
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input)
+      const path = decodeURIComponent(new URL(url, window.location.href).pathname)
+      if (path.endsWith(`/api/tasks/${id}`)) counter.__detailFetches += 1
+      return nativeFetch(input, init)
+    }
+  }, taskId)
+  const detailFetches = () =>
+    page.evaluate(() => (window as unknown as DetailFetchCounter).__detailFetches)
+  const isDetailResponse = (response: Response) =>
+    response.request().resourceType() === 'fetch' &&
+    decodeURIComponent(new URL(response.url()).pathname).endsWith(`/api/tasks/${taskId}`)
+
+  await page.clock.install()
+  await page.goto(`/tasks/${taskId}`)
+  await expect(page.getByText(taskId, { exact: true })).toBeVisible()
+  await expect(page.getByText('Live', { exact: true })).toBeVisible()
+  // Only the mount fetch. This relies on the socket going live within the 5 s
+  // poll interval useTask runs while disconnected; a slower handshake would
+  // add a poll here.
+  expect(await detailFetches()).toBe(1)
+  // StrictMode (dev) opens and drops a socket before the one that goes live.
+  const ws = sockets[sockets.length - 1]
+  let expected = 1
+  // From here timers fire only when the test advances the clock.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100)
+
+  // Lets due and delayed work run, then checks no refetch beyond `expected`.
+  async function expectNoFurtherRefetch() {
+    await page.clock.runFor(QUIET_MS)
+    expect(await detailFetches()).toBe(expected)
+  }
+
+  return {
+    /** Sends an event the page must ignore and checks it never refetches. */
+    async expectIgnored(event: object) {
+      ws.send(JSON.stringify(event))
+      await expectNoFurtherRefetch()
+    },
+    /** Sends an event and checks it refetches the detail exactly once. */
+    async expectRefetch(event: object) {
+      const response = page.waitForResponse(isDetailResponse)
+      ws.send(JSON.stringify(event))
+      await response
+      expected += 1
+      await expectNoFurtherRefetch()
+    },
+  }
+}
+
 test.describe('Task Detail - Output', () => {
   test.skip(isRealMode, 'Mock-only test')
 
@@ -426,44 +471,22 @@ test.describe('Task Detail - Output', () => {
   })
 
   test('refetches the open task only for its own live events', async ({ page }) => {
-    let socket: WebSocketRoute | null = null
-    await page.routeWebSocket(/\/ws$/, (ws) => {
-      socket = ws
-    })
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const task = retriedTask()
     const sibling = createSuccessTask('test.unrelated', 'done')
     mockApi.addTask(task)
     mockApi.addTask(sibling)
-    let detailRequests = 0
-    page.on('request', (request) => {
-      if (new URL(request.url()).pathname.endsWith(`/tasks/${task.task_id}`)) {
-        detailRequests += 1
-      }
-    })
 
-    await page.goto(`/tasks/${task.task_id}`)
-    await page.waitForLoadState('networkidle')
+    const live = await openLiveTaskPage(page, task.task_id)
     await expect(page.getByTestId('output-attempt')).toHaveCount(2)
-    await expect.poll(() => socket !== null).toBe(true)
-    const ws = socket as unknown as WebSocketRoute
-    const initial = detailRequests
 
     // An event for another task must not refetch this task's detail (and output).
-    ws.send(JSON.stringify({ task_id: sibling.task_id, state: 'STARTED' }))
-    await page.waitForTimeout(1000)
-    expect(detailRequests).toBe(initial)
-
+    await live.expectIgnored({ task_id: sibling.task_id, state: 'STARTED' })
     // An event for this task does.
-    ws.send(JSON.stringify({ task_id: task.task_id, state: 'FAILURE' }))
-    await expect.poll(() => detailRequests).toBe(initial + 1)
+    await live.expectRefetch({ task_id: task.task_id, state: 'FAILURE' })
   })
 
   test('refetches a chord page for its members and callback', async ({ page }) => {
-    let socket: WebSocketRoute | null = null
-    await page.routeWebSocket(/\/ws$/, (ws) => {
-      socket = ws
-    })
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const [chordNode, ...rest] = createGroup(2, { withCallback: true })
     const callback = rest[rest.length - 1]
@@ -471,49 +494,30 @@ test.describe('Task Detail - Output', () => {
     // The server lists the callback among the CHORD node's children.
     chordNode.children.push(callback.task_id)
     for (const task of [chordNode, ...rest]) mockApi.addTask(task)
-    let detailRequests = 0
-    page.on('request', (request) => {
-      const path = decodeURIComponent(new URL(request.url()).pathname)
-      if (path.endsWith(`/tasks/${chordNode.task_id}`)) detailRequests += 1
-    })
 
-    await page.goto(`/tasks/${chordNode.task_id}`)
-    await page.waitForLoadState('networkidle')
-    await expect.poll(() => socket !== null).toBe(true)
-    await expect.poll(() => detailRequests).toBeGreaterThan(0)
-    const ws = socket as unknown as WebSocketRoute
-    const initial = detailRequests
+    const live = await openLiveTaskPage(page, chordNode.task_id)
 
-    ws.send(JSON.stringify({ task_id: 'unrelated-task', state: 'STARTED', group_id: null }))
-    await page.waitForTimeout(1000)
-    expect(detailRequests).toBe(initial)
+    await live.expectIgnored({ task_id: 'unrelated-task', state: 'STARTED', group_id: null })
 
     // A header task joining or changing state (matched by group_id).
-    ws.send(JSON.stringify({ task_id: 'new-member', state: 'STARTED', group_id: groupId }))
-    await expect.poll(() => detailRequests).toBe(initial + 1)
+    await live.expectRefetch({ task_id: 'new-member', state: 'STARTED', group_id: groupId })
 
     // The callback as Celery 5.6 sends it: frozen with the chord's group_id.
-    ws.send(
-      JSON.stringify({
-        task_id: callback.task_id,
-        state: 'STARTED',
-        group_id: groupId,
-        parent_id: null,
-      }),
-    )
-    await expect.poll(() => detailRequests).toBe(initial + 2)
+    await live.expectRefetch({
+      task_id: callback.task_id,
+      state: 'STARTED',
+      group_id: groupId,
+      parent_id: null,
+    })
 
     // Fallback: a callback event without group_id still matches, because the
     // server lists the callback among the CHORD node's children.
-    ws.send(
-      JSON.stringify({
-        task_id: callback.task_id,
-        state: 'SUCCESS',
-        group_id: null,
-        parent_id: null,
-      }),
-    )
-    await expect.poll(() => detailRequests).toBe(initial + 3)
+    await live.expectRefetch({
+      task_id: callback.task_id,
+      state: 'SUCCESS',
+      group_id: null,
+      parent_id: null,
+    })
   })
 
   test('copies an attempt output to the clipboard', async ({ page }) => {
