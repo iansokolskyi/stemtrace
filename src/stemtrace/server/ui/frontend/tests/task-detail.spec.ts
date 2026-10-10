@@ -337,3 +337,104 @@ test.describe('Task Detail - Mock Scenarios', () => {
     await expect(page.getByText(/^-\d/)).toHaveCount(0)
   })
 })
+
+test.describe('Task Detail - Output', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  function retriedTask() {
+    const task = createFailedTask('test.flaky_output', 'ValueError: gave up', 'Traceback')
+    const base = Date.now() - 10_000
+    const at = (seconds: number) => new Date(base + seconds * 1000).toISOString()
+    const { task_id, name } = task
+    task.events = [
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), retries: 0 }),
+      createMockEvent(task_id, name, 'RETRY', {
+        timestamp: at(2),
+        retries: 0,
+        exception: 'RuntimeError: flaky',
+        output: 'attempt 0\nWARNING app.tasks: upstream timed out',
+      }),
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(3), retries: 1 }),
+      createMockEvent(task_id, name, 'FAILURE', {
+        timestamp: at(5),
+        retries: 1,
+        exception: 'ValueError: gave up',
+        output: 'attempt 1\nERROR app.tasks: giving up',
+      }),
+    ]
+    task.first_seen = at(1)
+    task.last_updated = at(5)
+    task.duration_ms = 4000
+    return task
+  }
+
+  test('shows output per attempt, latest first and expanded', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const section = page.getByTestId('task-output')
+    await expect(section.getByRole('heading', { name: 'Output' })).toBeVisible()
+
+    const attempts = section.getByTestId('output-attempt')
+    await expect(attempts).toHaveCount(2)
+    await expect(attempts.nth(0)).toContainText('FAILURE')
+    await expect(attempts.nth(0)).toContainText('retry #1')
+    await expect(attempts.nth(1)).toContainText('RETRY')
+
+    // Only the latest attempt is expanded initially.
+    const texts = section.getByTestId('output-text')
+    await expect(texts).toHaveCount(1)
+    await expect(texts.first()).toHaveText('attempt 1\nERROR app.tasks: giving up')
+
+    // Expanding the earlier attempt shows its own output.
+    await attempts
+      .nth(1)
+      .getByRole('button', { name: /expand/ })
+      .click()
+    await expect(attempts.nth(1).getByTestId('output-text')).toHaveText(
+      'attempt 0\nWARNING app.tasks: upstream timed out',
+    )
+  })
+
+  test('copies an attempt output to the clipboard', async ({ page }) => {
+    await page.addInitScript(() => {
+      const copied: string[] = []
+      Object.defineProperty(window, '__copied', { value: copied })
+      Object.defineProperty(navigator, 'clipboard', {
+        value: {
+          writeText: async (text: string) => {
+            copied.push(text)
+          },
+        },
+      })
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const latest = page.getByTestId('output-attempt').first()
+    await latest.getByRole('button', { name: 'Copy' }).click()
+    await expect(latest.getByRole('button', { name: 'Copied' })).toBeVisible()
+    const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied)
+    expect(copied).toEqual(['attempt 1\nERROR app.tasks: giving up'])
+  })
+
+  test('renders no output section when no attempt has output', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.silent_task', 'done')
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    await expect(page.getByRole('heading', { name: 'Event History' })).toBeVisible()
+    await expect(page.getByTestId('task-output')).toHaveCount(0)
+  })
+})

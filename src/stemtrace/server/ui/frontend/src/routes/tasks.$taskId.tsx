@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
+import { TaskOutput } from '@/components/TaskOutput'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
 import {
   buildSegments,
@@ -40,12 +41,6 @@ function TaskDetailPage() {
   const hasParams = startedEvent?.args || startedEvent?.kwargs
   const successEvent = task.events.find((e) => e.state === 'SUCCESS')
   const hasResult = successEvent?.result !== null && successEvent?.result !== undefined
-
-  // Find terminal event that might have stdout/stderr
-  const terminalEvent = task.events.find(
-    (e) => e.state === 'SUCCESS' || e.state === 'FAILURE' || e.state === 'RETRY',
-  )
-  const hasOutput = terminalEvent?.stdout || terminalEvent?.stderr
 
   return (
     <div className="space-y-6">
@@ -109,23 +104,8 @@ function TaskDetailPage() {
         </div>
       )}
 
-      {/* Output (stdout/stderr) */}
-      {hasOutput && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Output</h2>
-          {terminalEvent?.stdout && (
-            <OutputSection label="stdout" content={terminalEvent.stdout} variant="default" />
-          )}
-          {terminalEvent?.stderr && (
-            <OutputSection
-              label="stderr"
-              content={terminalEvent.stderr}
-              variant="error"
-              className={terminalEvent?.stdout ? 'mt-4' : ''}
-            />
-          )}
-        </div>
-      )}
+      {/* Output per attempt (worker capture_output=True) */}
+      <TaskOutput events={task.events} />
 
       {/* Visual Timeline */}
       {task.events.length > 1 && (
@@ -218,47 +198,6 @@ function InfoCard({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="text-xs text-slate-500">{label}</dt>
       <dd className="text-sm text-slate-200 font-mono mt-1">{value}</dd>
-    </div>
-  )
-}
-
-function OutputSection({
-  label,
-  content,
-  variant,
-  className = '',
-}: {
-  label: string
-  content: string
-  variant: 'default' | 'error'
-  className?: string
-}) {
-  const [expanded, setExpanded] = useState(true)
-  const lines = content.split('\n')
-  const isLong = lines.length > 20
-  const textColor = variant === 'error' ? 'text-red-300' : 'text-slate-300'
-
-  return (
-    <div className={className}>
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-slate-500">{label}</span>
-        {isLong && (
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="text-xs text-slate-500 hover:text-slate-300"
-          >
-            {expanded ? '▲ collapse' : '▼ expand'}
-          </button>
-        )}
-      </div>
-      <div
-        className={`bg-slate-950 rounded-lg p-3 font-mono text-sm ${textColor} overflow-x-auto whitespace-pre ${
-          !expanded && isLong ? 'max-h-40 overflow-y-hidden' : ''
-        }`}
-      >
-        {content}
-      </div>
     </div>
   )
 }
