@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 StreamEvent = TaskEvent | WorkerEvent
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    import threading
+    from collections.abc import Callable, Iterator
+
+# Reconnect backoff after consume failures: doubles per failure, resets once a
+# drain succeeds (or times out, which proves the connection is alive).
+RECONNECT_INITIAL_BACKOFF = 1.0
+RECONNECT_MAX_BACKOFF = 30.0
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -47,16 +53,28 @@ def _normalize_prefix(prefix: str) -> str:
 class RabbitMQTransport:
     """RabbitMQ (AMQP) transport using kombu."""
 
-    def __init__(self, url: str, *, prefix: str, ttl: int) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        prefix: str,
+        ttl: int,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         """Initialize the RabbitMQ transport.
 
         Args:
             url: AMQP URL (amqp/amqps/pyamqp).
             prefix: Namespace for exchange/queue names.
             ttl: Event retention window in seconds (queue message TTL).
+            sleep: Sleep function for reconnect backoff when no stop event is
+                bound (injectable for tests).
         """
         self._url = url
         self._ttl = ttl
+        self._sleep = sleep
+        self._connected: bool | None = None
+        self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
 
         # Fanout exchange to broadcast events.
@@ -76,6 +94,24 @@ class RabbitMQTransport:
             "x-message-ttl": ttl_ms,
             "x-expires": queue_expires_ms,
         }
+
+    @property
+    def connected(self) -> bool | None:
+        """Whether the last drain of the consumer connection reached RabbitMQ.
+
+        None until the first drain of the current consume() completes, True
+        after a drain returned or timed out on a live connection, False while
+        connecting or draining is failing.
+        """
+        return self._connected
+
+    def bind_stop_event(self, event: threading.Event) -> None:
+        """Stop consume() and interrupt its reconnect backoff when ``event`` is set."""
+        self._stop_event = event
+
+    def _stopping(self) -> bool:
+        """Whether a bound stop event has been set."""
+        return self._stop_event is not None and self._stop_event.is_set()
 
     @property
     def ttl(self) -> int:
@@ -164,6 +200,15 @@ class RabbitMQTransport:
     def consume(self) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
+        Connection and channel errors never end the iterator: the transport
+        logs a warning (with a traceback only for the first failure in a row),
+        backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
+        reconnects. The backoff resets only after a drain on the new
+        connection succeeds or times out, so a broker that accepts connections
+        and then drops them keeps backing off. The iterator ends once a stop
+        event bound with bind_stop_event() is set, and that event also
+        interrupts the backoff wait.
+
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
         """
@@ -199,13 +244,12 @@ class RabbitMQTransport:
                 except Exception:
                     logger.debug("Failed to reject malformed RabbitMQ message")
 
-        # Reconnect backoff: grows exponentially while failing, resets on success.
-        # Without this, a broker outage produces one ERROR-level traceback per second.
-        backoff = 1.0
-        max_backoff = 30.0
-        consecutive_failures = 0
+        # Unknown until this iterator's first drain completes.
+        self._connected = None
+        failures = 0
+        backoff = RECONNECT_INITIAL_BACKOFF
 
-        while True:
+        while not self._stopping():
             try:
                 with Connection(self._url) as conn:
                     channel = conn.channel()
@@ -220,41 +264,60 @@ class RabbitMQTransport:
                         callbacks=[on_message],
                         accept=["json"],
                     ):
-                        if consecutive_failures:
-                            logger.info(
-                                "RabbitMQ consume loop reconnected after %d failure(s)",
-                                consecutive_failures,
-                            )
-                        consecutive_failures = 0
-                        backoff = 1.0
-
                         while True:
                             # Periodic wakeup to allow outer loops to run.
                             with contextlib.suppress(TimeoutError, socket.timeout):
                                 conn.drain_events(timeout=5)
 
+                            # The drain returned or timed out: the connection
+                            # is alive, so the outage (if any) is over.
+                            if failures:
+                                logger.info(
+                                    "RabbitMQ consume loop reconnected after "
+                                    "%d failure(s)",
+                                    failures,
+                                )
+                            failures = 0
+                            backoff = RECONNECT_INITIAL_BACKOFF
+                            self._connected = True
+
+                            if self._stopping():
+                                return
+
                             while pending:
                                 yield pending.popleft()
             except Exception as exc:
-                consecutive_failures += 1
-                # Log full traceback only on the first failure of a run, then a
-                # single warning line per subsequent attempt to avoid log floods.
-                if consecutive_failures == 1:
-                    logger.warning(
-                        "RabbitMQ consume loop error; retrying in %.1fs",
-                        backoff,
-                        exc_info=True,
-                    )
-                else:
-                    logger.warning(
-                        "RabbitMQ consume loop still failing (attempt %d): %s; "
-                        "retrying in %.1fs",
-                        consecutive_failures,
-                        exc,
-                        backoff,
-                    )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, max_backoff)
+                if self._stopping():
+                    return
+                failures += 1
+                backoff = self._back_off(failures, backoff, exc)
+
+    def _back_off(self, failures: int, backoff: float, exc: Exception) -> float:
+        """Log a consume failure, wait, and return the next backoff delay.
+
+        The full traceback is logged only on the first failure in a row; later
+        attempts get a single warning line to avoid flooding the logs.
+        """
+        self._connected = False
+        if failures == 1:
+            logger.warning(
+                "RabbitMQ consume loop error; retrying in %.1fs",
+                backoff,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "RabbitMQ consume loop still failing (attempt %d): %s; "
+                "retrying in %.1fs",
+                failures,
+                exc,
+                backoff,
+            )
+        if self._stop_event is not None:
+            self._stop_event.wait(backoff)
+        else:
+            self._sleep(backoff)
+        return min(backoff * 2, RECONNECT_MAX_BACKOFF)
 
     @staticmethod
     def _parse_event(payload: Any) -> StreamEvent:

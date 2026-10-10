@@ -3,6 +3,7 @@
 import logging
 import socket
 import sys
+import threading
 import types
 from datetime import datetime, timezone
 from typing import Any
@@ -13,9 +14,14 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
+from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
 from stemtrace.library.transports import get_transport
 from stemtrace.library.transports.memory import MemoryTransport
-from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+from stemtrace.library.transports.rabbitmq import (
+    RECONNECT_INITIAL_BACKOFF,
+    RECONNECT_MAX_BACKOFF,
+    RabbitMQTransport,
+)
 from stemtrace.library.transports.redis import (
     RedisTransport,
     _normalize_redis_ssl_params,
@@ -1101,3 +1107,324 @@ class TestRabbitMQTransport:
         assert published["body"]["task_id"] == "t4"
         assert published["serializer"] == "json"
         assert published["delivery_mode"] == 2
+
+
+class _RecordingStopEvent(threading.Event):
+    """Stop event that records wait() timeouts and sets itself on the first wait."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        self.set()
+        return True
+
+
+class TestRabbitMQConsumeBackoff:
+    """Reconnect backoff, stop handling and connectivity of RabbitMQTransport.consume()."""
+
+    @staticmethod
+    def _event_body() -> dict[str, Any]:
+        return TaskEvent(
+            task_id="backoff-1",
+            name="tests.backoff",
+            state=TaskState.RECEIVED,
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ).model_dump(mode="json")
+
+    @classmethod
+    def _deliver(cls, callbacks: list[Any]) -> None:
+        msg = sys.modules["kombu"].FakeMessage()  # type: ignore[attr-defined]
+        for cb in callbacks:
+            cb(cls._event_body(), msg)
+
+    def test_backoff_constants_match_redis_transport(self) -> None:
+        """Backoff starts at 1s and is capped at 30s."""
+        assert RECONNECT_INITIAL_BACKOFF == 1.0
+        assert RECONNECT_MAX_BACKOFF == 30.0
+
+    def test_transport_implements_stoppable_and_connection_aware(self) -> None:
+        """The consumer can bind a stop event and read connectivity."""
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        assert isinstance(transport, StoppableTransport)
+        assert isinstance(transport, ConnectionAwareTransport)
+        assert transport.connected is None
+
+    def test_consume_when_broker_down_backs_off_exponentially_and_logs_once(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Failures sleep 1,2,4,...,30s; only the first failure logs a traceback."""
+        failures_before_success = 7
+        attempts = {"n": 0}
+        sleeps: list[float] = []
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_channel = conn_cls.channel
+
+        def flaky_channel(conn: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] <= failures_before_success:
+                raise ConnectionRefusedError("broker down")
+            return original_channel(conn)
+
+        monkeypatch.setattr(conn_cls, "channel", flaky_channel)
+
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeps.append
+        )
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            received = next(gen)
+            gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == failures_before_success
+        assert warnings[0].exc_info is not None
+        assert all(r.exc_info is None for r in warnings[1:])
+        assert "still failing (attempt 7): broker down" in warnings[-1].getMessage()
+        assert "reconnected after 7 failure(s)" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_consume_when_connection_drops_after_connect_keeps_backing_off(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A broker that accepts connections and then drops them doesn't reset backoff."""
+        sleeps: list[float] = []
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] <= 3:
+                raise ConnectionResetError("dropped")
+            self._deliver(callbacks)
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeps.append
+        )
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            received = next(gen)
+            gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeps == [1.0, 2.0, 4.0]
+        assert "reconnected after 3 failure(s)" in caplog.text
+
+    def test_consume_after_drain_timeout_resets_backoff(self, monkeypatch: Any) -> None:
+        """A drain that times out proves the connection is alive and resets backoff."""
+        sleeps: list[float] = []
+        attempts = {"n": 0}
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            drains["n"] += 1
+            if drains["n"] == 1:
+                raise TimeoutError
+            if drains["n"] == 2:
+                raise ConnectionResetError("dropped")
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_channel = conn_cls.channel
+
+        def flaky_channel(conn: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] <= 2:
+                raise ConnectionRefusedError("broker down")
+            return original_channel(conn)
+
+        monkeypatch.setattr(conn_cls, "channel", flaky_channel)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeps.append
+        )
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert sleeps == [1.0, 2.0, 1.0]
+
+    def test_consume_when_stop_event_set_during_backoff_wakes_and_ends(
+        self, monkeypatch: Any
+    ) -> None:
+        """The backoff waits on the bound stop event, not sleep, and then ends."""
+        sleeps: list[float] = []
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            raise AssertionError("must not connect")
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+
+        def broken_channel(conn: Any) -> Any:
+            del conn
+            raise ConnectionRefusedError("broker down")
+
+        monkeypatch.setattr(conn_cls, "channel", broken_channel)
+        stop = _RecordingStopEvent()
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeps.append
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+        assert stop.waits == [1.0]
+        assert sleeps == []
+        assert transport.connected is False
+
+    def test_consume_when_stop_event_set_while_connected_ends(
+        self, monkeypatch: Any
+    ) -> None:
+        """Setting the stop event ends the drain loop without reconnecting."""
+        stop = threading.Event()
+        drains = {"n": 0}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            drains["n"] += 1
+            stop.set()
+            raise TimeoutError
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+        assert drains["n"] == 1
+
+    def test_consume_with_stop_event_already_set_never_connects(
+        self, monkeypatch: Any
+    ) -> None:
+        """consume() ends immediately when the stop event is already set."""
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=lambda _n, _cb: None
+        )
+
+        def unexpected_channel(conn: Any) -> Any:
+            del conn
+            raise AssertionError("must not connect")
+
+        monkeypatch.setattr(conn_cls, "channel", unexpected_channel)
+        stop = threading.Event()
+        stop.set()
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+
+    def test_connected_tracks_failures_and_successful_drains(
+        self, monkeypatch: Any
+    ) -> None:
+        """connected is False while failing and True after a drain (timeouts count)."""
+        observed: list[bool | None] = []
+        attempts = {"n": 0}
+        transport_ref: dict[str, RabbitMQTransport] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            observed.append(transport_ref["t"].connected)
+            if drain_count == 1:
+                raise TimeoutError
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        original_channel = conn_cls.channel
+
+        def flaky_channel(conn: Any) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ConnectionRefusedError("broker down")
+            return original_channel(conn)
+
+        monkeypatch.setattr(conn_cls, "channel", flaky_channel)
+        transport = RabbitMQTransport(
+            "amqp://localhost",
+            prefix="test",
+            ttl=60,
+            sleep=lambda _s: observed.append(transport.connected),
+        )
+        transport_ref["t"] = transport
+
+        gen = transport.consume()
+        received = next(gen)
+        gen.close()
+
+        assert received.task_id == "backoff-1"
+        # sleep after the failure, first drain (still failing), second drain
+        # (after a timed-out drain proved the connection alive).
+        assert observed == [False, False, True]
+        assert transport.connected is True
+
+    def test_consume_called_again_resets_connected_until_first_drain(
+        self, monkeypatch: Any
+    ) -> None:
+        """A new consume() reports unknown connectivity until its first drain."""
+        observed: list[bool | None] = []
+        transport_ref: dict[str, RabbitMQTransport] = {}
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            observed.append(transport_ref["t"].connected)
+            self._deliver(callbacks)
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        transport_ref["t"] = transport
+
+        for _ in range(2):
+            gen = transport.consume()
+            next(gen)
+            gen.close()
+
+        assert observed == [None, None]
+        assert transport.connected is True
+
+    def test_consume_when_error_follows_stop_ends_without_backoff(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A connection error raised after stop was requested ends quietly."""
+        sleeps: list[float] = []
+        stop = threading.Event()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count, callbacks
+            stop.set()
+            raise ConnectionResetError("closed during shutdown")
+
+        _install_fake_kombu_for_consume(monkeypatch, drain_handler=drain_handler)
+        transport = RabbitMQTransport(
+            "amqp://localhost", prefix="test", ttl=60, sleep=sleeps.append
+        )
+        transport.bind_stop_event(stop)
+
+        with caplog.at_level(logging.WARNING):
+            assert list(transport.consume()) == []
+
+        assert sleeps == []
+        assert caplog.records == []
