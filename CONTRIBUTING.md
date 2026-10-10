@@ -37,7 +37,7 @@ make check
 make check
 
 # Individual checks
-make lint       # ruff check + format
+make lint       # ruff check + format + import contracts
 make types      # mypy --strict
 make test       # pytest with coverage
 ```
@@ -53,6 +53,29 @@ uv run ruff check --fix src/ tests/
 # Format code
 uv run ruff format src/ tests/
 ```
+
+### Lint Rules and Import Contracts
+
+Besides style, ruff enforces design limits: McCabe complexity 10 (`C90`), at most
+12 branches, 6 returns, 50 statements and 5 positional arguments per function
+(`PLR09xx`; make extra parameters keyword-only), no blind `except Exception`
+(`BLE`), no commented-out code (`ERA`), plus `RET` and `PT` style rules. A broad
+except is accepted only at a fire-and-forget boundary, with
+`# noqa: BLE001  <reason>` on that line.
+
+[import-linter](https://import-linter.readthedocs.io/) checks the architecture
+boundaries (`uv run lint-imports`, part of `make lint` and CI):
+
+- `stemtrace.core` imports nothing from `stemtrace.library` or `stemtrace.server`
+- `stemtrace.library` does not import `stemtrace.server`
+- `stemtrace.server` does not import `stemtrace.library`
+
+**Baseline policy.** Code that predates these rules is listed in `pyproject.toml`
+under the "Baseline" comments (ruff `per-file-ignores` and import-linter
+`ignore_imports`). The baseline only shrinks: don't add entries for new code. When
+you fix a listed file, delete its codes in the same change. import-linter fails
+on an ignore that no longer matches anything; ruff doesn't, so check ruff entries
+by hand.
 
 ### Type Checking
 
