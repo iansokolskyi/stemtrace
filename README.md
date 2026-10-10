@@ -298,13 +298,23 @@ again once events are re-consumed.
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
-  - Events published while RabbitMQ itself is unreachable are dropped, not buffered on the
-    worker. A worker tries each host of the broker URL once (2s connect timeout), then skips
-    publishing for a cooldown that grows from 1s to 30s and resets on the next successful
-    publish, so an outage doesn't slow tasks down. This includes a broker that accepts
-    connections but stops reading them, such as RabbitMQ blocking publishers during a memory or
-    disk alarm. The worker logs a warning when this starts, a summary at most once a minute, and
-    the number of dropped events once publishing recovers.
+  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker, and a
+    broker outage doesn't slow tasks down. Each publish tries every host of the broker URL once
+    (2s connect timeout, 2s per read or write after that). A single quick failure, such as a
+    refused connection, drops only that event; a failure that took 0.5s or more (a timeout) or
+    three quick failures in a row make the worker skip publishing for a cooldown that grows from
+    1s to 30s and resets on the next successful publish.
+  - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
+    from publishers, so a publish is sent but never confirmed. The worker counts such events as
+    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears) and retries
+    only every 30s. Each retry leaves one blocked connection on the broker until the alarm
+    clears, so expect up to about 2 connections per minute per worker process, released when
+    the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
+    from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
+    notice arriving while the connection closes.
+  - Failures are logged at most once a minute (plus a line when an outage starts and when it
+    ends), each line with the number of events dropped, and sent but unconfirmed, since the
+    previous one.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them.
