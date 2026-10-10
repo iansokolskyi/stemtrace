@@ -1,5 +1,6 @@
 """Tests for per-task output capture (buffer, logging handler, tee)."""
 
+import contextvars
 import copy
 import io
 import logging
@@ -16,12 +17,12 @@ from stemtrace.library.output_capture import (
     OutputBuffer,
     TaskOutputHandler,
     TeeStream,
-    get_active_buffer,
+    _get_active_buffer,
+    _is_installed,
+    _uninstall_capture,
     install_capture,
-    is_installed,
     start_capture,
     stop_capture,
-    uninstall_capture,
 )
 
 
@@ -41,11 +42,11 @@ class ListHandler(logging.Handler):
 @pytest.fixture(autouse=True)
 def clean_capture() -> Iterator[None]:
     """Remove the process-wide handler/tee and any active buffer around each test."""
-    uninstall_capture()
+    _uninstall_capture()
     yield
-    while (buffer := get_active_buffer()) is not None:
+    while (buffer := _get_active_buffer()) is not None:
         stop_capture(buffer.task_id)
-    uninstall_capture()
+    _uninstall_capture()
 
 
 @pytest.fixture
@@ -168,7 +169,7 @@ class TestStartStop:
         buffer = start_capture("t1", max_bytes=100)
         buffer.append("hello")
         assert stop_capture("t1") == "hello"
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_stop_without_start_returns_none(self) -> None:
         """Stopping when nothing is active is a no-op."""
@@ -185,12 +186,12 @@ class TestStartStop:
         start_capture("outer", max_bytes=100).append("outer-1\n")
         start_capture("inner", max_bytes=100).append("inner\n")
         assert stop_capture("inner") == "inner"
-        active = get_active_buffer()
+        active = _get_active_buffer()
         assert active is not None
         assert active.task_id == "outer"
         active.append("outer-2\n")
         assert stop_capture("outer") == "outer-1\nouter-2"
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_stop_for_unknown_task_leaves_active_buffer(self) -> None:
         """A stop for a different task id doesn't steal the active buffer."""
@@ -203,7 +204,7 @@ class TestStartStop:
         start_capture("outer", max_bytes=100).append("o")
         start_capture("inner", max_bytes=100).append("i")
         assert stop_capture("outer") == "o"
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_buffers_are_isolated_between_threads(self) -> None:
         """Concurrent tasks in a threads pool each see only their own output."""
@@ -322,7 +323,7 @@ class TestTaskOutputHandler:
         """Logging outside a task is untouched and buffers nothing."""
         install_capture()
         logging.getLogger("myapp").warning("outside")
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_bad_format_args_never_raise(self) -> None:
         """A broken log call inside a task doesn't break the task."""
@@ -349,7 +350,7 @@ class TestInstall:
     def test_install_adds_handler_to_root_and_celery_task(self) -> None:
         """The handler goes on root and celery.task (which doesn't propagate)."""
         install_capture()
-        assert is_installed()
+        assert _is_installed()
         assert len(self._handlers(None)) == 1
         assert len(self._handlers("celery.task")) == 1
 
@@ -369,17 +370,17 @@ class TestInstall:
         root = logging.getLogger()
         for handler in self._handlers(None):
             root.removeHandler(handler)
-        assert not is_installed()
+        assert not _is_installed()
         install_capture()
-        assert is_installed()
+        assert _is_installed()
         assert len(self._handlers(None)) == 1
 
     def test_uninstall_removes_handler_and_tee(self) -> None:
-        """uninstall_capture puts logging and streams back."""
+        """_uninstall_capture puts logging and streams back."""
         original = sys.stdout
         install_capture()
-        uninstall_capture()
-        assert not is_installed()
+        _uninstall_capture()
+        assert not _is_installed()
         assert self._handlers("celery.task") == []
         assert sys.stdout is original
 
@@ -390,12 +391,12 @@ class TestInstall:
         install_capture()
         replacement = io.StringIO()
         monkeypatch.setattr(sys, "stdout", replacement)
-        uninstall_capture()
+        _uninstall_capture()
         assert sys.stdout is replacement
 
     def test_not_installed_by_default(self) -> None:
         """Nothing is installed until capture is explicitly enabled."""
-        assert not is_installed()
+        assert not _is_installed()
         assert not isinstance(sys.stdout, TeeStream)
         assert not isinstance(sys.stderr, TeeStream)
 
@@ -495,7 +496,7 @@ class TestTee:
         install_capture()
         print("idle")
         assert original.getvalue() == "idle\n"
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_tee_forwards_attributes_and_writelines(self) -> None:
         """The tee behaves like the stream it wraps."""
@@ -536,7 +537,7 @@ class TestTee:
         """A StreamHandler created after the tee writes through it: one copy only.
 
         Its record would otherwise be captured by the handler and again by the
-        tee; the tee's copy (formatted as that handler formats it) wins.
+        tee; our handler's copy wins, so every record is formatted the same way.
         """
         monkeypatch.setattr(sys, "stderr", io.StringIO())
         install_capture()
@@ -546,7 +547,7 @@ class TestTee:
         try:
             start_capture("t1", max_bytes=1000)
             lib.warning("hello from lib")
-            assert stop_capture("t1") == "hello from lib"
+            assert stop_capture("t1") == "WARNING somelib: hello from lib"
         finally:
             lib.removeHandler(lib_handler)
 
@@ -566,6 +567,82 @@ class TestTee:
             assert stop_capture("t1") == "WARNING somelib: only via the handler"
         finally:
             lib.removeHandler(lib_handler)
+
+    def test_stream_handler_on_the_tee_rejecting_by_filter_leaves_record_to_us(
+        self, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """If that StreamHandler's filter drops the record, we still capture it."""
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        lib = logging.getLogger("somelib")
+        lib_handler = logging.StreamHandler()
+        lib_handler.addFilter(lambda record: "secret" not in record.getMessage())
+        lib.addHandler(lib_handler)
+        try:
+            start_capture("t1", max_bytes=1000)
+            lib.warning("not secret enough")
+            lib.warning("a secret line")
+            # That handler's filter only affects its own (console) output.
+            assert stop_capture("t1") == (
+                "WARNING somelib: not secret enough\nWARNING somelib: a secret line"
+            )
+        finally:
+            lib.removeHandler(lib_handler)
+
+    @pytest.mark.parametrize("placement", ["on-the-logger", "on-root"])
+    def test_stream_handler_on_the_tee_doesnt_leak_internal_loggers(
+        self, placement: str, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """Internal records written through the tee by another handler are dropped.
+
+        Covers a handler that runs before ours (on the record's own logger)
+        and one that runs after ours (added to root later).
+        """
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        target = logging.getLogger("kombu" if placement == "on-the-logger" else None)
+        late = logging.StreamHandler()
+        target.addHandler(late)
+        try:
+            start_capture("t1", max_bytes=1000)
+            logging.getLogger("kombu.connection").warning("broker hiccup")
+            logging.getLogger("stemtrace.library.signals").warning("publish failed")
+            logging.getLogger("celery.app.trace").warning("internal")
+            print("user print")
+            assert stop_capture("t1") == "user print"
+        finally:
+            target.removeHandler(late)
+        assert "broker hiccup" in sys.stderr.getvalue()
+
+    def test_stream_handler_on_the_tee_outside_our_chain_is_captured_by_tee(
+        self, monkeypatch: pytest.MonkeyPatch, info_logging: None
+    ) -> None:
+        """A non-propagating logger our handler never sees: the tee keeps its copy."""
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        install_capture()
+        lib = logging.getLogger("isolatedlib")
+        lib.propagate = False
+        lib_handler = logging.StreamHandler()
+        lib.addHandler(lib_handler)
+        try:
+            start_capture("t1", max_bytes=1000)
+            lib.warning("only the tee sees this")
+            assert stop_capture("t1") == "only the tee sees this"
+        finally:
+            lib.removeHandler(lib_handler)
+            lib.propagate = True
+
+    def test_tee_write_from_a_shallow_stack_is_captured(self) -> None:
+        """A write near the top of a thread's stack (few frames) still works."""
+        original = io.StringIO()
+        tee = TeeStream(original)
+        start_capture("t1", max_bytes=1000)
+        context = contextvars.copy_context()
+        thread = threading.Thread(target=context.run, args=(tee.write, "shallow"))
+        thread.start()
+        thread.join()
+        assert stop_capture("t1") == "shallow"
+        assert original.getvalue() == "shallow"
 
     def test_missing_streams_are_left_alone(
         self, monkeypatch: pytest.MonkeyPatch

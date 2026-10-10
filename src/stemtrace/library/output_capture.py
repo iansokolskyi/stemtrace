@@ -36,7 +36,10 @@ import logging
 import sys
 import threading
 from contextvars import ContextVar
-from typing import Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +144,7 @@ class OutputBuffer:
         return text or None
 
 
-def get_active_buffer() -> OutputBuffer | None:
+def _get_active_buffer() -> OutputBuffer | None:
     """Return the buffer capturing output in the current context, if any."""
     return _active_buffer.get()
 
@@ -219,21 +222,43 @@ def _has_other_handlers(record: logging.LogRecord) -> bool | None:
     return any(not isinstance(h, TaskOutputHandler) for h in chain)
 
 
-def _written_to_tee(record: logging.LogRecord) -> bool:
-    """Whether a StreamHandler in the chain writes this record to a tee.
+_HANDLE_CODE = logging.Handler.handle.__code__
+# How far up from a tee write to look for logging.Handler.handle: a handler's
+# emit (possibly a subclass calling super().emit) writes to the stream.
+_HANDLER_FRAME_DEPTH = 8
 
-    A StreamHandler created after the tee was installed holds the tee as its
-    stream, so the tee captures its output; capturing the record here as well
-    would duplicate it.
+
+def _record_being_emitted() -> logging.LogRecord | None:
+    """The log record whose handler is writing to the tee right now, if any.
+
+    Called from :meth:`TeeStream.write`; looks a few frames up for
+    ``logging.Handler.handle`` and returns its ``record``.
     """
-    for handler in _handler_chain(record) or ():
-        if (
-            isinstance(handler, logging.StreamHandler)
-            and isinstance(handler.stream, TeeStream)
-            and record.levelno >= handler.level
-        ):
-            return True
-    return False
+    # The caller of TeeStream.write (which always has one).
+    frame: FrameType | None = sys._getframe(2)
+    for _ in range(_HANDLER_FRAME_DEPTH):
+        if frame is None:
+            return None
+        if frame.f_code is _HANDLE_CODE:
+            record = frame.f_locals.get("record")
+            return record if isinstance(record, logging.LogRecord) else None
+        frame = frame.f_back
+    return None
+
+
+def _tee_should_skip(record: logging.LogRecord) -> bool:
+    """Whether a handler's write of ``record`` to the tee must not be captured.
+
+    A handler whose stream is the tee (a StreamHandler created after the tee
+    was installed) would otherwise copy records into the output: internal ones
+    (Celery, kombu, stemtrace) that must never be output, and records our
+    handler captures itself, which would appear twice. Only records our handler
+    can't see (a chain without it) are left to the tee.
+    """
+    if not _should_capture(record.name):
+        return True
+    chain = _handler_chain(record) or []
+    return any(isinstance(h, TaskOutputHandler) for h in chain)
 
 
 class TaskOutputHandler(logging.Handler):
@@ -265,7 +290,7 @@ class TaskOutputHandler(logging.Handler):
         buffer = _active_buffer.get()
         if buffer is None or getattr(record, _CAPTURED_ATTR, False):
             return
-        if not _should_capture(record.name) or _written_to_tee(record):
+        if not _should_capture(record.name):
             return
         text = self.format(record)
         setattr(record, _CAPTURED_ATTR, True)
@@ -317,7 +342,9 @@ class TeeStream:
         buffer = _active_buffer.get()
         if buffer is not None:
             try:
-                buffer.append(text)
+                record = _record_being_emitted()
+                if record is None or not _tee_should_skip(record):
+                    buffer.append(text)
             except Exception:
                 logger.debug("Failed to capture stream write", exc_info=True)
         return written
@@ -403,13 +430,13 @@ def install_capture() -> None:
         sys.stderr = _tee(sys.stderr)
 
 
-def is_installed() -> bool:
+def _is_installed() -> bool:
     """Return True if the capture handler is on the root logger."""
     return _handler in logging.getLogger().handlers
 
 
-def uninstall_capture() -> None:
-    """Remove the handler and tee (tests, or turning capture off at runtime).
+def _uninstall_capture() -> None:
+    """Remove the handler and tee (for tests; not a supported runtime switch).
 
     Streams are only restored if they're still our tee; a stream someone else
     swapped in since is left alone.

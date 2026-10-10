@@ -20,10 +20,10 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library import signals
 from stemtrace.library.config import StemtraceConfig, set_config
 from stemtrace.library.output_capture import (
-    get_active_buffer,
-    is_installed,
+    _get_active_buffer,
+    _is_installed,
+    _uninstall_capture,
     stop_capture,
-    uninstall_capture,
 )
 from stemtrace.library.signals import (
     _on_task_failure,
@@ -44,11 +44,11 @@ def clean_state() -> Iterator[None]:
     """Reset transport, signals, capture install and config around each test."""
     MemoryTransport.clear()
     disconnect_signals()
-    uninstall_capture()
+    _uninstall_capture()
     yield
-    while (buffer := get_active_buffer()) is not None:
+    while (buffer := _get_active_buffer()) is not None:
         stop_capture(buffer.task_id)
-    uninstall_capture()
+    _uninstall_capture()
     disconnect_signals()
     MemoryTransport.clear()
     set_config(StemtraceConfig(transport_url="memory://"))
@@ -126,8 +126,8 @@ class TestSignalHandlers:
         module_logger.warning("not captured")
         _postrun(task, "SUCCESS", retval=1)
 
-        assert not is_installed()
-        assert get_active_buffer() is None
+        assert not _is_installed()
+        assert _get_active_buffer() is None
         assert _events(TaskState.SUCCESS)[0].output is None
 
     def test_success_event_carries_output(self, info_logging: None) -> None:
@@ -138,12 +138,12 @@ class TestSignalHandlers:
         module_logger.info("working")
         _postrun(task, "SUCCESS", retval=1)
 
-        assert is_installed()
+        assert _is_installed()
         assert _events(TaskState.STARTED)[0].output is None
         assert _events(TaskState.SUCCESS)[0].output == (
             "INFO tests.unit.output_tasks: working"
         )
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_failure_event_carries_output_before_postrun(
         self, info_logging: None
@@ -168,7 +168,7 @@ class TestSignalHandlers:
         assert len(failures) == 1
         assert failures[0].output == "ERROR tests.unit.output_tasks: about to fail"
         assert _events(TaskState.SUCCESS) == []
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
 
     def test_each_retry_attempt_has_its_own_output(self, info_logging: None) -> None:
         """RETRY carries attempt 0's output; the final SUCCESS only attempt 1's."""
@@ -214,7 +214,7 @@ class TestSignalHandlers:
         _prerun(task)
         module_logger.warning("dropped")
         _postrun(task, state)
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
         assert _events(TaskState.SUCCESS) == []
 
     def test_output_is_capped_by_max_output_size(self, info_logging: None) -> None:
@@ -248,7 +248,7 @@ class TestSignalHandlers:
         _prerun(task)
         _postrun(task, "SUCCESS", retval=1)
 
-        assert get_active_buffer() is None
+        assert _get_active_buffer() is None
         assert _events(TaskState.STARTED)[0].task_id == "task-1"
         assert _events(TaskState.SUCCESS)[0].output is None
 
