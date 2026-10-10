@@ -491,16 +491,28 @@ test.describe('Task Detail - Output', () => {
     ws.send(JSON.stringify({ task_id: 'new-member', state: 'STARTED', group_id: groupId }))
     await expect.poll(() => detailRequests).toBe(initial + 1)
 
-    // The callback: its events carry no group_id; it's among the children.
+    // The callback as Celery 5.6 sends it: frozen with the chord's group_id.
     ws.send(
       JSON.stringify({
         task_id: callback.task_id,
         state: 'STARTED',
-        group_id: null,
+        group_id: groupId,
         parent_id: null,
       }),
     )
     await expect.poll(() => detailRequests).toBe(initial + 2)
+
+    // Fallback: a callback event without group_id still matches, because the
+    // server lists the callback among the CHORD node's children.
+    ws.send(
+      JSON.stringify({
+        task_id: callback.task_id,
+        state: 'SUCCESS',
+        group_id: null,
+        parent_id: null,
+      }),
+    )
+    await expect.poll(() => detailRequests).toBe(initial + 3)
   })
 
   test('copies an attempt output to the clipboard', async ({ page }) => {
