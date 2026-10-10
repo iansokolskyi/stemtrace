@@ -32,9 +32,19 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 # Reconnect backoff after consume failures: doubles per failure, resets once a
-# drain succeeds (or times out, which proves the connection is alive).
+# connection has been established and read from (a drain returned or timed out).
 RECONNECT_INITIAL_BACKOFF = 1.0
 RECONNECT_MAX_BACKOFF = 30.0
+
+# Seconds a consumer connection attempt may take to open the socket (also the
+# per-frame wait during the AMQP handshake). Kept short so a stalled broker
+# can't hold up shutdown for long.
+CONNECT_TIMEOUT = 2.0
+
+# Longest single wait for broker frames. The consume loop checks the stop event
+# between waits, so this bounds how long shutdown waits on an idle connection;
+# it must stay well below the server consumer's 5s stop timeout.
+DRAIN_TIMEOUT = 1.0
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -203,11 +213,13 @@ class RabbitMQTransport:
         Connection and channel errors never end the iterator: the transport
         logs a warning (with a traceback only for the first failure in a row),
         backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
-        reconnects. The backoff resets only after a drain on the new
-        connection succeeds or times out, so a broker that accepts connections
-        and then drops them keeps backing off. The iterator ends once a stop
-        event bound with bind_stop_event() is set, and that event also
-        interrupts the backoff wait.
+        reconnects on a new connection, declaring the exchange and queue
+        again. Each attempt connects once, with CONNECT_TIMEOUT. The backoff
+        resets once a connection has been established and read from (a drain
+        returned or timed out); connections that fail before that keep the
+        delay growing. The iterator ends once a stop event bound with
+        bind_stop_event() is set; that event also interrupts the backoff wait,
+        and the stop is noticed within DRAIN_TIMEOUT on a live connection.
 
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
@@ -251,26 +263,37 @@ class RabbitMQTransport:
 
         while not self._stopping():
             try:
-                with Connection(self._url) as conn:
+                with Connection(self._url, connect_timeout=CONNECT_TIMEOUT) as conn:
+                    # Connect exactly once: kombu's default connect path
+                    # retries internally with sleeps that ignore the stop
+                    # event. Retries are this loop's job (with backoff).
+                    conn.ensure_connection(
+                        max_retries=0, reraise_as_library_errors=False
+                    )
                     channel = conn.channel()
-                    exchange.maybe_bind(channel)
-                    queue.maybe_bind(channel)
-                    exchange.declare()
-                    queue.declare()
+                    # Bind fresh copies to this connection's channel. kombu
+                    # binds an entity only once, so re-binding the shared
+                    # templates would keep declaring on the first (dead)
+                    # channel after a reconnect.
+                    bound_exchange = exchange(channel)
+                    bound_queue = queue(channel)
+                    bound_exchange.declare()
+                    bound_queue.declare()
 
                     with Consumer(
                         channel,
-                        queues=[queue],
+                        queues=[bound_queue],
                         callbacks=[on_message],
                         accept=["json"],
                     ):
                         while True:
                             # Periodic wakeup to allow outer loops to run.
                             with contextlib.suppress(TimeoutError, socket.timeout):
-                                conn.drain_events(timeout=5)
+                                conn.drain_events(timeout=DRAIN_TIMEOUT)
 
-                            # The drain returned or timed out: the connection
-                            # is alive, so the outage (if any) is over.
+                            # The connection is established and was read from
+                            # (the drain returned or timed out), so the outage,
+                            # if any, is over.
                             if failures:
                                 logger.info(
                                     "RabbitMQ consume loop reconnected after "
