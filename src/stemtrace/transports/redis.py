@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -128,6 +129,31 @@ def _xread_block_ms(client: Redis[Any]) -> int:
     return max(1, min(XREAD_BLOCK_MS, int(timeout * 1000 / 2)))
 
 
+@dataclass
+class _ReadHealth:
+    """Failure bookkeeping for one consume() iterator.
+
+    Kept per iterator, not on the transport, so a new consume() call starts
+    with a clean slate (like ``connected``, which it resets to None).
+    """
+
+    # Consecutive failures to reach Redis (connection errors, connect timeouts).
+    failures: int = 0
+    # Consecutive XREAD read timeouts.
+    read_timeouts: int = 0
+    # Delay before the next reconnect attempt.
+    backoff: float = RECONNECT_INITIAL_BACKOFF
+    # Monotonic time of the last read-timeout warning, for rate limiting.
+    last_timeout_warning: float | None = None
+
+    def reset(self) -> None:
+        """Forget all failures after a read that reached Redis."""
+        self.failures = 0
+        self.read_timeouts = 0
+        self.backoff = RECONNECT_INITIAL_BACKOFF
+        self.last_timeout_warning = None
+
+
 class RedisTransport:
     """Redis Streams-based event transport (XADD/XREAD)."""
 
@@ -217,7 +243,7 @@ class RedisTransport:
             return event.task_id
         return f"{event.hostname}:{event.pid}:{event.event_type}"
 
-    def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:  # noqa: C901, PLR0912, PLR0915
+    def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
         Detects event type from JSON and yields appropriate model
@@ -244,12 +270,9 @@ class RedisTransport:
             self._last_id = last_id
         # Unknown until this iterator's first read completes.
         self._connected = None
-        failures = 0
-        read_timeouts = 0
-        backoff = RECONNECT_INITIAL_BACKOFF
-        last_timeout_warning: float | None = None
+        health = _ReadHealth()
 
-        while self._stop_event is None or not self._stop_event.is_set():
+        while not self._stopping():
             try:
                 results = self._client.xread(
                     {self._stream_key: self._last_id},
@@ -258,32 +281,12 @@ class RedisTransport:
                 )
             except RedisTimeoutError as exc:
                 if _is_connect_timeout(exc):
-                    failures += 1
-                    read_timeouts = 0
-                    backoff = self._back_off(failures, backoff, exc)
-                    continue
-                read_timeouts += 1
-                if read_timeouts < READ_TIMEOUT_WARN_AFTER:
-                    logger.debug("XREAD on %s timed out; retrying", self._stream_key)
-                    continue
-                self._connected = False
-                now = self._monotonic()
-                if (
-                    last_timeout_warning is None
-                    or now - last_timeout_warning >= READ_TIMEOUT_WARN_INTERVAL
-                ):
-                    last_timeout_warning = now
-                    logger.warning(
-                        "XREAD on %s timed out %d times in a row; check the "
-                        "network and the socket_timeout setting",
-                        self._stream_key,
-                        read_timeouts,
-                    )
+                    self._on_unreachable(health, exc)
+                else:
+                    self._on_read_timeout(health)
                 continue
             except RedisConnectionError as exc:
-                failures += 1
-                read_timeouts = 0
-                backoff = self._back_off(failures, backoff, exc)
+                self._on_unreachable(health, exc)
                 continue
             except RedisError:
                 # Not a connectivity problem (e.g. WRONGTYPE, NOPERM): report
@@ -291,41 +294,92 @@ class RedisTransport:
                 self._connected = False
                 raise
 
-            if failures:
-                logger.info(
-                    "Redis consumer on %s reconnected after %d failure(s)",
-                    self._stream_key,
-                    failures,
+            self._on_read(health)
+            yield from self._events_from(results)
+
+    def _stopping(self) -> bool:
+        """Whether a bound stop event has been set."""
+        return self._stop_event is not None and self._stop_event.is_set()
+
+    def _on_unreachable(self, health: _ReadHealth, exc: Exception) -> None:
+        """Count a failure to reach Redis, then back off before the next read.
+
+        A connection failure also ends any read-timeout streak: the timeouts
+        are counted again from zero once a connection is back.
+        """
+        health.failures += 1
+        health.read_timeouts = 0
+        health.backoff = self._back_off(health.failures, health.backoff, exc)
+
+    def _on_read_timeout(self, health: _ReadHealth) -> None:
+        """Retry a read that timed out at once, warning only about a streak.
+
+        The first READ_TIMEOUT_WARN_AFTER - 1 timeouts in a row are logged at
+        debug level. From then on reads count as failing, with at most one
+        warning per READ_TIMEOUT_WARN_INTERVAL. No backoff: Redis answered
+        the connection, the read just outlasted the socket timeout.
+        """
+        health.read_timeouts += 1
+        if health.read_timeouts < READ_TIMEOUT_WARN_AFTER:
+            logger.debug("XREAD on %s timed out; retrying", self._stream_key)
+            return
+        self._connected = False
+        now = self._monotonic()
+        last = health.last_timeout_warning
+        if last is not None and now - last < READ_TIMEOUT_WARN_INTERVAL:
+            return
+        health.last_timeout_warning = now
+        logger.warning(
+            "XREAD on %s timed out %d times in a row; check the "
+            "network and the socket_timeout setting",
+            self._stream_key,
+            health.read_timeouts,
+        )
+
+    def _on_read(self, health: _ReadHealth) -> None:
+        """Record a read that reached Redis: the outage, if any, is over."""
+        if health.failures:
+            logger.info(
+                "Redis consumer on %s reconnected after %d failure(s)",
+                self._stream_key,
+                health.failures,
+            )
+        health.reset()
+        self._connected = True
+
+    def _events_from(self, results: Any) -> Iterator[StreamEvent]:
+        """Yield the events of one XREAD reply, skipping unparseable entries.
+
+        The last id advances past every entry, including ones without data or
+        that fail to parse, so they are never read again.
+        """
+        if not results:
+            return
+        for _stream_name, messages in results:
+            for message_id, fields in messages:
+                self._last_id = (
+                    message_id.decode() if isinstance(message_id, bytes) else message_id
                 )
-            failures = 0
-            read_timeouts = 0
-            backoff = RECONNECT_INITIAL_BACKOFF
-            last_timeout_warning = None
-            self._connected = True
+                event = self._event_from_fields(fields)
+                if event is not None:
+                    yield event
 
-            if not results:
-                continue
-
-            for _stream_name, messages in results:
-                for message_id, fields in messages:
-                    self._last_id = (
-                        message_id.decode()
-                        if isinstance(message_id, bytes)
-                        else message_id
-                    )
-                    data = fields.get(b"data") or fields.get("data")
-                    if data:
-                        data_str = data.decode() if isinstance(data, bytes) else data
-                        try:
-                            yield self._parse_event(data_str)
-                        except (json.JSONDecodeError, ValidationError, ValueError):
-                            logger.warning(
-                                "Failed to parse event from Redis stream %s at id %s",
-                                self._stream_key,
-                                self._last_id,
-                                exc_info=True,
-                            )
-                            continue
+    def _event_from_fields(self, fields: Any) -> StreamEvent | None:
+        """Parse an entry's ``data`` field; None when missing or malformed."""
+        data = fields.get(b"data") or fields.get("data")
+        if not data:
+            return None
+        data_str = data.decode() if isinstance(data, bytes) else data
+        try:
+            return self._parse_event(data_str)
+        except (json.JSONDecodeError, ValidationError, ValueError):
+            logger.warning(
+                "Failed to parse event from Redis stream %s at id %s",
+                self._stream_key,
+                self._last_id,
+                exc_info=True,
+            )
+            return None
 
     def _back_off(self, failures: int, backoff: float, exc: Exception) -> float:
         """Log a consume failure, sleep, and return the next backoff delay."""
