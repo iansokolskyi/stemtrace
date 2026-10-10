@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Health endpoint: `consumer_connected` is now reported for RabbitMQ too: `false` while the server can't connect to the broker or its connection keeps failing, `true` once a drain on the consumer connection succeeds or times out (an idle but live connection), `null` until the first drain. A half-open connection that raises no socket error still looks connected.
+
+### Fixed
+- RabbitMQ: during a broker outage the server's consume loop no longer logs an ERROR traceback every second. It retries with exponential backoff (1s, doubling up to 30s), logs a traceback only for the first failure and one warning line per later attempt, and logs an INFO line once it reconnects (thanks @ohadmata — #70, #71). The backoff resets only after a drain on the new connection succeeds or times out, so a broker that accepts connections and then drops them keeps backing off instead of retrying every second. Shutdown no longer sits out the backoff wait: stopping the server interrupts it and ends the consume loop, instead of a wait of up to 30s outlasting the 5s stop timeout ("Consumer thread did not stop gracefully").
+
 ## [0.3.7] - 2026-10-10
 
 ### Changed

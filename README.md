@@ -512,7 +512,7 @@ Because the status code stays 200, check `status` in the body if you want monito
 What is detected depends on the transport:
 
 - **Redis:** refused or reset connections, connect timeouts, repeated read timeouts, and consumer loop failures. On redis-py < 8 the default socket timeout is unbounded, so a half-open or hung broker connection may go unnoticed; add `?socket_timeout=…` or `?health_check_interval=…` to the broker URL if you need that.
-- **RabbitMQ:** connectivity isn't reported (`consumer_connected` is `null`), so `"degraded"` only reflects consumer loop failures.
+- **RabbitMQ:** refused or dropped connections and channel errors while connecting or draining, and consumer loop failures. The consumer connection is drained every few seconds and a drain that times out counts as connected, so a half-open connection that raises no socket error may go unnoticed.
 
 ## 🗺️ Roadmap
 
