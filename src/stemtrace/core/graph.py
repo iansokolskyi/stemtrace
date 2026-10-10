@@ -25,8 +25,9 @@ _PHASE: dict[TaskState, int] = {
 }
 
 # Fixed state order used to break exact timestamp ties, both for the order of
-# a node's events and for which event decides its state. Keep in sync with
-# STATE_PRIORITY in the UI (frontend/src/components/TimelineBar.tsx).
+# a node's events and for which event decides its state. It also orders the
+# pre-start events (PENDING before RECEIVED) ahead of their timestamps. Keep in
+# sync with STATE_PRIORITY in the UI (frontend/src/components/TimelineBar.tsx).
 _STATE_ORDER: dict[TaskState, int] = {
     TaskState.PENDING: 0,
     TaskState.RECEIVED: 1,
@@ -38,8 +39,8 @@ _STATE_ORDER: dict[TaskState, int] = {
     TaskState.REVOKED: 7,
 }
 
-# (pre-start group, timestamp, state order, content digest)
-_EventKey = tuple[int, datetime, int, bytes]
+# (pre-start group, pre-start state order, timestamp, state order, content digest)
+_EventKey = tuple[int, int, datetime, int, bytes]
 
 
 def _with_aware_timestamp(event: TaskEvent) -> TaskEvent:
@@ -77,12 +78,16 @@ def _digest(event: TaskEvent) -> bytes:
 def _event_key(event: TaskEvent) -> _EventKey:
     """Order of a node's events, also used as its duplicate-detection key.
 
-    Attempt-0 PENDING/RECEIVED come first whatever their timestamps; everything
-    else follows by timestamp. Exact timestamp ties are broken by a fixed state
-    order and then by content, so the order never depends on arrival order.
+    Attempt-0 PENDING/RECEIVED come first whatever their timestamps, PENDING
+    before RECEIVED (the sender's PENDING can be stamped after the worker's
+    RECEIVED); everything else follows by timestamp. Exact timestamp ties are
+    broken by a fixed state order and then by content, so the order never
+    depends on arrival order.
     """
+    pre_start = _is_pre_start(event)
     return (
-        0 if _is_pre_start(event) else 1,
+        0 if pre_start else 1,
+        _STATE_ORDER[event.state] if pre_start else 0,
         event.timestamp,
         _STATE_ORDER[event.state],
         _digest(event),
@@ -130,8 +135,8 @@ class NodeType(str, Enum):
 class TaskNode(BaseModel):
     """Mutable node in the task graph. Tracks event history and child relationships.
 
-    ``events`` is kept in lifecycle order: attempt-0 PENDING/RECEIVED first,
-    then everything else by timestamp (see ``_event_key``).
+    ``events`` is kept in lifecycle order: attempt-0 PENDING then RECEIVED
+    first, then everything else by timestamp (see ``_event_key``).
     """
 
     model_config = ConfigDict(validate_assignment=True)

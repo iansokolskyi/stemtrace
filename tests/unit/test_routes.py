@@ -1559,6 +1559,58 @@ class TestResolveNodeAlias:
         resp = routes._node_to_graph_response(node, node_alias_key="operator_type")
         assert resp.name == "sync_table"
 
+    def test_alias_skips_leading_events_without_arguments(self) -> None:
+        """Events without args/kwargs (e.g. RECEIVED) don't hide later ones."""
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        node = TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.STARTED,
+            events=[
+                TaskEvent(
+                    task_id="test-1",
+                    name="myapp.tasks.process",
+                    state=state,
+                    timestamp=base + timedelta(milliseconds=offset),
+                    args=args,
+                    kwargs=kwargs,
+                )
+                for state, offset, args, kwargs in [
+                    (TaskState.RECEIVED, 10, None, None),
+                    (TaskState.STARTED, 20, ["invoice-42"], {"customer": "acme"}),
+                ]
+            ],
+        )
+
+        assert routes._resolve_node_alias(node, "0") == "invoice-42"
+        assert routes._resolve_node_alias(node, "customer") == "acme"
+
+    def test_graph_api_alias_with_pending_stamped_after_received(
+        self, store: GraphStore
+    ) -> None:
+        """The sender's late-stamped PENDING carries the args the alias needs."""
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        for state, offset, args in [
+            (TaskState.RECEIVED, 10, None),
+            (TaskState.PENDING, 60, ["invoice-42"]),
+        ]:
+            store.add_event(
+                TaskEvent(
+                    task_id="root",
+                    name="myapp.tasks.bill",
+                    state=state,
+                    timestamp=base + timedelta(milliseconds=offset),
+                    args=args,
+                )
+            )
+        app = FastAPI()
+        app.include_router(create_api_router(store, node_alias_from_arguments="0"))
+
+        response = TestClient(app).get("/api/graphs/root")
+
+        assert response.status_code == 200
+        assert response.json()["nodes"]["root"]["name"] == "invoice-42"
+
     def test_graph_response_without_alias_uses_task_name(self) -> None:
         """_node_to_graph_response without alias key uses task name."""
         node = self._make_node(kwargs={"operator_type": "sync_table"})

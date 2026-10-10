@@ -127,9 +127,11 @@ def _node_to_response(node: TaskNode) -> TaskNodeResponse:
 def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
     """Resolve display name for a graph node from task arguments.
 
-    When a key is configured, attempts to extract a value from the first
-    event's args (if key is a digit string) or kwargs (if key is a regular
-    string). Falls back to the node's registered task name.
+    When a key is configured, extracts a value from the args (if key is a
+    digit string) or kwargs (if key is a regular string) of the first event
+    that carries them. Not every event does (e.g. RECEIVED has no arguments),
+    so the leading event can't be relied on. Falls back to the node's
+    registered task name.
 
     Args:
         node: Task node containing events with args/kwargs.
@@ -139,17 +141,20 @@ def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
     Returns:
         Resolved display name for the node.
     """
-    if key is None or not node.events:
+    if key is None:
         return node.name
-
-    event = node.events[0]
 
     if key.isdigit():
         index = int(key)
-        if isinstance(event.args, list) and index < len(event.args):
-            return str(event.args[index])
-    elif isinstance(event.kwargs, dict) and key in event.kwargs:
-        return str(event.kwargs[key])
+        args = next((e.args for e in node.events if isinstance(e.args, list)), None)
+        if args is not None and index < len(args):
+            return str(args[index])
+    else:
+        kwargs = next(
+            (e.kwargs for e in node.events if isinstance(e.kwargs, dict)), None
+        )
+        if kwargs is not None and key in kwargs:
+            return str(kwargs[key])
 
     return node.name
 

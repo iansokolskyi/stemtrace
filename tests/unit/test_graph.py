@@ -1872,6 +1872,33 @@ class TestOutOfOrderEvents:
         assert node.first_seen == _BASE_TIME + timedelta(seconds=0.010)
         assert node.last_updated == _BASE_TIME + timedelta(seconds=0.020)
 
+    def test_add_event_pending_stamped_after_received_sorts_before_it(self) -> None:
+        events = [
+            _ordered_event(TaskState.PENDING, 0.060),
+            _ordered_event(TaskState.RECEIVED, 0.010),
+            _ordered_event(TaskState.STARTED, 0.020),
+            _ordered_event(TaskState.SUCCESS, 0.030),
+        ]
+        results = set()
+        for order in permutations(events):
+            graph = TaskGraph()
+            for event in order:
+                graph.add_event(event)
+            node = graph.nodes["task-1"]
+            results.add((tuple(e.state for e in node.events), node.first_seen))
+
+        assert results == {
+            (
+                (
+                    TaskState.PENDING,
+                    TaskState.RECEIVED,
+                    TaskState.STARTED,
+                    TaskState.SUCCESS,
+                ),
+                _BASE_TIME + timedelta(seconds=0.010),
+            )
+        }
+
     def test_add_event_only_pending_uses_its_timestamps(self) -> None:
         graph = TaskGraph()
         graph.add_event(_ordered_event(TaskState.PENDING, 3))

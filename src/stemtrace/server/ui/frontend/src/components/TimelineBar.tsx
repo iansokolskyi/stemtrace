@@ -47,16 +47,16 @@ interface TimelineSegment {
 
 /**
  * Attempt-0 PENDING/RECEIVED belong before the first run whatever their
- * timestamps: the sender's PENDING (task_sent fires after publish) can be
- * stamped after the worker already started or finished the task.
+ * timestamps (PENDING first): the sender's PENDING (task_sent fires after
+ * publish) can be stamped after the worker received, started or finished it.
  */
 function isPreStart(event: TaskEvent): boolean {
   return (event.retries ?? 0) === 0 && (event.state === 'PENDING' || event.state === 'RECEIVED')
 }
 
 /**
- * Order events for display, mirroring the API's order: attempt-0
- * PENDING/RECEIVED first, then everything by timestamp, with a fixed state
+ * Order events for display, mirroring the API's order: attempt-0 PENDING
+ * then RECEIVED first, then everything by timestamp, with a fixed state
  * order for exact ties (the sort is stable). Keeps only the first PENDING and
  * RECEIVED (retry re-queues create duplicates).
  *
@@ -80,8 +80,14 @@ function sortEventsChronologically(events: TaskEvent[]): TaskEvent[] {
   })
 
   return filtered.sort((a, b) => {
-    const groupDiff = (isPreStart(a) ? 0 : 1) - (isPreStart(b) ? 0 : 1)
+    const aPreStart = isPreStart(a)
+    const groupDiff = (aPreStart ? 0 : 1) - (isPreStart(b) ? 0 : 1)
     if (groupDiff !== 0) return groupDiff
+    if (aPreStart) {
+      // Both pre-start: PENDING before RECEIVED, whatever their timestamps.
+      const stateDiff = (STATE_PRIORITY[a.state] ?? 8) - (STATE_PRIORITY[b.state] ?? 8)
+      if (stateDiff !== 0) return stateDiff
+    }
     const timeDiff = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     if (timeDiff !== 0) return timeDiff
     return (STATE_PRIORITY[a.state] ?? 8) - (STATE_PRIORITY[b.state] ?? 8)

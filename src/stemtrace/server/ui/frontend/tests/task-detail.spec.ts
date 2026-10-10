@@ -297,4 +297,43 @@ test.describe('Task Detail - Mock Scenarios', () => {
     await expect(segments.nth(2)).toContainText('SUCCESS')
     await expect(page.getByText(/^-\d/)).toHaveCount(0)
   })
+
+  test('puts a PENDING stamped after RECEIVED before it', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.late_pending_received', 'done')
+    const base = Date.now() - 10_000
+    const at = (ms: number) => new Date(base + ms).toISOString()
+    const { task_id, name } = task
+    // The sender's PENDING can be stamped after the worker's RECEIVED.
+    task.events = [
+      createMockEvent(task_id, name, 'RECEIVED', { timestamp: at(10), retries: 0 }),
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(20), retries: 0 }),
+      createMockEvent(task_id, name, 'SUCCESS', { timestamp: at(30), retries: 0 }),
+      createMockEvent(task_id, name, 'PENDING', { timestamp: at(60), retries: 0 }),
+    ]
+    task.first_seen = at(10)
+    task.last_updated = at(30)
+    task.duration_ms = 20
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const rows = page.getByTestId('event-row')
+    await expect(rows).toHaveCount(4)
+    for (const [i, state] of ['PENDING', 'RECEIVED', 'STARTED', 'SUCCESS'].entries()) {
+      await expect(rows.nth(i)).toContainText(state)
+    }
+
+    const segments = page.getByTestId('timeline-segment')
+    await expect(segments).toHaveCount(4)
+    await expect(segments.nth(0)).toContainText('PENDING')
+    await expect(segments.nth(0)).toContainText('0ms')
+    await expect(segments.nth(1)).toContainText('RECEIVED')
+    await expect(segments.nth(1)).toContainText('10ms')
+    await expect(segments.nth(2)).toContainText('STARTED')
+    await expect(segments.nth(2)).toContainText('10ms')
+    await expect(segments.nth(3)).toContainText('SUCCESS')
+    await expect(page.getByText(/^-\d/)).toHaveCount(0)
+  })
 })
