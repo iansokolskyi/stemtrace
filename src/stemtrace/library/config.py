@@ -16,9 +16,10 @@ class StemtraceConfig(BaseModel):
         scrub_sensitive_data: Whether to scrub sensitive keys.
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
-        node_alias_from_arguments: Derive graph node display name from task
-            arguments. Pass a string key to use kwargs[key], a digit string
-            to use args[index], or None to use the task name (default).
+        node_alias_from_arguments: Deprecated, unused by workers. Stored for
+            backward compatibility only; node aliases are resolved by the
+            server (``init_app()`` / ``stemtrace server
+            --node-alias-from-arguments``).
         capture_output: Whether to capture what each task attempt prints and
             logs and attach it to the attempt's terminal event.
         max_output_size: Maximum UTF-8 bytes of output kept per attempt (the
@@ -41,7 +42,7 @@ class StemtraceConfig(BaseModel):
     additional_sensitive_keys: frozenset[str] = Field(default_factory=frozenset)
     safe_keys: frozenset[str] = Field(default_factory=frozenset)
 
-    # UI display options
+    # Deprecated: unused on the worker side (resolved by the server)
     node_alias_from_arguments: str | None = None
 
     # Output capture options (disabled by default)

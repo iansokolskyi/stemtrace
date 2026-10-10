@@ -15,7 +15,9 @@ Usage:
     stemtrace.get_transport()   # -> EventTransport | None
 """
 
+import logging
 import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -62,6 +64,18 @@ __all__ = [
 ]
 
 _transport: EventTransport | None = None
+_node_alias_deprecation_logged = False
+
+logger = logging.getLogger(__name__)
+
+_NODE_ALIAS_WORKER_DEPRECATION = (
+    "init_worker(node_alias_from_arguments=...) has no effect on workers: "
+    "node aliases are resolved by the stemtrace server. Pass "
+    "node_alias_from_arguments to stemtrace.init_app(), or use "
+    "`stemtrace server --node-alias-from-arguments` / the "
+    "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var. This parameter will be "
+    "removed in a future major release."
+)
 
 
 def is_initialized() -> bool:
@@ -108,9 +122,13 @@ def init_worker(
         additional_sensitive_keys: Extra keys to treat as sensitive.
         safe_keys: Keys to never scrub (overrides sensitive).
         max_data_size: Maximum size in bytes for serialized data (default: 10KB).
-        node_alias_from_arguments: Derive node display name from task arguments.
-            Pass a digit string to use args[index], a string key for kwargs[key],
-            or None to use the task name (default).
+        node_alias_from_arguments: Deprecated, has no effect on workers. Node
+            aliases are resolved by the server: pass ``node_alias_from_arguments``
+            to ``init_app()``, or use ``stemtrace server
+            --node-alias-from-arguments`` / ``STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS``.
+            A non-None value emits a ``DeprecationWarning`` (and a one-time
+            log warning, since Celery workers hide deprecation warnings); the
+            parameter will be removed in a future major release.
         capture_output: Capture what each task attempt prints and logs and show
             it in the UI (default: False). Output is not scrubbed.
         max_output_size: Maximum UTF-8 bytes of output kept per attempt; the
@@ -120,7 +138,15 @@ def init_worker(
         ConfigurationError: If no broker URL can be determined, or
             max_output_size isn't positive.
     """
-    global _transport
+    global _transport, _node_alias_deprecation_logged
+
+    if node_alias_from_arguments is not None:
+        warnings.warn(_NODE_ALIAS_WORKER_DEPRECATION, DeprecationWarning, stacklevel=2)
+        # Python's default filters hide DeprecationWarning unless it's raised from
+        # __main__, so under `celery worker` nobody would see it. Log it once too.
+        if not _node_alias_deprecation_logged:
+            _node_alias_deprecation_logged = True
+            logger.warning("%s", _NODE_ALIAS_WORKER_DEPRECATION)
 
     url = transport_url or app.conf.broker_url
     if not url:
@@ -195,7 +221,10 @@ def init_app(
             deployment.
         login_ttl_seconds: Session TTL in seconds (default: 24 hours).
         node_alias_from_arguments: Derive graph node display name from task arguments.
-            Digit string for args[index], string for kwargs[key], or None (default).
+            Digit string for args[index], string for kwargs[key], or None (default)
+            to show task names. Surrounding whitespace is stripped. If None or
+            blank, uses the STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var (blank
+            means unset).
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -213,6 +242,13 @@ def init_app(
 
     if transport_url is None:
         transport_url = os.getenv("STEMTRACE_TRANSPORT_URL") or broker_url
+
+    # Blank values count as unset (so the env var applies); padding is trimmed.
+    node_alias = (node_alias_from_arguments or "").strip() or None
+    if node_alias is None:
+        node_alias = (
+            os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or ""
+        ).strip() or None
 
     mount_prefix = f"/{prefix.strip('/')}"
 
@@ -251,7 +287,7 @@ def init_app(
         max_nodes=max_nodes,
         auth_dependency=auth_dependency,
         form_auth_config=form_auth_config,
-        node_alias_from_arguments=node_alias_from_arguments,
+        node_alias_from_arguments=node_alias,
     )
     extension.init_app(fastapi_app, prefix=prefix)
 
@@ -290,6 +326,7 @@ def _install_stemtrace_form_auth(
 
 def _reset() -> None:
     """Reset module state. For testing only."""
-    global _transport
+    global _transport, _node_alias_deprecation_logged
     _transport = None
+    _node_alias_deprecation_logged = False
     _reset_config()
