@@ -28,7 +28,27 @@ logger = logging.getLogger(__name__)
 StreamEvent = TaskEvent | WorkerEvent
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    import threading
+    from collections.abc import Callable, Iterator
+
+# Reconnect backoff after consume failures: doubles per failure, resets once a
+# connection has been established and read from (a drain returned or timed out).
+RECONNECT_INITIAL_BACKOFF = 1.0
+RECONNECT_MAX_BACKOFF = 30.0
+
+# Seconds a consumer connection attempt may take to open the socket (also the
+# per-frame wait during the AMQP handshake). Kept short so a stalled broker
+# can't hold up shutdown for long.
+CONNECT_TIMEOUT = 2.0
+
+# Longest single wait for broker frames. The consume loop checks the stop event
+# between waits, so this bounds how long shutdown waits on an idle connection;
+# it must stay well below the server consumer's 5s stop timeout.
+DRAIN_TIMEOUT = 1.0
+
+
+class _StopRequestedError(Exception):
+    """Raised between failover hosts to abandon a connect pass on stop."""
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -47,16 +67,28 @@ def _normalize_prefix(prefix: str) -> str:
 class RabbitMQTransport:
     """RabbitMQ (AMQP) transport using kombu."""
 
-    def __init__(self, url: str, *, prefix: str, ttl: int) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        prefix: str,
+        ttl: int,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         """Initialize the RabbitMQ transport.
 
         Args:
             url: AMQP URL (amqp/amqps/pyamqp).
             prefix: Namespace for exchange/queue names.
             ttl: Event retention window in seconds (queue message TTL).
+            sleep: Sleep function for reconnect backoff when no stop event is
+                bound (injectable for tests).
         """
         self._url = url
         self._ttl = ttl
+        self._sleep = sleep
+        self._connected: bool | None = None
+        self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
 
         # Fanout exchange to broadcast events.
@@ -76,6 +108,24 @@ class RabbitMQTransport:
             "x-message-ttl": ttl_ms,
             "x-expires": queue_expires_ms,
         }
+
+    @property
+    def connected(self) -> bool | None:
+        """Whether the last drain of the consumer connection reached RabbitMQ.
+
+        None until the first drain of the current consume() completes, True
+        after a drain returned or timed out on a live connection, False while
+        connecting or draining is failing.
+        """
+        return self._connected
+
+    def bind_stop_event(self, event: threading.Event) -> None:
+        """Stop consume() and interrupt its reconnect backoff when ``event`` is set."""
+        self._stop_event = event
+
+    def _stopping(self) -> bool:
+        """Whether a bound stop event has been set."""
+        return self._stop_event is not None and self._stop_event.is_set()
 
     @property
     def ttl(self) -> int:
@@ -164,6 +214,21 @@ class RabbitMQTransport:
     def consume(self) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
+        Connection and channel errors never end the iterator: the transport
+        logs a warning (with a traceback only for the first failure in a row),
+        backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
+        reconnects on a new connection, declaring the exchange and queue
+        again. Each attempt tries every host of a failover URL
+        (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host, no
+        sleep between hosts, and the stop event checked between hosts. Messages kombu can't decode (e.g. not JSON)
+        are rejected without requeueing and logged once. The backoff
+        resets once a connection has been established and read from (a drain
+        returned or timed out); connections that fail before that keep the
+        delay growing. The iterator ends once a stop event bound with
+        bind_stop_event() is set; that event also interrupts the backoff wait,
+        the stop is noticed within DRAIN_TIMEOUT on a live connection, and the
+        connection is then dropped without the AMQP close handshake.
+
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
         """
@@ -199,31 +264,149 @@ class RabbitMQTransport:
                 except Exception:
                     logger.debug("Failed to reject malformed RabbitMQ message")
 
-        while True:
+        def on_decode_error(message: Any, exc: Exception) -> None:
+            """Drop a message kombu can't decode (e.g. not JSON) instead of failing.
+
+            Without this kombu raises from drain_events, the connection is
+            torn down, and the broker redelivers the same message forever.
+            """
+            logger.warning(
+                "Dropping undecodable message from RabbitMQ queue %s: %s",
+                self._queue_name,
+                exc,
+            )
             try:
-                with Connection(self._url) as conn:
-                    channel = conn.channel()
-                    exchange.maybe_bind(channel)
-                    queue.maybe_bind(channel)
-                    exchange.declare()
-                    queue.declare()
-
-                    with Consumer(
-                        channel,
-                        queues=[queue],
-                        callbacks=[on_message],
-                        accept=["json"],
-                    ):
-                        while True:
-                            # Periodic wakeup to allow outer loops to run.
-                            with contextlib.suppress(TimeoutError, socket.timeout):
-                                conn.drain_events(timeout=5)
-
-                            while pending:
-                                yield pending.popleft()
+                message.reject(requeue=False)
             except Exception:
-                logger.exception("RabbitMQ consume loop error")
-                time.sleep(1)
+                logger.debug(
+                    "Failed to reject undecodable RabbitMQ message", exc_info=True
+                )
+
+        # Unknown until this iterator's first drain completes.
+        self._connected = None
+        failures = 0
+        backoff = RECONNECT_INITIAL_BACKOFF
+
+        while not self._stopping():
+            try:
+                conn = Connection(self._url, connect_timeout=CONNECT_TIMEOUT)
+                try:
+                    # One pass over the URL's hosts (";"-separated failover
+                    # alternates), nothing more: kombu's retry_over_time
+                    # raises once max_retries is reached, before switching
+                    # host, and doesn't sleep between hosts within a pass.
+                    # Its default connect path retries with sleeps that ignore
+                    # the stop event; retries are this loop's job. kombu calls
+                    # `callback` before moving on to the next host, which lets
+                    # a stop end the pass instead of waiting for every host.
+                    conn.ensure_connection(
+                        max_retries=max(len(conn.alt) - 1, 0),
+                        reraise_as_library_errors=False,
+                        callback=self._raise_if_stopping,
+                    )
+                    channel = conn.channel()
+                    # Bind fresh copies to this connection's channel. kombu
+                    # binds an entity only once, so re-binding the shared
+                    # templates would keep declaring on the first (dead)
+                    # channel after a reconnect.
+                    bound_exchange = exchange(channel)
+                    bound_queue = queue(channel)
+                    bound_exchange.declare()
+                    bound_queue.declare()
+
+                    consumer = Consumer(
+                        channel,
+                        queues=[bound_queue],
+                        callbacks=[on_message],
+                        on_decode_error=on_decode_error,
+                        accept=["json"],
+                    )
+                    consumer.consume()
+                    while True:
+                        # Periodic wakeup to allow outer loops to run.
+                        with contextlib.suppress(TimeoutError, socket.timeout):
+                            conn.drain_events(timeout=DRAIN_TIMEOUT)
+
+                        # The connection is established and was read from
+                        # (the drain returned or timed out), so the outage,
+                        # if any, is over.
+                        if failures:
+                            # WARNING, like the failures it ends, so operators
+                            # who see the outage also see the recovery.
+                            logger.warning(
+                                "RabbitMQ consume loop reconnected after %d failure(s)",
+                                failures,
+                            )
+                        failures = 0
+                        backoff = RECONNECT_INITIAL_BACKOFF
+                        self._connected = True
+
+                        if self._stopping():
+                            return
+
+                        while pending:
+                            yield pending.popleft()
+                finally:
+                    self._close_consumer_connection(conn)
+            except Exception as exc:
+                if self._stopping():
+                    return
+                failures += 1
+                backoff = self._back_off(failures, backoff, exc)
+
+    def _raise_if_stopping(self) -> None:
+        """Abort a multi-host connect pass once a stop has been requested.
+
+        Raises:
+            _StopRequestedError: If the bound stop event is set. consume()
+                treats any error raised while stopping as a quiet exit.
+        """
+        if self._stopping():
+            raise _StopRequestedError
+
+    def _close_consumer_connection(self, conn: Any) -> None:
+        """Close a consumer connection without letting shutdown hang.
+
+        When stopping, the socket is dropped without the AMQP cancel/close
+        handshake: those wait for the broker's reply with no timeout, so a
+        frozen broker would block shutdown. The broker discards the consumer
+        when the socket closes. Otherwise the connection is closed normally.
+        Errors are logged at debug level and never raised.
+        """
+        try:
+            if self._stopping() and conn.connected:
+                conn.collect()
+            else:
+                conn.release()
+        except Exception:
+            logger.debug("Failed to close RabbitMQ consumer connection", exc_info=True)
+
+    def _back_off(self, failures: int, backoff: float, exc: Exception) -> float:
+        """Log a consume failure, wait, and return the next backoff delay.
+
+        The full traceback is logged only on the first failure in a row; later
+        attempts get a single warning line to avoid flooding the logs.
+        """
+        self._connected = False
+        if failures == 1:
+            logger.warning(
+                "RabbitMQ consume loop error; retrying in %.1fs",
+                backoff,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "RabbitMQ consume loop still failing (attempt %d): %s; "
+                "retrying in %.1fs",
+                failures,
+                exc,
+                backoff,
+            )
+        if self._stop_event is not None:
+            self._stop_event.wait(backoff)
+        else:
+            self._sleep(backoff)
+        return min(backoff * 2, RECONNECT_MAX_BACKOFF)
 
     @staticmethod
     def _parse_event(payload: Any) -> StreamEvent:
