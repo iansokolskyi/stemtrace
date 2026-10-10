@@ -273,7 +273,7 @@ class TestFormLoginAcrossWorkers:
     def test_deeply_nested_json_cookie_returns_401_not_500(self) -> None:
         # The payload is parsed before the signature check, so an unsigned
         # cookie must not be able to crash the JSON decoder (RecursionError).
-        nested = base64.urlsafe_b64encode(b"[" * 5000).decode("ascii").rstrip("=")
+        nested = base64.urlsafe_b64encode(b"[" * 100_000).decode("ascii").rstrip("=")
         app = _make_login_app(login_secret=None)
 
         with TestClient(app, raise_server_exceptions=False) as client:

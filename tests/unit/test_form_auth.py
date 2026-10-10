@@ -7,7 +7,7 @@ import hmac
 import logging
 import time
 from hashlib import sha256
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 import pytest
@@ -95,8 +95,9 @@ class TestParseCookieHeader:
     def test_parse_cookie_header_returns_empty_dict_when_load_raises(
         self, monkeypatch: Any
     ) -> None:
+        # CookieError is the only exception SimpleCookie.load raises.
         def _boom(self: object, raw: str) -> None:
-            raise ValueError("boom")
+            raise CookieError("boom")
 
         monkeypatch.setattr(SimpleCookie, "load", _boom)
         assert parse_cookie_header("a=1") == {}
@@ -410,7 +411,7 @@ _MALFORMED_COOKIES: dict[str, str] = {
     "nul_bytes": "\x00.\x00",
     "invalid_utf8_payload": _raw_cookie(b"\xff\xfe\xfd"),
     "nested_list_unsigned": _raw_cookie(b"[" * 100_000),
-    "nested_dict_unsigned": _raw_cookie(b'{"a":' * 50_000),
+    "nested_dict_unsigned": _raw_cookie(b'{"a":' * 100_000),
     "nested_list_signed": _raw_cookie(b"[" * 100_000, secret="secret"),
     "huge_int_exp": _raw_cookie(b'{"exp":' + b"9" * 5000 + b"}"),
     "huge_int_exp_signed": _raw_cookie(
