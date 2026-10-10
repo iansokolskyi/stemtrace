@@ -769,6 +769,20 @@ class TestPublicAssetsWithServedUi:
         assert bare.status_code == 303  # not under assets/: login required
         assert shell.status_code == 303
 
+    def test_bare_assets_path_with_session_returns_404_not_shell(
+        self, fake_dist: Path
+    ) -> None:
+        # Bare "assets" misses the /assets mount and reaches the SPA catch-all.
+        with TestClient(self._ui_app()) as client:
+            _login_and_get_cookie(client)
+            bare = client.get("/stemtrace/assets", follow_redirects=False)
+            shell = client.get("/stemtrace/workers", follow_redirects=False)
+
+        assert bare.status_code == 404
+        assert "app shell" not in bare.text
+        assert shell.status_code == 200
+        assert "app shell" in shell.text
+
 
 class TestLoginPageFavicon:
     """The login page carries the brand favicon without an extra request."""
