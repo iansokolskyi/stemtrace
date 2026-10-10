@@ -1,7 +1,7 @@
 """Tests for REST API routes."""
 
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,7 +12,9 @@ import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.api.schemas import TaskEventResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
+from tests.conftest import InterleavingLock
 
 
 @pytest.fixture
@@ -34,7 +36,7 @@ class MakeEvent:
     """Factory for creating events with incrementing timestamps."""
 
     _counter = 0
-    _base_time = datetime(2024, 1, 1, tzinfo=UTC)
+    _base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
     @classmethod
     def reset(cls) -> None:
@@ -65,6 +67,80 @@ def make_event() -> type[MakeEvent]:
     return MakeEvent
 
 
+class FakeHealthConsumer:
+    """Consumer stand-in exposing only what the health endpoints read."""
+
+    def __init__(
+        self,
+        *,
+        running: bool,
+        connected: bool | None = None,
+        finished: bool = False,
+        stopped: bool = False,
+    ) -> None:
+        self.is_running = running
+        self.is_connected = connected
+        self.is_finished = finished
+        self.is_stopped = stopped
+
+
+def _live_client(store: GraphStore, consumer: FakeHealthConsumer | None) -> TestClient:
+    app = FastAPI()
+    app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # duck-typed fake
+    return TestClient(app)
+
+
+class TestLivenessEndpoint:
+    def test_live_without_consumer_returns_ok(self, store: GraphStore) -> None:
+        resp = _live_client(store, None).get("/api/health/live")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_live_with_running_consumer_returns_ok(self, store: GraphStore) -> None:
+        resp = _live_client(store, FakeHealthConsumer(running=True)).get(
+            "/api/health/live"
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_live_with_stopped_consumer_returns_200_degraded(
+        self, store: GraphStore
+    ) -> None:
+        resp = _live_client(store, FakeHealthConsumer(running=False)).get(
+            "/api/health/live"
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "degraded"}
+
+
+class TestHealthStatusAgreement:
+    """``/health`` and ``/health/live`` report the same consumer status."""
+
+    @pytest.mark.parametrize("path", ["/api/health", "/api/health/live"])
+    @pytest.mark.parametrize(
+        ("consumer", "expected_status"),
+        [
+            (FakeHealthConsumer(running=True, connected=True), "ok"),
+            (FakeHealthConsumer(running=True, connected=False), "degraded"),
+            (FakeHealthConsumer(running=False), "degraded"),
+            (FakeHealthConsumer(running=False, stopped=True), "ok"),
+            (FakeHealthConsumer(running=False, finished=True), "ok"),
+        ],
+        ids=["connected", "broker-down", "crashed", "stopped", "finished"],
+    )
+    def test_health_status_with_consumer_state_matches_on_both_endpoints(
+        self,
+        store: GraphStore,
+        path: str,
+        consumer: FakeHealthConsumer,
+        expected_status: str,
+    ) -> None:
+        resp = _live_client(store, consumer).get(path)
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == expected_status
+
+
 class TestHealthEndpoint:
     def test_health_basic(self, client: TestClient) -> None:
         response = client.get("/api/health")
@@ -73,10 +149,12 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "ok"
         assert data["node_count"] == 0
+        assert data["consumer_connected"] is None
 
     def test_health_with_consumer_and_ws(self, store: GraphStore) -> None:
         mock_consumer = MagicMock()
         mock_consumer.is_running = True
+        mock_consumer.is_connected = False
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.connection_count = 5
@@ -92,7 +170,46 @@ class TestHealthEndpoint:
         data = response.json()
 
         assert data["consumer_running"] is True
+        assert data["consumer_connected"] is False
         assert data["websocket_connections"] == 5
+
+    @pytest.mark.parametrize(
+        ("running", "connected", "finished", "expected_status"),
+        [
+            (True, True, False, "ok"),
+            (True, None, False, "ok"),
+            (False, None, False, "degraded"),
+            (True, False, False, "degraded"),
+            (False, None, True, "ok"),
+        ],
+        ids=[
+            "running-connected",
+            "running-unknown",
+            "not-running",
+            "disconnected",
+            "source-finished",
+        ],
+    )
+    def test_health_status_with_consumer_state_reports_status(
+        self,
+        store: GraphStore,
+        running: bool,
+        connected: bool | None,
+        finished: bool,
+        expected_status: str,
+    ) -> None:
+        consumer = FakeHealthConsumer(
+            running=running, connected=connected, finished=finished
+        )
+        app = FastAPI()
+        app.include_router(create_api_router(store, consumer=consumer))  # type: ignore[arg-type]  # structural fake
+
+        response = TestClient(app).get("/api/health")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == expected_status
+        assert response.json()["consumer_running"] is running
+        assert response.json()["consumer_connected"] is connected
 
 
 class TestTaskListEndpoint:
@@ -192,6 +309,158 @@ class TestTaskDetailEndpoint:
 
         assert len(data["children"]) == 2
 
+    def test_get_task_insert_during_serialization_returns_consistent_snapshot(
+        self,
+        client: TestClient,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        store.add_event(event(TaskState.STARTED, 100))
+        store.add_event(event(TaskState.SUCCESS, 1100))
+        late_pending = event(TaskState.PENDING, 0)
+        inserted: list[bool] = []
+
+        class InsertingEventResponse(TaskEventResponse):
+            """Simulates the consumer inserting an event mid-serialization."""
+
+            @classmethod
+            def model_validate(cls, obj: object, **kwargs: object) -> TaskEventResponse:  # type: ignore[override]  # test hook narrows the signature
+                if not inserted:
+                    inserted.append(True)
+                    # Lands at index 0 of the live list, shifting the rest.
+                    store.add_event(late_pending)
+                return TaskEventResponse.model_validate(obj)
+
+        monkeypatch.setattr(routes, "TaskEventResponse", InsertingEventResponse)
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert inserted == [True]
+        assert [e["state"] for e in task["events"]] == ["STARTED", "SUCCESS"]
+        assert task["first_seen"] == "2024-01-01T00:00:00.100000Z"
+        assert task["last_updated"] == "2024-01-01T00:00:01.100000Z"
+        assert task["duration_ms"] == 1000
+        # The store itself did take the late event.
+        node = store.get_node("task-1")
+        assert node is not None
+        assert [e.state for e in node.events] == [
+            TaskState.PENDING,
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+
+    def test_get_task_pending_stamped_after_finish_sorts_first(
+        self, client: TestClient, store: GraphStore
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        # task_sent fires after publish, so PENDING can be stamped last.
+        store.add_event(event(TaskState.STARTED, 10))
+        store.add_event(event(TaskState.SUCCESS, 20))
+        store.add_event(event(TaskState.PENDING, 25))
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert task["state"] == "SUCCESS"
+        assert [e["state"] for e in task["events"]] == [
+            "PENDING",
+            "STARTED",
+            "SUCCESS",
+        ]
+        assert task["events"][0]["timestamp"] == "2024-01-01T00:00:00.025000Z"
+        assert task["first_seen"] == "2024-01-01T00:00:00.010000Z"
+        assert task["last_updated"] == "2024-01-01T00:00:00.020000Z"
+        assert task["duration_ms"] == 10
+
+    def test_get_task_children_consistent_with_interleaved_writer(
+        self,
+        client: TestClient,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.sample",
+                state=TaskState.STARTED,
+                timestamp=base,
+            )
+        )
+        counter = iter(range(100))
+
+        def add_child() -> None:
+            n = next(counter)
+            store.add_event(
+                TaskEvent(
+                    task_id=f"child-{n}",
+                    name="tests.sample",
+                    state=TaskState.STARTED,
+                    timestamp=base + timedelta(seconds=n + 1),
+                    parent_id="parent",
+                )
+            )
+
+        monkeypatch.setattr(store, "_lock", InterleavingLock(store._lock, add_child))
+
+        data = client.get("/api/tasks/parent").json()
+
+        assert data["task"]["children"] == [c["task_id"] for c in data["children"]]
+        assert data["children"] != []
+
+    def test_get_task_with_late_pending_event_returns_terminal_state_and_timing(
+        self, client: TestClient, store: GraphStore
+    ) -> None:
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        def event(state: TaskState, offset_ms: int) -> TaskEvent:
+            return TaskEvent(
+                task_id="task-1",
+                name="tests.sample",
+                state=state,
+                timestamp=base + timedelta(milliseconds=offset_ms),
+            )
+
+        store.add_event(event(TaskState.STARTED, 100))
+        store.add_event(event(TaskState.SUCCESS, 1100))
+        # Sender-side PENDING reaches the stream after the worker finished.
+        store.add_event(event(TaskState.PENDING, 0))
+
+        task = client.get("/api/tasks/task-1").json()["task"]
+
+        assert task["state"] == "SUCCESS"
+        assert [e["state"] for e in task["events"]] == [
+            "PENDING",
+            "STARTED",
+            "SUCCESS",
+        ]
+        assert task["first_seen"] == "2024-01-01T00:00:00Z"
+        assert task["last_updated"] == "2024-01-01T00:00:01.100000Z"
+        assert task["duration_ms"] == 1100
+
+        listed = client.get("/api/tasks?state=SUCCESS").json()
+        assert [t["task_id"] for t in listed["tasks"]] == ["task-1"]
+        assert listed["tasks"][0]["duration_ms"] == 1100
+        assert client.get("/api/tasks?state=PENDING").json()["total"] == 0
+
 
 class TestTaskChildrenEndpoint:
     def test_get_children(
@@ -264,7 +533,7 @@ class TestTaskNodeResponse:
         self, client: TestClient, store: GraphStore
     ) -> None:
         """Test that duration is calculated for completed tasks."""
-        start_time = datetime(2024, 1, 1, tzinfo=UTC)
+        start_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
         end_time = start_time + timedelta(seconds=5)
 
         store.add_event(
@@ -1140,7 +1409,7 @@ class TestGraphNodeTimingResponse:
 
     def test_graph_node_response_timing_computed_from_children(self) -> None:
         """Synthetic nodes with no events compute timing/duration from child nodes."""
-        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t1 = t0 + timedelta(seconds=10)
         t2 = t0 + timedelta(seconds=25)
 
@@ -1184,3 +1453,196 @@ class TestGraphNodeTimingResponse:
         assert resp.first_seen == t1
         assert resp.last_updated == t2
         assert resp.duration_ms == int((t2 - t1).total_seconds() * 1000)
+
+    def test_graph_node_response_children_sorted_tasks_first(self) -> None:
+        """Children are ordered with TASK nodes first, GROUP/CHORD nodes last."""
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        task_a = TaskNode(
+            task_id="task-a",
+            name="myapp.tasks.a",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="task-a",
+                    name="myapp.tasks.a",
+                    state=TaskState.SUCCESS,
+                    timestamp=t0,
+                )
+            ],
+        )
+        task_b = TaskNode(
+            task_id="task-b",
+            name="myapp.tasks.b",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="task-b",
+                    name="myapp.tasks.b",
+                    state=TaskState.SUCCESS,
+                    timestamp=t0,
+                )
+            ],
+        )
+        chord_node = TaskNode(
+            task_id="group:chord-1",
+            name="chord",
+            state=TaskState.SUCCESS,
+            node_type=NodeType.CHORD,
+            children=[],
+        )
+
+        # Parent has children in "wrong" order: chord first, then tasks
+        parent = TaskNode(
+            task_id="root",
+            name="myapp.tasks.process_uploads",
+            state=TaskState.SUCCESS,
+            node_type=NodeType.TASK,
+            children=["group:chord-1", "task-a", "task-b"],
+        )
+
+        all_nodes = {"task-a": task_a, "task-b": task_b, "group:chord-1": chord_node}
+        resp = routes._node_to_graph_response(parent, all_nodes=all_nodes)
+
+        assert resp.children == ["task-a", "task-b", "group:chord-1"]
+
+
+class TestResolveNodeAlias:
+    """Tests for _resolve_node_alias helper."""
+
+    def _make_node(
+        self,
+        args: list[object] | None = None,
+        kwargs: dict[str, object] | None = None,
+    ) -> TaskNode:
+        """Create a TaskNode with a single event carrying given args/kwargs."""
+        return TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.SUCCESS,
+            events=[
+                TaskEvent(
+                    task_id="test-1",
+                    name="myapp.tasks.process",
+                    state=TaskState.SUCCESS,
+                    timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    args=args,
+                    kwargs=kwargs,
+                )
+            ],
+        )
+
+    def test_none_key_returns_task_name(self) -> None:
+        """When key is None, returns the task name unchanged."""
+        node = self._make_node(args=["ignored"])
+        assert routes._resolve_node_alias(node, None) == "myapp.tasks.process"
+
+    def test_digit_key_returns_args_by_index(self) -> None:
+        """Digit string key extracts positional argument by index."""
+        node = self._make_node(args=["upload.csv", 42])
+        assert routes._resolve_node_alias(node, "0") == "upload.csv"
+        assert routes._resolve_node_alias(node, "1") == "42"
+
+    def test_string_key_returns_kwargs_value(self) -> None:
+        """String key extracts keyword argument by name."""
+        node = self._make_node(kwargs={"operator_type": "run_query"})
+        assert routes._resolve_node_alias(node, "operator_type") == "run_query"
+
+    def test_digit_key_out_of_range_returns_task_name(self) -> None:
+        """Falls back to task name when args index is out of range."""
+        node = self._make_node(args=["only_one"])
+        assert routes._resolve_node_alias(node, "5") == "myapp.tasks.process"
+
+    def test_string_key_missing_returns_task_name(self) -> None:
+        """Falls back to task name when kwargs key doesn't exist."""
+        node = self._make_node(kwargs={"other": "value"})
+        assert routes._resolve_node_alias(node, "missing_key") == "myapp.tasks.process"
+
+    def test_no_events_returns_task_name(self) -> None:
+        """Falls back to task name when node has no events."""
+        node = TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.PENDING,
+        )
+        assert routes._resolve_node_alias(node, "0") == "myapp.tasks.process"
+
+    def test_none_args_returns_task_name(self) -> None:
+        """Falls back to task name when args is None."""
+        node = self._make_node(args=None)
+        assert routes._resolve_node_alias(node, "0") == "myapp.tasks.process"
+
+    def test_none_kwargs_returns_task_name(self) -> None:
+        """Falls back to task name when kwargs is None."""
+        node = self._make_node(kwargs=None)
+        assert routes._resolve_node_alias(node, "some_key") == "myapp.tasks.process"
+
+    def test_non_string_value_converted_to_str(self) -> None:
+        """Non-string args/kwargs values are converted to string."""
+        node = self._make_node(args=[123], kwargs={"count": 456})
+        assert routes._resolve_node_alias(node, "0") == "123"
+        assert routes._resolve_node_alias(node, "count") == "456"
+
+    def test_graph_response_uses_alias(self) -> None:
+        """_node_to_graph_response passes alias key through."""
+        node = self._make_node(kwargs={"operator_type": "sync_table"})
+        resp = routes._node_to_graph_response(node, node_alias_key="operator_type")
+        assert resp.name == "sync_table"
+
+    def test_alias_skips_leading_events_without_arguments(self) -> None:
+        """Events without args/kwargs (e.g. RECEIVED) don't hide later ones."""
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        node = TaskNode(
+            task_id="test-1",
+            name="myapp.tasks.process",
+            state=TaskState.STARTED,
+            events=[
+                TaskEvent(
+                    task_id="test-1",
+                    name="myapp.tasks.process",
+                    state=state,
+                    timestamp=base + timedelta(milliseconds=offset),
+                    args=args,
+                    kwargs=kwargs,
+                )
+                for state, offset, args, kwargs in [
+                    (TaskState.RECEIVED, 10, None, None),
+                    (TaskState.STARTED, 20, ["invoice-42"], {"customer": "acme"}),
+                ]
+            ],
+        )
+
+        assert routes._resolve_node_alias(node, "0") == "invoice-42"
+        assert routes._resolve_node_alias(node, "customer") == "acme"
+
+    def test_graph_api_alias_with_pending_stamped_after_received(
+        self, store: GraphStore
+    ) -> None:
+        """The sender's late-stamped PENDING carries the args the alias needs."""
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        for state, offset, args in [
+            (TaskState.RECEIVED, 10, None),
+            (TaskState.PENDING, 60, ["invoice-42"]),
+        ]:
+            store.add_event(
+                TaskEvent(
+                    task_id="root",
+                    name="myapp.tasks.bill",
+                    state=state,
+                    timestamp=base + timedelta(milliseconds=offset),
+                    args=args,
+                )
+            )
+        app = FastAPI()
+        app.include_router(create_api_router(store, node_alias_from_arguments="0"))
+
+        response = TestClient(app).get("/api/graphs/root")
+
+        assert response.status_code == 200
+        assert response.json()["nodes"]["root"]["name"] == "invoice-42"
+
+    def test_graph_response_without_alias_uses_task_name(self) -> None:
+        """_node_to_graph_response without alias key uses task name."""
+        node = self._make_node(kwargs={"operator_type": "sync_table"})
+        resp = routes._node_to_graph_response(node)
+        assert resp.name == "myapp.tasks.process"

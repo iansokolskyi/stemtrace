@@ -4,18 +4,22 @@ import logging
 import socket
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
 from stemtrace.library.transports import get_transport
 from stemtrace.library.transports.memory import MemoryTransport
 from stemtrace.library.transports.rabbitmq import RabbitMQTransport
-from stemtrace.library.transports.redis import RedisTransport
+from stemtrace.library.transports.redis import (
+    RedisTransport,
+    _normalize_redis_ssl_params,
+)
 
 
 @pytest.fixture
@@ -32,7 +36,7 @@ def started_event() -> TaskEvent:
         task_id="task-001",
         name="tests.my_task",
         state=TaskState.STARTED,
-        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -43,7 +47,7 @@ def success_event() -> TaskEvent:
         task_id="task-001",
         name="tests.my_task",
         state=TaskState.SUCCESS,
-        timestamp=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+        timestamp=datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
     )
 
 
@@ -69,7 +73,7 @@ class TestMemoryTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             registered_tasks=["tasks.add"],
         )
 
@@ -201,6 +205,40 @@ class TestGetTransport:
         assert transport.ttl == 7200
 
 
+class TestNormalizeRedisSslParams:
+    """Tests for _normalize_redis_ssl_params URL normalization."""
+
+    def test_cert_required_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/1?ssl_cert_reqs=CERT_REQUIRED"
+        assert "ssl_cert_reqs=required" in _normalize_redis_ssl_params(url)
+
+    def test_cert_none_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=CERT_NONE"
+        assert "ssl_cert_reqs=none" in _normalize_redis_ssl_params(url)
+
+    def test_cert_optional_normalized(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=CERT_OPTIONAL"
+        assert "ssl_cert_reqs=optional" in _normalize_redis_ssl_params(url)
+
+    def test_already_lowercase_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0?ssl_cert_reqs=required"
+        assert "ssl_cert_reqs=required" in _normalize_redis_ssl_params(url)
+
+    def test_no_query_params_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0"
+        assert _normalize_redis_ssl_params(url) == url
+
+    def test_no_ssl_cert_reqs_unchanged(self) -> None:
+        url = "rediss://:pass@host:6379/0?timeout=5"
+        assert _normalize_redis_ssl_params(url) == url
+
+    def test_other_params_preserved(self) -> None:
+        url = "rediss://:pass@host:6379/1?ssl_cert_reqs=CERT_REQUIRED&timeout=5"
+        result = _normalize_redis_ssl_params(url)
+        assert "ssl_cert_reqs=required" in result
+        assert "timeout=5" in result
+
+
 class TestRedisTransport:
     """Tests for RedisTransport with mocked Redis client."""
 
@@ -221,7 +259,7 @@ class TestRedisTransport:
             task_id="task-123",
             name="tests.sample_task",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
     @pytest.fixture
@@ -231,7 +269,7 @@ class TestRedisTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             registered_tasks=["tasks.add", "tasks.multiply"],
         )
 
@@ -484,6 +522,38 @@ class TestRedisTransport:
         assert len(events) == 1
         assert call_count == 2
 
+    def test_consume_when_xread_times_out_retries_and_yields_event(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+    ) -> None:
+        """consume() treats a socket read timeout as an empty read and keeps going."""
+        serialized = sample_event.model_dump_json().encode()
+        call_count = 0
+
+        def xread_side_effect(*args: Any, **kwargs: Any) -> list[Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RedisTimeoutError("Timeout reading from socket")
+            return [
+                (
+                    b"test:events",
+                    [(b"1234567890-0", {b"data": serialized})],
+                )
+            ]
+
+        mock_client.xread.side_effect = xread_side_effect
+
+        events = []
+        for event in transport.consume():
+            events.append(event)
+            break
+
+        assert call_count == 2
+        assert events == [sample_event]
+
     def test_consume_with_custom_last_id(
         self,
         mock_client: MagicMock,
@@ -694,7 +764,7 @@ class TestRabbitMQTransport:
             task_id="task-123",
             name="tests.sample_task",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
         transport.publish(event)
@@ -714,7 +784,7 @@ class TestRabbitMQTransport:
             task_id="t1",
             name="tests.t1",
             state=TaskState.SUCCESS,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ).model_dump(mode="json")
         parsed = RabbitMQTransport._parse_event(payload)
         assert isinstance(parsed, TaskEvent)
@@ -726,7 +796,7 @@ class TestRabbitMQTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="h",
             pid=1,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             registered_tasks=[],
         ).model_dump(mode="json")
         parsed = RabbitMQTransport._parse_event(payload)
@@ -751,7 +821,7 @@ class TestRabbitMQTransport:
             task_id="t2",
             name="tests.t2",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         transport.publish(event)
         assert seen["task_id"] == "t2"
@@ -768,7 +838,7 @@ class TestRabbitMQTransport:
                 task_id="consume-1",
                 name="tests.consume",
                 state=TaskState.RECEIVED,
-                timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             ).model_dump(mode="json")
             # Use the fake message type we installed on the kombu module.
             msg = sys.modules["kombu"].FakeMessage()  # type: ignore[attr-defined]
@@ -896,7 +966,7 @@ class TestRabbitMQTransport:
                     task_id="consume-2",
                     name="tests.consume",
                     state=TaskState.RECEIVED,
-                    timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                    timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 ).model_dump(mode="json")
                 seen["valid_msg"] = FakeMessage(reject_raises=False)
                 for cb in callbacks:
@@ -933,7 +1003,7 @@ class TestRabbitMQTransport:
             task_id="t3",
             name="tests.t3",
             state=TaskState.SUCCESS,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         json_str = event.model_dump_json()
         parsed_str = RabbitMQTransport._parse_event(json_str)
@@ -966,7 +1036,7 @@ class TestRabbitMQTransport:
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
             pid=12345,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
             registered_tasks=[],
         )
 
@@ -1024,7 +1094,7 @@ class TestRabbitMQTransport:
             task_id="t4",
             name="tests.t4",
             state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         transport.publish(event)
 

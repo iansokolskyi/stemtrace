@@ -12,10 +12,22 @@ from typing import TYPE_CHECKING, Final
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
+
 if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
 
 _DEFAULT_TITLE: Final[str] = "stemtrace"
+
+# Fixed messages for known ``reason`` codes; the query value is never echoed.
+_REASON_MESSAGES: Final[dict[str, str]] = {
+    LOGIN_REASON_SESSION_MISMATCH: (
+        "Your session was rejected because it was signed by a different server "
+        "process (another worker or replica). If stemtrace "
+        "runs with several workers or replicas, set STEMTRACE_LOGIN_SECRET to the "
+        "same long random value on all of them."
+    ),
+}
 _LOGIN_TEMPLATE_PATH: Final[str] = "templates/login.html"
 
 
@@ -38,6 +50,20 @@ def _safe_next(next_path: str | None, *, default: str) -> str:
     if next_path.startswith("//"):
         return default
     return next_path
+
+
+def _request_is_https(request: Request) -> bool:
+    """Best-effort HTTPS detection that survives a TLS-terminating proxy.
+
+    Falls back to the ``X-Forwarded-Proto`` header when the ASGI scheme is
+    ``http`` because proxy headers weren't applied to the scope (e.g. uvicorn
+    without ``--forwarded-allow-ips``). The first value of a comma-separated
+    list is the original client scheme.
+    """
+    if request.url.scheme == "https":
+        return True
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    return forwarded.split(",")[0].strip().lower() == "https"
 
 
 def _login_page_html(*, action_path: str, error: str | None, next_path: str) -> str:
@@ -89,10 +115,15 @@ def create_login_router(
     async def login_page(request: Request) -> HTMLResponse:
         """Render sign-in page."""
         error = request.query_params.get("error")
+        if error is None:
+            error = _REASON_MESSAGES.get(request.query_params.get("reason") or "")
         next_path = _safe_next(
             request.query_params.get("next"), default=default_next_path
         )
-        action_path = str(request.url_for("stemtrace_login_submit"))
+        # Relative path (not an absolute URL): the browser submits using the
+        # page's own scheme/host, so a TLS-terminating proxy that doesn't
+        # forward the scheme can't downgrade the form action to http.
+        action_path = request.url_for("stemtrace_login_submit").path
         rendered_html = _login_page_html(
             action_path=action_path, error=error, next_path=next_path
         )
@@ -125,7 +156,7 @@ def create_login_router(
             qs = {"error": "Invalid username or password"}
             if next_param:
                 qs["next"] = next_param
-            login_url = str(request.url_for("stemtrace_login_page"))
+            login_url = request.url_for("stemtrace_login_page").path
             return RedirectResponse(
                 url=login_url + "?" + urllib.parse.urlencode(qs),
                 status_code=303,
@@ -141,7 +172,7 @@ def create_login_router(
             value=config.create_session_cookie_value(),
             httponly=True,
             samesite="lax",
-            secure=request.url.scheme == "https",
+            secure=_request_is_https(request),
             path=config.cookie_path,
         )
         return response
@@ -149,7 +180,7 @@ def create_login_router(
     @router.post("/logout", include_in_schema=False, name="stemtrace_logout")
     async def logout(request: Request) -> RedirectResponse:
         """Clear the session cookie and redirect to login."""
-        login_url = str(request.url_for("stemtrace_login_page"))
+        login_url = request.url_for("stemtrace_login_page").path
         response = RedirectResponse(url=login_url, status_code=303)
         response.delete_cookie(key=config.cookie_name, path=config.cookie_path)
         return response

@@ -1,8 +1,10 @@
+<img src="https://raw.githubusercontent.com/iansokolskyi/stemtrace/main/docs/brand/stemtrace-mark.svg" width="48" alt="stemtrace logo" />
+
 # stemtrace 🌿
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.3.1-darklime)](https://pypi.org/project/stemtrace)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.3.7-darklime)](https://pypi.org/project/stemtrace)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
@@ -196,6 +198,10 @@ stemtrace.init_worker(
     scrub_sensitive_data=True,                 # Scrub passwords, API keys, etc.
     additional_sensitive_keys=frozenset({"my_secret"}),  # Add custom keys
     safe_keys=frozenset({"public_key"}),       # Never scrub these keys
+
+    # UI display
+    node_alias_from_arguments="operator_type", # Use kwargs["operator_type"] as node name
+    # node_alias_from_arguments="0",           # Or use args[0] (digit string = positional index)
 )
 
 # Introspection (after init)
@@ -382,6 +388,10 @@ stemtrace server \
     --login-secret change-me
 ```
 
+Set `--login-secret` (or `STEMTRACE_LOGIN_SECRET`) to a long random value, and use the same
+value on every replica. Without it, each process generates its own random secret, so sessions
+only work within a single process and are lost on restart.
+
 #### High-Scale Production Setup
 
 Note: `stemtrace server` includes an embedded consumer today (single-process). A multi-process deployment mode is planned.
@@ -451,7 +461,19 @@ stemtrace.init_app(
 )
 ```
 
-This serves a sign-in page at `/stemtrace/login` and protects everything under `/stemtrace`.
+This serves a sign-in page at `/stemtrace/login` and protects the UI, API and WebSocket under
+`/stemtrace`. The static JS/CSS bundle under `/stemtrace/assets/` is the public UI build and is
+served without a session. So is `/stemtrace/api/health/live`, a liveness probe for load
+balancers and container health checks: it always answers 200 while the process is serving,
+with only `{"status": "ok"}`, or `{"status": "degraded"}` when the embedded consumer stopped
+unexpectedly or can't read from the broker (the same rule as `/stemtrace/api/health`).
+
+For any multi-process deployment (`uvicorn --workers N`, gunicorn, or several replicas behind
+a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) to the same long
+random value everywhere, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+Without it, each process signs sessions with its own random secret, and users get logged out
+at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
+the problem when a session signed by another process is rejected.
 
 #### Built-in Auth Helpers (Basic / API key)
 
@@ -471,6 +493,26 @@ stemtrace.init_app(
 |------|----------|-------|
 | Embedded | Development, simple apps | Default — consumer runs in FastAPI process |
 | External | Production, high scale | Planned |
+
+### Health Endpoint
+
+`GET /stemtrace/api/health` (under your mount prefix when embedded) always returns HTTP 200 with:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `"ok"`, or `"degraded"` when the event consumer died unexpectedly, its loop keeps failing, or `consumer_connected` is `false`. A consumer stopped on purpose, or whose event source finished normally (`memory://`), stays `"ok"` |
+| `version` | Installed stemtrace version |
+| `consumer_running` | Whether the event consumer thread is alive |
+| `consumer_connected` | `true` if the last broker read succeeded, `false` while reads fail, `null` if unknown (starting up, or the transport doesn't report it) |
+| `websocket_connections` | Open UI WebSocket connections |
+| `node_count` | Tasks currently held in memory |
+
+Because the status code stays 200, check `status` in the body if you want monitoring to alert on a degraded consumer.
+
+What is detected depends on the transport:
+
+- **Redis:** refused or reset connections, connect timeouts, repeated read timeouts, and consumer loop failures. On redis-py < 8 the default socket timeout is unbounded, so a half-open or hung broker connection may go unnoticed; add `?socket_timeout=…` or `?health_check_interval=…` to the broker URL if you need that.
+- **RabbitMQ:** connectivity isn't reported (`consumer_connected` is `null`), so `"degraded"` only reflects consumer loop failures.
 
 ## 🗺️ Roadmap
 

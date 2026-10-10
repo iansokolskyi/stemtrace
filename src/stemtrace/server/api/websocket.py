@@ -8,8 +8,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from stemtrace.server.fastapi.form_auth import (
     FormAuthConfig,
-    is_authenticated_cookie,
+    SessionStatus,
+    check_session_cookie,
     parse_cookie_header,
+    warn_session_secret_mismatch,
 )
 
 if TYPE_CHECKING:
@@ -28,13 +30,20 @@ def create_websocket_router(
         if form_auth_config is not None:
             cookies = parse_cookie_header(websocket.headers.get("cookie"))
             cookie_value = cookies.get(form_auth_config.cookie_name)
-            if not is_authenticated_cookie(
-                cookie_value,
-                secret=form_auth_config.secret,
-                expected_username=form_auth_config.username,
-            ):
-                # Close without registering the connection.
-                await websocket.accept()
+            status = check_session_cookie(cookie_value, form_auth_config)
+            if status is not SessionStatus.VALID:
+                if status is SessionStatus.SECRET_MISMATCH:
+                    # Same rate-limited warning as for HTTP requests; the
+                    # client only sees the plain 403 (no reason). A forged,
+                    # unsigned cookie can trigger it too; accepted, see
+                    # check_session_cookie.
+                    warn_session_secret_mismatch()
+                # Deny the handshake without completing it. Accepting first and
+                # then closing half-opens the connection; if the unauthenticated
+                # client aborts during that dance, uvicorn's legacy websockets
+                # impl runs close() on a protocol whose transfer_data_task was
+                # never set and raises AttributeError. Closing before accept lets
+                # Starlette reject the handshake (HTTP 403) without opening it.
                 await websocket.close(code=1008)
                 return
 

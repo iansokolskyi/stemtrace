@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-from tests.e2e.conftest import wait_for_task
+from tests.e2e.conftest import wait_for_event, wait_for_task
 from tests.e2e.tasks import add, always_fails, create_workflow, flaky_task, slow_task
 
 
@@ -71,10 +71,20 @@ class TestTaskVisibility:
         data = wait_for_task(api_client, task_id, ["SUCCESS"])
 
         task = data["task"]
-        # Args are captured in PENDING or STARTED events
-        pending_event = get_event_by_state(task["events"], "PENDING")
-        assert pending_event is not None
+        # Args are captured in PENDING and STARTED events. The worker publishes
+        # STARTED before SUCCESS, so it is present once SUCCESS is visible.
+        started_event = get_event_by_state(task["events"], "STARTED")
+        assert started_event is not None
+        assert started_event["args"] == [10, 20]
+
+        # The sender-side PENDING can still be in flight; wait for it.
+        pending_event = wait_for_event(api_client, task_id, "PENDING")
         assert pending_event["args"] == [10, 20]
+
+        # The late PENDING must not move the finished task backwards.
+        response = api_client.get(f"/tasks/{task_id}")
+        assert response.status_code == 200
+        assert response.json()["task"]["state"] == "SUCCESS"
 
     def test_failed_task_captures_exception(self, api_client: httpx.Client) -> None:
         """Verify failed tasks capture exception details."""

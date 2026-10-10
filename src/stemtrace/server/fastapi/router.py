@@ -24,6 +24,7 @@ def create_router(
     broker_url: str | None = None,
     auth_dependency: Any = None,
     form_auth_config: FormAuthConfig | None = None,
+    node_alias_from_arguments: str | None = None,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension."""
     if store is None:
@@ -40,6 +41,7 @@ def create_router(
         ws_manager,
         worker_registry,
         broker_url=broker_url,
+        node_alias_from_arguments=node_alias_from_arguments,
     )
     ws_router = create_websocket_router(ws_manager, form_auth_config=form_auth_config)
 

@@ -130,10 +130,12 @@ class TestFastAPIIntegrationExample:
         """Stemtrace routes are mounted on the FastAPI app."""
         from fastapi_integration import app
 
-        # Check that stemtrace routes are mounted
-        routes = [route.path for route in app.routes]
-        assert "/stemtrace" in routes
-        assert any("/stemtrace/" in route for route in routes)
+        # Check that stemtrace routes are mounted. Newer FastAPI keeps included
+        # routers as nested entries in app.routes, so check the resolved
+        # OpenAPI paths for the nested API routes instead of flattening.
+        top_level_paths = [getattr(route, "path", None) for route in app.routes]
+        assert "/stemtrace" in top_level_paths
+        assert "/stemtrace/api/health" in app.openapi()["paths"]
 
 
 class TestWithAuthExample:
@@ -167,10 +169,12 @@ class TestWithAuthExample:
 
         from with_auth import app
 
-        # Check that stemtrace routes are mounted
-        routes = [route.path for route in app.routes]
-        assert "/stemtrace" in routes
-        assert any("/stemtrace/" in route for route in routes)
+        # Check that stemtrace routes are mounted. Newer FastAPI keeps included
+        # routers as nested entries in app.routes, so check the resolved
+        # OpenAPI paths for the nested API routes instead of flattening.
+        top_level_paths = [getattr(route, "path", None) for route in app.routes]
+        assert "/stemtrace" in top_level_paths
+        assert "/stemtrace/api/health" in app.openapi()["paths"]
 
 
 class TestExamplesConsistency:

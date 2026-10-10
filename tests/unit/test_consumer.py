@@ -1,13 +1,21 @@
 """Tests for EventConsumer and AsyncEventConsumer."""
 
+import logging
 import time
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.library.transports.redis import RedisTransport
+from stemtrace.server import consumer as consumer_module
+from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -49,7 +57,7 @@ def store() -> GraphStore:
 @pytest.fixture
 def sample_events() -> list[TaskEvent]:
     """Create sample events for testing."""
-    base_time = datetime(2024, 1, 1, tzinfo=UTC)
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
     return [
         TaskEvent(
             task_id=f"task-{i}",
@@ -175,7 +183,7 @@ class TestWorkerEventHandling:
         """Worker ready event should register worker in registry."""
         worker_registry = WorkerRegistry()
         # Use future time to ensure event is after consumer's _started_at
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         worker_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
@@ -210,7 +218,7 @@ class TestWorkerEventHandling:
         worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
 
         # Use future time to ensure event is after consumer's _started_at
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         shutdown_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_SHUTDOWN,
             hostname="worker-1",
@@ -240,8 +248,8 @@ class TestWorkerEventHandling:
         worker_registry = WorkerRegistry()
         # Use future time for worker event so it's after consumer's _started_at
         # Task events can use any time (they're not filtered)
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
-        past_time = datetime(2024, 1, 1, tzinfo=UTC)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
+        past_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         events: list[TaskEvent | WorkerEvent] = [
             TaskEvent(
@@ -285,7 +293,7 @@ class TestWorkerEventHandling:
 
     def test_worker_events_skipped_without_registry(self, store: GraphStore) -> None:
         """Worker events should be skipped if no registry provided."""
-        future_time = datetime.now(UTC) + timedelta(seconds=1)
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
         worker_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="worker-1",
@@ -317,7 +325,7 @@ class TestWorkerEventHandling:
         """
         worker_registry = WorkerRegistry()
         # Create an event from 1 minute ago (before consumer starts but recent)
-        one_min_ago = datetime.now(UTC) - timedelta(minutes=1)
+        one_min_ago = datetime.now(timezone.utc) - timedelta(minutes=1)
         old_event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
             hostname="still-running-worker",
@@ -354,8 +362,8 @@ class TestWorkerEventHandling:
         """
         worker_registry = WorkerRegistry()
         # Worker started at T1, shut down at T2 (both before consumer but recent)
-        t1 = datetime.now(UTC) - timedelta(minutes=2)
-        t2 = datetime.now(UTC) - timedelta(minutes=1)
+        t1 = datetime.now(timezone.utc) - timedelta(minutes=2)
+        t2 = datetime.now(timezone.utc) - timedelta(minutes=1)
         events: list[WorkerEvent] = [
             WorkerEvent(
                 event_type=WorkerEventType.WORKER_READY,
@@ -402,14 +410,14 @@ class TestWorkerEventHandling:
         # Manually set last_seen to 20 minutes ago to trigger stale detection
         with worker_registry._lock:
             worker = worker_registry._workers["stale-worker:11111"]
-            worker.last_seen = datetime.now(UTC) - timedelta(minutes=20)
+            worker.last_seen = datetime.now(timezone.utc) - timedelta(minutes=20)
 
         # Create a task event to trigger processing (stale check happens after events)
         task_event = TaskEvent(
             task_id="trigger-1",
             name="tests.trigger",
             state=TaskState.STARTED,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
         fake = FakeTransport([task_event])
 
@@ -434,3 +442,316 @@ class TestWorkerEventHandling:
         worker = worker_registry.get_worker("stale-worker", 11111)
         assert worker is not None
         assert worker.status == WorkerStatus.OFFLINE
+
+
+class FlakyTransport(FakeTransport):
+    """Transport whose consume() raises for the first ``failures`` calls."""
+
+    def __init__(
+        self,
+        events: list[TaskEvent | WorkerEvent],
+        *,
+        failures: int,
+        connected: bool | None = None,
+    ) -> None:
+        super().__init__(events)
+        self.failures_left = failures
+        self.consume_calls = 0
+        self.connected = connected
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        self.consume_calls += 1
+        if self.failures_left > 0:
+            self.failures_left -= 1
+            raise ConnectionError("Connection closed by server.")
+        yield from super().consume()
+
+
+def _wait_until(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met in time")
+        time.sleep(0.01)
+
+
+class TestConsumerRecovery:
+    def test_consume_loop_after_errors_restarts_and_processes_events(
+        self,
+        store: GraphStore,
+        sample_events: list[TaskEvent],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        fake = FlakyTransport(list(sample_events), failures=3)
+
+        with (
+            patch("stemtrace.server.consumer.get_transport", return_value=fake),
+            caplog.at_level(logging.INFO, logger="stemtrace.server.consumer"),
+        ):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: store.node_count == len(sample_events))
+
+            assert consumer.is_running
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        assert fake.consume_calls == 4
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 3
+        assert warnings[0].exc_info is not None
+        assert all(w.exc_info is None for w in warnings[1:])
+        assert "still failing (attempt 3)" in warnings[-1].message
+        assert "Consumer recovered after 3 restart(s)" in caplog.text
+
+    def test_consume_loop_restart_backoff_doubles_up_to_cap(
+        self, store: GraphStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        delays: list[float] = []
+        consumer = EventConsumer("memory://", store)
+        fake = FlakyTransport([], failures=8)
+
+        def fake_wait(timeout: float | None = None) -> bool:
+            delays.append(timeout or 0.0)
+            if len(delays) == 8:
+                fake.stop()
+            return False
+
+        monkeypatch.setattr(consumer._stop_event, "wait", fake_wait)
+        consumer._transport = fake
+        consumer._consume_loop()
+
+        assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
+
+    def test_consume_loop_when_stopped_before_start_exits(
+        self, store: GraphStore
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+        fake = FlakyTransport([], failures=1)
+        consumer._transport = fake
+        consumer._stop_event.set()
+
+        consumer._consume_loop()
+
+        assert fake.consume_calls == 0
+
+    def test_consume_loop_when_stopped_during_error_exits_without_warning(
+        self, store: GraphStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        consumer = EventConsumer("memory://", store)
+
+        class StopThenFail(FlakyTransport):
+            def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+                consumer._stop_event.set()
+                return super().consume()
+
+        fake = StopThenFail([], failures=1)
+        consumer._transport = fake
+
+        with caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"):
+            consumer._consume_loop()
+
+        assert fake.consume_calls == 1
+        assert caplog.records == []
+
+    def test_is_connected_reports_transport_connectivity(
+        self, store: GraphStore
+    ) -> None:
+        fake = FlakyTransport([], failures=0, connected=False)
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("memory://", store)
+            assert consumer.is_connected is None
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+
+            assert consumer.is_connected is False
+            fake.connected = True
+            assert consumer.is_connected is True
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+    def test_is_connected_without_connectivity_support_is_none(
+        self, store: GraphStore
+    ) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+
+            assert consumer.is_connected is None
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+
+class SwitchableTransport(FakeTransport):
+    """Connection-aware transport whose reads fail while ``fail`` is True."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.fail = True
+        self.connected: bool | None = None
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        self._consume_started = True
+        self.connected = None
+        if self.fail:
+            self.connected = False
+            raise RuntimeError(
+                "WRONGTYPE Operation against a key holding the wrong kind"
+            )
+        self.connected = True
+        yield from super().consume()
+
+
+class FiniteTransport:
+    """Transport whose iterator ends after its events, like memory://."""
+
+    def __init__(self, events: list[TaskEvent | WorkerEvent]) -> None:
+        self.events = events
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        yield from self.events
+
+
+class AlwaysDownRedis:
+    """Redis client stand-in whose reads always fail to connect."""
+
+    def xread(self, streams: dict[str, str], block: int, count: int) -> Any:
+        del streams, block, count
+        raise RedisConnectionError("Error 111 connecting to localhost:6379.")
+
+
+def _health(consumer: AsyncEventConsumer, store: GraphStore) -> dict[str, Any]:
+    app = FastAPI()
+    app.include_router(create_api_router(store, consumer=consumer))
+    body: dict[str, Any] = TestClient(app).get("/api/health").json()
+    return body
+
+
+class TestConsumerHealthState:
+    def test_is_connected_while_restarting_on_errors_is_false_until_read(
+        self,
+        store: GraphStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        monkeypatch.setattr(consumer_module, "RESTART_MAX_BACKOFF", 0.01)
+        fake = SwitchableTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: consumer._consumer._failures >= 2)
+
+            assert consumer.is_running is True
+            assert consumer.is_connected is False
+            assert _health(consumer, store)["status"] == "degraded"
+
+            fake.fail = False
+            _wait_until(lambda: fake.connected is True)
+
+            assert consumer.is_connected is True
+            assert _health(consumer, store)["status"] == "ok"
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+    def test_is_connected_while_failing_without_connectivity_support_is_false(
+        self, store: GraphStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(consumer_module, "RESTART_INITIAL_BACKOFF", 0.01)
+        fake = FlakyTransport([], failures=1_000_000)
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: consumer._failures >= 1)
+
+            assert consumer.is_connected is False
+
+            consumer.stop(timeout=1.0)
+
+    def test_consumer_whose_source_finished_is_not_degraded(
+        self, store: GraphStore, sample_events: list[TaskEvent]
+    ) -> None:
+        fake = FiniteTransport(list(sample_events))
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("memory://", store)
+            consumer.start()
+            _wait_until(lambda: not consumer.is_running)
+
+            assert consumer.is_finished is True
+            assert store.node_count == len(sample_events)
+            health = _health(consumer, store)
+            assert health["status"] == "ok"
+            assert health["consumer_running"] is False
+
+            consumer.stop(timeout=1.0)
+
+    def test_stop_during_transport_reconnect_backoff_is_prompt(
+        self, store: GraphStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = RedisTransport(
+            client=AlwaysDownRedis(),  # type: ignore[arg-type]  # structural fake
+            prefix="test",
+            ttl=60,
+        )
+
+        with (
+            patch("stemtrace.server.consumer.get_transport", return_value=transport),
+            caplog.at_level(logging.WARNING, logger="stemtrace.server.consumer"),
+        ):
+            consumer = EventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: transport.connected is False)
+            started = time.monotonic()
+
+            consumer.stop(timeout=2.0)
+
+        assert time.monotonic() - started < 1.0
+        assert "did not stop gracefully" not in caplog.text
+        assert consumer.is_running is False
+
+
+class TestGracefulStopHealth:
+    def test_health_after_graceful_stop_is_not_degraded(
+        self, store: GraphStore
+    ) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = AsyncEventConsumer("redis://localhost", store)
+            consumer.start()
+            _wait_until(lambda: fake._consume_started)
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        assert consumer.is_running is False
+        assert consumer.is_stopped is True
+        health = _health(consumer, store)
+        assert health["status"] == "ok"
+        assert health["consumer_running"] is False
+        assert health["consumer_connected"] is None
+
+    def test_start_after_stop_clears_stopped_flag(self, store: GraphStore) -> None:
+        fake = FakeTransport()
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer("memory://", store)
+            consumer.start()
+            consumer.stop(timeout=0.1)
+            assert consumer.is_stopped is True
+
+            consumer.start()
+            assert consumer.is_stopped is False
+
+            fake.stop()
+            consumer.stop(timeout=1.0)
