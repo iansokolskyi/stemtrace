@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
     outputs:
@@ -87,8 +88,11 @@ jobs:
           path: dist/
 
   pypi:
-    needs: build
+    # After the image: a failed or hung docker build then publishes nothing,
+    # instead of leaving PyPI ahead of GHCR and the GitHub Release.
+    needs: [build, docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write
@@ -105,6 +109,7 @@ jobs:
   docker:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: write
@@ -147,6 +152,7 @@ jobs:
   github-release:
     needs: [build, pypi, docker]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
