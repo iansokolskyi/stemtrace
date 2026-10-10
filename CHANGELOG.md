@@ -7,21 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Health endpoint: `consumer_connected` is now reported for RabbitMQ too: `false` while the server can't connect to the broker or its connection keeps failing, `true` once the consumer connection has been established and read from (a drain returned or timed out, i.e. an idle but open connection), `null` until then. A half-open connection that raises no socket error still looks connected.
-
 ### Changed
-- Development: ruff now also checks complexity, function size, positional-argument count, blind `except`, commented-out code and return/pytest style, and [import-linter](https://import-linter.readthedocs.io/) checks the `core`/`library`/`server` import boundaries in `make lint` and CI. Existing violations are listed in a baseline in `pyproject.toml` that only shrinks (see CONTRIBUTING.md). No runtime change.
+- Development: ruff now also enforces complexity, function-size, blind-`except` and dead-code rules, and [import-linter](https://import-linter.readthedocs.io/) checks the `core`/`library`/`server` import boundaries in `make lint` and CI (see CONTRIBUTING.md). No runtime change.
+
+## [0.3.9] - 2026-10-10
+
+### Added
+- Task output: with `init_worker(app, capture_output=True)`, what each task attempt prints and logs is shown on its task page, one block per attempt (latest first). Off by default because output isn't scrubbed; each attempt keeps the last `max_output_size` bytes (default 16 KB). Works with prefork, thread and gevent pools (thanks @JonatanMartens for the original implementation — #49; requested by @ohadmata — #47).
+
+## [0.3.8] - 2026-10-10
 
 ### Fixed
-- `node_alias_from_arguments` (show a task argument as the graph node name) can now be set on the standalone server and the Docker image: `stemtrace server --node-alias-from-arguments <key>` or the `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` env var, where `<key>` is a kwarg name (e.g. `operator_type`) or a positional index (e.g. `0`). `stemtrace.init_app()` also reads the env var when `node_alias_from_arguments` isn't passed (an explicit argument wins). Surrounding whitespace is stripped, and an empty or whitespace-only value means unset (for `init_app()`, a blank argument falls back to the env var). When set, `stemtrace server` prints `Node alias: <key>` at startup next to the broker and transport. Before, it could only be passed to `init_app()`, and the README showed it on `init_worker()`, where it has no effect. The README now documents it with the server and `init_app()` options, with a Docker example (#69).
-- RabbitMQ: the server's event consumer now recovers after the broker restarts or drops its connection. It used to retry forever on the first, already-closed channel (`connection already closed`), so no events arrived until the server was restarted.
-- RabbitMQ: a message the server's consumer can't decode (for example a non-JSON `text/plain` message published to the stemtrace exchange) is now rejected without requeueing, with one warning. It used to fail the connection and be redelivered forever, so later events never arrived and, with this release's connectivity reporting, the server would have shown as degraded.
-- RabbitMQ: during a broker outage the server's consume loop no longer logs an ERROR traceback every second. It retries with exponential backoff (1s, doubling up to 30s), logs a traceback only for the first failure and one warning line per later attempt, and logs a warning once it reconnects, so the recovery shows up wherever the failures did (thanks @ohadmata — #70, #71). The backoff resets once a connection has been established and read from (a drain returned or timed out); connections that fail before that, such as a proxy that accepts connections while the broker is down, keep the delay growing. Each attempt now tries each host of the broker URL once (every host of a `;`-separated failover URL, as before) with a 2s connect timeout per host and no sleep in between, instead of kombu's built-in retry, which slept 2s and took about 12s per attempt against an unresponsive host.
-- RabbitMQ: shutdown no longer sits out the reconnect wait (up to 30s, longer than the 5s stop timeout, which logged "Consumer thread did not stop gracefully"). Stopping the server interrupts the wait and ends the consume loop; an idle connection notices the stop within about 1s, a connection attempt within the 2s connect timeout (with a failover URL the stop is checked between hosts, so it doesn't wait for every host). On stop the connection is dropped without the AMQP cancel/close handshake, which waits for the broker's reply with no timeout, so a frozen broker (for example a paused container) no longer blocks shutdown. A broker that freezes while a connection is being set up, after connecting but before consuming starts (for example while declaring the queue), can still delay shutdown past the stop timeout.
+- `node_alias_from_arguments` can now be set on the standalone server and Docker image: `stemtrace server --node-alias-from-arguments <key>` or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS=<key>` (a kwarg name or a positional index). `init_app()` reads the same env var when the argument isn't passed (#69).
+- RabbitMQ: publishing from workers no longer blocks tasks while the broker is down, stalled or in a memory/disk alarm. Each publish tries every host of the URL once with a 2s timeout; repeated or slow failures open a circuit breaker that drops events (instead of queueing them) until the broker answers again, and the worker logs at most four warnings a minute with counts of dropped events. The README's broker section has the details and limits.
+- RabbitMQ: the server's consumer now reconnects after the broker restarts or drops the connection; it used to retry forever on a dead channel.
+- RabbitMQ: a broker outage no longer floods the server log with one ERROR traceback per second; reconnects back off from 1s to 30s and log one line per attempt, plus one when the connection is back (thanks @ohadmata — #70, #71).
+- RabbitMQ: a message the consumer can't decode is dropped with a warning instead of blocking the queue forever.
+- RabbitMQ: stopping the server no longer waits out the reconnect delay or hangs on a frozen broker.
+
+### Added
+- Health endpoint: `consumer_connected` is now reported for RabbitMQ, so `/api/health` shows `degraded` while the server can't read from the broker.
 
 ### Deprecated
-- `stemtrace.init_worker(node_alias_from_arguments=...)`: node aliases are resolved by the server, so the worker-side value was never used. Passing it now emits a `DeprecationWarning` pointing to `init_app()`, `--node-alias-from-arguments` or `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS`, and logs the same message once as a warning on the `stemtrace` logger, since Python hides `DeprecationWarning`s under `celery worker`. The parameter (and the `StemtraceConfig.node_alias_from_arguments` field) will be removed in a future major release.
+- `init_worker(node_alias_from_arguments=...)` has no effect (node names are resolved by the server) and now logs a deprecation warning; it will be removed in a future major release.
 
 ## [0.3.7] - 2026-10-10
 
@@ -181,7 +189,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.2...v0.3.3

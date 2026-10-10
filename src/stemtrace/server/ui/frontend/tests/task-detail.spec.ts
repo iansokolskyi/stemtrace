@@ -1,7 +1,12 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
-import { createFailedTask, createMockEvent, createSuccessTask } from './fixtures/mock-data'
+import {
+  createFailedTask,
+  createGroup,
+  createMockEvent,
+  createSuccessTask,
+} from './fixtures/mock-data'
 
 /**
  * Tests for the Task Detail page.
@@ -335,5 +340,217 @@ test.describe('Task Detail - Mock Scenarios', () => {
     await expect(segments.nth(2)).toContainText('10ms')
     await expect(segments.nth(3)).toContainText('SUCCESS')
     await expect(page.getByText(/^-\d/)).toHaveCount(0)
+  })
+})
+
+test.describe('Task Detail - Output', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  function retriedTask() {
+    const task = createFailedTask('test.flaky_output', 'ValueError: gave up', 'Traceback')
+    const base = Date.now() - 10_000
+    const at = (seconds: number) => new Date(base + seconds * 1000).toISOString()
+    const { task_id, name } = task
+    task.events = [
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), retries: 0 }),
+      createMockEvent(task_id, name, 'RETRY', {
+        timestamp: at(2),
+        retries: 0,
+        exception: 'RuntimeError: flaky',
+        output: 'attempt 0\nWARNING app.tasks: upstream timed out',
+      }),
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(3), retries: 1 }),
+      createMockEvent(task_id, name, 'FAILURE', {
+        timestamp: at(5),
+        retries: 1,
+        exception: 'ValueError: gave up',
+        output: 'attempt 1\nERROR app.tasks: giving up',
+      }),
+    ]
+    task.first_seen = at(1)
+    task.last_updated = at(5)
+    task.duration_ms = 4000
+    return task
+  }
+
+  test('shows output per attempt, latest first and expanded', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const section = page.getByTestId('task-output')
+    await expect(section.getByRole('heading', { name: 'Output' })).toBeVisible()
+
+    const attempts = section.getByTestId('output-attempt')
+    await expect(attempts).toHaveCount(2)
+    await expect(attempts.nth(0)).toContainText('FAILURE')
+    await expect(attempts.nth(0)).toContainText('retry #1')
+    await expect(attempts.nth(1)).toContainText('RETRY')
+
+    // Only the latest attempt is expanded initially.
+    const texts = section.getByTestId('output-text')
+    await expect(texts).toHaveCount(1)
+    await expect(texts.first()).toHaveText('attempt 1\nERROR app.tasks: giving up')
+
+    // Expanding the earlier attempt shows its own output.
+    await attempts
+      .nth(1)
+      .getByRole('button', { name: /expand/ })
+      .click()
+    await expect(attempts.nth(1).getByTestId('output-text')).toHaveText(
+      'attempt 0\nWARNING app.tasks: upstream timed out',
+    )
+  })
+
+  test('orders attempts by retry number when worker clocks disagree', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    const [, retry, , failure] = task.events
+    // Attempt 1 ran on a worker whose clock is behind: its FAILURE is stamped
+    // before attempt 0's RETRY.
+    failure.timestamp = new Date(Date.parse(retry.timestamp) - 60_000).toISOString()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const attempts = page.getByTestId('output-attempt')
+    await expect(attempts).toHaveCount(2)
+    await expect(attempts.nth(0)).toContainText('FAILURE')
+    await expect(page.getByTestId('output-text')).toHaveText(
+      'attempt 1\nERROR app.tasks: giving up',
+    )
+  })
+
+  test('refetches the open task only for its own live events', async ({ page }) => {
+    let socket: WebSocketRoute | null = null
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      socket = ws
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    const sibling = createSuccessTask('test.unrelated', 'done')
+    mockApi.addTask(task)
+    mockApi.addTask(sibling)
+    let detailRequests = 0
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.endsWith(`/tasks/${task.task_id}`)) {
+        detailRequests += 1
+      }
+    })
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+    await expect(page.getByTestId('output-attempt')).toHaveCount(2)
+    await expect.poll(() => socket !== null).toBe(true)
+    const ws = socket as unknown as WebSocketRoute
+    const initial = detailRequests
+
+    // An event for another task must not refetch this task's detail (and output).
+    ws.send(JSON.stringify({ task_id: sibling.task_id, state: 'STARTED' }))
+    await page.waitForTimeout(1000)
+    expect(detailRequests).toBe(initial)
+
+    // An event for this task does.
+    ws.send(JSON.stringify({ task_id: task.task_id, state: 'FAILURE' }))
+    await expect.poll(() => detailRequests).toBe(initial + 1)
+  })
+
+  test('refetches a chord page for its members and callback', async ({ page }) => {
+    let socket: WebSocketRoute | null = null
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      socket = ws
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+    const callback = rest[rest.length - 1]
+    const groupId = chordNode.group_id as string
+    // The server lists the callback among the CHORD node's children.
+    chordNode.children.push(callback.task_id)
+    for (const task of [chordNode, ...rest]) mockApi.addTask(task)
+    let detailRequests = 0
+    page.on('request', (request) => {
+      const path = decodeURIComponent(new URL(request.url()).pathname)
+      if (path.endsWith(`/tasks/${chordNode.task_id}`)) detailRequests += 1
+    })
+
+    await page.goto(`/tasks/${chordNode.task_id}`)
+    await page.waitForLoadState('networkidle')
+    await expect.poll(() => socket !== null).toBe(true)
+    await expect.poll(() => detailRequests).toBeGreaterThan(0)
+    const ws = socket as unknown as WebSocketRoute
+    const initial = detailRequests
+
+    ws.send(JSON.stringify({ task_id: 'unrelated-task', state: 'STARTED', group_id: null }))
+    await page.waitForTimeout(1000)
+    expect(detailRequests).toBe(initial)
+
+    // A header task joining or changing state (matched by group_id).
+    ws.send(JSON.stringify({ task_id: 'new-member', state: 'STARTED', group_id: groupId }))
+    await expect.poll(() => detailRequests).toBe(initial + 1)
+
+    // The callback as Celery 5.6 sends it: frozen with the chord's group_id.
+    ws.send(
+      JSON.stringify({
+        task_id: callback.task_id,
+        state: 'STARTED',
+        group_id: groupId,
+        parent_id: null,
+      }),
+    )
+    await expect.poll(() => detailRequests).toBe(initial + 2)
+
+    // Fallback: a callback event without group_id still matches, because the
+    // server lists the callback among the CHORD node's children.
+    ws.send(
+      JSON.stringify({
+        task_id: callback.task_id,
+        state: 'SUCCESS',
+        group_id: null,
+        parent_id: null,
+      }),
+    )
+    await expect.poll(() => detailRequests).toBe(initial + 3)
+  })
+
+  test('copies an attempt output to the clipboard', async ({ page }) => {
+    await page.addInitScript(() => {
+      const copied: string[] = []
+      Object.defineProperty(window, '__copied', { value: copied })
+      Object.defineProperty(navigator, 'clipboard', {
+        value: {
+          writeText: async (text: string) => {
+            copied.push(text)
+          },
+        },
+      })
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = retriedTask()
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const latest = page.getByTestId('output-attempt').first()
+    await latest.getByRole('button', { name: 'Copy' }).click()
+    await expect(latest.getByRole('button', { name: 'Copied' })).toBeVisible()
+    const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied)
+    expect(copied).toEqual(['attempt 1\nERROR app.tasks: giving up'])
+  })
+
+  test('renders no output section when no attempt has output', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.silent_task', 'done')
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    await expect(page.getByRole('heading', { name: 'Event History' })).toBeVisible()
+    await expect(page.getByTestId('task-output')).toHaveCount(0)
   })
 })

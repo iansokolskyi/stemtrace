@@ -57,7 +57,9 @@ class WebSocketManager:
         if not self._connections:
             return
 
-        message = event.model_dump_json()
+        # Captured task output can be large and the UI only needs to know that
+        # something changed; GET /api/tasks/{id} serves the output.
+        message = event.model_dump_json(exclude={"output"})
         disconnected: list[WebSocket] = []
 
         for websocket in self._connections.copy():

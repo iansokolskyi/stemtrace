@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
+import { TaskOutput } from '@/components/TaskOutput'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
 import {
   buildSegments,
@@ -102,6 +103,9 @@ function TaskDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Output per attempt (worker capture_output=True) */}
+      <TaskOutput events={task.events} />
 
       {/* Visual Timeline */}
       {task.events.length > 1 && (

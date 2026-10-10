@@ -1,10 +1,10 @@
 [tool.bumpversion]
-current_version = "0.3.7"
+current_version = "0.3.9"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 commit = true
-tag = false  # Tag created via GitHub Release UI
-commit_message = "chore: release v{new_version}"
+tag = false  # Tagged after the release PR merges (make release-tag)
+message = "chore: release v{new_version}"
 
 # Python package version in pyproject.toml
 [[tool.bumpversion.files]]
@@ -60,3 +60,10 @@ replace = """## [Unreleased]
 filename = "README.md"
 search = "[![PyPI version](https://img.shields.io/badge/pypi-v{current_version}-darklime)](https://pypi.org/project/stemtrace)"
 replace = "[![PyPI version](https://img.shields.io/badge/pypi-v{new_version}-darklime)](https://pypi.org/project/stemtrace)"
+
+# CHANGELOG compare links: advance [unreleased], add the new version's link
+[[tool.bumpversion.files]]
+filename = "CHANGELOG.md"
+search = "[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...HEAD"
+replace = """[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{new_version}...HEAD
+[{new_version}]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...v{new_version}"""

@@ -106,6 +106,8 @@ def init_worker(
     safe_keys: frozenset[str] | None = None,
     max_data_size: int = 10240,
     node_alias_from_arguments: str | None = None,
+    capture_output: bool = False,
+    max_output_size: int = 16384,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -127,9 +129,14 @@ def init_worker(
             A non-None value emits a ``DeprecationWarning`` (and a one-time
             log warning, since Celery workers hide deprecation warnings); the
             parameter will be removed in a future major release.
+        capture_output: Capture what each task attempt prints and logs and show
+            it in the UI (default: False). Output is not scrubbed.
+        max_output_size: Maximum UTF-8 bytes of output kept per attempt; the
+            end is kept (default: 16KB).
 
     Raises:
-        ConfigurationError: If no broker URL can be determined.
+        ConfigurationError: If no broker URL can be determined, or
+            max_output_size isn't positive.
     """
     global _transport, _node_alias_deprecation_logged
 
@@ -147,6 +154,10 @@ def init_worker(
             "No broker URL available. Either pass transport_url or configure "
             "Celery's broker_url."
         )
+    if max_output_size <= 0:
+        raise ConfigurationError(
+            f"max_output_size must be a positive number of bytes, got {max_output_size}."
+        )
 
     config = StemtraceConfig(
         transport_url=url,
@@ -159,6 +170,8 @@ def init_worker(
         safe_keys=safe_keys or frozenset(),
         max_data_size=max_data_size,
         node_alias_from_arguments=node_alias_from_arguments,
+        capture_output=capture_output,
+        max_output_size=max_output_size,
     )
     set_config(config)
 

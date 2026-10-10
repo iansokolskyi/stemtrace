@@ -1,5 +1,6 @@
 """Tests for Celery signal handlers."""
 
+import logging
 import os
 from types import SimpleNamespace
 from typing import Any
@@ -201,6 +202,27 @@ class TestWorkerLifecycleSignals:
         assert event.hostname == "worker-1"
         assert event.pid == os.getpid()
         assert event.shutdown_time is not None
+
+    def test_worker_lifecycle_logs_handoff_not_delivery(
+        self, transport: MemoryTransport, caplog: Any
+    ) -> None:
+        """Lifecycle logs say the event went to the transport, which may drop it."""
+        caplog.set_level(logging.INFO, logger="stemtrace.library.signals")
+        sender = MagicMock()
+        sender.hostname = "worker-1"
+        sender.app.tasks = {"tasks.add": MagicMock()}
+
+        on_worker_ready(sender=sender)
+        on_worker_shutdown(sender=sender, sig=15)
+
+        pid = os.getpid()
+        assert f"Worker ready event sent to transport: worker-1:{pid} (1 tasks)" in (
+            caplog.text
+        )
+        assert f"Worker shutdown event sent to transport: worker-1:{pid}" in (
+            caplog.text
+        )
+        assert "event published" not in caplog.text
 
     def test_worker_lifecycle_does_not_raise_without_transport(self) -> None:
         """Handlers should never raise if stemtrace not initialized."""

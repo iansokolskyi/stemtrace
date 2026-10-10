@@ -114,6 +114,15 @@ def test_server_with_empty_node_alias_flag_passes_none(
     assert captured_alias == [None]
 
 
+def test_server_with_empty_node_alias_flag_falls_back_to_env_var(
+    captured_alias: list[str | None],
+) -> None:
+    """A blank flag counts as unset, so the env var still applies."""
+    _invoke("--node-alias-from-arguments", "", env={_ENV_VAR: "operator_type"})
+
+    assert captured_alias == ["operator_type"]
+
+
 def test_server_with_padded_node_alias_env_var_strips_whitespace(
     captured_alias: list[str | None],
 ) -> None:
