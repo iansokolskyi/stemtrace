@@ -45,9 +45,11 @@ RECONNECT_INITIAL_BACKOFF = 1.0
 RECONNECT_MAX_BACKOFF = 30.0
 
 # Publishing runs in the Celery task's thread, so from_url() gives it its own
-# client whose connect and socket reads/writes time out after these many
-# seconds (redis-py 8.1 defaults both to 5s), with no redis-py retries: a
-# silent or blackholed Redis costs one bounded attempt, not 5s per event.
+# client whose connect (per address the host name resolves to) and socket
+# reads/writes time out after these many seconds (redis-py 8.1 defaults both
+# to 5s), with no redis-py retries: a silent or blackholed Redis costs one
+# bounded attempt, not 5s per event. Host name resolution (getaddrinfo) is not
+# covered by these timeouts.
 PUBLISH_CONNECT_TIMEOUT = 1.0
 PUBLISH_SOCKET_TIMEOUT = 1.0
 
@@ -56,15 +58,15 @@ PUBLISH_SOCKET_TIMEOUT = 1.0
 PUBLISH_PROBE_TIMEOUT = 60.0
 
 # A failed publish that took this long (a timeout, which is what blocks tasks)
-# opens the publish circuit breaker at once. Fast failures (e.g. a refused
-# connection) and publishes that succeeded but took this long (a degraded
-# Redis that still answers) open it after PUBLISH_FAILURES_TO_OPEN in a row.
+# opens the publish circuit breaker at once; fast failures (e.g. a refused
+# connection) open it after PUBLISH_FAILURES_TO_OPEN in a row. Until then, a
+# failure drops only its own event.
 PUBLISH_SLOW_ATTEMPT = 0.5
 PUBLISH_FAILURES_TO_OPEN = 3
 
 # While the breaker is open, events are dropped without contacting Redis for
-# a cooldown that doubles per failed or slow retry (RECONNECT_INITIAL_BACKOFF
-# up to RECONNECT_MAX_BACKOFF) and resets once a publish succeeds fast. At
+# a cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
+# RECONNECT_MAX_BACKOFF) and resets once a publish succeeds. At
 # most four publish WARNING lines per interval (see PublishBreaker).
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
 
@@ -331,16 +333,18 @@ class RedisTransport:
 
         Fire-and-forget: never raises, and events that can't be published are
         dropped, not queued. With a transport from from_url(), an attempt
-        takes at most PUBLISH_CONNECT_TIMEOUT to connect plus
-        PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
+        takes at most PUBLISH_CONNECT_TIMEOUT per address to connect plus
+        PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries, plus
+        however long resolving the host name takes (not bounded here).
 
         A failure that took PUBLISH_SLOW_ATTEMPT or longer, or
-        PUBLISH_FAILURES_TO_OPEN fast failures or slow successes in a row,
-        open a circuit breaker; a single fast failure drops only its own
-        event. While open, events are dropped without contacting Redis for a
-        cooldown (1s, doubling per failed or slow retry up to 30s, reset by a
-        fast successful publish), so an outage costs tasks about one bounded
-        attempt per cooldown instead of one per event. Per
+        PUBLISH_FAILURES_TO_OPEN fast failures in a row, open a circuit
+        breaker; a single fast failure drops only its own event. While open,
+        events are dropped without contacting Redis for a cooldown (1s,
+        doubling per failed retry up to 30s, reset by a successful publish),
+        so an outage costs tasks about one bounded attempt per cooldown
+        instead of one per event. A Redis that answers slowly doesn't open
+        the breaker: each publish waits for it, up to the timeouts above. Per
         PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written,
         each with the number of events lost since the previous line; each
         dropped event gets a DEBUG line.
@@ -372,7 +376,7 @@ class RedisTransport:
                 elapsed=self._monotonic() - started,
             )
         else:
-            breaker.record_success(ticket, elapsed=self._monotonic() - started)
+            breaker.record_success(ticket)
 
     @staticmethod
     def _event_identifier(event: StreamEvent) -> str:

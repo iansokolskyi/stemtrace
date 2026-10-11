@@ -67,9 +67,8 @@ def _attempt_fails(
     )
 
 
-def _attempt_succeeds(breaker: PublishBreaker, *, elapsed: float = FAST) -> None:
-    """Start an attempt and report that it succeeded after ``elapsed`` seconds."""
-    breaker.record_success(_take(breaker), elapsed=elapsed)
+def _attempt_succeeds(breaker: PublishBreaker) -> None:
+    breaker.record_success(_take(breaker))
 
 
 def _records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -95,7 +94,7 @@ def _simulate(
         if fails(i):
             breaker.record_failure(ticket, f"e{i}", _error(), elapsed=elapsed)
         else:
-            breaker.record_success(ticket, elapsed=FAST)
+            breaker.record_success(ticket)
             delivered += 1
     return delivered
 
@@ -658,7 +657,7 @@ class TestPublishBreakerInFlightAttempts:
 
         assert breaker.cooldown == 1.0
         assert breaker.dropped == 1
-        breaker.record_success(probe, elapsed=FAST)
+        breaker.record_success(probe)
         assert breaker.is_open is False
 
     def test_in_flight_success_while_open_keeps_breaker_open(self) -> None:
@@ -666,7 +665,7 @@ class TestPublishBreakerInFlightAttempts:
         stale = _take(breaker)
         _attempt_fails(breaker)
 
-        breaker.record_success(stale, elapsed=FAST)
+        breaker.record_success(stale)
 
         assert breaker.is_open is True
         assert breaker.allow() is None
@@ -705,7 +704,7 @@ class TestPublishBreakerInFlightAttempts:
         # The abandoned probe reporting late changes nothing.
         breaker.record_failure(lost, "lost", _error(), elapsed=SLOW)
         assert breaker.cooldown == 1.0
-        breaker.record_success(replacement, elapsed=FAST)
+        breaker.record_success(replacement)
         assert breaker.is_open is False
 
     def test_concurrent_allow_after_cooldown_admits_single_probe(self) -> None:
@@ -770,177 +769,3 @@ class TestPublishBreakerFork:
         assert worker.is_alive() is False
         assert len(result) == 1
         assert result[0] is not None
-
-
-class TestPublishBreakerSlowSuccesses:
-    """A broker that still answers, but slowly, opens the breaker too."""
-
-    def test_slow_successes_in_a_row_open_without_dropping_them(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
-        breaker = _make_breaker(FakeClock())
-
-        _attempt_succeeds(breaker, elapsed=0.9)
-        _attempt_succeeds(breaker, elapsed=0.9)
-        assert breaker.is_open is False
-        _attempt_succeeds(breaker, elapsed=0.5)
-
-        assert breaker.is_open is True
-        assert breaker.cooldown == 1.0
-        assert breaker.allow() is None
-        assert breaker.dropped == 1
-        records = _records(caplog)
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        assert records[0].exc_info is None
-        assert records[0].getMessage() == (
-            "Publishing to TestBroker is slow (the last attempt took 0.5s); "
-            "dropping events for 1.0s before trying again (0 event(s) dropped "
-            "since the last report)"
-        )
-
-    def test_single_success_twice_as_slow_as_threshold_opens(self) -> None:
-        breaker = _make_breaker(FakeClock())
-
-        _attempt_succeeds(breaker, elapsed=1.0)
-
-        assert breaker.is_open is True
-        assert breaker.allow() is None
-
-    def test_single_success_just_below_twice_threshold_does_not_open(self) -> None:
-        breaker = _make_breaker(FakeClock())
-
-        _attempt_succeeds(breaker, elapsed=0.99)
-        _attempt_succeeds(breaker, elapsed=0.99)
-
-        assert breaker.is_open is False
-
-    def test_fast_success_resets_slow_success_count(self) -> None:
-        breaker = _make_breaker(FakeClock())
-
-        for _ in range(5):
-            _attempt_succeeds(breaker, elapsed=0.9)
-            _attempt_succeeds(breaker, elapsed=0.9)
-            _attempt_succeeds(breaker, elapsed=FAST)
-
-        assert breaker.is_open is False
-        assert breaker.allow() is not None
-
-    def test_slow_successes_and_fast_failures_count_together(self) -> None:
-        breaker = _make_breaker(FakeClock())
-
-        _attempt_succeeds(breaker, elapsed=0.9)
-        _attempt_fails(breaker, elapsed=FAST)
-        assert breaker.is_open is False
-        _attempt_succeeds(breaker, elapsed=0.9)
-
-        assert breaker.is_open is True
-
-    def test_slow_probe_success_keeps_open_and_doubles_cooldown(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        for _ in range(3):
-            _attempt_succeeds(breaker, elapsed=0.9)
-        clock.advance(1.0)
-
-        _attempt_succeeds(breaker, elapsed=0.8)
-
-        assert breaker.is_open is True
-        assert breaker.cooldown == 2.0
-        assert breaker.allow() is None
-        clock.advance(1.0)
-        assert breaker.allow() is None
-        clock.advance(1.0)
-        probe = _take(breaker)
-        breaker.record_success(probe, elapsed=FAST)
-        assert breaker.is_open is False
-        assert breaker.cooldown == 1.0
-        # The slow probe's summary is rate-limited by the opening line.
-        assert [r.getMessage()[:42] for r in _records(caplog)] == [
-            "Publishing to TestBroker is slow (the last",
-            "Publishing to TestBroker recovered after 3",
-        ]
-
-    def test_slow_probe_after_log_interval_logs_summary(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        for _ in range(3):
-            _attempt_succeeds(breaker, elapsed=0.9)
-        assert breaker.allow() is None
-        caplog.clear()
-        clock.advance(61.0)
-
-        _attempt_succeeds(breaker, elapsed=0.8)
-
-        assert breaker.is_open is True
-        assert [r.getMessage() for r in _records(caplog)] == [
-            "TestBroker still slow after 61.0s (last attempt took 0.8s; "
-            "1 event(s) dropped since the last report); next attempt in 2.0s"
-        ]
-
-    def test_slow_success_of_attempt_in_flight_while_open_changes_nothing(
-        self,
-    ) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        in_flight = _take(breaker)
-        _attempt_fails(breaker, elapsed=SLOW)
-        clock.advance(1.0)
-        probe = _take(breaker)
-
-        breaker.record_success(in_flight, elapsed=0.9)
-
-        assert breaker.is_open is True
-        breaker.record_success(probe, elapsed=FAST)
-        assert breaker.is_open is False
-
-    def test_fast_traffic_with_sporadic_failures_never_opens(self) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-
-        delivered = _simulate(
-            breaker, clock, seconds=60, rate=100, fails=lambda i: i % 10 == 0
-        )
-
-        assert breaker.is_open is False
-        assert delivered == 5400
-
-    def test_second_slow_opening_within_log_interval_is_not_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        for _ in range(3):
-            _attempt_succeeds(breaker, elapsed=0.9)
-        clock.advance(1.0)
-        _attempt_succeeds(breaker)  # fast probe closes it
-        caplog.clear()
-
-        for _ in range(3):
-            _attempt_succeeds(breaker, elapsed=0.9)
-
-        assert breaker.is_open is True
-        assert _records(caplog) == []
-
-    def test_slow_success_of_attempt_started_before_last_outage_is_ignored(
-        self,
-    ) -> None:
-        clock = FakeClock()
-        breaker = _make_breaker(clock)
-        stale = _take(breaker)
-        _attempt_fails(breaker, elapsed=SLOW)
-        clock.advance(1.0)
-        _attempt_succeeds(breaker)
-        _attempt_succeeds(breaker, elapsed=0.9)
-        _attempt_succeeds(breaker, elapsed=0.9)
-
-        breaker.record_success(stale, elapsed=0.9)
-
-        assert breaker.is_open is False

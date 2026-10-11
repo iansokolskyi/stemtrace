@@ -23,7 +23,6 @@ import redis
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports.redis import (
-    PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_SOCKET_TIMEOUT,
     RedisTransport,
 )
@@ -151,10 +150,14 @@ def test_publish_to_real_redis_appends_every_event(stream_prefix: str) -> None:
 
 @pytest.mark.integration
 @requires_redis
-def test_publish_through_slow_proxy_stops_waiting_after_slow_successes(
+def test_publish_through_slow_proxy_delivers_every_event(
     stream_prefix: str,
 ) -> None:
-    """A Redis that answers, but slowly, stops costing tasks time."""
+    """A Redis that answers slowly, within the timeouts, gets every event.
+
+    Slow successes don't open the breaker: each publish waits for Redis, up
+    to the socket timeouts.
+    """
     parsed = urllib.parse.urlsplit(REDIS_URL)
     proxy = _DelayingProxy(
         (parsed.hostname or "localhost", parsed.port or 6379), PROXY_DELAY
@@ -169,18 +172,13 @@ def test_publish_through_slow_proxy_stops_waiting_after_slow_successes(
         proxied = parsed._replace(netloc=netloc).geturl()
         transport = RedisTransport.from_url(proxied, prefix=stream_prefix)
 
-        durations = _timed_publishes(transport, 10)
+        durations = _timed_publishes(transport, 5)
     finally:
         proxy.close()
 
-    # The first publish also pays for the connection handshake through the
-    # proxy (over 1s, so it opens the breaker alone); later ones take one
-    # delayed reply each and open it after PUBLISH_FAILURES_TO_OPEN in a row.
-    slow = [d for d in durations if d >= PROXY_DELAY]
-    assert 1 <= len(slow) <= PUBLISH_FAILURES_TO_OPEN, durations
-    assert durations[: len(slow)] == slow, durations
-    assert sum(durations[len(slow) :]) < 0.1, durations
-    assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == len(slow)
+    assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 5
+    assert transport._publish_breaker.is_open is False
+    assert min(durations) >= PROXY_DELAY, durations
 
 
 @pytest.mark.integration

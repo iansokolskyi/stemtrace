@@ -128,21 +128,16 @@ class TestRedisPublishBreaker:
 
         assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN
 
-    def test_publish_single_very_slow_success_opens_breaker(self) -> None:
-        transport, publisher, _ = _make([(2 * PUBLISH_SLOW_ATTEMPT, None)])
+    def test_publish_slow_successes_never_open_breaker(self) -> None:
+        """Wall time is not evidence of a slow Redis (e.g. another thread may
+        hold the GIL), so only failures open the breaker."""
+        transport, publisher, _ = _make([(2.0, None)] * 10)
 
         for i in range(10):
             transport.publish(_event(f"t-{i}"))
 
-        assert len(publisher.calls) == 1
-
-    def test_publish_slow_successes_open_breaker(self) -> None:
-        transport, publisher, _ = _make([(0.9, None)] * 10)
-
-        for i in range(10):
-            transport.publish(_event(f"t-{i}"))
-
-        assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN
+        assert len(publisher.calls) == 10
+        assert transport._publish_breaker.is_open is False
 
     def test_publish_probes_after_cooldown_and_recovers(
         self, caplog: pytest.LogCaptureFixture
