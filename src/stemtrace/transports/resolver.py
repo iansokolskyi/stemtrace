@@ -23,10 +23,16 @@ forks while a lookup runs can cause this, so:
   getaddrinfo() in between, so its forks can't inherit such a lock. Pool
   children and web workers never fork, so they never start helpers.
 
-The helper is checked once per process before it is used; where it can't
-run this Python (a frozen application, an embedded interpreter such as
+The helper is checked once per process before it is used (a check that
+doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
+can't run this Python (a frozen application, an embedded interpreter such as
 uWSGI's, whose sys.executable is the uwsgi binary), lookups stay in-process
-and every fork waits for them as above (one WARNING says so).
+and every fork waits for them as above (one WARNING says so). A helper is
+never started while the process forks (see _run_helper()). uWSGI's master
+forks in C, without Python's at-fork hooks, so in a uWSGI process other than
+a request worker lookups run on the calling thread, without the wait bound.
+Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
+custom resolver shim) is no longer consulted for its lookups.
 """
 
 from __future__ import annotations
