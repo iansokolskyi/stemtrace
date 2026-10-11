@@ -21,6 +21,7 @@ from stemtrace.server.fastapi.login_throttle import (
     LOGIN_IP_MAX_FAILURES,
     LOGIN_LOCKOUT_BASE_S,
     LOGIN_LOCKOUT_MAX_S,
+    LOGIN_THROTTLE_BUCKETS,
     LOGIN_USERNAME_MAX_FAILURES,
     LoginAttempt,
     LoginThrottle,
@@ -118,7 +119,6 @@ class TestLoginThrottle:
         clock.now += LOGIN_FAILURE_MEMORY_S
 
         assert throttle.retry_after(_attempt()) == 0
-        assert throttle.tracked_keys == 0
         _fail(throttle, LOGIN_IP_MAX_FAILURES - 1, _attempt())
         assert throttle.retry_after(_attempt()) == 0
 
@@ -198,7 +198,7 @@ class TestLoginThrottle:
             throttle.record_failure(_attempt(None, f"user-{i}"))
 
         assert throttle.retry_after(_attempt(None, "someone")) == 0
-        assert len(throttle._by_ip) == 0
+        assert not any(throttle._by_ip._counts)
         _fail(throttle, LOGIN_USERNAME_MAX_FAILURES, _attempt(None))
         assert throttle.retry_after(_attempt(None)) == 30
 
@@ -211,166 +211,152 @@ class TestLoginThrottle:
 
         assert throttle.retry_after(_attempt()) == 0
         assert throttle.retry_after(_attempt(device="dev-1")) == 0
-        assert throttle.tracked_keys == 0
+        tables = (throttle._by_ip, throttle._by_username, throttle._by_device)
+        assert not any(any(t._counts) for t in tables)
 
-    def test_memory_is_capped_under_flood_of_distinct_keys(self) -> None:
-        cap = 50
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=cap, max_locked=cap)
-        for i in range(10 * cap):
+    def test_memory_is_constant_under_flood_of_distinct_keys(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock(), buckets=1024)
+        before = throttle.memory_bytes
+        for i in range(20_000):
             throttle.record_failure(_attempt(f"ip-{i}", f"user-{i}"))
 
-        assert throttle.tracked_keys == 2 * cap
+        assert throttle.memory_bytes == before == 3 * 3 * 8 * 1024
 
-    def test_flood_of_new_keys_never_evicts_a_lock(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=10)
+    def test_default_tables_use_a_fixed_amount_of_memory(self) -> None:
+        throttle = LoginThrottle()
+
+        assert throttle.memory_bytes == 3 * 3 * 8 * LOGIN_THROTTLE_BUCKETS
+
+    def test_flood_of_new_keys_never_clears_a_lock(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock(), buckets=256)
         _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("attacker", "a"))
-        for i in range(1000):
+        for i in range(5000):
             throttle.record_failure(_attempt(f"ip-{i}", f"u-{i}"))
 
-        assert throttle.retry_after(_attempt("attacker", "zzz")) == 30
+        assert throttle.retry_after(_attempt("attacker", "zzz")) >= 30
 
-    def test_full_locked_table_fails_closed_for_new_keys(self) -> None:
-        clock = FakeClock()
-        throttle = LoginThrottle(clock=clock, max_keys=10, max_locked=2)
-        _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("a", "ua"))
-        clock.now += 10
-        _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("b", "ub"))
+    def test_bucket_choice_depends_on_the_hash_key(self) -> None:
+        a = LoginThrottle(clock=FakeClock(), hash_key=b"a" * 32)
+        b = LoginThrottle(clock=FakeClock(), hash_key=b"b" * 32)
+        same = LoginThrottle(clock=FakeClock(), hash_key=b"a" * 32)
 
-        # Refused until the earliest lock ("a", 30s from t=0) expires.
-        assert throttle.retry_after(_attempt("new", "un")) == 20
-        # A known device isn't refused for the IP table being full.
-        assert throttle.retry_after(_attempt("new", "un", device="dev")) == 0
-        clock.now += 20
-        assert throttle.retry_after(_attempt("new", "un")) == 0
+        assert a._by_username._slots("admin") != b._by_username._slots("admin")
+        assert a._by_username._slots("admin") == same._by_username._slots("admin")
 
-    def test_lock_beyond_locked_cap_keeps_counting_without_locking(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=10, max_locked=1)
-        _fail(throttle, LOGIN_DEVICE_MAX_FAILURES, _attempt("a", device="dev-a"))
-        _fail(throttle, LOGIN_DEVICE_MAX_FAILURES, _attempt("b", device="dev-b"))
+    def test_random_hash_key_per_throttle(self) -> None:
+        keys = {LoginThrottle()._by_username._hash_key for _ in range(3)}
 
-        assert throttle.retry_after(_attempt("c", device="dev-a")) == 30
-        assert throttle.retry_after(_attempt("c", device="dev-b")) == 0
-        assert len(throttle._by_device) == 2
-
-    def test_success_releases_lock_slot(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=10, max_locked=1)
-        _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("a", "ua"))
-
-        throttle.record_success(_attempt("a", "ua"))
-
-        assert throttle.retry_after(_attempt("new", "un")) == 0
-
-    def test_forgotten_keys_make_room_before_low_count_ones(self) -> None:
-        clock = FakeClock()
-        throttle = LoginThrottle(clock=clock, max_keys=2)
-        _fail(throttle, 3, _attempt(None, "old"))
-        clock.now += LOGIN_FAILURE_MEMORY_S
-        throttle.record_failure(_attempt(None, "fresh"))
-        throttle.record_failure(_attempt(None, "new"))
-
-        held = set(throttle._by_username._bucket_of)
-        assert held == {
-            login_throttle._username_key("fresh"),
-            login_throttle._username_key("new"),
-        }
-
-    def test_long_usernames_are_stored_as_fixed_size_keys(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock())
-        throttle.record_failure(_attempt(user="x" * 1_000_000))
-
-        keys = list(throttle._by_username._bucket_of)
-        assert [len(k) for k in keys] == [64]
+        assert len(keys) == 3
 
 
-def _flood(throttle: LoginThrottle, count: int, *, tag: str) -> None:
-    """Junk usernames, one failure each, as an attacker without a client IP."""
+def _flood(throttle: LoginThrottle, count: int, *, tag: str, each: int = 1) -> None:
+    """Junk usernames, ``each`` failures apiece, from a client without an IP."""
     for i in range(count):
         junk = _attempt(None, f"{tag}-{i}")
-        if throttle.retry_after(junk) == 0:
-            throttle.record_failure(junk)
+        for _ in range(each):
+            if throttle.retry_after(junk) == 0:
+                throttle.record_failure(junk)
 
 
-class TestUsernameEvictionResistance:
-    _CAP = 100
+def _guesses_until_locked(throttle: LoginThrottle, attempt: LoginAttempt) -> int:
+    """Password checks an attacker gets on ``attempt`` before a 429."""
+    guesses = 0
+    while throttle.retry_after(attempt) == 0:
+        throttle.record_failure(attempt)
+        guesses += 1
+        assert guesses <= 10 * LOGIN_USERNAME_MAX_FAILURES, "never locked"
+    return guesses
 
-    def test_junk_username_flood_cannot_reset_a_near_lock_count(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
-        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES - 1, _attempt(None))
-        _flood(throttle, 30 * self._CAP, tag="junk")
-        throttle.record_failure(_attempt(None))
 
-        assert throttle.retry_after(_attempt(None)) == LOGIN_LOCKOUT_BASE_S
+class TestNoResetByFlooding:
+    """Nothing an attacker sends can lower another key's count."""
 
-    def test_reviewer_attack_gets_no_more_than_the_limit_of_guesses(self) -> None:
-        # Guess, flood junk usernames to push the count out, repeat.
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
+    @pytest.mark.parametrize(
+        ("junk_keys", "junk_count_level"),
+        [(3000, 1), (3000, 5), (9_999, 11), (3000, 19)],
+    )
+    def test_prewarmed_table_never_gives_more_than_the_limit(
+        self, junk_keys: int, junk_count_level: int
+    ) -> None:
+        # Round-3 attack: pre-warm with junk usernames at some count level,
+        # then alternate guesses on the real username with new junk keys
+        # (which used to evict the real username's count).
+        throttle = LoginThrottle(clock=FakeClock(), hash_key=b"k" * 32)
+        _flood(throttle, junk_keys, tag="warm", each=junk_count_level)
+        guesses = 0
+        for round_ in range(50):
+            for _ in range(10):
+                if throttle.retry_after(_attempt(None)) == 0:
+                    throttle.record_failure(_attempt(None))
+                    guesses += 1
+            _flood(throttle, 20, tag=f"evict-{round_}")
+
+        assert guesses == LOGIN_USERNAME_MAX_FAILURES
+        assert throttle.retry_after(_attempt(None)) > 0
+
+    def test_round2_flood_attack_gets_no_more_than_the_limit(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock(), hash_key=b"k" * 32)
         guesses = 0
         for round_ in range(5):
             for _ in range(LOGIN_USERNAME_MAX_FAILURES - 1):
                 if throttle.retry_after(_attempt(None)) == 0:
                     throttle.record_failure(_attempt(None))
                     guesses += 1
-            _flood(throttle, 3 * self._CAP, tag=f"junk{round_}")
+            _flood(throttle, 3000, tag=f"junk{round_}")
 
         assert guesses == LOGIN_USERNAME_MAX_FAILURES
         assert throttle.retry_after(_attempt(None)) > 0
 
+    def test_without_collisions_the_limit_is_exact(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock())
+
+        assert _guesses_until_locked(throttle, _attempt(None)) == (
+            LOGIN_USERNAME_MAX_FAILURES
+        )
+
     @pytest.mark.parametrize("username", [_USER, "no-such-user"])
-    def test_eviction_sequence_is_the_same_for_any_username(
-        self, username: str
-    ) -> None:
+    def test_flood_sequence_is_the_same_for_any_username(self, username: str) -> None:
         # No oracle: fail X 19 times, flood, fail X once -> locked either way.
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
+        throttle = LoginThrottle(clock=FakeClock(), buckets=4096)
         _fail(throttle, LOGIN_USERNAME_MAX_FAILURES - 1, _attempt(None, username))
-        _flood(throttle, 3 * self._CAP, tag="junk")
+        _flood(throttle, 3000, tag="junk")
         throttle.record_failure(_attempt(None, username))
 
-        assert throttle.retry_after(_attempt(None, username)) == 30
+        assert throttle.retry_after(_attempt(None, username)) >= 30
 
-    def test_low_count_keys_are_evicted_before_higher_ones(self) -> None:
-        throttle = LoginThrottle(clock=FakeClock(), max_keys=3)
-        _fail(throttle, 3, _attempt(None, "warm"))
-        throttle.record_failure(_attempt(None, "cold-1"))
-        throttle.record_failure(_attempt(None, "cold-2"))
-        throttle.record_failure(_attempt(None, "new"))
 
-        held = set(throttle._by_username._bucket_of)
-        assert len(held) == 3
-        assert login_throttle._username_key("warm") in held
-        assert login_throttle._username_key("cold-1") not in held
+def _false_lock_rate(*, buckets: int, locked_keys: int, probes: int) -> float:
+    """Share of never-failed usernames that are locked by collisions alone."""
+    throttle = LoginThrottle(clock=FakeClock(), buckets=buckets, hash_key=b"k" * 32)
+    for i in range(locked_keys):
+        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES, _attempt(None, f"bad-{i}"))
+    locked = sum(
+        throttle.retry_after(_attempt(None, f"fresh-{i}")) > 0 for i in range(probes)
+    )
+    return locked / probes
 
-    def test_table_full_of_warm_keys_fails_closed_for_new_usernames(self) -> None:
-        clock = FakeClock()
-        throttle = LoginThrottle(clock=clock, max_keys=3)
-        warm = LOGIN_USERNAME_MAX_FAILURES // 2 + 1
-        for name in ("w1", "w2", "w3"):
-            _fail(throttle, warm, _attempt(None, name))
-            clock.now += 10
 
-        # Refused until the oldest ("w1", 20s ago) is forgotten.
-        assert (
-            throttle.retry_after(_attempt(None, "new")) == LOGIN_FAILURE_MEMORY_S - 30
+class TestFalseLocks:
+    """Measured false-lock rates (documented in the README)."""
+
+    def test_realistic_load_has_no_measurable_false_locks(self) -> None:
+        # 500 locked keys at once is far beyond normal traffic; the expected
+        # rate with two hashes is about (2*500/65536)**2 = 0.02%.
+        rate = _false_lock_rate(
+            buckets=LOGIN_THROTTLE_BUCKETS, locked_keys=500, probes=20_000
         )
-        assert throttle.retry_after(_attempt(None, "w2")) == 0
-        assert throttle.retry_after(_attempt(None, "new", device="dev")) == 0
-        throttle.record_failure(_attempt(None, "new"))
-        assert len(throttle._by_username) == 3
-        clock.now += LOGIN_FAILURE_MEMORY_S
-        assert throttle.retry_after(_attempt(None, "new")) == 0
 
-    def test_released_lock_keeps_its_count_when_table_is_full(self) -> None:
-        clock = FakeClock()
-        throttle = LoginThrottle(clock=clock, max_keys=2)
-        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES, _attempt(None))
-        warm = LOGIN_USERNAME_MAX_FAILURES // 2 + 1
-        _fail(throttle, warm, _attempt(None, "w1"))
-        _fail(throttle, warm, _attempt(None, "w2"))
-        clock.now += LOGIN_LOCKOUT_BASE_S
+        assert rate <= 0.001
 
-        assert throttle.retry_after(_attempt(None)) == 0
-        throttle.record_failure(_attempt(None))
-        assert throttle.retry_after(_attempt(None)) == 2 * LOGIN_LOCKOUT_BASE_S
-        assert throttle.tracked_keys == 3
+    def test_heavy_attack_false_lock_rate_stays_bounded(self) -> None:
+        # 20,000 locked junk usernames: about (1 - e**(-40000/65536))**2,
+        # roughly 21%, of other usernames are falsely locked (still only for
+        # browsers without a device cookie).
+        rate = _false_lock_rate(
+            buckets=LOGIN_THROTTLE_BUCKETS, locked_keys=20_000, probes=5_000
+        )
+
+        assert 0.15 <= rate <= 0.28
 
 
 def _config() -> FormAuthConfig:
