@@ -207,7 +207,7 @@ e2e-up:
 	docker compose -f docker-compose.e2e.yml build
 	docker compose -f docker-compose.e2e.yml up -d --wait
 	@echo "Waiting for services..."
-	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60
+	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60 --expect-json status=ok --expect-json consumer_connected=true
 	@echo "✅ E2E environment ready at http://localhost:8000"
 
 # Stop E2E test environment
@@ -238,7 +238,7 @@ e2e-up-rabbitmq:
 	docker compose -f docker-compose.e2e.rabbitmq.yml build
 	docker compose -f docker-compose.e2e.rabbitmq.yml up -d --wait
 	@echo "Waiting for services..."
-	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60
+	@uv run python scripts/wait_for_http.py http://localhost:8000/stemtrace/api/health --timeout 60 --expect-json status=ok --expect-json consumer_connected=true
 	@echo "✅ RabbitMQ E2E environment ready at http://localhost:8000"
 
 e2e-down-rabbitmq:
