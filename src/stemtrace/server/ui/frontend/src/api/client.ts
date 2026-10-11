@@ -174,6 +174,7 @@ export interface TaskNode {
   group_id: string | null
   chord_id: string | null
   parent_id: string | null
+  reported_parent_id: string | null
   children: string[]
   events: TaskEvent[]
   first_seen: string | null
@@ -201,6 +202,7 @@ export interface GraphNode {
   group_id: string | null
   chord_id: string | null
   parent_id: string | null
+  reported_parent_id: string | null
   children: string[]
   duration_ms: number | null
   first_seen: string | null
