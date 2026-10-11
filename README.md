@@ -392,9 +392,13 @@ again once events are re-consumed.
     next attempt (at the latest the first retry after the breaker's cooldown) uses the new
     address; a host that moved while its old address still accepts connections is picked up
     within the 30s cache time. TLS behavior is unchanged. A `fork()` (prefork pool) waits up
-    to 1s for DNS lookups in flight that no earlier fork has waited for, since a child forked
-    while one is inside glibc can deadlock; a lookup stuck on a dead resolver delays at most
-    one fork. The same applies to RabbitMQ.
+    to 1s while a DNS lookup that started less than 5s ago (glibc's per-try timeout), or that
+    no earlier fork has waited for, is in flight, since a child forked while a lookup is
+    finishing inside glibc can deadlock. The cost: while a lookup is stuck on a dead
+    resolver, forks in its first 5s wait about 1s each. The risk is not zero with a resolver
+    that answers just slower than that 1s (1 hung child in 22,572 forks in a stress test,
+    against 5 in 28,150 when forks waited only once per lookup); a hung child stops publishing, and its tasks don't block. The same applies
+    to RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the

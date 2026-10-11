@@ -91,18 +91,21 @@ class BoundedResolver:
     own next lookup (reproduced with glibc 2.41: 27 of 1000 children hung
     while PUBLISH_RESOLVER refreshed a dual-stack name in the background).
     prepare_fork(), registered with os.register_at_fork() for
-    PUBLISH_RESOLVER, therefore waits (up to FORK_WAIT in total) for every
-    lookup in flight that no earlier fork waited for, including lookups that
-    start or finish meanwhile, and keeps new ones from starting until the
-    fork is done. Later forks don't wait for a lookup again, so one stuck
-    on a dead resolver delays at most one fork; while it waits on the
-    network it holds no such lock (a child forked then resolved normally in
-    the same reproduction). Not fully closed: a lookup that outlives the wait
-    and then completes with several addresses can still coincide with a
-    later fork (measured: 1 hung child in 5090 forks with back-to-back 1.15s
-    lookups; the resolver refreshes once per TTL or after a failed connect).
-    A hung child's lookups then time out after the caller's bound, so its
-    tasks never block; that child stops publishing.
+    PUBLISH_RESOLVER, therefore waits (up to FORK_WAIT per fork) while any
+    lookup in flight is younger than RECENT_LOOKUP_AGE or hasn't been waited
+    for by a fork yet, including lookups that start or finish meanwhile, and
+    keeps new ones from starting until the fork is done. The cost: while a
+    lookup is stuck on a dead resolver, forks in its first RECENT_LOOKUP_AGE
+    seconds wait about FORK_WAIT each, and one fork after that (measured:
+    four forks waited 1.0s, the rest 2-4ms). While it waits on the network a
+    lookup holds no such lock (a child forked then resolved normally in the
+    same reproduction). Not fully closed: a fork whose FORK_WAIT runs out at
+    the very moment a slow lookup completes can still catch it inside glibc
+    (measured with a resolver answering after 1.15s and a lookup every ~1.3s:
+    1 hung child in 22572 forks, against 5 in 28150 when forks waited only
+    once per lookup; in production the resolver refreshes once per TTL or
+    after a failed connect). A hung child's lookups time out after the
+    caller's bound, so its tasks never block; that child stops publishing.
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
