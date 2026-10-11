@@ -56,10 +56,11 @@ class BoundedResolver:
     own next lookup (reproduced with glibc 2.41: 27 of 1000 children hung
     while PUBLISH_RESOLVER refreshed a dual-stack name in the background).
     prepare_fork(), registered with os.register_at_fork() for
-    PUBLISH_RESOLVER, therefore waits up to FORK_WAIT for lookups in flight
-    and keeps new ones from starting until the fork is done. A lookup still
-    running after FORK_WAIT is waiting on the network, which holds no such
-    lock (a child forked then resolved normally in the same reproduction).
+    PUBLISH_RESOLVER, therefore waits up to FORK_WAIT for lookups that
+    started less than FORK_WAIT ago, and keeps new ones from starting until
+    the fork is done. An older lookup is waiting on the network, which holds
+    no such lock (a child forked then resolved normally in the same
+    reproduction), so a stuck lookup delays at most one fork.
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
@@ -94,7 +95,8 @@ class BoundedResolver:
         self._lock = threading.Lock()
         # Notified whenever a lookup ends; prepare_fork() waits on it.
         self._idle = threading.Condition(self._lock)
-        self._lookups = 0
+        # Start time of each lookup in flight, keyed by its done event.
+        self._in_flight: dict[threading.Event, float] = {}
         self._pid = os.getpid()
         self._entries: dict[tuple[Any, ...], _Entry] = {}
 
@@ -174,14 +176,28 @@ class BoundedResolver:
                 self._start_lookup((host, port, family, socktype, proto), entry)
 
     def prepare_fork(self) -> None:
-        """Before fork(): wait up to fork_wait for lookups, then hold the lock.
+        """Before fork(): wait for young lookups (up to fork_wait), then hold the lock.
 
-        Holding the lock keeps new lookups from starting until
-        parent_after_fork() (in the parent) or child_after_fork() (in the
-        child) runs.
+        Only lookups started less than fork_wait ago are waited for: glibc's
+        locked sections are short, so an older lookup is waiting on the
+        network (e.g. a dead resolver), and waiting for it would delay every
+        fork by fork_wait while it lasts. Lookups that start while this waits
+        (the lock is released meanwhile) are young and waited for too, within
+        the same fork_wait. Holding the lock afterwards keeps new lookups from
+        starting until parent_after_fork() (in the parent) or
+        child_after_fork() (in the child) runs.
         """
         self._lock.acquire()
-        self._idle.wait_for(lambda: self._lookups == 0, timeout=self._fork_wait)
+        deadline = self._monotonic() + self._fork_wait
+        while True:
+            now = self._monotonic()
+            young = any(
+                now - started < self._fork_wait for started in self._in_flight.values()
+            )
+            if not young or now >= deadline:
+                return
+            if not self._idle.wait(deadline - now):
+                return
 
     def parent_after_fork(self) -> None:
         """After fork(), in the parent: let lookups start again."""
@@ -202,7 +218,7 @@ class BoundedResolver:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
-        self._lookups += 1
+        self._in_flight[done] = self._monotonic()
         try:
             threading.Thread(
                 target=self._lookup,
@@ -212,7 +228,7 @@ class BoundedResolver:
             ).start()
         except RuntimeError as exc:  # e.g. "can't start new thread"
             entry.lookup = None
-            self._lookups -= 1
+            del self._in_flight[done]
             raise socket.gaierror(
                 socket.EAI_AGAIN, f"Could not look up {key[0]!r}: {exc}"
             ) from exc
@@ -245,7 +261,7 @@ class BoundedResolver:
                 # After a failure too: a stale answer is retried once per TTL.
                 entry.refresh_at = self._monotonic() + self._ttl
                 entry.lookup = None
-                self._lookups -= 1
+                self._in_flight.pop(done, None)
                 self._idle.notify_all()
             done.set()
 

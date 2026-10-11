@@ -1,8 +1,10 @@
 """Tests for the bounded, cached host name resolver used by publishers."""
 
+import contextlib
 import os
 import socket
 import threading
+import time
 import warnings
 from typing import Any
 
@@ -287,7 +289,7 @@ class TestBoundedResolverFork:
 
         resolver.prepare_fork()
         try:
-            in_flight = resolver._lookups
+            in_flight = len(resolver._in_flight)
         finally:
             resolver.parent_after_fork()
 
@@ -303,7 +305,7 @@ class TestBoundedResolverFork:
 
         resolver.prepare_fork()
         try:
-            in_flight = resolver._lookups
+            in_flight = len(resolver._in_flight)
         finally:
             resolver.parent_after_fork()
             dns.release.set()
@@ -361,3 +363,52 @@ class TestBoundedResolverFork:
         assert os.waitstatus_to_exitcode(status) == 0
         assert PUBLISH_RESOLVER._lock.acquire(blocking=False) is True
         PUBLISH_RESOLVER._lock.release()
+
+
+class TestBoundedResolverForkWaitsOnlyForYoungLookups:
+    """A stuck lookup costs forks at most one FORK_WAIT in total."""
+
+    def test_prepare_fork_skips_lookup_older_than_fork_wait(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()  # stuck, like a lookup against a dead resolver
+        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=JOIN_S)
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+        clock.now += JOIN_S + 0.1  # it has been in flight longer than fork_wait
+        started = time.monotonic()
+
+        resolver.prepare_fork()
+        resolver.parent_after_fork()
+
+        assert time.monotonic() - started < 1.0  # didn't wait for it
+        dns.release.set()
+
+    def test_prepare_fork_waits_for_lookup_started_while_waiting(self) -> None:
+        first, second = FakeDns(), FakeDns()
+        first.release.clear()
+        second.release.clear()
+
+        def dns(host: str, *args: Any) -> list[AddrInfo]:
+            return (first if host == "a.local" else second)(host, *args)
+
+        resolver = BoundedResolver(
+            getaddrinfo=dns, monotonic=FakeClock(), fork_wait=JOIN_S
+        )
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("a.local", 6379, timeout=0.0)
+
+        def start_second_then_release_first() -> None:
+            with contextlib.suppress(socket.gaierror):
+                resolver.resolve("b.local", 6379, timeout=0.0)
+            first.release.set()
+            threading.Timer(0.1, second.release.set).start()
+
+        threading.Timer(0.05, start_second_then_release_first).start()
+
+        resolver.prepare_fork()
+        try:
+            in_flight = len(resolver._in_flight)
+        finally:
+            resolver.parent_after_fork()
+
+        assert in_flight == 0  # it waited for the second lookup too
