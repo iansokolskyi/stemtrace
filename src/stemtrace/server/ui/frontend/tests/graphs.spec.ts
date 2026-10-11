@@ -592,6 +592,39 @@ test.describe('Graph Page - Mock Scenarios', () => {
   })
 })
 
+test.describe('Graph Page - Chains In Groups', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('draws each chain of a group of chains as a row inside the group', async ({ page }) => {
+    // group(chain(a1, b1), chain(a2, b2)): the server puts a1 and a2 (chain
+    // links) inside the group, with b1 and b2 (the members) after them
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [groupNode, b1, b2] = createGroup(2, { withCallback: false })
+    const a1 = createSuccessTask('tasks.first_step')
+    const a2 = createSuccessTask('tasks.first_step')
+    for (const [link, member] of [
+      [a1, b1],
+      [a2, b2],
+    ]) {
+      link.parent_id = groupNode.task_id
+      link.root_id = groupNode.task_id
+      link.children = [member.task_id]
+      member.parent_id = link.task_id
+    }
+    groupNode.children = [a1.task_id, a2.task_id]
+    mockApi.addTasks([groupNode, a1, a2, b1, b2])
+
+    await page.goto(`/graph/${encodeURIComponent(groupNode.task_id)}`)
+    await page.waitForLoadState('load')
+
+    // 1 GROUP container + 1 header label + 4 tasks, all inside the container
+    await expect(page.locator('.react-flow__node')).toHaveCount(6)
+    await expect(page.locator('.react-flow__node.container-child')).toHaveCount(4)
+    // a1 -> b1 and a2 -> b2
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+  })
+})
+
 test.describe('Graph Page - Chord Bodies', () => {
   test.skip(isRealMode, 'Mock-only test')
 

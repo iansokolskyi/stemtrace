@@ -49,6 +49,8 @@ const CONTAINER_PADDING = 16
 const CONTAINER_HEADER = 40
 const CHILD_SPACING = 12
 const LEVEL_SPACING = 320
+const ROW_GAP = 40
+const LEVEL_GAP = 160
 
 /**
  * A node's children without links back to itself. The server never sends
@@ -56,6 +58,27 @@ const LEVEL_SPACING = 320
  */
 function childIdsOf(node: GraphNode, id: string): string[] {
   return node.children.filter((childId) => childId !== id)
+}
+
+/**
+ * The row a container draws for one of its children: the child, then down a
+ * chain of single children until the group's member (the server puts a
+ * group member's chain links inside the group, e.g. group(chain(a, b), ...)).
+ */
+function containerRow(
+  nodes: Record<string, GraphNode>,
+  headId: string,
+  groupId: string | null,
+): string[] {
+  const row = [headId]
+  let current = nodes[headId]
+  while (current && current.group_id !== groupId) {
+    const next = childIdsOf(current, row[row.length - 1])
+    if (next.length !== 1 || row.includes(next[0]) || !nodes[next[0]]) break
+    row.push(next[0])
+    current = nodes[next[0]]
+  }
+  return row
 }
 
 function buildGraphElements(
@@ -75,20 +98,16 @@ function buildGraphElements(
 
   for (const [nodeId, node] of Object.entries(nodes)) {
     const nodeType = node.node_type ?? 'TASK'
-    if (nodeType === 'GROUP') {
+    if (nodeType === 'GROUP' || nodeType === 'CHORD') {
+      // Members (with their chain rows) go inside; a CHORD's callback, named
+      // in chord_id, stays outside and connects via edges
       for (const childId of childIdsOf(node, nodeId)) {
-        containerChildren.add(childId)
-      }
-    } else if (nodeType === 'CHORD') {
-      // For CHORD, header tasks go inside, callback stays outside
-      // The CHORD node's chord_id field contains the callback task_id
-      for (const childId of childIdsOf(node, nodeId)) {
-        if (childId === node.chord_id) {
-          // This is the callback - render outside with edge
+        if (nodeType === 'CHORD' && childId === node.chord_id) {
           chordCallbacks.add(childId)
         } else {
-          // Header task - render inside container
-          containerChildren.add(childId)
+          for (const rowId of containerRow(nodes, childId, node.group_id)) {
+            containerChildren.add(rowId)
+          }
         }
       }
     }
@@ -124,6 +143,31 @@ function buildGraphElements(
     }
   }
 
+  // Each level starts right of the widest node of the level before it
+  // (a container with chain rows can be wider than a single task)
+  const levelWidths: number[] = []
+  for (const [id, level] of levels) {
+    const node = nodes[id]
+    const nodeType = node?.node_type ?? 'TASK'
+    let width = TASK_NODE_MIN_WIDTH
+    if (node && (nodeType === 'GROUP' || nodeType === 'CHORD')) {
+      const heads = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
+      const rowLength = Math.max(
+        1,
+        ...heads.map((cid) => containerRow(nodes, cid, node.group_id).length),
+      )
+      width = rowLength * TASK_NODE_MIN_WIDTH + (rowLength - 1) * ROW_GAP + CONTAINER_PADDING * 2
+    }
+    levelWidths[level] = Math.max(levelWidths[level] ?? 0, width)
+  }
+  const levelX = (level: number): number => {
+    let x = 0
+    for (let l = 0; l < level; l++) {
+      x += Math.max(LEVEL_SPACING, (levelWidths[l] ?? 0) + LEVEL_GAP)
+    }
+    return x
+  }
+
   // Create flow nodes
   visited.clear()
   const queue2: string[] = [rootId]
@@ -148,10 +192,13 @@ function buildGraphElements(
     if (isContainer) {
       // For CHORD, only header tasks go inside (not callbacks)
       const headerChildren = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
-      const childCount = headerChildren.length
+      const rows = headerChildren.map((cid) => containerRow(nodes, cid, node.group_id))
+      const childCount = rows.length
+      const rowLength = Math.max(1, ...rows.map((row) => row.length))
 
-      // Vertical layout: children stacked in a column
-      const containerWidth = TASK_NODE_MIN_WIDTH + CONTAINER_PADDING * 2
+      // Rows stacked in a column; a chain runs left to right within its row
+      const containerWidth =
+        rowLength * TASK_NODE_MIN_WIDTH + (rowLength - 1) * ROW_GAP + CONTAINER_PADDING * 2
       const containerHeight =
         CONTAINER_HEADER +
         CONTAINER_PADDING * 2 +
@@ -166,7 +213,7 @@ function buildGraphElements(
       flowNodes.push({
         id,
         type: 'default',
-        position: { x: level * LEVEL_SPACING, y: yPos },
+        position: { x: levelX(level), y: yPos },
         data: { label: '' },
         style: {
           width: containerWidth,
@@ -214,10 +261,22 @@ function buildGraphElements(
         },
       })
 
-      // Header task nodes inside container (vertical column layout)
-      headerChildren.forEach((childId, idx) => {
+      // Task nodes inside the container: one row per member
+      const rowCells = rows.flatMap((row, idx) =>
+        row.map((childId, column) => ({ childId, idx, column, previous: row[column - 1] })),
+      )
+      rowCells.forEach(({ childId, idx, column, previous }) => {
         const childNode = nodes[childId]
         if (!childNode) return
+        if (previous) {
+          flowEdges.push({
+            id: `${previous}-${childId}`,
+            source: previous,
+            target: childId,
+            animated: childNode.state === 'STARTED',
+            style: { stroke: '#475569' },
+          })
+        }
 
         const childStateColor = stateColors[childNode.state] ?? stateColors.PENDING
         const duration = formatDuration(childNode.duration_ms)
@@ -226,7 +285,7 @@ function buildGraphElements(
         flowNodes.push({
           id: childId,
           position: {
-            x: CONTAINER_PADDING,
+            x: CONTAINER_PADDING + column * (TASK_NODE_MIN_WIDTH + ROW_GAP),
             y: CONTAINER_HEADER + CONTAINER_PADDING + idx * (TASK_NODE_HEIGHT + CHILD_SPACING),
           },
           parentId: id,
@@ -282,9 +341,9 @@ function buildGraphElements(
             const callbackNode = nodes[childId]
             if (!callbackNode) continue
 
-            // Edges from ALL header tasks to callback (chord aggregation)
-            // Each header task's completion contributes to triggering the callback
-            for (const headerId of headerChildren) {
+            // Edges from ALL header tasks (each row's member) to the callback:
+            // each header's completion contributes to triggering it
+            for (const headerId of rows.map((row) => row[row.length - 1])) {
               flowEdges.push({
                 id: `${id}-callback-${headerId}-${childId}`,
                 source: headerId,
@@ -304,7 +363,7 @@ function buildGraphElements(
             const callbackStartTime = formatTime(callbackNode.first_seen)
 
             // Position callback to the RIGHT of container, vertically centered
-            const callbackX = level * LEVEL_SPACING + containerWidth + 60
+            const callbackX = levelX(level) + containerWidth + 60
             const callbackY = yPos + (containerHeight - TASK_NODE_HEIGHT) / 2
 
             flowNodes.push({
@@ -369,7 +428,7 @@ function buildGraphElements(
 
       flowNodes.push({
         id,
-        position: { x: level * LEVEL_SPACING, y: yPos },
+        position: { x: levelX(level), y: yPos },
         data: {
           label: (
             <Link to="/tasks/$taskId" params={{ taskId: id }} className="block p-3 text-left">
