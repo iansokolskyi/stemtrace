@@ -185,6 +185,34 @@ class TestLoginThrottle:
         assert throttle.retry_after(_attempt(first, "u")) == 30
         assert throttle.retry_after(_attempt(other_client, "u")) == 0
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("203.0.113.7:51234", "203.0.113.7"),
+            ("[2001:db8::1]:443", "2001:db8::/64"),
+            ("[2001:db8::1]", "2001:db8::/64"),
+            ("2001:db8::1", "2001:db8::/64"),
+            ("203.0.113.7", "203.0.113.7"),
+            ("testclient", "testclient"),
+            ("not-an-ip:80", "not-an-ip:80"),
+            ("[nonsense]:1", "[nonsense]:1"),
+            ("[2001:db8::1]junk", "[2001:db8::1]junk"),
+            ("203.0.113.7:http", "203.0.113.7:http"),
+        ],
+    )
+    def test_ip_key_strips_ports_and_keeps_unparseable_names(
+        self, raw: str, expected: str
+    ) -> None:
+        assert login_throttle._ip_key(raw) == expected
+
+    def test_source_ports_share_one_ip_limit(self) -> None:
+        # Proxies like Azure Application Gateway append the client's port.
+        throttle = LoginThrottle(clock=FakeClock())
+        for port in range(LOGIN_IP_MAX_FAILURES):
+            throttle.record_failure(_attempt(f"203.0.113.7:{40000 + port}", f"u{port}"))
+
+        assert throttle.retry_after(_attempt("203.0.113.7:50000", "other")) == 30
+
     def test_non_ip_client_names_are_used_verbatim(self) -> None:
         throttle = LoginThrottle(clock=FakeClock())
         _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("testclient", "x"))

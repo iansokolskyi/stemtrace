@@ -56,7 +56,11 @@ LOGIN_LOCKOUT_MAX_S: Final[float] = 900.0
 
 #: A key is forgotten this long after its last failure. Longer than the longest
 #: lockout, so a key at the cap stays at one attempt per lockout instead of
-#: getting a fresh set of free attempts when its lock ends.
+#: getting a fresh set of free attempts when its lock ends. This bounds
+#: guessing per username: a greedy attacker gets the 20 free failures, then
+#: one per lockout (about 4 an hour at the 15-minute cap); a patient one waits
+#: out this hour after each burst of 20, so about 20 an hour is the sustained
+#: maximum either way.
 LOGIN_FAILURE_MEMORY_S: Final[float] = 3600.0
 
 #: Buckets per kind of key (IP, username, device). Failures are counted in
@@ -360,16 +364,41 @@ class LoginThrottle:
             self._by_username.reset(attempt.username)
 
 
+def _parse_client_address(
+    client_ip: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse a client address, dropping a ``:port`` / ``[v6]:port`` suffix.
+
+    Some proxies (e.g. Azure Application Gateway) append the client's source
+    port to X-Forwarded-For, which uvicorn passes on as the client host.
+    """
+    candidates = [client_ip]
+    if client_ip.startswith("["):
+        host, _, rest = client_ip[1:].partition("]")
+        if not rest or (rest.startswith(":") and rest[1:].isdigit()):
+            candidates = [host]
+    elif client_ip.count(":") == 1:
+        host, _, port = client_ip.partition(":")
+        if port.isdigit():
+            candidates.append(host)
+    for candidate in candidates:
+        try:
+            return ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+    return None
+
+
 def _ip_key(client_ip: str) -> str:
     """Throttling key for a client address: IPv6 by /64, IPv4 as is.
 
     An IPv6 client typically controls a whole /64, so keying by address would
     give it 2**64 fresh IP limits. IPv4-mapped IPv6 addresses count as their
-    IPv4 address. Anything that isn't an IP address is used verbatim.
+    IPv4 address, and a source port is ignored. Anything that isn't an IP
+    address is used verbatim.
     """
-    try:
-        address = ipaddress.ip_address(client_ip)
-    except ValueError:
+    address = _parse_client_address(client_ip)
+    if address is None:
         return client_ip
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
