@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 import warnings
 from typing import Any, ClassVar
 
@@ -820,3 +821,51 @@ class TestCachedErrorsAreRaisedFresh:
 
         entry = resolver._state().entries[("redis.local", 6379, 0, 0, 0)]
         assert info.value is not entry.error
+
+
+class TestUwsgiMasterResolvesOnCallingThread:
+    """uWSGI's master forks in C, without Python's at-fork hooks, so it must
+    not have lookup threads that a fork could catch inside glibc."""
+
+    def _uwsgi(self, monkeypatch: pytest.MonkeyPatch, worker_id: int) -> None:
+        fake = types.ModuleType("uwsgi")
+        fake.worker_id = lambda: worker_id  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "uwsgi", fake)
+
+    def _lookup_thread(
+        self, resolver: BoundedResolver, dns: "_ThreadRecordingDns"
+    ) -> str:
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        return dns.threads[0]
+
+    def test_uwsgi_master_resolves_on_calling_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, worker_id=0)
+        dns = _ThreadRecordingDns()
+
+        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
+
+        assert thread == threading.current_thread().name
+
+    def test_uwsgi_worker_resolves_in_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, worker_id=1)
+        dns = _ThreadRecordingDns()
+
+        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
+
+        assert thread.startswith("stemtrace-dns-")
+
+
+class _ThreadRecordingDns(FakeDns):
+    """FakeDns that also records which thread each lookup ran on."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.threads: list[str] = []
+
+    def __call__(self, host: str, port: int, *args: Any) -> list[AddrInfo]:
+        self.threads.append(threading.current_thread().name)
+        return super().__call__(host, port, *args)

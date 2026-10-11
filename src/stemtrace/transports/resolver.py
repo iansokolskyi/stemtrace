@@ -233,6 +233,8 @@ class BoundedResolver:
         _check_host_name(host)
         state = self._state()
         key = (host, port, family, socktype, proto)
+        if _in_uwsgi_master():
+            return self._resolve_on_this_thread(state, key)
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
             now = self._monotonic()
@@ -266,6 +268,43 @@ class BoundedResolver:
         if error is not None:
             raise _fresh(error)
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
+
+    def _resolve_on_this_thread(
+        self, state: _State, key: tuple[Any, ...]
+    ) -> list[AddrInfo]:
+        """Resolve on the calling thread, without a wait bound (uWSGI master).
+
+        uWSGI's master forks its workers in C, without running Python's
+        at-fork hooks, so prepare_fork() can't keep a fork from catching a
+        lookup thread inside glibc. A lookup on the calling thread is never
+        running while that thread forks. Cache rules are as in resolve().
+        """
+        with state.lock:
+            entry = state.entries.setdefault(key, _Entry())
+            now = self._monotonic()
+            if now < entry.refresh_at:
+                if entry.addresses is not None:
+                    return entry.addresses
+                if entry.error is not None:
+                    raise _fresh(entry.error)
+        getaddrinfo = self._getaddrinfo or socket.getaddrinfo
+        try:
+            addresses = getaddrinfo(*key)
+        except OSError as exc:
+            with state.lock:
+                entry.error = exc
+                retry_in = (
+                    self._ttl if entry.addresses is not None else DNS_NEGATIVE_TTL
+                )
+                entry.refresh_at = self._monotonic() + retry_in
+                fallback = entry.addresses
+            if fallback is not None:
+                return fallback
+            raise
+        with state.lock:
+            entry.addresses, entry.error = addresses, None
+            entry.refresh_at = self._monotonic() + self._ttl
+        return addresses
 
     def invalidate(
         self, host: str, port: int, family: int = 0, socktype: int = 0, proto: int = 0
@@ -584,6 +623,16 @@ def _fresh(error: Exception) -> Exception:
     new = copy.copy(error)
     new.__cause__ = error.__cause__
     return new
+
+
+def _in_uwsgi_master() -> bool:
+    """Whether this is a uWSGI process other than a request worker.
+
+    uWSGI's master (worker id 0) forks in C, without Python's at-fork hooks.
+    """
+    uwsgi = sys.modules.get("uwsgi")
+    worker_id = getattr(uwsgi, "worker_id", None)
+    return callable(worker_id) and worker_id() == 0
 
 
 def _check_host_name(host: str) -> None:
