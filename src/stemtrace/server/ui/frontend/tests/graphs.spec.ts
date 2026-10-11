@@ -592,6 +592,36 @@ test.describe('Graph Page - Mock Scenarios', () => {
   })
 })
 
+test.describe('Graph Page - Chord Bodies', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('draws a chord whose body is another chord as a container', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [outer, ...outerRest] = createGroup(2, { withCallback: false })
+    const [inner, ...innerRest] = createGroup(2, { withCallback: true })
+    const innerCallback = innerRest[innerRest.length - 1]
+    // As the server sends `chord([a, b], chord([c, d], e))`: the outer CHORD's
+    // callback (chord_id) is the inner CHORD node
+    outer.node_type = 'CHORD'
+    outer.chord_id = inner.task_id
+    outer.children.push(inner.task_id)
+    inner.parent_id = outer.task_id
+    for (const task of [inner, ...innerRest]) task.root_id = outer.task_id
+    mockApi.addTasks([outer, ...outerRest, inner, ...innerRest])
+
+    await page.goto(`/graph/${encodeURIComponent(outer.task_id)}`)
+    await page.waitForLoadState('load')
+
+    // Each CHORD: container + header label + 2 headers; plus the inner callback
+    await expect(page.locator('.react-flow__node')).toHaveCount(9)
+    await expect(page.locator(`.react-flow__node[data-id="${innerCallback.task_id}"]`)).toHaveCount(
+      1,
+    )
+    // 2 outer headers -> inner CHORD, 2 inner headers -> inner callback
+    await expect(page.locator('.react-flow__edge')).toHaveCount(4)
+  })
+})
+
 test.describe('Graph Page - Malformed Links', () => {
   // The server never sends these shapes; the page must still render them
   test.skip(isRealMode, 'Mock-only test')

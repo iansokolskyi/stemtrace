@@ -282,6 +282,23 @@ function buildGraphElements(
             const callbackNode = nodes[childId]
             if (!callbackNode) continue
 
+            // Edges from ALL header tasks to callback (chord aggregation)
+            // Each header task's completion contributes to triggering the callback
+            for (const headerId of headerChildren) {
+              flowEdges.push({
+                id: `${id}-callback-${headerId}-${childId}`,
+                source: headerId,
+                target: childId,
+                animated: callbackNode.state === 'STARTED',
+                style: { stroke: '#475569' },
+              })
+            }
+
+            // A body that is itself a group or chord is drawn as a container
+            // at the next level, like any child; only its edges are added here
+            const callbackType = callbackNode.node_type ?? 'TASK'
+            if (callbackType === 'GROUP' || callbackType === 'CHORD') continue
+
             const callbackStateColor = stateColors[callbackNode.state] ?? stateColors.PENDING
             const callbackDuration = formatDuration(callbackNode.duration_ms)
             const callbackStartTime = formatTime(callbackNode.first_seen)
@@ -337,18 +354,6 @@ function buildGraphElements(
               sourcePosition: Position.Right,
               targetPosition: Position.Left,
             })
-
-            // Edges from ALL header tasks to callback (chord aggregation)
-            // Each header task's completion contributes to triggering the callback
-            for (const headerId of headerChildren) {
-              flowEdges.push({
-                id: `${id}-callback-${headerId}-${childId}`,
-                source: headerId,
-                target: childId,
-                animated: callbackNode.state === 'STARTED',
-                style: { stroke: '#475569' },
-              })
-            }
 
             visited.add(childId)
           }
