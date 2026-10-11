@@ -635,9 +635,11 @@ Failed sign-ins are throttled in memory, per client IP and per username or brows
   the last 90 days are not affected. Restarting stemtrace clears all limits. If that's a
   concern, put stemtrace behind your own auth (see below) or a proxy with its own rate limits.
 - Guessing costs the same for every username, real or not: 20 guesses, then one per lockout
-  (about 4 an hour at the 15-minute cap). A count goes down only after an hour without
-  failures or after a successful sign-in, which clears the counts for its IP, username and
-  device. The response is the same whether the username exists or not.
+  (about 4 an hour at the 15-minute cap), or, waiting out the hour after which failures are
+  forgotten, another burst of 20. So the sustained maximum is about 20 guesses an hour per
+  username. A count goes down only after an hour without failures or after a successful
+  sign-in, which clears the counts for its IP, username and device. The response is the same
+  whether the username exists or not.
 - The client IP is the one your ASGI server reports; `X-Forwarded-For` is never read directly.
   Behind a reverse proxy or load balancer, tell the server which proxies to trust with uvicorn
   `--forwarded-allow-ips` or the `FORWARDED_ALLOW_IPS` env var (which `stemtrace server` also
@@ -649,13 +651,17 @@ Failed sign-ins are throttled in memory, per client IP and per username or brows
   username and device limits still apply.
 - Limits are per process: with several workers or replicas, each counts on its own.
 - Failures are counted in fixed tables of 65,536 buckets per kind (IP, username, device;
-  about 1.5 MB each), not per key, so memory never grows and no amount of traffic can push out
-  or lower another key's count. Each key maps to two buckets through a hash keyed with a
-  random per-process secret, and is locked only if both are. Keys that share buckets can
-  therefore only be locked early, never late. Measured false locks for a username that never
-  failed: 0.01% with 500 usernames locked at once, 0.07% with 1,000, 1.9% with 5,000 and 21%
-  with 20,000 (an attacker locking junk usernames on purpose); IPs behave the same. Browsers
-  with a device cookie are never affected by IP or username buckets.
+  about 1.5 MB each), not per key, so memory never grows and failure traffic can't push out or
+  lower another key's count. Each key maps to two buckets through a hash keyed with a random
+  per-process secret, and is locked only if both are. Keys that share buckets can therefore
+  only be locked early, never late. (A successful sign-in clears its own two buckets, so with a
+  probability of about 0.006% per sign-in it can also lift the lock of a key sharing both.)
+  False locks for a username that never failed: about 0.02% with 500 usernames locked at
+  once, 0.08% with 1,000, 2% with 5,000 and 21% with 20,000 (an attacker locking junk
+  usernames on purpose); IPs behave the same. Junk-IP floods are cheap for anyone with many
+  addresses (an IP locks after 5 failures, so 5,000 IPs take 25,000 requests) and lock out
+  that share of other IPs, for browsers without a device cookie. Browsers with a device cookie
+  are never affected by IP or username buckets.
 
 Behind a reverse proxy that strips a path prefix, run your app with uvicorn's `--root-path`
 (e.g. `uvicorn app:app --root-path /monitoring`); the login page, redirects and the session
