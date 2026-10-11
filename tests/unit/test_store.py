@@ -1807,3 +1807,36 @@ class TestGraphStoreEvictionGroupLinks:
         assert "group:g" in store._graph.root_ids
         assert group.state == TaskState.FAILURE
         assert_graph_invariants(store._graph)
+
+    def test_eviction_keeps_group_while_its_newest_member_lives(self) -> None:
+        store = GraphStore(max_nodes=20)
+        store.add_event(self._event("m1", 1, group_id="g"))
+        store.add_event(self._event("m2", 100, group_id="g"))
+        for i in range(18):
+            store.add_event(self._event(f"x{i}", 10 + i))
+
+        # 21 nodes -> down to 18: the three oldest tasks go, the group stays.
+        assert store.get_node("m1") is None
+        assert store.get_node("x0") is None
+        assert store.get_node("x1") is None
+        group = store.get_node("group:g")
+        assert group is not None
+        assert group.children == ["m2"]
+        assert store._graph.nodes["m2"].parent_id == "group:g"
+        assert_graph_invariants(store._graph)
+
+    def test_eviction_of_chord_callback_drops_it_from_chord_children(self) -> None:
+        store = GraphStore(max_nodes=5)
+        store.add_event(self._event("P", 50))
+        store.add_event(self._event("cb", 1, parent_id="P"))
+        store.add_event(
+            self._event("h1", 60, group_id="g", chord_callback_id="cb", parent_id="P")
+        )
+        store.add_event(self._event("x", 70))
+        store.add_event(self._event("y", 80))  # 6 nodes -> 4: cb, then P go
+
+        assert store.get_node("cb") is None
+        chord = store.get_node("group:g")
+        assert chord is not None
+        assert chord.children == ["h1"]
+        assert_graph_invariants(store._graph)
