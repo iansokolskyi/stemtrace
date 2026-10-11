@@ -86,36 +86,51 @@ _SSL_CERT_REQS_MAP = {
 }
 
 
+def _query_items(url: str) -> tuple[str, list[str]]:
+    """Split a URL into the part before ``?`` and its raw ``&``-separated items.
+
+    The URL is never re-assembled by urllib: urlunparse() turns
+    ``unix:///path`` into ``unix:/path``, which redis-py 4.5+ rejects.
+    """
+    base, _, query = url.partition("?")
+    return base, [item for item in query.split("&") if item]
+
+
+def _query_key(item: str) -> str:
+    """The (unquoted) option name of a raw query item such as ``db=1``."""
+    from urllib.parse import unquote_plus
+
+    return unquote_plus(item.partition("=")[0])
+
+
+def _with_query_items(base: str, items: list[str]) -> str:
+    """Re-join a URL split by _query_items()."""
+    return f"{base}?{'&'.join(items)}" if items else base
+
+
 def _normalize_redis_ssl_params(url: str) -> str:
     """Normalize ssl_cert_reqs in a Redis URL from CERT_* to lowercase.
 
     redis-py expects lowercase values (none/optional/required) but URLs
     commonly use the Python ssl module constants (CERT_NONE/CERT_REQUIRED).
+    Everything else in the URL is kept as written.
     """
-    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+    from urllib.parse import unquote_plus
 
-    parsed = urlparse(url)
-    if not parsed.query:
-        return url
-    params = parse_qs(parsed.query)
-    if "ssl_cert_reqs" not in params:
-        return url
-    raw = params["ssl_cert_reqs"][0]
-    normalized = _SSL_CERT_REQS_MAP.get(raw, raw)
-    params["ssl_cert_reqs"] = [normalized]
-    new_query = urlencode(params, doseq=True)
-    return urlunparse(parsed._replace(query=new_query))
+    base, items = _query_items(url)
+    for index, item in enumerate(items):
+        if _query_key(item) == "ssl_cert_reqs":
+            raw = unquote_plus(item.partition("=")[2])
+            items[index] = f"ssl_cert_reqs={_SSL_CERT_REQS_MAP.get(raw, raw)}"
+    return _with_query_items(base, items) if "?" in url else url
 
 
 def _without_query_params(url: str, names: tuple[str, ...]) -> str:
     """Return ``url`` with the given querystring options removed."""
-    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
-    parsed = urlparse(url)
-    if not parsed.query:
+    base, items = _query_items(url)
+    if "?" not in url:
         return url
-    kept = [(k, v) for k, v in parse_qsl(parsed.query) if k not in names]
-    return urlunparse(parsed._replace(query=urlencode(kept)))
+    return _with_query_items(base, [i for i in items if _query_key(i) not in names])
 
 
 # Whether the current publish attempt has written its XADD to the socket. A

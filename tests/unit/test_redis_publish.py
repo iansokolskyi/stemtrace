@@ -550,3 +550,52 @@ class TestPublishConnectionKeywordCompatibility:
         assert connection.db == 3
         assert connection.socket_timeout == PUBLISH_SOCKET_TIMEOUT
         assert connection.socket_connect_timeout == PUBLISH_CONNECT_TIMEOUT
+
+
+class TestUnixSocketUrlsWithQuery:
+    """unix:// URLs keep their path when stemtrace rewrites the query string."""
+
+    def test_publish_client_keeps_unix_path_and_db(self) -> None:
+        client = redis_transport._publish_client_from_url(
+            "unix:///tmp/redis.sock?db=1&socket_timeout=30&socket_connect_timeout=30"
+        )
+
+        kwargs = client.connection_pool.connection_kwargs
+        connection = client.connection_pool.make_connection()
+        assert kwargs["path"] == "/tmp/redis.sock"
+        assert kwargs["db"] == 1
+        assert connection.socket_timeout == PUBLISH_SOCKET_TIMEOUT
+
+    def test_consume_client_keeps_unix_path_and_db(self) -> None:
+        transport = RedisTransport.from_url("unix:///tmp/redis.sock?db=1")
+
+        kwargs = transport.client.connection_pool.connection_kwargs
+        assert kwargs["path"] == "/tmp/redis.sock"
+        assert kwargs["db"] == 1
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "unix:///tmp/redis.sock?db=1&ssl_cert_reqs=CERT_NONE",
+                "unix:///tmp/redis.sock?db=1&ssl_cert_reqs=none",
+            ),
+            (
+                "rediss://:pw@host:6380/0?ssl_cert_reqs=CERT_REQUIRED&x=",
+                "rediss://:pw@host:6380/0?ssl_cert_reqs=required&x=",
+            ),
+            ("unix:///tmp/redis.sock", "unix:///tmp/redis.sock"),
+        ],
+    )
+    def test_normalize_ssl_params_keeps_rest_of_url(
+        self, url: str, expected: str
+    ) -> None:
+        assert redis_transport._normalize_redis_ssl_params(url) == expected
+
+    def test_without_query_params_keeps_unix_path(self) -> None:
+        url = "unix:///tmp/redis.sock?db=1&socket_timeout=30"
+
+        assert (
+            redis_transport._without_query_params(url, ("socket_timeout",))
+            == "unix:///tmp/redis.sock?db=1"
+        )
