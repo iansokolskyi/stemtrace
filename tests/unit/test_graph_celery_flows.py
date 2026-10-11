@@ -142,6 +142,15 @@ _EXPECTED: dict[str, str] = {
     # chain(add, paginate(0)): the replaced task has a parent of its own,
     # and its replacement's events report another (paginate(1)).
     "chain_replace_same_name@worker_process": "add(paginate(paginate))",
+    # paginate_to(0) replaces itself with a chain of 3 or 4 pages: the
+    # replacement's last task reports a grandchild (or deeper) as parent.
+    "chain_replace3@worker_process": "add(paginate_to(paginate_to(paginate_to)))",
+    "chain_replace4@worker_process": (
+        "add(paginate_to(paginate_to(paginate_to(paginate_to))))"
+    ),
+    # Replaced by a group inside a chain: celery.accumulate, the chord's
+    # callback, reuses the ID and reports the last header as parent.
+    "chain_replace_group@worker_process": "add(replace_with_group(chord{add, add}))",
     "chord_header_replace_same_name@worker_process": "chord{*tsum, add, paginate(paginate)}",
     # add.apply_async(parent_id=<an earlier add>) from a client: Celery
     # defaults root_id to the task's own ID there, so the task claims to be
@@ -384,6 +393,9 @@ _REPLACE_FLOWS = (
     "replace_same_name@worker_process",
     "chord_header_replace_same_name@worker_process",
     "chain_replace_same_name@worker_process",
+    "chain_replace3@worker_process",
+    "chain_replace4@worker_process",
+    "chain_replace_group@worker_process",
 )
 
 
@@ -403,7 +415,7 @@ def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
 
 
 @pytest.mark.parametrize("flow", sorted(_REPLACE_FLOWS))
-@pytest.mark.parametrize("skew_s", [-3600, -1, -0.025, 0.025, 1, 3600])
+@pytest.mark.parametrize("skew_s", [-3600, -1, -0.05, -0.025, 0.025, 1, 3600])
 def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
     flow: str, skew_s: float
 ) -> None:

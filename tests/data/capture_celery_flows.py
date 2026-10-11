@@ -120,6 +120,14 @@ def _after_earlier_task(build: Callable[[str], Signature]) -> Signature:
     return build(earlier.id)
 
 
+@app.task(bind=True, name="flows.paginate_to")
+def paginate_to(self: Any, page: int, pages: int) -> int:
+    """Fetch page 0 by replacing itself with a chain of pages 1..pages."""
+    if page == 0:
+        raise self.replace(chain(paginate_to.si(i, pages) for i in range(1, pages + 1)))
+    return page
+
+
 @app.task(name="flows.fail")
 def fail() -> int:
     """Raise, so a chord using it as a header never runs its body."""
@@ -204,6 +212,9 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         "replace_task": lambda: replace_with_task.s(),
         "replace_same_name": lambda: paginate.s(0),
         "chain_replace_same_name": lambda: chain(add.s(1, 1), paginate.si(0)),
+        "chain_replace3": lambda: chain(add.s(1, 1), paginate_to.si(0, 3)),
+        "chain_replace4": lambda: chain(add.s(1, 1), paginate_to.si(0, 4)),
+        "chain_replace_group": lambda: chain(add.s(1, 1), replace_with_group.si()),
         # Celery defaults root_id to the task's own ID outside a worker.
         "client_explicit_parent": lambda: _after_earlier_task(
             lambda parent: add.s(2, 2).set(parent_id=parent)
