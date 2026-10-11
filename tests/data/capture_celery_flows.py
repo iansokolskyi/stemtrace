@@ -12,7 +12,11 @@ adds the chord flows again (keys ending ``@chord_unlock``) with a
 the callback from its ``celery.chord_unlock`` polling task. ``--only NAME...``
 captures just those flows and merges them into the existing file;
 ``--suffix S`` stores them as ``NAME + S`` (e.g. to keep a capture made with
-an older stemtrace alongside a new one).
+an older stemtrace alongside a new one). ``--worker-process`` makes the worker
+forget which tasks were already announced before each task, as a worker in
+its own process does (the client and the in-process worker otherwise share
+that memory, which hides a worker's republished PENDING, e.g. from
+``task.replace()``).
 """
 
 import json
@@ -26,7 +30,9 @@ from typing import Any
 from celery import Celery, chain, chord, group
 from celery.canvas import Signature
 from celery.contrib.testing.worker import start_worker
+from celery.signals import task_prerun
 
+import stemtrace.library.signals as stemtrace_signals
 from stemtrace.core.events import TaskEvent
 from stemtrace.library.signals import connect_signals, disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
@@ -200,6 +206,11 @@ def _settle() -> None:
         time.sleep(0.5)
 
 
+def _forget_announced(**_: Any) -> None:
+    """Act as a worker in its own process: it never saw the client's sends."""
+    stemtrace_signals._pending_emitted.clear()
+
+
 def main() -> None:
     """Run the workflows and write (or, with --unlock, add) their events."""
     flows = _flows()
@@ -219,6 +230,8 @@ def main() -> None:
         flows = {name: flows[name] for name in only}
     captures: dict[str, list[dict[str, Any]]] = {}
     connect_signals(MemoryTransport())
+    if "--worker-process" in sys.argv:
+        task_prerun.connect(_forget_announced, weak=False)
     try:
         with start_worker(app, pool="solo", perform_ping_check=False):
             for name, build in flows.items():

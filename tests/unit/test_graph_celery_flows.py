@@ -13,6 +13,7 @@ root, group, chord callback and chord IDs of each event in turn).
 
 import json
 import random
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -328,6 +329,32 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {},
     ),
+    # The same with the worker in its own process: it announces the
+    # replacement's last task, under the replaced task's ID, with a second
+    # attempt-0 PENDING (another name, a parent from the replacement).
+    "replace_chain@worker_process": (
+        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
+        {},
+    ),
+    "replace_group@worker_process": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+        },
+        {"group:T2": None},
+    ),
+    "chain_replace_group_tsum@worker_process": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+            "T4": (_T, "group:T2", []),
+        },
+        {"group:T2": "T4"},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},
@@ -582,3 +609,37 @@ def test_replay_chain_link_spawning_task_with_delayed_subtask() -> None:
         _labelled_shape(graph, labels)
         == _EXPECTED["group_of_chains_link_spawns@publish_headers"][0]
     )
+
+
+@pytest.mark.parametrize(
+    "flow",
+    [
+        "replace_chain@worker_process",
+        "replace_group@worker_process",
+        "chain_replace_group_tsum@worker_process",
+    ],
+)
+@pytest.mark.parametrize("skew_s", [-3600, 3600])
+def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
+    flow: str, skew_s: int
+) -> None:
+    """The replacement's events for the replaced task's ID come from another
+    host: with its clock skewed either way, the replaced task keeps its name
+    and place, in any order."""
+    events = _CAPTURES[flow]
+    labels = _labels(events)
+    original = _id(labels, "T0")
+    name = next(e["name"] for e in events if e["task_id"] == original)
+    skewed = []
+    for event in events:
+        if event["task_id"] == original and event["name"] != name:
+            shifted = datetime.fromisoformat(event["timestamp"]) + timedelta(
+                seconds=skew_s
+            )
+            event = {**event, "timestamp": shifted.isoformat()}
+        skewed.append(event)
+    for order in _orders(skewed):
+        graph = _replay(order)
+
+        assert graph.nodes[original].name == name
+        assert _labelled_shape(graph, labels) == _EXPECTED[flow][0]
