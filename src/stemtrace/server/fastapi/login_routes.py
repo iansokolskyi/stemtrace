@@ -10,9 +10,10 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Final
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
+from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.fastapi.paths import browser_path, cookie_path_for
 
 if TYPE_CHECKING:
@@ -30,6 +31,9 @@ _REASON_MESSAGES: Final[dict[str, str]] = {
     ),
 }
 _LOGIN_TEMPLATE_PATH: Final[str] = "templates/login.html"
+_THROTTLED_MESSAGE: Final[str] = (
+    "Too many failed sign-in attempts. Try again in {seconds} seconds."
+)
 
 
 @lru_cache(maxsize=1)
@@ -96,22 +100,49 @@ def _login_page_html(*, action_path: str, error: str | None, next_path: str) -> 
     )
 
 
+def _throttled_response(
+    request: Request, next_path: str | None, wait_s: int, default_next_path: str
+) -> HTMLResponse:
+    """Render the sign-in page with a fixed lockout message, as a 429.
+
+    The same response for every username and password, so it reveals nothing
+    about which part was wrong.
+    """
+    safe_next = _safe_next(
+        next_path or request.query_params.get("next"),
+        default=browser_path(request.scope, default_next_path),
+    )
+    page = _login_page_html(
+        action_path=request.url_for("stemtrace_login_submit").path,
+        error=_THROTTLED_MESSAGE.format(seconds=wait_s),
+        next_path=safe_next,
+    )
+    return HTMLResponse(page, status_code=429, headers={"Retry-After": str(wait_s)})
+
+
 def create_login_router(
     config: FormAuthConfig,
     *,
     default_next_path: str,
+    throttle: LoginThrottle | None = None,
 ) -> APIRouter:
     """Create router that serves /login and /logout for stemtrace.
+
+    Failed sign-ins are throttled per client IP and per username (see
+    :class:`LoginThrottle`): once over the limit, ``POST /login`` answers 429
+    with ``Retry-After`` without checking the credentials.
 
     Args:
         config: Form auth configuration.
         default_next_path: Default redirect target after login (absolute route
             path; the ASGI root_path is prepended per request).
+        throttle: Failed-attempt throttle; a new in-memory one if None.
 
     Returns:
         A configured APIRouter.
     """
     router = APIRouter(tags=["stemtrace-auth"])
+    login_throttle = throttle or LoginThrottle()
 
     @router.get(
         "/login",
@@ -138,7 +169,7 @@ def create_login_router(
         return HTMLResponse(rendered_html, status_code=200)
 
     @router.post("/login", include_in_schema=False, name="stemtrace_login_submit")
-    async def login_submit(request: Request) -> RedirectResponse:
+    async def login_submit(request: Request) -> Response:
         """Handle login form submit and set session cookie."""
         # Avoid python-multipart dependency: our login form uses the default
         # application/x-www-form-urlencoded encoding, so we can parse it ourselves.
@@ -152,6 +183,11 @@ def create_login_router(
         next_values = form.get("next")
         next_path = next_values[0] if next_values else None
 
+        client_ip = request.client.host if request.client else ""
+        wait = login_throttle.retry_after(client_ip, username)
+        if wait > 0:
+            return _throttled_response(request, next_path, wait, default_next_path)
+
         username_ok = secrets.compare_digest(
             username.encode("utf-8"), config.username.encode("utf-8")
         )
@@ -159,6 +195,10 @@ def create_login_router(
             password.encode("utf-8"), config.password.encode("utf-8")
         )
         if not (username_ok and password_ok):
+            login_throttle.record_failure(client_ip, username)
+            wait = login_throttle.retry_after(client_ip, username)
+            if wait > 0:
+                return _throttled_response(request, next_path, wait, default_next_path)
             # Preserve next parameter if present.
             next_param = (next_path or request.query_params.get("next")) or None
             qs = {"error": "Invalid username or password"}
@@ -170,6 +210,7 @@ def create_login_router(
                 status_code=303,
             )
 
+        login_throttle.record_success(client_ip, username)
         effective_next = _safe_next(
             next_path or request.query_params.get("next"),
             default=browser_path(request.scope, default_next_path),

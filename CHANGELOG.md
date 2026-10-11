@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Built-in login: failed sign-ins are throttled in memory per client IP (5) and per username (20); further attempts get 429 with `Retry-After`, starting at 30 seconds and doubling up to 15 minutes. Limits are per process, and the client IP comes from the ASGI server (behind a proxy, set uvicorn's `--forwarded-allow-ips` / `FORWARDED_ALLOW_IPS`). See the README.
 - `stemtrace server --root-path /prefix` (or `STEMTRACE_ROOT_PATH`) for a reverse proxy that serves stemtrace under a path prefix and strips it; it is passed to uvicorn as `root_path`.
 
 ### Fixed
