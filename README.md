@@ -495,7 +495,10 @@ stemtrace server \
 path prefix and strips it before forwarding (e.g. `https://example.com/monitoring/` →
 `http://stemtrace:8000/`). It is passed to uvicorn as its `root_path`, so the UI, login
 redirects and session cookies use the prefixed URLs. Leave it unset when the proxy forwards
-the full path or serves stemtrace at the root of a host.
+the full path or serves stemtrace at the root of a host. The prefix may only contain
+`/`-separated segments of letters, digits, `.`, `_` and `-` (up to 64 characters each);
+`stemtrace server` refuses to start with anything else, and an embedded app whose `root_path`
+breaks this rule logs a warning and serves UI links without the prefix.
 
 #### Node Names from Task Arguments
 

@@ -118,7 +118,20 @@ def server(
         create_form_auth_middleware,
     )
     from stemtrace.server.fastapi.login_routes import create_login_router
-    from stemtrace.server.ui.static import get_static_router_with_base
+    from stemtrace.server.ui.static import (
+        get_static_router_with_base,
+        is_usable_mount_prefix,
+    )
+
+    # uvicorn wants "/prefix": a leading slash and no trailing one.
+    normalized_root = root_path.strip().strip("/")
+    effective_root_path = f"/{normalized_root}" if normalized_root else ""
+    if not is_usable_mount_prefix(effective_root_path):
+        raise typer.BadParameter(
+            "must be '/'-separated segments of letters, digits, '.', '_' and '-' "
+            f"(up to 64 characters each), got {root_path!r}",
+            param_hint="'--root-path'",
+        )
 
     typer.echo(f"Starting stemtrace server on {host}:{port}")
     typer.echo(f"Broker: {broker_url}")
@@ -193,14 +206,12 @@ def server(
     if ui_router is not None:
         fastapi_app.include_router(ui_router)
 
-    # uvicorn wants "/prefix": a leading slash and no trailing one.
-    normalized_root = root_path.strip().strip("/")
     uvicorn.run(
         fastapi_app,
         host=host,
         port=port,
         reload=reload,
-        root_path=f"/{normalized_root}" if normalized_root else "",
+        root_path=effective_root_path,
     )
 
 

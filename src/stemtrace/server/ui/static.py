@@ -21,6 +21,8 @@ _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 _PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
+_unsafe_root_path_warned = False
+
 
 def _sanitize_derived_prefix(prefix: str) -> str:
     """Sanitize a prefix derived from request paths.
@@ -51,6 +53,39 @@ def _sanitize_derived_prefix(prefix: str) -> str:
         return ""
 
     return "/" + "/".join(segments)
+
+
+def is_usable_mount_prefix(prefix: str) -> bool:
+    """Whether the UI can serve under ``prefix`` (e.g. an ASGI root_path).
+
+    The UI only writes prefixes that pass its sanitizer into the page (see
+    ``_sanitize_derived_prefix``); anything else is dropped, so the UI would
+    load its assets and API from the wrong URLs.
+
+    Args:
+        prefix: Absolute path prefix such as "/monitoring"; "" means none.
+
+    Returns:
+        True if the prefix is empty or survives sanitization unchanged.
+    """
+    normalized = prefix.rstrip("/")
+    return _sanitize_derived_prefix(normalized) == normalized
+
+
+def _warn_if_unsafe_root_path(root_path: object) -> None:
+    """Log once per process when the ASGI root_path can't be used by the UI."""
+    global _unsafe_root_path_warned
+    if _unsafe_root_path_warned or not isinstance(root_path, str):
+        return
+    if is_usable_mount_prefix(root_path):
+        return
+    _unsafe_root_path_warned = True
+    logger.warning(
+        "Ignoring ASGI root_path %r in the stemtrace UI: only segments of "
+        "letters, digits, '.', '_' and '-' (up to 64 characters each) are "
+        "supported, so UI links will miss the reverse-proxy prefix.",
+        root_path,
+    )
 
 
 def _rewrite_html_for_prefix(
@@ -211,6 +246,7 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
             asset_prefix = prefix
             effective_logout = logout_path
+        _warn_if_unsafe_root_path(request.scope.get("root_path"))
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),
@@ -263,6 +299,7 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             prefix = _sanitize_derived_prefix(derived)
             asset_prefix = prefix
             effective_logout = logout_path
+        _warn_if_unsafe_root_path(request.scope.get("root_path"))
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),

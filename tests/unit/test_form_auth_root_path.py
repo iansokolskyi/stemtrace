@@ -8,6 +8,7 @@ prepends it to ``scope["path"]``; Starlette strips it again before routing.
 
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,7 @@ _SHELL = (
 @pytest.fixture
 def fake_dist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A built UI with an index shell and one hashed asset."""
+    monkeypatch.setattr(static, "_unsafe_root_path_warned", False)
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text(_SHELL)
@@ -160,6 +162,20 @@ class TestEmbeddedBehindRootPath:
         assert f'__STEMTRACE_LOGOUT_PATH__="{_ROOT}/stemtrace/logout"' in shell.text
         assert f'src="{_ROOT}/stemtrace/assets/index-abc123.js"' in shell.text
 
+    def test_unsafe_root_path_logs_one_warning(
+        self, fake_dist: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger="stemtrace.server.ui.static")
+        with TestClient(_embedded_app(), root_path="/~ops") as client:
+            _login(client, "/~ops/stemtrace/login")
+            first = client.get("/~ops/stemtrace/workers")
+            second = client.get("/~ops/stemtrace/")
+
+        assert first.status_code == second.status_code == 200
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1
+        assert "'/~ops'" in messages[0]
+
     async def test_root_path_not_in_scope_path_still_protected(
         self, fake_dist: Path
     ) -> None:
@@ -271,6 +287,23 @@ class TestCliBehindRootPath:
         _, kwargs = cli_app("--root-path", value)
 
         assert kwargs["root_path"] == expected
+
+    @pytest.mark.parametrize("value", ["/~ops", "/a b", "/" + "x" * 65, "/a/../b"])
+    def test_root_path_rejected_when_ui_cannot_use_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_dist: Path,
+        value: str,
+    ) -> None:
+        ran: list[object] = []
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: ran.append(a))
+        result = CliRunner().invoke(
+            cli.app, ["server", "--broker-url", "memory://", "--root-path", value]
+        )
+
+        assert result.exit_code == 2
+        assert "--root-path" in result.output
+        assert ran == []
 
     def test_root_path_env_var_reaches_uvicorn(
         self,
