@@ -13,6 +13,17 @@ import { createGroup, createSuccessTask, createWorkflowWithGroup } from './fixtu
 const isRealMode = process.env.E2E_MODE === 'real'
 
 /**
+ * Open a graph's page and wait until it has rendered a node. The wait is
+ * bounded by the test's timeout rather than an assertion's 5 s, which a slow
+ * first load of the dev server's modules can exceed (a blank page). It waits
+ * for the node to be in the DOM, as the counts that follow do, not visible.
+ */
+async function openGraph(page: import('@playwright/test').Page, rootId: string): Promise<void> {
+  await page.goto(`/graph/${encodeURIComponent(rootId)}`)
+  await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
+}
+
+/**
  * Helper to navigate to first available graph
  */
 async function navigateToFirstGraph(page: import('@playwright/test').Page): Promise<boolean> {
@@ -614,8 +625,7 @@ test.describe('Graph Page - Chains In Groups', () => {
     groupNode.children = [a1.task_id, a2.task_id]
     mockApi.addTasks([groupNode, a1, a2, b1, b2])
 
-    await page.goto(`/graph/${encodeURIComponent(groupNode.task_id)}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, groupNode.task_id)
 
     // 1 GROUP container + 1 header label + 4 tasks, all inside the container
     await expect(page.locator('.react-flow__node')).toHaveCount(6)
@@ -640,8 +650,7 @@ test.describe('Graph Page - Container Cell Children', () => {
     header.children = [subtask.task_id]
     mockApi.addTasks([chordNode, ...rest, subtask])
 
-    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, chordNode.task_id)
 
     // CHORD container + header label + 2 headers + callback + subtask
     await expect(page.locator('.react-flow__node')).toHaveCount(6)
@@ -660,8 +669,7 @@ test.describe('Graph Page - Container Cell Children', () => {
     for (const task of [innerGroup, ...innerMembers]) task.root_id = chordNode.task_id
     mockApi.addTasks([chordNode, ...rest, innerGroup, ...innerMembers])
 
-    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, chordNode.task_id)
 
     // Each container + its header label, 2 chord headers, the callback and
     // 2 inner members: every node exactly once
@@ -690,8 +698,7 @@ test.describe('Graph Page - Layout', () => {
     }
     mockApi.addTasks(all)
 
-    await page.goto(`/graph/${parent.task_id}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, parent.task_id)
     // parent + 3 x (container + header label + 2 headers + callback + subtask)
     await expect(page.locator('.react-flow__node')).toHaveCount(19)
     await page.screenshot({ path: testInfo.outputPath('sibling-chords.png'), fullPage: true })
@@ -745,8 +752,7 @@ test.describe('Graph Page - Chord Bodies', () => {
     chordNode.children.push(body.task_id)
     mockApi.addTasks([chordNode, ...headers, body, ...bodyTasks])
 
-    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, chordNode.task_id)
 
     // Each container + its header label, 2 headers, 2 body tasks
     await expect(page.locator('.react-flow__node')).toHaveCount(8)
@@ -790,8 +796,7 @@ test.describe('Graph Page - Chord Bodies', () => {
     for (const task of [inner, ...innerRest]) task.root_id = outer.task_id
     mockApi.addTasks([outer, ...outerRest, inner, ...innerRest])
 
-    await page.goto(`/graph/${encodeURIComponent(outer.task_id)}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, outer.task_id)
 
     // Each CHORD: container + header label + 2 headers; plus the inner callback
     await expect(page.locator('.react-flow__node')).toHaveCount(9)
@@ -814,8 +819,7 @@ test.describe('Graph Page - Malformed Links', () => {
     groupNode.children = [groupNode.task_id, ...groupNode.children]
     mockApi.addTasks([groupNode, ...members])
 
-    await page.goto(`/graph/${encodeURIComponent(groupNode.task_id)}`)
-    await page.waitForLoadState('networkidle')
+    await openGraph(page, groupNode.task_id)
 
     // 1 GROUP container + 1 header label + 2 members
     await expect(page.locator('.react-flow__node')).toHaveCount(4)
@@ -832,8 +836,7 @@ test.describe('Graph Page - Malformed Links', () => {
     first.parent_id = second.task_id
     mockApi.addTasks([first, second])
 
-    await page.goto(`/graph/${first.task_id}`)
-    await page.waitForLoadState('networkidle')
+    await openGraph(page, first.task_id)
 
     await expect(page.locator('.react-flow__node')).toHaveCount(2)
   })
@@ -855,8 +858,7 @@ test.describe('Graph Page - Malformed Links', () => {
       if (msg.type() === 'warning' || msg.type() === 'error') messages.push(msg.text())
     })
 
-    await page.goto(`/graph/${parent.task_id}`)
-    await page.waitForLoadState('load')
+    await openGraph(page, parent.task_id)
 
     // parent + CHORD container + header label + 2 headers + callback
     await expect(page.locator('.react-flow__node')).toHaveCount(6)
