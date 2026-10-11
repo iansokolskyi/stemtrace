@@ -316,11 +316,18 @@ batch_processor
 │  ├── add(20, 20) │──┼──► aggregate_results
 │  └── add(30, 30) │──┘
 └──────────────────┘
+
+# Group of chains: each chain is a row inside the group
+┌─ GROUP ─────────────────────────┐
+│  fetch(1) ──► parse(1)          │
+│  fetch(2) ──► parse(2)          │
+└─────────────────────────────────┘
 ```
 
 - **Synthetic containers** — GROUP/CHORD nodes are always created when 2+ tasks share a `group_id`
 - **Parent linking** — When spawned from a parent task, the container becomes a child of that parent
-- **Chord callbacks** — Rendered outside the container with edges from each header task
+- **Chord callbacks** — Rendered outside the container with edges from each header task. The callback is the task the chord's body starts with (for a chain body, the rest of the chain follows it). It is only drawn on evidence from the events: the callback the headers name, or the chord's group ID that Celery stamps on a chain body's last task, traced back to a header (or Celery's `chord_unlock` task). A chord whose body never ran (e.g. a header failed) shows no callback, and a header's own subtasks are never mistaken for it
+- **Chains in groups** — For `group(chain(a1, b1), chain(a2, b2))` Celery only marks `b1` and `b2` as group members. A member's parent task whose only child is that member, and which belongs to no group and isn't a chord callback, is drawn inside the group as part of the member's chain (and so on up the chain), so the whole workflow is one graph. A parent with other children (e.g. one that started the group, or spawned other tasks) is never pulled in. Chains are drawn once every member has reported its parent
 - **Timing** — Each node displays start time and duration directly in the graph
 - **Aggregate state** — Container shows running/success/failure based on member states
 
