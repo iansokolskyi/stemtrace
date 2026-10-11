@@ -51,6 +51,7 @@ const CHILD_SPACING = 12
 const LEVEL_SPACING = 320
 const ROW_GAP = 40
 const LEVEL_GAP = 160
+const CALLBACK_GAP = 60
 
 /**
  * A node's children without links back to itself. The server never sends
@@ -193,6 +194,11 @@ function buildGraphElements(
       const heads = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
       const rowLength = longestRow(heads.map((cid) => containerRow(nodes, cid, node.group_id)))
       width = rowLength * TASK_NODE_MIN_WIDTH + (rowLength - 1) * ROW_GAP + CONTAINER_PADDING * 2
+      // A chord's task callback is drawn to the right of its container
+      const callback = node.chord_id ? nodes[node.chord_id] : undefined
+      if (nodeType === 'CHORD' && callback && (callback.node_type ?? 'TASK') === 'TASK') {
+        width += CALLBACK_GAP + TASK_NODE_MIN_WIDTH
+      }
     }
     levelWidths[level] = Math.max(levelWidths[level] ?? 0, width)
   }
@@ -398,7 +404,7 @@ function buildGraphElements(
             const callbackStartTime = formatTime(callbackNode.first_seen)
 
             // Position callback to the RIGHT of container, vertically centered
-            const callbackX = levelX(level) + containerWidth + 60
+            const callbackX = levelX(level) + containerWidth + CALLBACK_GAP
             const callbackY = yPos + (containerHeight - TASK_NODE_HEIGHT) / 2
 
             flowNodes.push({

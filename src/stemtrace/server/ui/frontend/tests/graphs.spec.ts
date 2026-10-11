@@ -670,6 +670,52 @@ test.describe('Graph Page - Container Cell Children', () => {
   })
 })
 
+test.describe('Graph Page - Layout', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('sibling chords with header subtasks do not overlap', async ({ page }, testInfo) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const parent = createSuccessTask('tasks.parent')
+    const all = [parent]
+    for (let i = 0; i < 3; i++) {
+      const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+      const [header] = rest
+      const subtask = createSuccessTask('tasks.subtask')
+      subtask.parent_id = header.task_id
+      header.children = [subtask.task_id]
+      chordNode.parent_id = parent.task_id
+      parent.children.push(chordNode.task_id)
+      for (const task of [chordNode, ...rest, subtask]) task.root_id = parent.task_id
+      all.push(chordNode, ...rest, subtask)
+    }
+    mockApi.addTasks(all)
+
+    await page.goto(`/graph/${parent.task_id}`)
+    await page.waitForLoadState('load')
+    // parent + 3 x (container + header label + 2 headers + callback + subtask)
+    await expect(page.locator('.react-flow__node')).toHaveCount(19)
+    await page.screenshot({ path: testInfo.outputPath('sibling-chords.png'), fullPage: true })
+
+    // Top-level nodes (containers, tasks, callbacks, subtasks) never overlap
+    const boxes = []
+    for (const node of await page
+      .locator('.react-flow__node:not(.container-child):not(.header-label-node)')
+      .all()) {
+      const box = await node.boundingBox()
+      if (box) boxes.push({ id: await node.getAttribute('data-id'), ...box })
+    }
+    // parent, 3 containers, 3 callbacks, 3 subtasks
+    expect(boxes).toHaveLength(10)
+    for (const [i, a] of boxes.entries()) {
+      for (const b of boxes.slice(i + 1)) {
+        const overlap =
+          a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+        expect(overlap, `${a.id} overlaps ${b.id}`).toBe(false)
+      }
+    }
+  })
+})
+
 test.describe('Graph Page - Chord Bodies', () => {
   test.skip(isRealMode, 'Mock-only test')
 
