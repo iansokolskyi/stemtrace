@@ -200,11 +200,14 @@ def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
     handshake commands sent while connecting go through it too, hence the
     name check).
     """
-    from redis.connection import Connection
+    from redis.connection import Connection, UnixDomainSocketConnection
 
     mixin = _resolved_connect_mixin()
-    if connection_class is Connection:
-        bases: tuple[type[Any], ...] = (mixin,)
+    if issubclass(connection_class, UnixDomainSocketConnection):
+        # A Connection subclass in redis-py 4.x, but there is no host to resolve.
+        bases: tuple[type[Any], ...] = (connection_class,)
+    elif connection_class is Connection:
+        bases = (mixin,)
     elif issubclass(connection_class, Connection):
         # E.g. SSLConnection: its _connect() calls super()._connect(), which
         # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.

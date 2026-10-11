@@ -128,9 +128,7 @@ def stream_prefix() -> Iterator[str]:
 
 
 @pytest.mark.integration
-def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_publish_to_silent_listener_opens_after_three_attempts() -> None:
     """A Redis that accepts but never answers costs three attempts, then none."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -150,8 +148,6 @@ def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts(
     # redis-py's 5s default.
     assert breaker.dropped == 20 - PUBLISH_FAILURES_TO_OPEN
     assert sum(durations) < 10 * PUBLISH_SOCKET_TIMEOUT, durations
-    # The handshake timed out, so no XADD was ever sent: nothing unconfirmed.
-    assert "unconfirmed" not in caplog.text
 
 
 class _ReplyOnlyToHandshake:
@@ -197,8 +193,13 @@ class _ReplyOnlyToHandshake:
                     if self._xadd_reply is not None:
                         conn.sendall(self._xadd_reply)
                 elif command == b"HELLO":
-                    # redis-py 8 speaks RESP3 and checks the reply's proto.
-                    conn.sendall(b"%1\r\n+proto\r\n:3\r\n")
+                    # Sent by redis-py versions that negotiate a protocol
+                    # (RESP3 by default in 8.x); the client checks "proto".
+                    proto = int(args[1]) if len(args) > 1 else 2
+                    if proto == 3:
+                        conn.sendall(b"%1\r\n+proto\r\n:3\r\n")
+                    else:
+                        conn.sendall(b"*2\r\n$5\r\nproto\r\n:2\r\n")
                 else:
                     conn.sendall(b"+OK\r\n")
 

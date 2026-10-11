@@ -1,5 +1,7 @@
 """Tests for RedisTransport.publish(): bounded client and circuit breaker."""
 
+import contextlib
+import importlib
 import inspect
 import logging
 import os
@@ -10,7 +12,6 @@ from typing import Any
 import pytest
 import redis
 import redis.connection
-from redis._parsers.socket import SERVER_CLOSED_CONNECTION_ERROR
 from redis.exceptions import AuthenticationError, BusyLoadingError, ResponseError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -301,7 +302,8 @@ class TestRedisPublishClient:
 
         assert connection.socket_timeout == PUBLISH_SOCKET_TIMEOUT
         assert connection.socket_connect_timeout == PUBLISH_CONNECT_TIMEOUT
-        assert connection.retry.get_retries() == 0
+        # Retry.get_retries() is missing in some versions (e.g. 5.0.1).
+        assert connection.retry._retries == 0
 
     def test_from_url_keeps_consume_client_timeouts_and_other_options(self) -> None:
         url = "redis://localhost:6379/3?socket_timeout=30&health_check_interval=7"
@@ -387,7 +389,11 @@ class TestRedisPublishClientPerProcess:
         inherited pool's lock (redis-py 8.1 ConnectionPool.reset)."""
         transport = RedisTransport.from_url("redis://localhost:6379/0")
 
-        assert transport.publish_client.auto_close_connection_pool is False
+        # redis-py 4.x has no such attribute: its close() never closes the pool.
+        assert (
+            getattr(transport.publish_client, "auto_close_connection_pool", False)
+            is False
+        )
 
 
 class TestRedisPublishConnectionTracksXadd:
@@ -423,10 +429,18 @@ class TestRedisPublishConnectionTracksXadd:
 
 def test_lost_reply_messages_match_installed_redis_py() -> None:
     """The fixed transport-error messages _reply_lost() matches still exist."""
-    connection_source = inspect.getsource(redis.connection.AbstractConnection)
+    sources = [inspect.getsource(redis.connection)]
+    with contextlib.suppress(ImportError):  # redis-py >= 5 moved the parsers
+        sources.append(
+            inspect.getsource(importlib.import_module("redis._parsers.socket"))
+        )
+    connection_source = "".join(sources)
 
-    assert redis_transport._SERVER_CLOSED_CONNECTION == SERVER_CLOSED_CONNECTION_ERROR
-    assert f'f"{redis_transport._READ_FAILED_PREFIX}{{host_error}}' in connection_source
+    assert (
+        f'SERVER_CLOSED_CONNECTION_ERROR = "{redis_transport._SERVER_CLOSED_CONNECTION}"'
+        in connection_source
+    )
+    assert f'f"{redis_transport._READ_FAILED_PREFIX}' in connection_source
 
 
 class FakeResolver:
