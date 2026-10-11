@@ -13,16 +13,21 @@ import { createGroup, createWorkflowWithGroup } from './fixtures/mock-data'
 const isRealMode = process.env.E2E_MODE === 'real'
 
 /**
- * Helper to navigate to first available graph
+ * Helper to navigate to first available graph.
+ *
+ * Waits for the graphs list to settle: either a graph link shows up or the page
+ * says there are no graphs. Returns false only in the second case (genuinely no
+ * graph data, so callers skip). If neither appears (slow load, failed request)
+ * the wait times out and the test fails instead of silently skipping.
  */
 async function navigateToFirstGraph(page: import('@playwright/test').Page): Promise<boolean> {
   await page.goto('/graphs')
-  await page.waitForLoadState('networkidle')
 
   const graphLink = page.locator('a[href*="/graph/"]').first()
-  const isVisible = await graphLink.isVisible().catch(() => false)
+  const emptyState = page.getByText('No task graphs yet')
+  await expect(graphLink.or(emptyState)).toBeVisible({ timeout: 15_000 })
 
-  if (!isVisible) return false
+  if (!(await graphLink.isVisible())) return false
 
   await graphLink.click()
   await page.waitForLoadState('networkidle')
@@ -60,18 +65,11 @@ test.describe('Graphs Page', () => {
   })
 
   test('can navigate to graph detail', async ({ page }) => {
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
-
-    const graphLink = page.locator('a[href*="/graph/"]').first()
-    const isVisible = await graphLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
+    const hasGraph = await navigateToFirstGraph(page)
+    if (!hasGraph) {
       test.skip()
       return
     }
-
-    await graphLink.click()
     await expect(page).toHaveURL(/\/graph\/.+/)
   })
 })
@@ -85,18 +83,11 @@ test.describe('Graph Detail Page', () => {
 
   test('renders graph visualization', async ({ page }) => {
     // First go to graphs list
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
-
-    const graphLink = page.locator('a[href*="/graph/"]').first()
-    const isVisible = await graphLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
+    const hasGraph = await navigateToFirstGraph(page)
+    if (!hasGraph) {
       test.skip()
       return
     }
-
-    await graphLink.click()
     await page.waitForLoadState('networkidle')
 
     // Look for react-flow container or SVG graph
@@ -108,18 +99,11 @@ test.describe('Graph Detail Page', () => {
   })
 
   test('shows graph nodes', async ({ page }) => {
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
-
-    const graphLink = page.locator('a[href*="/graph/"]').first()
-    const isVisible = await graphLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
+    const hasGraph = await navigateToFirstGraph(page)
+    if (!hasGraph) {
       test.skip()
       return
     }
-
-    await graphLink.click()
     await page.waitForLoadState('networkidle')
 
     // Look for graph nodes
@@ -135,18 +119,11 @@ test.describe('Graph Detail Page', () => {
   })
 
   test('nodes show task state colors', async ({ page }) => {
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
-
-    const graphLink = page.locator('a[href*="/graph/"]').first()
-    const isVisible = await graphLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
+    const hasGraph = await navigateToFirstGraph(page)
+    if (!hasGraph) {
       test.skip()
       return
     }
-
-    await graphLink.click()
     await page.waitForLoadState('networkidle')
 
     // Nodes should have state-based styling
@@ -160,18 +137,11 @@ test.describe('Graph Detail Page', () => {
   })
 
   test('can click node to see task details', async ({ page }) => {
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
-
-    const graphLink = page.locator('a[href*="/graph/"]').first()
-    const isVisible = await graphLink.isVisible().catch(() => false)
-
-    if (!isVisible) {
+    const hasGraph = await navigateToFirstGraph(page)
+    if (!hasGraph) {
       test.skip()
       return
     }
-
-    await graphLink.click()
     await page.waitForLoadState('networkidle')
 
     // Click on a task node link (not container), which navigates to task details
