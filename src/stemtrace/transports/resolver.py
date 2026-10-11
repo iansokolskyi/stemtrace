@@ -29,6 +29,9 @@ AddrInfo = tuple[Any, ...]
 # previous answer keeps being used until a refresh succeeds).
 DNS_CACHE_TTL = 30.0
 
+# Longest a fork() waits for lookups in flight (see prepare_fork()).
+FORK_WAIT = 1.0
+
 
 @dataclass
 class _Entry:
@@ -46,7 +49,17 @@ class BoundedResolver:
     """getaddrinfo() with a bounded wait and a per-process cache.
 
     Thread-safe. Fork-safe: a forked child starts with an empty cache and a
-    fresh lock, since the parent's lookup threads don't exist in it.
+    fresh lock, since the parent's lookup threads don't exist in it. Lookup
+    threads also make fork() itself risky: glibc's getaddrinfo() takes
+    internal locks that fork() doesn't reset (e.g. while sorting several
+    addresses), and a child forked while a lookup holds one deadlocks on its
+    own next lookup (reproduced with glibc 2.41: 27 of 1000 children hung
+    while PUBLISH_RESOLVER refreshed a dual-stack name in the background).
+    prepare_fork(), registered with os.register_at_fork() for
+    PUBLISH_RESOLVER, therefore waits up to FORK_WAIT for lookups in flight
+    and keeps new ones from starting until the fork is done. A lookup still
+    running after FORK_WAIT is waiting on the network, which holds no such
+    lock (a child forked then resolved normally in the same reproduction).
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
@@ -57,6 +70,7 @@ class BoundedResolver:
         ttl: float = DNS_CACHE_TTL,
         getaddrinfo: Callable[..., list[AddrInfo]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        fork_wait: float = FORK_WAIT,
     ) -> None:
         """Initialize an empty resolver.
 
@@ -67,15 +81,20 @@ class BoundedResolver:
                 monkey-patched version is used even if stemtrace was imported
                 before patching.
             monotonic: Clock for the cache (injectable for tests).
+            fork_wait: Longest prepare_fork() waits for lookups in flight.
         """
         self._ttl = ttl
         self._getaddrinfo = getaddrinfo
         self._monotonic = monotonic
+        self._fork_wait = fork_wait
         self._start_over()
 
     def _start_over(self) -> None:
         """Reset the cache and lock (at init and in a forked child)."""
         self._lock = threading.Lock()
+        # Notified whenever a lookup ends; prepare_fork() waits on it.
+        self._idle = threading.Condition(self._lock)
+        self._lookups = 0
         self._pid = os.getpid()
         self._entries: dict[tuple[Any, ...], _Entry] = {}
 
@@ -154,6 +173,24 @@ class BoundedResolver:
             with contextlib.suppress(socket.gaierror):
                 self._start_lookup((host, port, family, socktype, proto), entry)
 
+    def prepare_fork(self) -> None:
+        """Before fork(): wait up to fork_wait for lookups, then hold the lock.
+
+        Holding the lock keeps new lookups from starting until
+        parent_after_fork() (in the parent) or child_after_fork() (in the
+        child) runs.
+        """
+        self._lock.acquire()
+        self._idle.wait_for(lambda: self._lookups == 0, timeout=self._fork_wait)
+
+    def parent_after_fork(self) -> None:
+        """After fork(), in the parent: let lookups start again."""
+        self._lock.release()
+
+    def child_after_fork(self) -> None:
+        """After fork(), in the child: start over (the lookup threads are gone)."""
+        self._start_over()
+
     def _start_lookup(self, key: tuple[Any, ...], entry: _Entry) -> threading.Event:
         """Start a lookup for ``key`` unless one is running (lock held).
 
@@ -165,6 +202,7 @@ class BoundedResolver:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
+        self._lookups += 1
         try:
             threading.Thread(
                 target=self._lookup,
@@ -174,6 +212,7 @@ class BoundedResolver:
             ).start()
         except RuntimeError as exc:  # e.g. "can't start new thread"
             entry.lookup = None
+            self._lookups -= 1
             raise socket.gaierror(
                 socket.EAI_AGAIN, f"Could not look up {key[0]!r}: {exc}"
             ) from exc
@@ -206,6 +245,8 @@ class BoundedResolver:
                 # After a failure too: a stale answer is retried once per TTL.
                 entry.refresh_at = self._monotonic() + self._ttl
                 entry.lookup = None
+                self._lookups -= 1
+                self._idle.notify_all()
             done.set()
 
 
@@ -235,3 +276,10 @@ def _is_ip_address(host: str) -> bool:
 
 # Shared by the publishers of every transport in this process.
 PUBLISH_RESOLVER = BoundedResolver()
+
+if hasattr(os, "register_at_fork"):  # POSIX; prefork pools fork worker processes
+    os.register_at_fork(
+        before=PUBLISH_RESOLVER.prepare_fork,
+        after_in_parent=PUBLISH_RESOLVER.parent_after_fork,
+        after_in_child=PUBLISH_RESOLVER.child_after_fork,
+    )

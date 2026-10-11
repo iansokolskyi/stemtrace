@@ -3,11 +3,12 @@
 import os
 import socket
 import threading
+import warnings
 from typing import Any
 
 import pytest
 
-from stemtrace.transports.resolver import BoundedResolver
+from stemtrace.transports.resolver import PUBLISH_RESOLVER, BoundedResolver
 
 AddrInfo = tuple[Any, ...]
 ADDRESS: list[AddrInfo] = [
@@ -266,3 +267,97 @@ class TestBoundedResolverInvalidate:
         _make(dns, clock).invalidate("redis.local", 6379)
 
         assert dns.calls == []
+
+
+class TestBoundedResolverFork:
+    """Forking waits (boundedly) for lookups in flight, then blocks new ones.
+
+    glibc's getaddrinfo() takes internal locks that fork() doesn't reset; a
+    child forked while a lookup thread holds one deadlocks on its own first
+    lookup of the same kind.
+    """
+
+    def test_prepare_fork_waits_for_lookup_in_flight(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()
+        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=JOIN_S)
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+        threading.Timer(0.05, dns.release.set).start()
+
+        resolver.prepare_fork()
+        try:
+            in_flight = resolver._lookups
+        finally:
+            resolver.parent_after_fork()
+
+        assert in_flight == 0
+        assert resolver.resolve("redis.local", 6379, timeout=0.0) == ADDRESS
+
+    def test_prepare_fork_gives_up_after_bound(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()  # the lookup never ends on its own
+        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=0.05)
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+
+        resolver.prepare_fork()
+        try:
+            in_flight = resolver._lookups
+        finally:
+            resolver.parent_after_fork()
+            dns.release.set()
+
+        assert in_flight == 1
+
+    def test_prepare_fork_holds_lock_until_after_fork(self) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+
+        resolver.prepare_fork()
+        try:
+            assert resolver._lock.acquire(blocking=False) is False
+        finally:
+            resolver.parent_after_fork()
+
+        assert resolver._lock.acquire(blocking=False) is True
+        resolver._lock.release()
+
+    def test_child_after_fork_starts_over_with_free_lock(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        resolver = _make(dns, clock)
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        resolver.prepare_fork()
+
+        resolver.child_after_fork()
+
+        assert resolver._lock.acquire(blocking=False) is True
+        resolver._lock.release()
+        assert resolver._entries == {}
+
+    def test_publish_resolver_is_registered_for_fork(self) -> None:
+        """A real fork while another thread holds the resolver's lock."""
+        held, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with PUBLISH_RESOLVER._lock:
+                held.set()
+                release.wait(JOIN_S)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        assert held.wait(JOIN_S)
+        threading.Timer(0.2, release.set).start()
+        with warnings.catch_warnings():
+            # Python warns that forking a multi-threaded process may deadlock:
+            # that is what the registered fork hooks guard against.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the child process
+            ok = PUBLISH_RESOLVER._lock.acquire(timeout=1.0)
+            os._exit(0 if ok else 1)
+        _, status = os.waitpid(pid, 0)
+        holder.join(JOIN_S)
+
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert PUBLISH_RESOLVER._lock.acquire(blocking=False) is True
+        PUBLISH_RESOLVER._lock.release()
