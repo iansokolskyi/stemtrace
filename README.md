@@ -635,11 +635,9 @@ Failed sign-ins are throttled in memory, per client IP and per username or brows
   the last 90 days are not affected. Restarting stemtrace clears all limits. If that's a
   concern, put stemtrace behind your own auth (see below) or a proxy with its own rate limits.
 - Guessing costs the same for every username, real or not: 20 guesses, then one per lockout
-  (about 4 an hour at the 15-minute cap). Flooding with other usernames can't reset a count:
-  to make room, stemtrace only drops counts at no more than half their limit (or forgotten
-  ones), so a count is reset only by an hour without failures or by a successful sign-in,
-  which clears the counts for its IP, username and device. The response is the same whether
-  the username exists or not.
+  (about 4 an hour at the 15-minute cap). A count goes down only after an hour without
+  failures or after a successful sign-in, which clears the counts for its IP, username and
+  device. The response is the same whether the username exists or not.
 - The client IP is the one your ASGI server reports; `X-Forwarded-For` is never read directly.
   Behind a reverse proxy or load balancer, tell the server which proxies to trust with uvicorn
   `--forwarded-allow-ips` or the `FORWARDED_ALLOW_IPS` env var (which `stemtrace server` also
@@ -649,15 +647,15 @@ Failed sign-ins are throttled in memory, per client IP and per username or brows
   shares the proxy's address and its IP limit (browsers with a device cookie aren't held up by
   that). Requests without a client address (e.g. uvicorn `--uds`) have no IP limit; the
   username and device limits still apply.
-- Limits are per process: with several workers or replicas, each counts on its own. Each
-  process tracks up to 10,000 unlocked and 10,000 locked keys of each kind (IPs, usernames,
-  devices). Locks are never dropped early. When a table is full, sign-ins from browsers
-  without a device cookie fail closed: every IP or username that isn't already tracked gets
-  429, for as long as the table stays full. Filling an IP table takes about 10,000 distinct IPs
-  (or IPv6 /64s) with 3 to 5 failures each; holding the lock table at the 15-minute cap takes
-  about one request per IP every 15 minutes (~11 requests/s). Filling the username table takes
-  about 10,000 usernames with 11 or more failures each. Browsers with a device cookie keep
-  working.
+- Limits are per process: with several workers or replicas, each counts on its own.
+- Failures are counted in fixed tables of 65,536 buckets per kind (IP, username, device;
+  about 1.5 MB each), not per key, so memory never grows and no amount of traffic can push out
+  or lower another key's count. Each key maps to two buckets through a hash keyed with a
+  random per-process secret, and is locked only if both are. Keys that share buckets can
+  therefore only be locked early, never late. Measured false locks for a username that never
+  failed: 0.01% with 500 usernames locked at once, 0.07% with 1,000, 1.9% with 5,000 and 21%
+  with 20,000 (an attacker locking junk usernames on purpose); IPs behave the same. Browsers
+  with a device cookie are never affected by IP or username buckets.
 
 Behind a reverse proxy that strips a path prefix, run your app with uvicorn's `--root-path`
 (e.g. `uvicorn app:app --root-path /monitoring`); the login page, redirects and the session
