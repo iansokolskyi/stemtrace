@@ -513,13 +513,14 @@ class TestGraphEdgeData:
                 chord_callback_id=callback_id,
             )
         )
-        # Callback task
+        # Callback task; Celery reports the last header as its parent
         store.add_event(
             TaskEvent(
                 task_id=callback_id,
                 name="tests.aggregate",
                 state=TaskState.SUCCESS,
                 timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                parent_id="header-2",
             )
         )
 
