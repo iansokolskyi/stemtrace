@@ -142,7 +142,9 @@ class _State:
         self.has_forked = False
         # Whether the helper can run here: None until checked.
         self.helper_usable: bool | None = None
-        self.helper_check_started = False
+        # When the one-off helper check started (monotonic), None before.
+        self.helper_check_started: float | None = None
+        self.helper_warned = False
 
 
 class BoundedResolver:
@@ -295,7 +297,11 @@ class BoundedResolver:
         helper is in use there is nothing to wait for. Holding the lock
         afterwards keeps new lookups from starting until parent_after_fork()
         or child_after_fork() runs.
+
+        It first takes the helper spawn lock (see _spawn_lock()), so the fork
+        never happens while a helper is being started.
         """
+        _spawn_lock().acquire()
         state = self._state()
         state.lock.acquire()
         state.held_for_fork = True
@@ -322,35 +328,61 @@ class BoundedResolver:
         if state.held_for_fork:
             state.held_for_fork = False
             state.lock.release()
+            _spawn_lock().release()
         self._check_helper(state)
 
     def child_after_fork(self) -> None:
-        """After fork(), in the child: start over (it hasn't forked itself)."""
+        """After fork(), in the child: start over (it hasn't forked itself).
+
+        The child also gets a fresh spawn lock: prepare_fork() took the
+        parent's, and nothing releases it in the child.
+        """
         self._states = {os.getpid(): _State()}
+        _SPAWN_LOCKS.clear()
 
     def _check_helper(self, state: _State) -> None:
         """Check once, in the background, that the helper can run here."""
-        if self._getaddrinfo is not None or state.helper_check_started:
+        if self._getaddrinfo is not None or state.helper_check_started is not None:
             return
-        state.helper_check_started = True
+        state.helper_check_started = self._monotonic()
 
         def check() -> None:
-            """Record whether the helper can run; warn once if it can't."""
+            """Record whether the helper can run, unless it's too late."""
             usable = _helper_usable()
-            state.helper_usable = usable
-            if not usable:
-                logger.warning(
-                    "stemtrace can't start %r to resolve broker host names in a "
-                    "helper process; resolving in-process, and every fork waits "
-                    "up to %gs for lookups in flight",
-                    sys.executable,
-                    self._fork_wait,
-                )
+            with state.lock:
+                if state.helper_usable is None:
+                    state.helper_usable = usable
+                    if not usable:
+                        self._warn_helper_unusable(state)
 
         with contextlib.suppress(RuntimeError):  # can't start: stay in-process
             threading.Thread(
                 target=check, name="stemtrace-dns-helper-check", daemon=True
             ).start()
+
+    def _warn_helper_unusable(self, state: _State) -> None:
+        """Log, once per process, that lookups stay in-process (lock held)."""
+        if state.helper_warned:
+            return
+        state.helper_warned = True
+        logger.warning(
+            "stemtrace can't start %r to resolve broker host names in a helper "
+            "process; resolving in-process, and every fork waits up to %gs for "
+            "lookups in flight",
+            sys.executable,
+            self._fork_wait,
+        )
+
+    def _helper_check_overdue(self, state: _State) -> None:
+        """Give up on a helper check that hasn't answered in time (lock held)."""
+        started = state.helper_check_started
+        if (
+            state.helper_usable is None
+            and started is not None
+            and self._monotonic() - started >= HELPER_CHECK_TIMEOUT
+        ):
+            state.helper_usable = False
+            self._warn_helper_unusable(state)
 
     def _start_lookup(
         self, state: _State, key: tuple[Any, ...], entry: _Entry
@@ -365,6 +397,7 @@ class BoundedResolver:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
+        self._helper_check_overdue(state)
         use_helper = state.has_forked and state.helper_usable is True
         use_helper = use_helper and self._getaddrinfo is None
         if not use_helper:
@@ -440,7 +473,7 @@ def _getaddrinfo_in_helper(
 
     The host goes in argv, never through a shell. ``-I -S`` keeps the helper
     isolated from the environment and skips site packages, so it starts fast
-    (tens of milliseconds). subprocess.run() kills and reaps it on timeout.
+    (tens of milliseconds). It is killed and reaped on timeout.
 
     Raises:
         socket.gaierror: As getaddrinfo() would (same errno), or EAI_AGAIN
@@ -450,13 +483,8 @@ def _getaddrinfo_in_helper(
     command = [sys.executable, "-I", "-S", "-c", _HELPER_SCRIPT, host]
     command += [str(int(value)) for value in (port or 0, family, socktype, proto)]
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=HELPER_TIMEOUT,
-            check=False,
-        )
-        reply = json.loads(completed.stdout)
+        _, stdout = _run_helper(command, HELPER_TIMEOUT)
+        reply = json.loads(stdout)
     except subprocess.TimeoutExpired as exc:
         raise socket.gaierror(
             socket.EAI_AGAIN,
@@ -493,15 +521,61 @@ def _helper_usable() -> bool:
     if not _PYTHON_EXECUTABLE.match(Path(executable).name):
         return False
     try:
-        completed = subprocess.run(
-            [executable, "-I", "-S", "-c", "print('stemtrace')"],
-            capture_output=True,
-            timeout=HELPER_CHECK_TIMEOUT,
-            check=False,
+        returncode, stdout = _run_helper(
+            [executable, "-I", "-S", "-c", "print('stemtrace')"], HELPER_CHECK_TIMEOUT
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return completed.returncode == 0 and completed.stdout.strip() == b"stemtrace"
+    return returncode == 0 and stdout.strip() == b"stemtrace"
+
+
+# One re-entrant lock per process, created on first use (after gevent may have
+# patched threading), that helper starts and fork() take (see _run_helper()).
+_SPAWN_LOCKS: dict[int, Any] = {}
+
+
+def _spawn_lock() -> Any:
+    """This process's helper spawn lock (an RLock), created on first use.
+
+    Re-entrant because gevent's subprocess starts the helper with os.fork(),
+    which runs prepare_fork() on the spawning greenlet while it holds this
+    lock. A forked child gets its own (dict.setdefault() keyed by PID).
+    """
+    pid = os.getpid()
+    lock = _SPAWN_LOCKS.get(pid)
+    if lock is None:
+        lock = _SPAWN_LOCKS.setdefault(pid, threading.RLock())
+    return lock
+
+
+def _run_helper(command: list[str], timeout: float) -> tuple[int | Any, bytes]:
+    """Start ``command`` and return its exit code and stdout, within ``timeout``.
+
+    Popen() runs under the spawn lock, which prepare_fork() takes too: a
+    child forked while Popen() runs would inherit the pipes Popen() hasn't
+    closed yet, so Popen() would wait forever for its exec status, or the
+    helper's stdout would never reach EOF (subprocess.run()'s timeout covers
+    only the reading). Reading the output happens outside the lock.
+
+    Raises:
+        subprocess.TimeoutExpired: The helper didn't finish in time; it has
+            been killed and reaped.
+        OSError: It couldn't be started.
+    """
+    with _spawn_lock():
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    return process.returncode, stdout
 
 
 def _check_host_name(host: str) -> None:

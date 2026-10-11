@@ -165,3 +165,129 @@ def test_only_a_process_that_forked_uses_the_helper() -> None:
         "child": ["in_process"],
         "after": ["helper"],
     }
+
+
+# Forks long-lived children a few ms apart (like a prefork master starting a
+# pool) while the helper check and helper lookups run, then reports what the
+# resolver ended up with.
+_FORK_STORM_SCRIPT = """\
+import json, os, threading, time, warnings
+from stemtrace.transports import resolver
+
+warnings.simplefilter("ignore", DeprecationWarning)
+r = resolver.PUBLISH_RESOLVER
+r.resolve("localhost", 1, timeout=5.0)
+stop = threading.Event()
+
+def churn():
+    i = 0
+    while not stop.is_set():
+        i += 1
+        try:
+            r.resolve("localhost", 1000 + i % 50, timeout=5.0)
+        except OSError:
+            pass
+        time.sleep(0.002)
+
+worker = threading.Thread(target=churn)
+worker.start()
+release_read, release_write = os.pipe()
+children = []
+for _ in range(150):
+    pid = os.fork()
+    if pid == 0:
+        # Like a pool child: lives on, never execs, keeps what it inherited.
+        os.close(release_write)
+        os.read(release_read, 1)
+        os._exit(0)
+    children.append(pid)
+    time.sleep(0.003)
+stop.set()
+worker.join()
+state = r._state()
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and (
+    state.helper_usable is None
+    or any(e.lookup is not None for e in state.entries.values())
+):
+    time.sleep(0.1)
+zombies = 0
+for task in os.listdir("/proc/self/task"):
+    try:  # threads and processes may come and go while this reads
+        with open(f"/proc/self/task/{task}/children") as f:
+            for child in f.read().split():
+                with open(f"/proc/{child}/stat") as stat:
+                    zombies += stat.read().split(") ")[1].startswith("Z")
+    except FileNotFoundError:
+        pass
+result = {
+    "helper_usable": state.helper_usable,
+    "stuck_lookups": sum(e.lookup is not None for e in state.entries.values()),
+    "zombies": zombies,
+}
+os.close(release_write)  # the children exit
+for pid in children:
+    os.waitpid(pid, 0)
+print(json.dumps(result))
+"""
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="counts zombies through /proc"
+)
+def test_fork_storm_while_helpers_start_leaves_nothing_stuck() -> None:
+    """A child forked mid-Popen() would hold the helper's pipes open: Popen()
+    would never return, the check never finish, the lookup never end."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _FORK_STORM_SCRIPT],
+        capture_output=True,
+        timeout=120,
+        check=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+
+    assert json.loads(completed.stdout) == {
+        "helper_usable": True,
+        "stuck_lookups": 0,
+        "zombies": 0,
+    }
+
+
+# Under gevent, subprocess starts the helper with os.fork() from the spawning
+# greenlet, which runs prepare_fork() while that greenlet holds the spawn lock.
+_GEVENT_SCRIPT = """\
+from gevent import monkey
+monkey.patch_all()
+import json, os, signal, threading, warnings
+from stemtrace.transports import resolver
+
+warnings.simplefilter("ignore", DeprecationWarning)
+signal.alarm(30)  # a deadlock fails the test instead of hanging it
+r = resolver.PUBLISH_RESOLVER
+r.resolve("localhost", 1, timeout=5.0)
+pid = os.fork()  # this process now forks: lookups go to the helper
+if pid == 0:
+    os._exit(0)
+os.waitpid(pid, 0)
+for thread in threading.enumerate():
+    if thread.name == "stemtrace-dns-helper-check":
+        thread.join(20)
+addresses = r.resolve("localhost", 2, timeout=10.0)
+print(json.dumps({"helper_usable": r._state().helper_usable, "resolved": bool(addresses)}))
+"""
+
+
+def test_helper_under_gevent_does_not_deadlock() -> None:
+    pytest.importorskip("gevent")
+    completed = subprocess.run(
+        [sys.executable, "-c", _GEVENT_SCRIPT],
+        capture_output=True,
+        timeout=60,
+        check=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+
+    assert json.loads(completed.stdout.splitlines()[-1]) == {
+        "helper_usable": True,
+        "resolved": True,
+    }

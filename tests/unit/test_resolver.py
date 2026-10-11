@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import warnings
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -660,3 +660,130 @@ class TestBoundedResolverConcurrentFirstUse:
             sys.setswitchinterval(previous)
 
         assert failures == []
+
+
+class _FakePopen:
+    """subprocess.Popen stand-in that answers like a helper with no addresses."""
+
+    held_elsewhere: ClassVar[list[bool]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        lock = resolver_module._spawn_lock()
+        result: list[bool] = []
+        probe = threading.Thread(target=lambda: result.append(lock.acquire(False)))
+        probe.start()
+        probe.join(JOIN_S)
+        if result[0]:
+            lock.release()
+        type(self).held_elsewhere.append(not result[0])
+        self.returncode = 0
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        del timeout
+        return b'{"infos": []}', b""
+
+    def kill(self) -> None:
+        pass
+
+
+class TestHelperSpawnVersusFork:
+    """Starting a helper and forking exclude each other.
+
+    A child forked while Popen() runs inherits the pipes Popen hasn't closed
+    yet, so Popen() (or the helper's stdout) never sees EOF and the lookup or
+    the check hangs. A lock around Popen(), taken before every fork, keeps
+    them apart.
+    """
+
+    def test_helper_starts_under_spawn_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _FakePopen.held_elsewhere = []
+        monkeypatch.setattr(resolver_module.subprocess, "Popen", _FakePopen)
+
+        assert resolver_module._getaddrinfo_in_helper("redis.local", 1, 0, 0, 0) == []
+        assert _FakePopen.held_elsewhere == [True]
+
+    def test_prepare_fork_waits_for_helper_being_started(self) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        lock = resolver_module._spawn_lock()
+        started, release = threading.Event(), threading.Event()
+
+        def spawning() -> None:
+            with lock:
+                started.set()
+                release.wait(JOIN_S)
+
+        thread = threading.Thread(target=spawning)
+        thread.start()
+        assert started.wait(JOIN_S)
+        threading.Timer(0.1, release.set).start()
+        begun = time.monotonic()
+
+        resolver.prepare_fork()
+        try:
+            waited = time.monotonic() - begun
+        finally:
+            resolver.parent_after_fork()
+        thread.join(JOIN_S)
+
+        assert waited >= 0.09
+        assert lock.acquire(blocking=False) is True
+        lock.release()
+
+    def test_prepare_fork_from_the_spawning_thread_does_not_deadlock(self) -> None:
+        """gevent's subprocess forks with os.fork() from the spawning greenlet,
+        which runs the at-fork hooks while it holds the spawn lock."""
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        lock = resolver_module._spawn_lock()
+
+        with lock:
+            resolver.prepare_fork()
+            resolver.parent_after_fork()
+
+        assert lock.acquire(blocking=False) is True
+        lock.release()
+
+    def test_child_gets_its_own_spawn_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent_lock = resolver_module._spawn_lock()
+        parent_lock.acquire()  # held by a parent thread at fork time
+        try:
+            parent_pid = os.getpid()
+            monkeypatch.setattr(os, "getpid", lambda: parent_pid + 1)
+            child_lock = resolver_module._spawn_lock()
+
+            assert child_lock is not parent_lock
+            assert child_lock.acquire(blocking=False) is True
+            child_lock.release()
+        finally:
+            parent_lock.release()
+
+    def test_helper_check_without_result_in_time_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stuck = threading.Event()
+        monkeypatch.setattr(
+            resolver_module, "_helper_usable", lambda: stuck.wait(JOIN_S)
+        )
+        in_process, helper = FakeDns(), FakeDns()
+        monkeypatch.setattr(socket, "getaddrinfo", in_process)
+        monkeypatch.setattr(resolver_module, "_getaddrinfo_in_helper", helper)
+        clock = FakeClock()
+        resolver = BoundedResolver(monotonic=clock)
+        resolver.prepare_fork()
+        resolver.parent_after_fork()
+        clock.now += resolver_module.HELPER_CHECK_TIMEOUT + 0.1
+
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        stuck.set()  # the check answers late: too late to switch
+        for thread in threading.enumerate():
+            if thread.name == "stemtrace-dns-helper-check":
+                thread.join(JOIN_S)
+        resolver.resolve("other.local", 6379, timeout=1.0)
+
+        assert in_process.calls == ["redis.local", "other.local"]
+        assert helper.calls == []
+        assert resolver._state().helper_usable is False
+        assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
