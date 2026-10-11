@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from stemtrace.transports import resolver as resolver_module
-from stemtrace.transports.resolver import PUBLISH_RESOLVER, BoundedResolver
+from stemtrace.transports.resolver import (
+    DNS_NEGATIVE_TTL,
+    PUBLISH_RESOLVER,
+    BoundedResolver,
+)
 
 AddrInfo = tuple[Any, ...]
 ADDRESS: list[AddrInfo] = [
@@ -172,14 +176,31 @@ class TestBoundedResolver:
         with pytest.raises(socket.gaierror, match="unknown host"):
             _make(dns, clock).resolve("nope.local", 6379, timeout=1.0)
 
-    def test_failed_first_lookup_is_retried_on_next_attempt(self) -> None:
+    def test_failed_first_lookup_is_retried_after_negative_ttl(self) -> None:
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [socket.gaierror(socket.EAI_AGAIN, "no dns"), ADDRESS]
         resolver = _make(dns, clock)
         with pytest.raises(socket.gaierror):
             resolver.resolve("redis.local", 6379, timeout=1.0)
+        clock.now += DNS_NEGATIVE_TTL
 
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+
+    def test_failed_first_lookup_is_cached_for_negative_ttl(self) -> None:
+        """A mistyped host or a dead resolver at boot: one lookup per
+        DNS_NEGATIVE_TTL, not one per publish."""
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
+        resolver = _make(dns, clock)
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        clock.now += DNS_NEGATIVE_TTL - 0.1
+        for _ in range(5):
+            with pytest.raises(socket.gaierror, match="unknown host"):
+                resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        assert dns.calls == ["redis.local"]
 
     def test_forked_child_starts_with_empty_cache_and_fresh_lock(
         self, monkeypatch: pytest.MonkeyPatch
@@ -225,6 +246,7 @@ class TestBoundedResolverRobustness:
 
         with pytest.raises(socket.gaierror, match="label too long"):
             resolver.resolve("redis.local", 6379, timeout=1.0)
+        clock.now += DNS_NEGATIVE_TTL
 
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local", "redis.local"]

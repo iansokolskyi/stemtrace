@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # previous answer keeps being used until a refresh succeeds).
 DNS_CACHE_TTL = 30.0
 
+# Seconds a lookup that failed, with no earlier answer to fall back on, is
+# remembered: a mistyped host or a dead resolver at boot costs one lookup per
+# this interval instead of one per publish.
+DNS_NEGATIVE_TTL = 5.0
+
 # Longest a fork() waits for in-process lookups in flight (see prepare_fork()).
 FORK_WAIT = 1.0
 
@@ -234,7 +239,13 @@ class BoundedResolver:
                     with contextlib.suppress(socket.gaierror):
                         self._start_lookup(state, key, entry)
                 return entry.addresses
-            done = self._start_lookup(state, key, entry)
+            cached_error = entry.error if entry.lookup is None else None
+            if cached_error is None or now >= entry.refresh_at:
+                cached_error = None
+                done = self._start_lookup(state, key, entry)
+        if cached_error is not None:
+            # A recent failure (negative caching, see DNS_NEGATIVE_TTL).
+            raise cached_error
         if not done.wait(timeout):
             raise socket.gaierror(
                 socket.EAI_AGAIN,
@@ -410,8 +421,12 @@ class BoundedResolver:
                 if addresses is not None:
                     entry.addresses = addresses
                 entry.error = error
-                # After a failure too: a stale answer is retried once per TTL.
-                entry.refresh_at = self._monotonic() + self._ttl
+                # After a failure too: a stale answer is retried once per TTL,
+                # a host with no answer once per DNS_NEGATIVE_TTL.
+                retry_in = (
+                    self._ttl if entry.addresses is not None else DNS_NEGATIVE_TTL
+                )
+                entry.refresh_at = self._monotonic() + retry_in
                 entry.lookup = None
                 state.in_flight.pop(done, None)
                 state.idle.notify_all()
