@@ -49,9 +49,10 @@ def _load_login_template() -> str:
 def _safe_next(next_path: str | None, *, default: str) -> str:
     r"""Validate a next redirect path to avoid open redirects.
 
-    Only same-origin absolute paths pass. Browsers treat a backslash like '/'
-    (so "/\evil.example" means "//evil.example") and drop tabs/newlines from
-    URLs, so any backslash or control character rejects the target too.
+    Only same-origin absolute paths pass. Backslashes and control characters
+    are rejected too, as defense in depth: browsers read "/\evil.example" as
+    "//evil.example" and drop tabs/newlines, although Starlette's
+    RedirectResponse (0.38.6 through 1.7.0) percent-encodes both in Location.
     """
     if not next_path or not next_path.startswith("/"):
         return default
