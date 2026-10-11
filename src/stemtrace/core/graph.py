@@ -280,8 +280,13 @@ class TaskNode(BaseModel):
         index.by_key[key] = event
         index.last_position = position
         index.last_key = key
-        index.new_name = event.name not in index.names
+        parent = event.parent_id if event.parent_id != self.task_id else None
+        index.new_identity = event.name not in index.names or (
+            parent is not None and parent not in index.parents
+        )
         index.names.add(event.name)
+        if parent is not None:
+            index.parents.add(parent)
 
         current = index.state_event
         if current is None or _precedence(event) > _precedence(current):
@@ -302,7 +307,7 @@ class TaskNode(BaseModel):
             self.chord_id = event.chord_id
 
     def _note_reported_parent(
-        self, from_replacement: "Callable[[str], bool]" = lambda _: False
+        self, is_replacement: "Callable[[TaskEvent], bool]" = lambda _: False
     ) -> bool:
         """Update the name and reported parent after recording an event.
 
@@ -313,11 +318,11 @@ class TaskNode(BaseModel):
         reports a retried task as its own parent).
 
         ``task.replace()`` makes Celery reuse the replaced task's ID for the
-        replacement's last task, whose events (including a worker's second
-        attempt-0 PENDING) report a parent from the replacement: one of the
-        task's own children. ``from_replacement(parent_id)`` says so, and
-        such events are ignored, whatever their timestamps (they can come
-        from another host's clock).
+        replacement (its last task), whose events, including a worker's
+        second attempt-0 PENDING, report a parent from the replacement.
+        ``is_replacement(event)`` says so (see ``TaskGraph._replacement_check``)
+        and those events are ignored, whatever their timestamps (they can
+        come from another host's clock).
 
         Returns:
             True if the reported parent changed.
@@ -325,22 +330,17 @@ class TaskNode(BaseModel):
         index = self._ensure_index()
         previous = self.reported_parent_id
         event = self.events[index.last_position]
-        if index.new_name and len(index.names) > 1:
-            # A second name: the task was replaced; sort out whose events.
-            return self._recompute_identity(from_replacement)
-        ignored = (
-            len(index.names) > 1
-            and event.parent_id is not None
-            and from_replacement(event.parent_id)
-        )
-        if ignored:
+        if index.new_identity:
+            # A new name or parent: the task may have been replaced.
+            return self._recompute_identity(is_replacement)
+        if is_replacement(event):
             if index.last_position <= index.first_own:
                 index.first_own += 1
             return False
         if index.last_position <= index.first_own or (
             index.parent_key is None and previous is not None
         ):
-            return self._recompute_identity(from_replacement)
+            return self._recompute_identity(is_replacement)
         if (
             event.parent_id is not None
             and event.parent_id != self.task_id
@@ -352,19 +352,27 @@ class TaskNode(BaseModel):
             index.parent_key = index.last_key
         return self.reported_parent_id != previous
 
-    def _recompute_identity(self, from_replacement: "Callable[[str], bool]") -> bool:
+    def _is_reused(self) -> bool:
+        """Whether the ID carries two tasks: two names or two parents.
+
+        Celery's ``task.replace()`` reuses the replaced task's ID; a retry
+        keeps its name and reports itself as parent, which doesn't count.
+        """
+        index = self._ensure_index()
+        return len(index.names) > 1 or len(index.parents) > 1
+
+    def _recompute_identity(
+        self, is_replacement: "Callable[[TaskEvent], bool]"
+    ) -> bool:
         """Recompute name and reported parent from all events; True if the parent changed."""
         index = self._ensure_index()
         previous = self.reported_parent_id
-        replaced = len(index.names) > 1  # only a replaced task has two names
         own = [
             (position, key, event)
             for position, (key, event) in enumerate(
                 zip(index.keys, self.events, strict=True)
             )
-            if not replaced
-            or event.parent_id is None
-            or not from_replacement(event.parent_id)
+            if not is_replacement(event)
         ]
         if not own:  # only a replacement's events so far
             index.first_own = len(self.events)
@@ -396,8 +404,9 @@ class _EventIndex:
         "last_key",
         "last_position",
         "names",
-        "new_name",
+        "new_identity",
         "parent_key",
+        "parents",
         "state_event",
     )
 
@@ -413,7 +422,12 @@ class _EventIndex:
         # the last recorded event brought a new one.
         self.first_own = 0
         self.names: set[str] = {event.name for event in events}
-        self.new_name = False
+        self.parents: set[str] = {
+            e.parent_id
+            for e in events
+            if e.parent_id is not None and e.parent_id != e.task_id
+        }
+        self.new_identity = False
         pairs = sorted(((_event_key(e), e) for e in events), key=lambda p: p[0])
         events[:] = [event for _, event in pairs]
         self.keys: list[_EventKey] = [key for key, _ in pairs]
@@ -608,6 +622,8 @@ class TaskGraph(BaseModel):
     _roots: dict[str, None] = PrivateAttr(default_factory=dict)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
+    # Parent ID -> tasks with any event naming it (replace() detection).
+    _raw_children: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     # Reported parent ID -> tasks that reported it, in arrival order.
     _reported_children: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     # Group member -> its chain links inside the group (bottom-up), and the
@@ -714,10 +730,9 @@ class TaskGraph(BaseModel):
             if not node._record_event(event):
                 return None
             node._fill_missing_ids(event)
-            new_parent = node._note_reported_parent(
-                self._replacement_check(node.task_id)
-            )
+            new_parent = node._note_reported_parent(self._replacement_check(node))
 
+        self._index_raw_parent(node, event)
         tally = self._groups.get(node.group_id) if node.group_id else None
         if old_state is not None and old_state != node.state:
             self._state_changed(node, tally, old_state)
@@ -726,12 +741,7 @@ class TaskGraph(BaseModel):
         if tally is not None and node.task_id in tally.counted():
             self._parent_evidence_changed(tally, node, event, new_parent=new_parent)
         if event.group_id is not None and event.group_id == node.group_id:
-            self._join_group(
-                node,
-                event.group_id,
-                event.chord_callback_id,
-                worker_event=event.state != TaskState.PENDING,
-            )
+            self._join_from_event(node, event)
         if is_new:
             self._on_children_changed(node.task_id)
         self._place(node)
@@ -742,14 +752,65 @@ class TaskGraph(BaseModel):
             self._retry_cycle_broken()
         return event
 
-    def _replacement_check(self, task_id: str) -> Callable[[str], bool]:
-        """Whether a parent an event of ``task_id`` reports is one of its children.
+    def _replacement_check(self, node: TaskNode) -> Callable[[TaskEvent], bool]:
+        """Whether an event of ``node`` comes from a ``task.replace()`` reuse.
 
-        Only a ``task.replace()`` replacement's events (which reuse the
-        replaced task's ID) report that; see ``TaskNode._note_reported_parent``.
+        Such an event reports a parent the task can't have:
+
+        * any parent, when the event names the task as its own root (a
+          workflow's root has no parent; the replacement inherits the root);
+        * for an ID carrying two tasks (two names or parents), the task
+          itself (a single-signature replacement) or one of the tasks that
+          report it as their parent (the replacement's previous task);
+        * a task that reports this one as its parent while this one reports
+          it: a two-task cycle that only ID reuse makes. With nothing else to
+          go on (e.g. the server missed the original events), the task with
+          the larger ID gives up that parent, so the result is stable.
         """
-        children = self._reported_children.get(task_id)
-        return lambda parent_id: children is not None and parent_id in children
+        task_id = node.task_id
+        children = self._raw_children.get(task_id)
+
+        def check(event: TaskEvent) -> bool:
+            parent = event.parent_id
+            if parent is None or (parent == task_id and not node._is_reused()):
+                return False
+            if event.root_id == task_id:
+                return True
+            if node._is_reused():
+                return parent == task_id or (
+                    children is not None and parent in children
+                )
+            mutual = children is not None and parent in children
+            return mutual and task_id > parent
+
+        return check
+
+    def _join_from_event(self, node: TaskNode, event: TaskEvent) -> None:
+        """Track the group membership an event carries."""
+        self._join_group(
+            node,
+            event.group_id or "",
+            event.chord_callback_id,
+            worker_event=event.state != TaskState.PENDING,
+        )
+
+    def _index_raw_parent(self, node: TaskNode, event: TaskEvent) -> None:
+        """Index the parent an event of ``node`` names (replace() detection).
+
+        An event naming its own task as root is a replacement's (a root has
+        no parent): it says nothing about who sent the task.
+        """
+        parent_id = event.parent_id
+        if parent_id is not None and node.task_id not in (parent_id, event.root_id):
+            self._note_raw_child(parent_id, node.task_id)
+
+    def _note_raw_child(self, parent_id: str, child_id: str) -> None:
+        """Index an event of ``child_id`` naming ``parent_id`` as parent."""
+        children = self._raw_children.get(parent_id)
+        if children is not None and child_id in children:
+            return
+        _add_to(self._raw_children, parent_id, child_id)
+        self._recheck_identity(parent_id, child_id)
 
     def _recheck_identity(self, parent_id: str, child_id: str) -> None:
         """Re-pick a task's name and parent once a child of it reports it.
@@ -760,7 +821,7 @@ class TaskGraph(BaseModel):
         if parent is None or not any(e.parent_id == child_id for e in parent.events):
             return
         old_parent = parent.reported_parent_id
-        if parent._recompute_identity(self._replacement_check(parent_id)):
+        if parent._recompute_identity(self._replacement_check(parent)):
             self._reported_parent_changed(parent, old_parent)
             self._place(parent)
             self._retrigger(parent_id, changed=True)
@@ -892,7 +953,7 @@ class TaskGraph(BaseModel):
             chord_id=event.chord_id,
         )
         node._record_event(event)
-        node._note_reported_parent(self._replacement_check(node.task_id))
+        node._note_reported_parent(self._replacement_check(node))
         self.nodes[event.task_id] = node
         node.parent_id = self._safe_parent(node, self._desired_parent(node))
         self._link(node)
@@ -1315,7 +1376,6 @@ class TaskGraph(BaseModel):
         if parent_id is None:
             return
         _add_to(self._reported_children, parent_id, node.task_id)
-        self._recheck_identity(parent_id, node.task_id)
         self._on_children_changed(parent_id)
         # A chain whose first task this is can now extend upwards.
         self._extend_chain_through(node.task_id)
@@ -1493,6 +1553,8 @@ class TaskGraph(BaseModel):
             Group IDs of chords whose callback may have changed.
         """
         chords: set[str] = set()
+        for parent in {e.parent_id for e in node.events if e.parent_id is not None}:
+            _drop_from(self._raw_children, parent, node.task_id)
         owner = self._link_owner.pop(node.task_id, None)
         self._drop_chain(node.task_id)
         parent_id = node.reported_parent_id

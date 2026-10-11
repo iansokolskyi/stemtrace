@@ -2745,13 +2745,16 @@ class TestGraphLinksStayConsistent:
     def test_add_event_tasks_naming_each_other_as_parent_make_no_cycle(
         self,
     ) -> None:
-        graph = _build(_ev("a", parent_id="b"), _ev("b", parent_id="a"))
+        # Only task.replace() ID reuse makes such a pair; with nothing else to
+        # go on, the larger ID gives up its parent, in any order.
+        for order in ((("a", "b"), ("b", "a")), (("b", "a"), ("a", "b"))):
+            graph = _build(*(_ev(t, parent_id=p) for t, p in order))
 
-        assert _shape(graph) == {
-            "a": (NodeType.TASK, None, ["b"]),
-            "b": (NodeType.TASK, "a", []),
-        }
-        assert graph.root_ids == ["a"]
+            assert _shape(graph) == {
+                "a": (NodeType.TASK, "b", []),
+                "b": (NodeType.TASK, None, ["a"]),
+            }
+            assert graph.root_ids == ["b"]
 
     def test_add_event_member_parented_by_other_member_breaks_cycle_at_group(
         self,

@@ -89,6 +89,20 @@ def replace_with_group(self: Any) -> None:
     raise self.replace(group(add.s(1, 1), add.s(2, 2)))
 
 
+@app.task(bind=True, name="flows.replace_with_task")
+def replace_with_task(self: Any) -> None:
+    """Replace this task with a single task (which takes over its ID)."""
+    raise self.replace(add.s(1, 1))
+
+
+@app.task(bind=True, name="flows.paginate")
+def paginate(self: Any, page: int) -> int:
+    """Fetch page 0 by replacing itself with the next two pages (same task)."""
+    if page == 0:
+        raise self.replace(chain(paginate.si(1), paginate.si(2)))
+    return page
+
+
 @app.task(name="flows.fail")
 def fail() -> int:
     """Raise, so a chord using it as a header never runs its body."""
@@ -170,6 +184,12 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             group(add.s(1, 1), add.s(2, 2)), group(tsum.s(), tsum.s())
         ),
         "replace_chain": lambda: replace_with_chain.s(),
+        "replace_task": lambda: replace_with_task.s(),
+        "replace_same_name": lambda: paginate.s(0),
+        "chain_replace_same_name": lambda: chain(add.s(1, 1), paginate.si(0)),
+        "chord_header_replace_same_name": lambda: chord(
+            [paginate.si(0), add.si(1, 1)], tsum.s()
+        ),
         "replace_group": lambda: replace_with_group.s(),
         "chain_replace_group_tsum": lambda: chain(replace_with_group.s(), tsum.s()),
         "group_of_chains_link_spawns": lambda: group(

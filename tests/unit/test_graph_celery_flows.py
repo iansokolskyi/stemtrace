@@ -425,6 +425,31 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {},
     ),
+    # self.replace(add.s()): the single replacement task takes over the ID
+    # and reports it as its own parent.
+    "replace_task@worker_process": ({"T0": (_T, None, [])}, {}),
+    # paginate(0) replaces itself with chain(paginate(1), paginate(2)): the
+    # same task name, so only the structure shows the replacement.
+    "replace_same_name@worker_process": (
+        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
+        {},
+    ),
+    # chain(add, paginate(0)): the replaced task (T1) has a parent of its
+    # own, and its replacement's events report another (T2).
+    "chain_replace_same_name@worker_process": (
+        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", ["T2"]), "T2": (_T, "T1", [])},
+        {},
+    ),
+    "chord_header_replace_same_name@worker_process": (
+        {
+            "group:T1": (_C, None, ["T0", "T2", "T3"]),
+            "T0": (_T, "group:T1", ["T4"]),
+            "T2": (_T, "group:T1", []),
+            "T3": (_T, "group:T1", []),
+            "T4": (_T, "T0", []),
+        },
+        {"group:T1": "T3"},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},
@@ -694,28 +719,34 @@ def test_replay_chain_link_spawning_task_with_delayed_subtask() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "flow",
-    [
-        "replace_chain@worker_process",
-        "replace_group@worker_process",
-        "chain_replace_group_tsum@worker_process",
-    ],
-)
-@pytest.mark.parametrize("skew_s", [-3600, 3600])
+# Flow -> label of the replaced task.
+_REPLACE_FLOWS = {
+    "replace_chain@worker_process": "T0",
+    "replace_group@worker_process": "T0",
+    "chain_replace_group_tsum@worker_process": "T0",
+    "replace_task@worker_process": "T0",
+    "replace_same_name@worker_process": "T0",
+    "chord_header_replace_same_name@worker_process": "T0",
+    "chain_replace_same_name@worker_process": "T1",
+}
+
+
+@pytest.mark.parametrize("flow", sorted(_REPLACE_FLOWS))
+@pytest.mark.parametrize("skew_s", [-3600, -1, -0.025, 0.025, 1, 3600])
 def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
-    flow: str, skew_s: int
+    flow: str, skew_s: float
 ) -> None:
     """The replacement's events for the replaced task's ID come from another
     host: with its clock skewed either way, the replaced task keeps its name
     and place, in any order."""
     events = _CAPTURES[flow]
     labels = _labels(events)
-    original = _id(labels, "T0")
+    original = _id(labels, _REPLACE_FLOWS[flow])
     name = next(e["name"] for e in events if e["task_id"] == original)
+    first_parent = next(e["parent_id"] for e in events if e["task_id"] == original)
     skewed = []
     for event in events:
-        if event["task_id"] == original and event["name"] != name:
+        if _is_replacement_event(event, original, first_parent):
             shifted = datetime.fromisoformat(
                 event["timestamp"].replace("Z", "+00:00")
             ) + timedelta(seconds=skew_s)
@@ -755,3 +786,49 @@ def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
                 continue  # a cycle is still open: where it breaks depends on order
             assert _graph_shape(graph) == _graph_shape(rebuilt), (flow, removed)
             assert sorted(graph.root_ids) == sorted(rebuilt.root_ids), (flow, removed)
+
+
+def _is_replacement_event(
+    event: dict[str, Any], task_id: str, first_parent: str | None = None
+) -> bool:
+    """A captured event of ``task_id`` sent for its replacement: it reports
+    another parent than the task's first event."""
+    return event["task_id"] == task_id and event["parent_id"] != first_parent
+
+
+@pytest.mark.parametrize(
+    "flow", ["replace_chain@worker_process", "replace_same_name@worker_process"]
+)
+def test_replay_replaced_task_when_server_missed_its_start(flow: str) -> None:
+    """A server that starts mid-flow sees only the replacement's events for
+    the replaced task: the graph is the same, in any order."""
+    events = _CAPTURES[flow]
+    labels = _labels(events)
+    original = _id(labels, "T0")
+    late = [
+        e
+        for e in events
+        if e["task_id"] != original or _is_replacement_event(e, original)
+    ]
+    for order in _orders(late):
+        assert _labelled_shape(_replay(order), labels) == _EXPECTED[flow][0]
+
+
+def test_replay_non_root_replaced_task_when_server_missed_its_start() -> None:
+    """Without the replaced task's own events, its replacement's report the
+    replacement's previous task as parent, which reports it in turn: an ID
+    reuse cycle with nothing to tell the original. The result is stable in
+    any order (the larger task ID gives up its parent)."""
+    events = _CAPTURES["chain_replace_same_name@worker_process"]
+    labels = _labels(events)
+    original = _id(labels, "T1")
+    late = [
+        e
+        for e in events
+        if e["task_id"] != original
+        or _is_replacement_event(e, original, _id(labels, "T0"))
+    ]
+    shapes = {
+        repr(sorted(_labelled_shape(_replay(o), labels).items())) for o in _orders(late)
+    }
+    assert len(shapes) == 1
