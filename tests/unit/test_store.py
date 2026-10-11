@@ -1631,7 +1631,7 @@ class TestGraphStoreRootNodesSyntheticDateFiltering:
                 group_id=group_id,
                 children=["missing-child"],
             )
-            store._graph.root_ids.append(group_node_id)
+            store._graph._roots[group_node_id] = None
 
         roots, total = store.get_root_nodes()
         assert total == 1

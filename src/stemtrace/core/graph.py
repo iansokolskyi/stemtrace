@@ -5,7 +5,15 @@ import hashlib
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    computed_field,
+    model_validator,
+)
 from pydantic_core import PydanticSerializationError
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -332,7 +340,10 @@ class TaskGraph(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     nodes: dict[str, TaskNode] = Field(default_factory=dict)
-    root_ids: list[str] = Field(default_factory=list)
+
+    # Root IDs in the order they became roots: a dict used as an ordered set,
+    # so adding and removing a root is O(1). Exposed as ``root_ids``.
+    _roots: dict[str, None] = PrivateAttr(default_factory=dict)
 
     # Track which tasks belong to each group_id (private, not serialized)
     _group_members: dict[str, list[str]] = PrivateAttr(default_factory=dict)
@@ -343,6 +354,23 @@ class TaskGraph(BaseModel):
     # node is created, and the reverse map to keep both in sync.
     _awaiting_parent: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     _awaited_by: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_roots(
+        cls, data: object, handler: ModelWrapValidatorHandler["TaskGraph"]
+    ) -> "TaskGraph":
+        """Take ``root_ids`` from the input (e.g. a ``model_dump``) as the roots."""
+        graph = handler(data)
+        if isinstance(data, dict) and data.get("root_ids") is not None:
+            graph._roots = dict.fromkeys(data["root_ids"])
+        return graph
+
+    @computed_field  # type: ignore[prop-decorator]  # mypy can't type decorated properties
+    @property
+    def root_ids(self) -> list[str]:
+        """IDs of the root nodes, in the order they became roots (a copy)."""
+        return list(self._roots)
 
     def add_event(self, event: TaskEvent) -> TaskEvent | None:
         """Add event, creating node if needed, and update the graph's links.
@@ -524,15 +552,16 @@ class TaskGraph(BaseModel):
     def _link(self, node: TaskNode) -> None:
         """List a node under its ``parent_id``, or as a root if it has none.
 
-        Only call it for a node that isn't listed yet (new or just unlinked):
-        checking ``root_ids`` would cost O(roots) per event.
+        Only call it for a node that isn't listed yet (new or just unlinked).
         """
         if node.parent_id is None:
-            self.root_ids.append(node.task_id)
+            self._roots[node.task_id] = None
             return
         parent = self.nodes[node.parent_id]
-        if node.task_id not in parent.children:  # a CHORD lists its callback
-            parent.children.append(node.task_id)
+        # Only a CHORD can already list the node: as its callback's edge.
+        if parent.chord_callback_id == node.task_id and node.task_id in parent.children:
+            return
+        parent.children.append(node.task_id)
 
     def _unlink(self, node: TaskNode) -> None:
         """Drop a node from its parent's children, or from the roots.
@@ -540,8 +569,7 @@ class TaskGraph(BaseModel):
         A CHORD keeps its callback listed: that entry draws the chord's edge.
         """
         if node.parent_id is None:
-            if node.task_id in self.root_ids:
-                self.root_ids.remove(node.task_id)
+            self._roots.pop(node.task_id, None)
             return
         parent = self.nodes.get(node.parent_id)
         if parent is None or node.task_id not in parent.children:

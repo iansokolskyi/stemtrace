@@ -453,6 +453,39 @@ class TestTaskGraphSerialization:
         assert restored.nodes["parent"].children == ["child"]
 
 
+class TestRootIds:
+    def test_root_ids_keep_order_when_a_middle_root_moves(self) -> None:
+        graph = TaskGraph()
+        for task_id in ("a", "b", "c"):
+            graph.add_event(_ordered_event(TaskState.PENDING, 0, task_id=task_id))
+        graph.add_event(
+            TaskEvent(
+                task_id="b",
+                name="myapp.tasks.process",
+                state=TaskState.STARTED,
+                timestamp=_BASE_TIME,
+                parent_id="c",
+            )
+        )
+        graph.add_event(_ordered_event(TaskState.PENDING, 0, task_id="d"))
+
+        assert graph.root_ids == ["a", "c", "d"]
+        assert graph.model_dump()["root_ids"] == ["a", "c", "d"]
+
+    def test_root_ids_is_a_copy(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.PENDING, 0, task_id="a"))
+
+        graph.root_ids.append("ghost")
+
+        assert graph.root_ids == ["a"]
+
+    def test_root_ids_restored_from_validated_input(self) -> None:
+        graph = TaskGraph.model_validate({"nodes": {}, "root_ids": ["x", "y"]})
+
+        assert graph.root_ids == ["x", "y"]
+
+
 class TestGroupIdCapture:
     """Tests for group_id field on events and nodes."""
 
