@@ -5,4 +5,4 @@ importing the package root (which pulls in ``stemtrace.library``).
 bump-my-version updates the string; see ``.bumpversion.toml``.
 """
 
-__version__ = "0.3.9"
+__version__ = "0.3.10"

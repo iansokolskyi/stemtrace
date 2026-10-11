@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-10-11
+
 ### Changed
 - Docker image: the UI is built once on the build machine's native platform instead of under emulation for each architecture, which also makes release builds faster. Building the image from source now needs BuildKit (the default since Docker 23 and in `docker compose`).
 - Development: ruff now also enforces complexity, function-size, blind-`except` and dead-code rules, and [import-linter](https://import-linter.readthedocs.io/) checks the `core`/`library`/`server` import boundaries in `make lint` and CI (see CONTRIBUTING.md). No runtime change.
@@ -191,7 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.6...v0.3.7
