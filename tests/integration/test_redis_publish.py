@@ -11,12 +11,14 @@ import contextlib
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import urllib.parse
 import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -453,3 +455,38 @@ def test_publish_after_dns_failover_recovers_within_one_cooldown(
     assert i == 1  # the second attempt already used the new address
     assert clock.now - started <= RECONNECT_INITIAL_BACKOFF
     assert breaker.is_open is False
+
+
+@pytest.mark.integration
+@requires_redis
+def test_publish_from_forking_uwsgi_like_process_falls_back_in_process(
+    stream_prefix: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Under uWSGI sys.executable is the uwsgi binary: the helper can't run
+    this Python, so lookups stay in-process and events still get through."""
+    uwsgi = tmp_path / "uwsgi"
+    uwsgi.write_text("#!/bin/sh\nexit 1\n")
+    uwsgi.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(uwsgi))
+    resolver = BoundedResolver()
+    monkeypatch.setattr(redis_transport, "PUBLISH_RESOLVER", resolver)
+    resolver.prepare_fork()  # this process forks, like a uWSGI master
+    resolver.parent_after_fork()
+    for thread in threading.enumerate():
+        if thread.name == "stemtrace-dns-helper-check":
+            thread.join(10)
+    parsed = urllib.parse.urlsplit(REDIS_URL)
+    userinfo, _, _ = parsed.netloc.rpartition("@")
+    host = f"localhost:{parsed.port or 6379}"
+    netloc = f"{userinfo}@{host}" if userinfo else host
+    transport = RedisTransport.from_url(
+        parsed._replace(netloc=netloc).geturl(), prefix=stream_prefix
+    )
+
+    _timed_publishes(transport, 5)
+
+    assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 5
+    assert "resolving in-process" in caplog.text

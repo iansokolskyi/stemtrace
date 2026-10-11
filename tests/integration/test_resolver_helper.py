@@ -4,15 +4,17 @@ Spawns real helper processes (no network needed: names come from /etc/hosts
 or fail locally). Skipped where the helper isn't used (no fork(), e.g. Windows).
 """
 
+import json
 import os
 import socket
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from stemtrace.transports import resolver as resolver_module
-from stemtrace.transports.resolver import BoundedResolver
 
 pytestmark = [
     pytest.mark.integration,
@@ -91,11 +93,75 @@ def test_cold_helper_resolves_well_within_publish_bound() -> None:
     assert max(durations) < 1.0, durations
 
 
-def test_resolver_by_default_resolves_through_helper() -> None:
-    resolver = BoundedResolver()
+def test_helper_usable_with_this_python() -> None:
+    assert resolver_module._helper_usable() is True
 
-    result = resolver.resolve(
-        "localhost", 6379, socktype=socket.SOCK_STREAM, timeout=2.0
+
+def test_helper_unusable_when_executable_is_not_really_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    impostor = tmp_path / "python3"
+    impostor.write_text("#!/bin/sh\necho not-python\n")
+    impostor.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(impostor))
+
+    assert resolver_module._helper_usable() is False
+
+
+# Run in a fresh interpreter: it forks, and reports which lookup path the
+# parent and the child used.
+_FORK_SCRIPT = """\
+import json, os, socket, sys, threading, warnings
+from stemtrace.transports import resolver
+
+warnings.simplefilter("ignore", DeprecationWarning)
+calls = []
+real_helper = resolver._getaddrinfo_in_helper
+real_getaddrinfo = socket.getaddrinfo
+
+def helper(*args):
+    calls.append("helper")
+    return real_helper(*args)
+
+def in_process(*args, **kwargs):
+    if threading.current_thread().name.startswith("stemtrace-dns-"):
+        calls.append("in_process")
+    return real_getaddrinfo(*args, **kwargs)
+
+resolver._getaddrinfo_in_helper = helper
+socket.getaddrinfo = in_process
+r = resolver.PUBLISH_RESOLVER
+r.resolve("localhost", 1, timeout=5.0)
+before = list(calls)
+read, write = os.pipe()
+pid = os.fork()
+if pid == 0:
+    calls.clear()
+    r.resolve("localhost", 2, timeout=5.0)
+    os.write(write, json.dumps(calls).encode())
+    os._exit(0)
+os.waitpid(pid, 0)
+child = json.loads(os.read(read, 1000))
+for thread in threading.enumerate():
+    if thread.name == "stemtrace-dns-helper-check":
+        thread.join(10)
+calls.clear()
+r.resolve("localhost", 3, timeout=5.0)
+print(json.dumps({"before": before, "child": child, "after": calls}))
+"""
+
+
+def test_only_a_process_that_forked_uses_the_helper() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _FORK_SCRIPT],
+        capture_output=True,
+        timeout=60,
+        check=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
     )
 
-    assert result == socket.getaddrinfo("localhost", 6379, 0, socket.SOCK_STREAM)
+    assert json.loads(completed.stdout) == {
+        "before": ["in_process"],
+        "child": ["in_process"],
+        "after": ["helper"],
+    }
