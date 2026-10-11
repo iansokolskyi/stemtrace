@@ -356,6 +356,75 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {"group:T2": "T4"},
     ),
+    # Captured with Celery 5.2 (the lowest supported version). A group body
+    # gets its own group ID there, which the headers name.
+    "chord_group_body@celery5.2": (
+        {
+            "group:T1": (_C, None, ["T0", "T2", "group:T3"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", []),
+            "group:T3": (_G, "group:T1", ["T4", "T5"]),
+            "T4": (_T, "group:T3", []),
+            "T5": (_T, "group:T3", []),
+        },
+        {"group:T1": "group:T3"},
+    ),
+    "chain_group_group@celery5.2": (
+        {
+            "group:T1": (_C, None, ["T0", "T2", "group:T3"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", []),
+            "group:T3": (_G, "group:T1", ["T4", "T5"]),
+            "T4": (_T, "group:T3", []),
+            "T5": (_T, "group:T3", []),
+        },
+        {"group:T1": "group:T3"},
+    ),
+    "chain_chord@celery5.2": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+            "T4": (_T, "group:T2", []),
+        },
+        {"group:T2": "T4"},
+    ),
+    # On Celery 5.2 the headers of a chord with a chain body, or of
+    # chain(group, task), carry no chord callback ID: nothing shows they are
+    # a chord, so they stay a GROUP with the chain hanging from its last
+    # member (as on main).
+    "chain_group_tsum_add@celery5.2": (
+        {
+            "group:T1": (_G, None, ["T0", "T2"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", ["T3"]),
+            "T3": (_T, "T2", ["T4"]),
+            "T4": (_T, "T3", []),
+        },
+        {},
+    ),
+    "chord_with_chain_body@celery5.2": (
+        {
+            "group:T1": (_G, None, ["T0", "T2"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", ["T3"]),
+            "T3": (_T, "T2", ["T4"]),
+            "T4": (_T, "T3", []),
+        },
+        {},
+    ),
+    "chain_a_group_tsum_add@celery5.2": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_G, "T0", ["T1", "T3"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", ["T4"]),
+            "T4": (_T, "T3", ["T5"]),
+            "T5": (_T, "T4", []),
+        },
+        {},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},

@@ -5,7 +5,9 @@ backend) with stemtrace's signal handlers publishing to ``MemoryTransport``,
 runs each workflow below and writes the events, in arrival order, to
 ``celery_flows.json`` next to this file. The graph tests replay them.
 
-Regenerate with: ``uv run python tests/data/capture_celery_flows.py``. Then
+Regenerate with: ``uv run python tests/data/capture_celery_flows.py``. The
+``@celery5.2`` captures come from running this script with Celery 5.2.0 (the
+lowest supported version) installed: ``--only NAME... --suffix @celery5.2``. Then
 ``uv run --with sqlalchemy python tests/data/capture_celery_flows.py --unlock``
 adds the chord flows again (keys ending ``@chord_unlock``) with a
 ``db+sqlite`` backend, which has no native chord support: Celery then runs
