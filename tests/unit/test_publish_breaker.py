@@ -895,3 +895,34 @@ class TestPublishBreakerEveryFailureCounts:
             _attempt_succeeds(breaker)
 
         assert breaker.is_open is False
+
+
+class TestPublishBreakerDeprecatedArguments:
+    """Arguments of the removed slow-failure rule are accepted and ignored."""
+
+    def test_slow_attempt_argument_warns_and_is_ignored(self) -> None:
+        with pytest.warns(
+            DeprecationWarning, match=r"slow_attempt=\.\.\.\) is deprecated"
+        ):
+            breaker = PublishBreaker(
+                "TestBroker",
+                logger=logging.getLogger(LOGGER_NAME),
+                initial_cooldown=1.0,
+                max_cooldown=30.0,
+                log_interval=60.0,
+                probe_timeout=60.0,
+                slow_attempt=0.5,
+                failures_to_open=3,
+                monotonic=FakeClock(),
+            )
+
+        breaker.record_failure(_take(breaker), "evt", _error())
+        assert breaker.is_open is False
+
+    def test_elapsed_argument_warns_and_is_ignored(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        with pytest.warns(DeprecationWarning, match=r"elapsed=\.\.\.\) is deprecated"):
+            breaker.record_failure(_take(breaker), "evt", _error(), elapsed=5.0)
+
+        assert breaker.is_open is False

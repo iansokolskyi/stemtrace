@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis: each worker process (e.g. each prefork child) now builds its own publish connection pool instead of reusing one inherited from the parent, which could hang the child's first publish if another parent thread held the pool's lock at fork.
 - Redis and RabbitMQ: worker event ids in publish failure logs read `host:pid:worker_ready` instead of `host:pid:WorkerEventType.WORKER_READY`.
 
+### Deprecated
+- `stemtrace.transports.rabbitmq.PUBLISH_SLOW_ATTEMPT` (also exported by the deprecated `stemtrace.library.transports.rabbitmq`) is no longer used, since a single slow publish failure no longer opens the circuit breaker; it will be removed in 1.0.
+- `PublishBreaker(slow_attempt=...)` and `PublishBreaker.record_failure(elapsed=...)` are ignored and emit a `DeprecationWarning`; they will be removed in 1.0.
+
 ## [0.3.10] - 2026-10-11
 
 ### Changed

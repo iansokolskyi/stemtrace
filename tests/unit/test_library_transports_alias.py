@@ -63,6 +63,9 @@ class TestLibraryTransportsAlias:
         assert old_redis.XREAD_BLOCK_MS == redis.XREAD_BLOCK_MS
         assert old_rabbitmq.RabbitMQTransport is rabbitmq.RabbitMQTransport
         assert old_rabbitmq.CONNECT_TIMEOUT == rabbitmq.CONNECT_TIMEOUT
+        # Deprecated and unused, but exported since 0.3.8: imports keep working.
+        assert old_rabbitmq.PUBLISH_SLOW_ATTEMPT == rabbitmq.PUBLISH_SLOW_ATTEMPT == 0.5
+        assert "PUBLISH_SLOW_ATTEMPT" in old_rabbitmq.__all__
         assert old_memory.MemoryTransport is memory.MemoryTransport
         assert old_breaker.PublishBreaker is breaker.PublishBreaker
 

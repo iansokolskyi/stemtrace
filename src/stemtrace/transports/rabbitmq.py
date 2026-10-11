@@ -68,6 +68,10 @@ PUBLISH_PROBE_TIMEOUT = 60.0
 # thread waited for the GIL past its socket deadline).
 PUBLISH_FAILURES_TO_OPEN = 3
 
+# Deprecated and unused: a single slow failure no longer opens the breaker.
+# Kept so existing imports keep working; removed in 1.0.
+PUBLISH_SLOW_ATTEMPT = 0.5
+
 # While the breaker is open, events are dropped without connecting for a
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
 # RECONNECT_MAX_BACKOFF; straight to the maximum after two unconfirmed

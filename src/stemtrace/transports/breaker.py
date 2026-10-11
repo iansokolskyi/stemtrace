@@ -13,11 +13,23 @@ from __future__ import annotations
 import os
 import threading
 import time
+import warnings
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import logging
     from collections.abc import Callable
+
+
+def _warn_if_passed(value: float | None, call: str) -> None:
+    """Warn that a deprecated, ignored argument was passed (removed in 1.0)."""
+    if value is not None:
+        warnings.warn(
+            f"{call} is deprecated and ignored: every failure counts toward "
+            "failures_to_open",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
 
 def _losses(dropped: int, unconfirmed: int) -> str:
@@ -101,6 +113,7 @@ class PublishBreaker:
         probe_timeout: float,
         failures_to_open: int,
         monotonic: Callable[[], float] = time.monotonic,
+        slow_attempt: float | None = None,
     ) -> None:
         """Initialize a closed breaker.
 
@@ -113,10 +126,13 @@ class PublishBreaker:
             probe_timeout: Seconds after which an outstanding probe that never
                 reported back is presumed lost and another may start. Must
                 exceed the longest possible publish attempt.
-            failures_to_open: Consecutive failures that open the breaker even
-                when each one was fast.
+            failures_to_open: Consecutive failures (of any kind) that open
+                the breaker.
             monotonic: Clock (injectable for tests).
+            slow_attempt: Deprecated and ignored (a single slow failure no
+                longer opens the breaker); removed in 1.0.
         """
+        _warn_if_passed(slow_attempt, "PublishBreaker(slow_attempt=...)")
         self._name = name
         self._logger = logger
         self._initial_cooldown = initial_cooldown
@@ -320,6 +336,7 @@ class PublishBreaker:
         exc: BaseException,
         *,
         unconfirmed: bool = False,
+        elapsed: float | None = None,
     ) -> None:
         """Report a failed publish attempt; the event counts as lost.
 
@@ -334,7 +351,10 @@ class PublishBreaker:
                 It counts as unconfirmed rather than dropped; an unconfirmed
                 probe right after an unconfirmed failure sets the cooldown to
                 the maximum.
+            elapsed: Deprecated and ignored (how long a failure took no
+                longer matters); removed in 1.0.
         """
+        _warn_if_passed(elapsed, "record_failure(elapsed=...)")
         self._check_fork()
         with self._lock:
             now = self._monotonic()
