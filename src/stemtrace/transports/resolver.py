@@ -591,7 +591,7 @@ def _spawn_lock() -> Any:
     return lock
 
 
-def _run_helper(command: list[str], timeout: float) -> tuple[int | Any, bytes]:
+def _run_helper(command: list[str], timeout: float) -> tuple[int, bytes]:
     """Start ``command`` and return its exit code and stdout, within ``timeout``.
 
     Popen() runs under the spawn lock, which prepare_fork() takes too: a

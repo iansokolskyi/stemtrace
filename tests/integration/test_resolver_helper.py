@@ -78,7 +78,7 @@ def test_helper_killed_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(socket.gaierror, match="timed out"):
         resolver_module._getaddrinfo_in_helper("localhost", 6379, 0, 0, 0)
 
-    # subprocess.run() kills the helper on timeout and reaps it.
+    # _run_helper() kills the helper on timeout and reaps it.
     assert time.monotonic() - started < 5.0
 
 
