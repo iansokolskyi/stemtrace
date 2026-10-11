@@ -205,6 +205,25 @@ def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
     else:
         bases = (connection_class,)
 
+    accepted = _accepted_init_kwargs(connection_class)
+
+    def __init__(self: Any, **kwargs: Any) -> None:
+        """Pass on the keywords the base class takes, then set the timeouts.
+
+        redis-py 4.x UnixDomainSocketConnection has no socket_connect_timeout
+        parameter (the pool passes it anyway since we set it), and 5.0.0-5.0.6
+        drop socket_timeout for Unix sockets; setting both afterwards keeps
+        publishing bounded on every supported version.
+        """
+        if accepted is not None:
+            kwargs_for_base = {k: v for k, v in kwargs.items() if k in accepted}
+        else:
+            kwargs_for_base = kwargs
+        connection_class.__init__(self, **kwargs_for_base)
+        for name in ("socket_timeout", "socket_connect_timeout"):
+            if name in kwargs:
+                setattr(self, name, kwargs[name])
+
     def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
         """Send a command; note an XADD once it was written in full."""
         connection_class.send_command(self, *args, **kwargs)
@@ -212,8 +231,34 @@ def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
             _XADD_SENT.set(True)
 
     return type(
-        f"Publish{connection_class.__name__}", bases, {"send_command": send_command}
+        f"Publish{connection_class.__name__}",
+        bases,
+        {"__init__": __init__, "send_command": send_command},
     )
+
+
+def _accepted_init_kwargs(connection_class: type[Any]) -> frozenset[str] | None:
+    """Keyword arguments a class's __init__ chain accepts; None if any.
+
+    Follows ``**kwargs`` up the MRO (e.g. UnixDomainSocketConnection forwards
+    them to AbstractConnection in redis-py 4.5) until an __init__ without it.
+    """
+    names: set[str] = set()
+    for klass in connection_class.__mro__:
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        if klass is object:
+            return None
+        parameters = inspect.signature(init).parameters.values()
+        names.update(
+            p.name
+            for p in parameters
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+        )
+        if not any(p.kind is p.VAR_KEYWORD for p in parameters):
+            return frozenset(names)
+    return None
 
 
 def _publish_client_from_url(url: str) -> Redis[Any]:

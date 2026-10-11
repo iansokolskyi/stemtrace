@@ -474,3 +474,65 @@ class TestRedisPublishConnectionResolvesWithBound:
         connection_class = transport.publish_client.connection_pool.connection_class
 
         assert not hasattr(connection_class, "_resolved_addresses")
+
+
+class _Abstract45Like:
+    """Shape of redis-py 4.5's AbstractConnection: no socket_connect_timeout."""
+
+    def __init__(self, db: int = 0, socket_timeout: float | None = None) -> None:
+        self.db = db
+        self.socket_timeout = socket_timeout
+
+    def send_command(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+
+class _Unix41Like(_Abstract45Like):
+    """redis-py 4.1 UnixDomainSocketConnection: explicit parameters only."""
+
+    def __init__(
+        self, path: str = "", db: int = 0, socket_timeout: float | None = None
+    ) -> None:
+        super().__init__(db=db, socket_timeout=socket_timeout)
+        self.path = path
+
+
+class _Unix45Like(_Abstract45Like):
+    """redis-py 4.5 UnixDomainSocketConnection: forwards **kwargs upward."""
+
+    def __init__(self, path: str = "", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.path = path
+
+
+class _Unix50Like(_Abstract45Like):
+    """redis-py 5.0.0-5.0.6 UnixDomainSocketConnection: drops socket_timeout."""
+
+    def __init__(
+        self, path: str = "", socket_timeout: float | None = None, **kwargs: Any
+    ) -> None:
+        del socket_timeout
+        super().__init__(**kwargs)
+        self.path = path
+
+
+class TestPublishConnectionKeywordCompatibility:
+    """Older redis-py connection classes take fewer keywords; timeouts stick."""
+
+    @pytest.mark.parametrize("base", [_Unix41Like, _Unix45Like, _Unix50Like])
+    def test_publish_connection_accepts_pool_kwargs_and_keeps_timeouts(
+        self, base: type[Any]
+    ) -> None:
+        cls = redis_transport._publish_connection_class(base)
+
+        connection = cls(
+            path="/tmp/redis.sock",
+            db=3,
+            socket_timeout=PUBLISH_SOCKET_TIMEOUT,
+            socket_connect_timeout=PUBLISH_CONNECT_TIMEOUT,
+        )
+
+        assert connection.path == "/tmp/redis.sock"
+        assert connection.db == 3
+        assert connection.socket_timeout == PUBLISH_SOCKET_TIMEOUT
+        assert connection.socket_connect_timeout == PUBLISH_CONNECT_TIMEOUT
