@@ -13,7 +13,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
-from stemtrace.server.fastapi.login_throttle import LoginThrottle
+from stemtrace.server.fastapi.login_throttle import (
+    DEVICE_COOKIE_TTL_SECONDS,
+    LoginAttempt,
+    LoginThrottle,
+    create_device_cookie_value,
+    device_cookie_name,
+    device_id_from_cookie,
+)
 from stemtrace.server.fastapi.paths import browser_path, cookie_path_for
 
 if TYPE_CHECKING:
@@ -184,8 +191,16 @@ def create_login_router(
         next_values = form.get("next")
         next_path = next_values[0] if next_values else None
 
-        client_ip = request.client.host if request.client else ""
-        wait = login_throttle.retry_after(client_ip, username)
+        # No client address (e.g. a Unix socket): skip the per-IP limit
+        # rather than putting every such client in one shared bucket.
+        attempt = LoginAttempt(
+            client_ip=(request.client.host if request.client else None) or None,
+            username=username,
+            device_id=device_id_from_cookie(
+                request.cookies.get(device_cookie_name(config)), config, username
+            ),
+        )
+        wait = login_throttle.retry_after(attempt)
         if wait > 0:
             return _throttled_response(request, next_path, wait, default_next_path)
 
@@ -196,8 +211,8 @@ def create_login_router(
             password.encode("utf-8"), config.password.encode("utf-8")
         )
         if not (username_ok and password_ok):
-            login_throttle.record_failure(client_ip, username)
-            wait = login_throttle.retry_after(client_ip, username)
+            login_throttle.record_failure(attempt)
+            wait = login_throttle.retry_after(attempt)
             if wait > 0:
                 return _throttled_response(request, next_path, wait, default_next_path)
             # Preserve next parameter if present.
@@ -211,7 +226,7 @@ def create_login_router(
                 status_code=303,
             )
 
-        login_throttle.record_success(client_ip, username)
+        login_throttle.record_success(attempt)
         effective_next = _safe_next(
             next_path or request.query_params.get("next"),
             default=browser_path(request.scope, default_next_path),
@@ -221,6 +236,18 @@ def create_login_router(
         response.set_cookie(
             key=config.cookie_name,
             value=config.create_session_cookie_value(),
+            httponly=True,
+            samesite="lax",
+            secure=_request_is_https(request),
+            path=cookie_path_for(request.scope, config.cookie_path),
+        )
+        # Long-lived "this browser signed in before" proof: lets it keep
+        # signing in while strangers' failures lock the username (see
+        # LoginThrottle). Logout keeps it on purpose.
+        response.set_cookie(
+            key=device_cookie_name(config),
+            value=create_device_cookie_value(config),
+            max_age=DEVICE_COOKIE_TTL_SECONDS,
             httponly=True,
             samesite="lax",
             secure=_request_is_https(request),
