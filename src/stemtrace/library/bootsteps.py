@@ -13,18 +13,22 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from celery import bootsteps
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.signals import _extract_chord_info
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from celery.worker.consumer import Consumer
 
 logger = logging.getLogger(__name__)
 
-# Import here to avoid circular imports
-_publish_event: Any = None
+# Set by register_bootsteps(). With the prefork pool the consumer, and so this
+# step, runs in the worker's main process, not in the pool children.
+_publish_event: Callable[[TaskEvent], None] | None = None
 
 
-def _set_publisher(publisher: Any) -> None:
-    """Set the event publisher function (called from signals module)."""
+def _set_publisher(publisher: Callable[[TaskEvent], None] | None) -> None:
+    """Set the function RECEIVED events are published with (None: don't publish)."""
     global _publish_event
     _publish_event = publisher
 
@@ -101,26 +105,27 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         parent_id: str | None = None
         root_id: str | None = None
         group_id: str | None = None
-        chord_id: str | None = None
+        chord: Any = None
         retries: int = 0
 
         if isinstance(body, list | tuple) and len(body) >= 3:
-            # Old format: (args, kwargs, embed)
+            # Protocol 2: (args, kwargs, embed). Celery 5.6's consumer passes no
+            # body for it (decoding is left to the pool), so headers carry the ids.
             embed = body[2] if len(body) > 2 else {}
             if isinstance(embed, dict):
                 task_id = embed.get("id")
                 parent_id = embed.get("parent_id")
                 root_id = embed.get("root_id")
                 group_id = embed.get("group")
-                chord_id = embed.get("chord")
+                chord = embed.get("chord")
                 retries = embed.get("retries", 0) or 0
         elif isinstance(body, dict):
-            # New format: {'task': ..., 'id': ..., ...}
+            # Protocol 1: {'task': ..., 'id': ..., ...}
             task_id = body.get("id")
             parent_id = body.get("parent_id")
             root_id = body.get("root_id")
             group_id = body.get("group")
-            chord_id = body.get("chord")
+            chord = body.get("chord")
             retries = body.get("retries", 0) or 0
 
         # Fallback to message headers/properties
@@ -131,7 +136,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
             parent_id = parent_id or headers.get("parent_id")
             root_id = root_id or headers.get("root_id")
             group_id = group_id or headers.get("group")
-            chord_id = chord_id or headers.get("chord")
+            chord = chord or headers.get("chord")
             if retries == 0:
                 retries = headers.get("retries", 0) or 0
 
@@ -144,6 +149,9 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
             logger.debug("Skipping RECEIVED for retry %d of task %s", retries, task_id)
             return
 
+        # A chord header's message carries the chord callback signature (a dict
+        # once deserialized); read its ids the way STARTED reads request.chord.
+        chord_id, chord_callback_id = _extract_chord_info(chord)
         _publish_event(
             TaskEvent(
                 task_id=task_id,
@@ -154,16 +162,20 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 root_id=root_id,
                 group_id=group_id,
                 chord_id=chord_id,
+                chord_callback_id=chord_callback_id,
             )
         )
         logger.debug("Emitted RECEIVED for task %s", task_id)
 
 
-def register_bootsteps(app: Any) -> None:
+def register_bootsteps(app: Any, *, publish: Callable[[TaskEvent], None]) -> None:
     """Register stemtrace bootsteps with the Celery app.
 
     Args:
         app: The Celery application instance.
+        publish: Publishes the RECEIVED events. It runs in the worker's
+            consumer loop for every task message, so it must not raise.
     """
+    _set_publisher(publish)
     app.steps["consumer"].add(ReceivedEventStep)
     logger.debug("Registered ReceivedEventStep bootstep")

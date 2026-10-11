@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
+
+import pytest
+from celery import Celery
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.bootsteps import (
@@ -10,6 +16,39 @@ from stemtrace.library.bootsteps import (
     _set_publisher,
     register_bootsteps,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _reset_publisher() -> Iterator[None]:
+    """Keep each test's publisher from leaking into the next."""
+    yield
+    _set_publisher(None)
+
+
+def _received_via_real_message(
+    events: list[TaskEvent], *, protocol: int, **message_options: object
+) -> None:
+    """Feed a message built by Celery itself through the bootstep.
+
+    Called the way Celery 5.6.3's ``Consumer.create_task_handler``
+    (celery/worker/consumer/consumer.py) calls strategies: protocol 2 passes
+    no body (decoding is deferred to the pool, so only headers are readable);
+    protocol 1 passes the decoded body, where canvas signatures are dicts.
+    """
+    app = Celery("bootstep_test", broker="memory://")
+    build = app.amqp.as_task_v2 if protocol == 2 else app.amqp.as_task_v1
+    message = build("header-1", "app.add", args=(1, 2), **message_options)
+    body = None if protocol == 2 else json.loads(json.dumps(message.body))
+    consumer = SimpleNamespace(strategies={"app.add": lambda *_a, **_k: None})
+    _set_publisher(events.append)
+    ReceivedEventStep(consumer).start(consumer)
+
+    consumer.strategies["app.add"](
+        SimpleNamespace(headers=message.headers), body, None, None, None
+    )
 
 
 class TestReceivedEventStep:
@@ -213,6 +252,77 @@ class TestReceivedEventStep:
         original_strategy.assert_called_once()
 
 
+class TestReceivedFromCeleryMessages:
+    """RECEIVED built from messages exactly as Celery 5.6 delivers them."""
+
+    def test_protocol2_chord_header_emits_received_from_headers(self) -> None:
+        """Ids come from headers; chord ids are left to STARTED.
+
+        The chord callback is only in the protocol 2 body, which the consumer
+        doesn't decode.
+        """
+        app = Celery("bootstep_test", broker="memory://")
+        callback = app.signature("app.tsum")
+        callback.freeze(group_id="group-1")
+        events: list[TaskEvent] = []
+
+        _received_via_real_message(
+            events,
+            protocol=2,
+            chord=callback,
+            group_id="group-1",
+            root_id="root-1",
+            parent_id="parent-1",
+        )
+
+        assert [
+            (e.task_id, e.name, e.state, e.group_id, e.root_id, e.parent_id)
+            for e in events
+        ] == [
+            (
+                "header-1",
+                "app.add",
+                TaskState.RECEIVED,
+                "group-1",
+                "root-1",
+                "parent-1",
+            )
+        ]
+        assert (events[0].chord_id, events[0].chord_callback_id) == (None, None)
+
+    def test_protocol1_chord_header_emits_received_with_chord_ids(self) -> None:
+        """The decoded body's chord signature yields the ids STARTED reports."""
+        app = Celery("bootstep_test", broker="memory://")
+        callback = app.signature("app.tsum")
+        callback.freeze(group_id="group-1")
+        events: list[TaskEvent] = []
+
+        _received_via_real_message(
+            events, protocol=1, chord=callback, group_id="group-1"
+        )
+
+        assert [
+            (e.task_id, e.state, e.group_id, e.chord_id, e.chord_callback_id)
+            for e in events
+        ] == [
+            (
+                "header-1",
+                TaskState.RECEIVED,
+                "group-1",
+                "group-1",
+                callback.options["task_id"],
+            )
+        ]
+
+    def test_retry_redelivery_message_emits_nothing(self) -> None:
+        """A retry's message (headers retries=1) is skipped; RETRY covers it."""
+        events: list[TaskEvent] = []
+
+        _received_via_real_message(events, protocol=2, retries=1)
+
+        assert events == []
+
+
 class TestRegisterBootsteps:
     """Tests for register_bootsteps function."""
 
@@ -221,6 +331,6 @@ class TestRegisterBootsteps:
         mock_app = MagicMock()
         mock_app.steps = {"consumer": set()}
 
-        register_bootsteps(mock_app)
+        register_bootsteps(mock_app, publish=lambda _event: None)
 
         assert ReceivedEventStep in mock_app.steps["consumer"]

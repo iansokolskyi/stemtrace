@@ -28,7 +28,7 @@ from stemtrace.core.ports import EventTransport
 from stemtrace.library.bootsteps import register_bootsteps
 from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.config import get_config as _get_config
-from stemtrace.library.signals import connect_signals
+from stemtrace.library.signals import _publish_event, connect_signals
 from stemtrace.server.fastapi import (
     StemtraceExtension,
     create_router,
@@ -177,7 +177,7 @@ def init_worker(
 
     _transport = _get_transport(url, prefix=prefix, ttl=ttl)
     connect_signals(_transport)
-    register_bootsteps(app)
+    register_bootsteps(app, publish=_publish_event)
 
 
 def init_app(

@@ -4,9 +4,11 @@ import logging
 import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from celery import Celery
 from fastapi import FastAPI
 
 import stemtrace
@@ -21,6 +23,8 @@ from stemtrace import (
     init_worker,
     is_initialized,
 )
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.bootsteps import ReceivedEventStep, _set_publisher
 from stemtrace.library.signals import disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
 
@@ -32,6 +36,7 @@ def cleanup() -> object:
     """Clean up after each test."""
     yield
     disconnect_signals()
+    _set_publisher(None)
     MemoryTransport.clear()
     _reset()  # Reset module-level transport state
 
@@ -304,6 +309,28 @@ class TestInit:
         config = get_config()
         assert config is not None
         assert config.node_alias_from_arguments is None
+
+    def test_init_worker_publishes_received_when_worker_receives_task(self) -> None:
+        """The RECEIVED bootstep init_worker registers publishes to the transport."""
+        app = Celery("received_test", broker="memory://")
+        init_worker(app, transport_url="memory://")
+        consumer = SimpleNamespace(strategies={"app.add": lambda *_a, **_k: None})
+        step = next(
+            step_cls(consumer)
+            for step_cls in app.steps["consumer"]
+            if step_cls is ReceivedEventStep
+        )
+        step.start(consumer)
+
+        message = SimpleNamespace(headers={"id": "task-1", "retries": 0})
+        consumer.strategies["app.add"](message, ((), {}, {}), None, None, None)
+
+        received = [
+            (e.task_id, e.name, e.state)
+            for e in MemoryTransport.events
+            if isinstance(e, TaskEvent)
+        ]
+        assert received == [("task-1", "app.add", TaskState.RECEIVED)]
 
 
 class TestInitAppNodeAlias:

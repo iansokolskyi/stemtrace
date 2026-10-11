@@ -5,7 +5,7 @@ and reads the events it publishes to Redis. This is the path unit tests can't
 cover: a prefork child process, Celery's own logging setup (which clears root
 handlers after ``init_worker``), ``print()`` going through Celery's
 ``LoggingProxy`` (or not, with the redirect off), and a worker with no logging
-handlers at all.
+handlers at all. The same workers also check the worker-side RECEIVED event.
 
 Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``).
 Worker modes default to prefork and threads with Celery's redirect, plus prefork
@@ -197,6 +197,32 @@ def test_each_attempt_has_its_own_output(worker: WorkerRun) -> None:
         (TaskState.RETRY, 0): "attempt 0",
         (TaskState.FAILURE, 1): "attempt 1",
     }
+
+
+def test_received_is_published_once_before_started(worker: WorkerRun) -> None:
+    """The worker publishes RECEIVED when it takes the message, before STARTED.
+
+    With prefork, RECEIVED comes from the main process (the consumer) and
+    STARTED from a pool child. The retry's redelivery publishes no second
+    RECEIVED: its RETRY event covers it.
+    """
+    task_id = worker.send("output_test.flaky")
+
+    events = worker.wait_for(task_id, TaskState.FAILURE)
+
+    pre_run = [
+        (e.state, e.retries)
+        for e in events
+        if e.state in (TaskState.RECEIVED, TaskState.STARTED)
+    ]
+    assert pre_run == [
+        (TaskState.RECEIVED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.STARTED, 1),
+    ]
+    received = next(e for e in events if e.state == TaskState.RECEIVED)
+    first_start = next(e for e in events if e.state == TaskState.STARTED)
+    assert received.timestamp <= first_start.timestamp
 
 
 def test_concurrent_tasks_keep_their_own_output(worker: WorkerRun) -> None:
