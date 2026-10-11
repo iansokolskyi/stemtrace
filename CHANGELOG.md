@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Minimum dependency versions raised to the lowest ones the test suite passes with: `celery>=5.2.0`, `pydantic>=2.2.0`, `typer>=0.13.0`. A new CI job runs the unit tests against the declared minimums.
+- Minimum dependency versions raised to the lowest ones the test suite passes with: `celery>=5.2.0`, `pydantic>=2.2.0`, `typer>=0.13.0`; `kombu>=5.2.1`, which stemtrace imports, is now declared. A new CI job runs the unit tests against the declared minimums.
 - Graph data: a node's `parent_id` is where it sits in the graph. For a group's task that is the GROUP/CHORD node, for a chord's callback the CHORD node, and a task whose parent isn't in the store yet has none. The parent a task's events reported is in the new `reported_parent_id` field, on `TaskNode` and in the API's task and graph node responses.
 - `TaskGraph.root_ids` is now computed and returns a copy: appending to it no longer changes the graph. `TaskGraph.model_validate` rebuilds the graph from its nodes' events, so a deserialized graph keeps its groups and links and accepts more events.
 
@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graphs: a chain containing a chord, such as `chain(a, group(b, c), d, e)`, is one graph again: the chord sits under `a`, `d` is drawn as the chord's callback and `e` follows it. Celery stamps the chord's group ID on the chain's last task, which used to count as a header and split the workflow in two. The same applies to a chord whose body is a chain (the body's first task is the callback; its later tasks no longer appear inside the chord) or another chord (drawn as a container after the outer chord).
 - Graphs: a chord's callback hangs off the chord instead of off the header that finished last, and a retried header stays a header.
 - Graphs: `group(chain(a1, b1), chain(a2, b2))` is one graph: each chain is drawn as a row inside the group (Celery only marks the chains' last tasks as members). A parent task with other children is never pulled into a group. Other groups whose tasks report different parents go under the one most of them report, the same one whatever order events arrive in.
+- Graphs: a chord inside a chain, such as `chain(a, chord([b, c], d))`, draws its callback again (it reports `a`, not a header, as its parent).
+- Graphs: a chain's first task is no longer drawn inside a group for a moment before moving out; `group(chain(a, b), c)` draws the chain inside the group; a header's own subtasks (or a group it starts) are drawn next to the chord instead of not at all.
 - Graphs: a chord's callback is only drawn on evidence from the events (the callback the headers name, or the chord's group ID Celery stamps on a chain body's last task, traced back to a header). A header's own subtask or sub-group is no longer drawn as the callback, including when a header failed and the body never ran; such a chord shows no callback. Chords run through Celery's `chord_unlock` task (result backends without chord support) link their callback too.
 - The server no longer evicts a group's or chord's node before its tasks; a recreated group used to be linked under itself, which left its graph page blank. Evicting a task also drops it from its group and from its chord.
 - Graph page: a malformed graph in which a group lists itself among its children is drawn instead of rendering blank.
