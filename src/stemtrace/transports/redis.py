@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -113,6 +114,37 @@ def _without_query_params(url: str, names: tuple[str, ...]) -> str:
     return urlunparse(parsed._replace(query=urlencode(kept)))
 
 
+# Whether the current publish attempt has written its XADD to the socket. A
+# timeout or dropped connection after that may still leave the entry in the
+# stream (Redis applies the command, the reply is lost), so the event counts
+# as unconfirmed rather than dropped. A ContextVar, so threads and greenlets
+# publishing at once each see their own attempt.
+_XADD_SENT: ContextVar[bool] = ContextVar("stemtrace_redis_xadd_sent", default=False)
+
+
+def _with_xadd_tracking(connection_class: type[Any]) -> type[Any]:
+    """Subclass a redis-py connection class to set _XADD_SENT once XADD is written.
+
+    redis-py 8.1 Redis._send_command_parse_response() calls
+    ``connection.send_command(command_name, *args)`` and only then reads the
+    reply; send_command() returns once the whole command was written (the
+    handshake commands sent while connecting go through it too, hence the
+    name check).
+    """
+
+    def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
+        """Send a command; note an XADD once it was written in full."""
+        connection_class.send_command(self, *args, **kwargs)
+        if args and args[0] == "XADD":
+            _XADD_SENT.set(True)
+
+    return type(
+        f"Publish{connection_class.__name__}",
+        (connection_class,),
+        {"send_command": send_command},
+    )
+
+
 def _publish_client_from_url(url: str) -> Redis[Any]:
     """Build the client publish() uses: short timeouts, no retries.
 
@@ -140,7 +172,21 @@ def _publish_client_from_url(url: str) -> Redis[Any]:
         socket_timeout=PUBLISH_SOCKET_TIMEOUT,
         retry=Retry(NoBackoff(), 0),
     )
+    # from_url() picked the class for the scheme (TCP, TLS or Unix socket).
+    pool.connection_class = _with_xadd_tracking(pool.connection_class)
     return RedisClient(connection_pool=pool)
+
+
+def _reply_lost(exc: Exception) -> bool:
+    """Whether a publish error leaves it unknown if Redis applied the command.
+
+    A timeout or a broken connection while waiting for the reply does; an
+    error reply (e.g. OOM, WRONGTYPE) means Redis rejected the command.
+    """
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    return isinstance(exc, RedisConnectionError | RedisTimeoutError)
 
 
 def _is_connect_timeout(exc: Exception) -> bool:
@@ -335,8 +381,10 @@ class RedisTransport:
         PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries, plus
         however long resolving the host name takes (not bounded here).
 
-        Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure.
-        PUBLISH_FAILURES_TO_OPEN failures
+        Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure. A failure
+        after the XADD was written (a timeout or lost connection) counts the
+        event as sent but unconfirmed, since Redis may still have applied it;
+        other failures count it as dropped. PUBLISH_FAILURES_TO_OPEN failures
         in a row open a circuit breaker; until then a failure loses only its
         own event. While open, events are dropped without contacting Redis
         for a cooldown (1s, doubling per failed retry up to 30s, reset by a
@@ -358,6 +406,7 @@ class RedisTransport:
                 self._event_identifier(event),
             )
             return
+        sent = _XADD_SENT.set(False)
         try:
             self.publish_client.xadd(
                 self._stream_key,
@@ -370,9 +419,12 @@ class RedisTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
+                unconfirmed=_XADD_SENT.get() and _reply_lost(exc),
             )
         else:
             breaker.record_success(ticket)
+        finally:
+            _XADD_SENT.reset(sent)
 
     @staticmethod
     def _event_identifier(event: StreamEvent) -> str:

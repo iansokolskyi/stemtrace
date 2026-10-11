@@ -8,9 +8,11 @@ from typing import Any
 import pytest
 import redis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.transports import redis as redis_transport
 from stemtrace.transports.redis import (
     PUBLISH_CONNECT_TIMEOUT,
     PUBLISH_FAILURES_TO_OPEN,
@@ -22,6 +24,7 @@ from stemtrace.transports.redis import (
 LOGGER_NAME = "stemtrace.transports.redis"
 REFUSED = RedisConnectionError("Error 111 connecting to 127.0.0.1:6379.")
 TIMED_OUT = RedisTimeoutError("Timeout connecting to server")
+READ_TIMED_OUT = RedisTimeoutError("Timeout reading from socket")
 
 
 class FakeClock:
@@ -56,6 +59,8 @@ class FakePublishRedis:
         self.calls.append(key)
         step = self.script.pop(0) if self.script else (0.0, None)
         delay, error = step[0], step[1]
+        if len(step) == 3 and step[2]:
+            redis_transport._XADD_SENT.set(True)
         self.clock.now += delay
         if error is not None:
             raise error
@@ -138,6 +143,47 @@ class TestRedisPublishBreaker:
         assert [r.getMessage() for r in _warnings(caplog)][-1] == (
             "Failed to publish event t-2 to Redis; dropping events for 1.0s "
             "before trying again (2 event(s) dropped since the last report)"
+        )
+
+    @pytest.mark.parametrize("error", [READ_TIMED_OUT, RedisConnectionError("reset")])
+    def test_publish_reply_lost_after_xadd_sent_counts_as_unconfirmed(
+        self, error: Exception, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Redis may still apply an XADD whose reply timed out (e.g. a stall)."""
+        transport, _, _ = _make([(PUBLISH_SOCKET_TIMEOUT, error, True)])
+
+        transport.publish(_event("t-0"))
+
+        assert [r.getMessage() for r in _warnings(caplog)] == [
+            "Failed to publish event t-0 to Redis; publishing continues "
+            "(0 event(s) dropped, 1 sent but unconfirmed since the last report)"
+        ]
+
+    def test_publish_error_reply_after_xadd_sent_counts_as_dropped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An error reply means Redis rejected the XADD: the event is lost."""
+        transport, _, _ = _make([(0.001, ResponseError("OOM"), True)])
+
+        transport.publish(_event("t-0"))
+
+        assert (
+            _warnings(caplog)[0]
+            .getMessage()
+            .endswith("(1 event(s) dropped since the last report)")
+        )
+
+    def test_publish_timeout_before_xadd_sent_counts_as_dropped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport, _, _ = _make([(PUBLISH_SOCKET_TIMEOUT, READ_TIMED_OUT, False)])
+
+        transport.publish(_event("t-0"))
+
+        assert (
+            _warnings(caplog)[0]
+            .getMessage()
+            .endswith("(1 event(s) dropped since the last report)")
         )
 
     def test_publish_fast_refusals_open_after_threshold(self) -> None:
@@ -301,3 +347,34 @@ class TestRedisPublishClientPerProcess:
         transport = RedisTransport.from_url("redis://localhost:6379/0")
 
         assert transport.publish_client.auto_close_connection_pool is False
+
+
+class TestRedisPublishConnectionTracksXadd:
+    """The publish client's connections note when XADD reached the socket."""
+
+    @pytest.mark.parametrize(
+        "url", ["redis://localhost:6379/0", "rediss://localhost:6380/0"]
+    )
+    def test_send_command_marks_only_xadd_as_sent(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport = RedisTransport.from_url(url)
+        pool = transport.publish_client.connection_pool
+        connection = pool.make_connection()
+        sent: list[Any] = []
+        monkeypatch.setattr(
+            connection, "send_packed_command", lambda command, **kw: sent.append(1)
+        )
+        token = redis_transport._XADD_SENT.set(False)
+        try:
+            connection.send_command("CLIENT", "SETINFO", "LIB-NAME", "x")
+            assert redis_transport._XADD_SENT.get() is False
+            connection.send_command("XADD", "k", "*", "data", "x")
+            assert redis_transport._XADD_SENT.get() is True
+        finally:
+            redis_transport._XADD_SENT.reset(token)
+        assert len(sent) == 2
+        assert isinstance(
+            connection,
+            type(redis.Redis.from_url(url).connection_pool.make_connection()),
+        )

@@ -124,9 +124,9 @@ def stream_prefix() -> Iterator[str]:
 
 
 @pytest.mark.integration
-def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts() -> (
-    None
-):
+def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A Redis that accepts but never answers costs three attempts, then none."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -146,6 +146,81 @@ def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts()
     # redis-py's 5s default.
     assert breaker.dropped == 20 - PUBLISH_FAILURES_TO_OPEN
     assert sum(durations) < 10 * PUBLISH_SOCKET_TIMEOUT, durations
+    # The handshake timed out, so no XADD was ever sent: nothing unconfirmed.
+    assert "unconfirmed" not in caplog.text
+
+
+class _ReplyOnlyToHandshake:
+    """Fake Redis: answers the handshake, then ignores XADD (never replies)."""
+
+    def __init__(self) -> None:
+        self._server = socket.socket()
+        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server.bind(("127.0.0.1", 0))
+        self._server.listen(16)
+        self._server.settimeout(0.1)
+        self._stop = threading.Event()
+        self._sockets: list[socket.socket] = []
+        self.xadds = 0
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    @property
+    def url(self) -> str:
+        return f"redis://127.0.0.1:{self._server.getsockname()[1]}/0"
+
+    def _accept(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._server.accept()
+            except (TimeoutError, OSError):
+                continue
+            self._sockets.append(conn)
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        reader = conn.makefile("rb")
+        with contextlib.suppress(OSError, ValueError):
+            while header := reader.readline():
+                # RESP array of bulk strings: *<n>, then $<len> and data each.
+                args = []
+                for _ in range(int(header[1:])):
+                    length = int(reader.readline()[1:])
+                    args.append(reader.read(length + 2)[:-2])
+                command = args[0].upper()
+                if command == b"XADD":
+                    self.xadds += 1
+                elif command == b"HELLO":
+                    # redis-py 8 speaks RESP3 and checks the reply's proto.
+                    conn.sendall(b"%1\r\n+proto\r\n:3\r\n")
+                else:
+                    conn.sendall(b"+OK\r\n")
+
+    def close(self) -> None:
+        self._stop.set()
+        for sock in [self._server, *self._sockets]:
+            with contextlib.suppress(OSError):
+                sock.close()
+
+
+@pytest.mark.integration
+def test_publish_reply_timeout_after_xadd_counts_as_unconfirmed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An XADD whose reply times out may still be applied: not "dropped"."""
+    server = _ReplyOnlyToHandshake()
+    try:
+        transport = RedisTransport.from_url(server.url)
+
+        transport.publish(_event(0))
+    finally:
+        server.close()
+
+    assert server.xadds == 1
+    assert transport._publish_breaker.is_open is False
+    assert (
+        "(0 event(s) dropped, 1 sent but unconfirmed since the last report)"
+        in caplog.text
+    )
 
 
 @pytest.mark.integration
