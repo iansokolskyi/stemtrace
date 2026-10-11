@@ -469,9 +469,12 @@ class TaskGraph(BaseModel):
         what keeps a task that arrived before its parent unlinked. With
         ``ensure_linked``, it is listed under that parent if it isn't yet.
         """
-        parent_id = self._safe_parent(node, self._desired_parent(node))
+        parent_id = self._desired_parent(node)
+        if parent_id != node.parent_id:
+            parent_id = self._safe_parent(node, parent_id)
         if parent_id == node.parent_id:
-            if ensure_linked:
+            # A placed node without a parent is already a root.
+            if ensure_linked and parent_id is not None:
                 self._link(node)
             return
         self._unlink(node)
@@ -489,11 +492,12 @@ class TaskGraph(BaseModel):
     def _link(self, node: TaskNode) -> None:
         """List a node under its ``parent_id``, or as a root if it has none.
 
-        A parent that isn't in the graph leaves the node unlinked.
+        A parent that isn't in the graph leaves the node unlinked. Only call
+        it for a node that isn't a root yet (new or just unlinked): checking
+        ``root_ids`` would cost O(roots) per event.
         """
         if node.parent_id is None:
-            if node.task_id not in self.root_ids:
-                self.root_ids.append(node.task_id)
+            self.root_ids.append(node.task_id)
             return
         parent = self.nodes.get(node.parent_id)
         if parent is not None and node.task_id not in parent.children:
