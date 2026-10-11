@@ -191,16 +191,26 @@ class TestRabbitMQTransportReconnect:
 
     @staticmethod
     def _consumer_connection_name(queue_name: str, timeout: float) -> str:
-        """Wait for the management API to report the queue's consumer connection."""
+        """Wait for the management API to report the queue's consumer connection.
+
+        A consumer can be listed before its channel details are: the
+        management stats arrive asynchronously, so ``channel_details`` may
+        still be empty. Keep polling until the connection name shows up.
+        """
         path = f"queues/{urllib.parse.quote('/', safe='')}/{queue_name}"
         deadline = time.monotonic() + timeout
+        details: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             details = _management_request("GET", path).get("consumer_details") or []
-            if details:
-                name: str = details[0]["channel_details"]["connection_name"]
-                return name
-            time.sleep(0.5)
-        raise TimeoutError(f"No consumer reported on {queue_name} after {timeout}s")
+            for consumer in details:
+                name = (consumer.get("channel_details") or {}).get("connection_name")
+                if isinstance(name, str) and name:
+                    return name
+            time.sleep(0.2)
+        raise TimeoutError(
+            f"No consumer connection reported on {queue_name} after {timeout}s "
+            f"(last consumer_details: {details!r})"
+        )
 
     def test_consume_after_broker_closes_connection_reconnects_and_resumes(
         self,
