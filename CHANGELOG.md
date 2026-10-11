@@ -8,8 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- Redis: publishing from workers no longer blocks tasks while Redis is down, hung or unreachable. Workers publish through a separate connection with 1s timeouts and no retries, and repeated or slow failures open the same circuit breaker RabbitMQ uses, which drops events (instead of queueing them) until Redis answers again. Before, every event of every task could wait 5s (redis-py's default timeout). The server's consumer keeps its timeouts.
-- Redis and RabbitMQ: a broker that answers but slowly no longer slows tasks down. A publish that succeeds but takes 1s or more, or three in a row that take 0.5s or more, now open the circuit breaker too, and events are dropped while it's open.
+- Redis: publishing from workers no longer waits 5s per event (redis-py's default timeout) while Redis is down, hung or unreachable. Workers publish through a separate connection with 1s timeouts and no retries, and timeouts or repeated failures open the same circuit breaker RabbitMQ uses, which drops events (instead of queueing them) and retries once per cooldown (1s, growing to 30s). Host name resolution isn't bounded by these timeouts, so with an unreachable DNS resolver each retry can block a task for the resolver's timeout. The server's consumer keeps its timeouts.
+- Redis: each worker process (e.g. each prefork child) now builds its own publish connection pool instead of reusing one inherited from the parent, which could hang the child's first publish if another parent thread held the pool's lock at fork.
+- Redis and RabbitMQ: worker event ids in publish failure logs read `host:pid:worker_ready` instead of `host:pid:WorkerEventType.WORKER_READY`.
 
 ## [0.3.10] - 2026-10-11
 
