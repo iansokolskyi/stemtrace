@@ -265,14 +265,14 @@ class TestTaskGraphParentChild:
                 timestamp=datetime.now(timezone.utc),
             )
         )
-        # Child's PENDING event (from task_sent) lacks parent_id
+        # Child's PENDING from an older stemtrace sender lacks parent_id
         graph.add_event(
             TaskEvent(
                 task_id="child-1",
                 name="myapp.tasks.subtask",
                 state=TaskState.PENDING,
                 timestamp=datetime.now(timezone.utc),
-                parent_id=None,  # task_sent doesn't know parent
+                parent_id=None,  # older senders didn't send it
             )
         )
         # Initially child appears as root
@@ -542,7 +542,7 @@ class TestGroupIdCapture:
     def test_group_id_updated_from_later_event(self) -> None:
         """Test that group_id is updated from later events (e.g., STARTED after PENDING)."""
         graph = TaskGraph()
-        # PENDING event (from task_sent) may lack group_id
+        # A PENDING from an older stemtrace sender lacks group_id
         graph.add_event(
             TaskEvent(
                 task_id="task-1",
@@ -1540,7 +1540,7 @@ class TestOutOfOrderEvents:
         graph = TaskGraph()
         graph.add_event(_ordered_event(TaskState.STARTED, 1))
         graph.add_event(_ordered_event(TaskState.SUCCESS, 2))
-        # Sender-side PENDING (task_sent fires after publish) arrives last.
+        # Sender-side PENDING (after_task_publish fires after publish) arrives last.
         graph.add_event(_ordered_event(TaskState.PENDING, 0))
 
         node = graph.nodes["task-1"]
@@ -1554,7 +1554,7 @@ class TestOutOfOrderEvents:
     def test_add_event_pending_with_later_timestamp_after_success_keeps_success(
         self,
     ) -> None:
-        # task_sent can be stamped after the worker already started the task.
+        # The sender's PENDING can be stamped after the worker already started the task.
         graph = TaskGraph()
         graph.add_event(_ordered_event(TaskState.STARTED, 1))
         graph.add_event(_ordered_event(TaskState.SUCCESS, 2))

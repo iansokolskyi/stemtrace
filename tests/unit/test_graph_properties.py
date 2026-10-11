@@ -19,6 +19,38 @@ _GROUP_IDS = ["g0", "g1", "g2"]
 _STATES = list(TaskState)
 
 
+def _make_celery_shaped(
+    rng: random.Random,
+    group_of: dict[str, str | None],
+    parent_of: dict[str, str | None],
+) -> dict[str, str | None]:
+    """Make the plan Celery-shaped; returns each chord's callback.
+
+    A group's members are sent together, by one earlier parent; each chord
+    names its own callback, a later task outside the group that its last
+    header sends.
+    """
+    callback_of: dict[str, str | None] = {}
+    for g in _GROUP_IDS:
+        members = [i for i, t in enumerate(_TASK_IDS) if group_of[t] == g]
+        if not members:
+            callback_of[g] = None
+            continue
+        shared = rng.choice([*_TASK_IDS[: min(members)], "ghost", None])
+        for i in members:
+            parent_of[_TASK_IDS[i]] = shared
+        later = [
+            t
+            for t in _TASK_IDS[max(members) + 1 :]
+            if group_of[t] is None and t not in callback_of.values()
+        ]
+        callback = rng.choice([*later, None]) if later else None
+        callback_of[g] = callback
+        if callback is not None:
+            parent_of[callback] = _TASK_IDS[max(members)]
+    return callback_of
+
+
 def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[TaskEvent]:
     """Events for a small pool of tasks with groups, chords and odd parents.
 
@@ -26,20 +58,36 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
     but some events drop or change them, report a missing or the task's own
     ID as parent, or name a chord callback. With ``acyclic``, every reported
     parent is an earlier task (or missing), as in Celery, where a task's
-    parent is sent before it; chords name distinct callbacks and a task
-    keeps its group.
+    parent is sent before it; a group's members share one parent; chords
+    name distinct callbacks; a task keeps its group.
     """
     rng = random.Random(seed)
     group_of = {t: rng.choice([*_GROUP_IDS, None, None]) for t in _TASK_IDS}
     parent_of = {
-        t: rng.choice([*(_TASK_IDS[:i] if acyclic else _TASK_IDS), "ghost", None, None])
+        t: rng.choice(
+            [
+                *(
+                    # Celery-shaped: an earlier task, never one of the
+                    # task's own group (a group's members share a parent
+                    # outside it).
+                    [
+                        p
+                        for p in _TASK_IDS[:i]
+                        if group_of[t] is None or group_of[p] != group_of[t]
+                    ]
+                    if acyclic
+                    else _TASK_IDS
+                ),
+                "ghost",
+                None,
+                None,
+            ]
+        )
         for i, t in enumerate(_TASK_IDS)
     }
     callback_of = {g: rng.choice([*_TASK_IDS, None]) for g in _GROUP_IDS}
-    if acyclic:  # and, as in Celery, each chord names its own callback
-        callback_of = dict(
-            zip(_GROUP_IDS, rng.sample(_TASK_IDS, len(_GROUP_IDS)), strict=True)
-        )
+    if acyclic:
+        callback_of = _make_celery_shaped(rng, group_of, parent_of)
     events = []
     for i in range(count):
         task_id = rng.choice(_TASK_IDS)
@@ -105,8 +153,10 @@ def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
     """Removing tasks leaves the graph a rebuild from the other tasks'
     events would give (placement, children, chord callbacks, roots).
 
-    Parents are acyclic, as in Celery: with a parent cycle, where it is
-    broken depends on which link was placed first.
+    The plan is Celery-shaped (see ``_make_celery_shaped``). Steps where
+    the data still closes a cycle through groups, chain links and chord
+    bodies only check invariants: where a cycle breaks depends on which link
+    came first. (About 6% of steps.)
     """
     rng = random.Random(20_000 + seed)
     events = _random_events(seed, 60, acyclic=True)
@@ -131,9 +181,9 @@ def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
                 rebuilt.add_event(event)
         assert_graph_invariants(rebuilt)
         if graph._cycles_refused or rebuilt._cycles_refused:
-            # The data closed a cycle through groups and chord bodies (Celery
-            # can't). Where it is broken depends on which link came first,
-            # so only the invariants are comparable.
+            # The data closed a cycle through groups, chain links and chord
+            # bodies. Where it breaks depends on which link came first, so
+            # only the invariants are comparable.
             continue
         assert _shape(graph) == _shape(rebuilt), (seed, removed)
         assert sorted(graph.root_ids) == sorted(rebuilt.root_ids)

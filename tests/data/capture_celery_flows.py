@@ -10,7 +10,9 @@ Regenerate with: ``uv run python tests/data/capture_celery_flows.py``. Then
 adds the chord flows again (keys ending ``@chord_unlock``) with a
 ``db+sqlite`` backend, which has no native chord support: Celery then runs
 the callback from its ``celery.chord_unlock`` polling task. ``--only NAME...``
-captures just those flows and merges them into the existing file.
+captures just those flows and merges them into the existing file;
+``--suffix S`` stores them as ``NAME + S`` (e.g. to keep a capture made with
+an older stemtrace alongside a new one).
 """
 
 import json
@@ -65,6 +67,18 @@ def add_with_subtask(x: int, y: int) -> int:
     """Add, also sending an unrelated subtask (fire-and-forget)."""
     add.delay(x, 100)
     return x + y
+
+
+@app.task(bind=True, name="flows.replace_with_chain")
+def replace_with_chain(self: Any) -> None:
+    """Replace this task with a chain (its last task reuses this task's ID)."""
+    raise self.replace(chain(add.s(1, 1), add.s(2)))
+
+
+@app.task(bind=True, name="flows.replace_with_group")
+def replace_with_group(self: Any) -> None:
+    """Replace this task with a group."""
+    raise self.replace(group(add.s(1, 1), add.s(2, 2)))
 
 
 @app.task(name="flows.fail")
@@ -141,6 +155,15 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         "group_chain_and_task": lambda: group(
             chain(add.s(1, 1), add.s(1)), add.s(2, 2)
         ),
+        "chord_group_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)], group(tsum.s(), tsum.s())
+        ),
+        "chain_group_group": lambda: chain(
+            group(add.s(1, 1), add.s(2, 2)), group(tsum.s(), tsum.s())
+        ),
+        "replace_chain": lambda: replace_with_chain.s(),
+        "replace_group": lambda: replace_with_group.s(),
+        "chain_replace_group_tsum": lambda: chain(replace_with_group.s(), tsum.s()),
         "group_of_chains_link_spawns": lambda: group(
             chain(add_with_subtask.s(1, 1), add.s(1)), chain(add.s(2, 2), add.s(2))
         ),
@@ -180,7 +203,16 @@ def _settle() -> None:
 def main() -> None:
     """Run the workflows and write (or, with --unlock, add) their events."""
     flows = _flows()
-    only = sys.argv[sys.argv.index("--only") + 1 :] if "--only" in sys.argv else None
+    suffix = sys.argv[sys.argv.index("--suffix") + 1] if "--suffix" in sys.argv else ""
+    only = None
+    if "--only" in sys.argv:
+        only = [
+            a
+            for a in sys.argv[sys.argv.index("--only") + 1 :]
+            if not a.startswith("--")
+        ]
+        if "--suffix" in sys.argv:
+            only = [a for a in only if a != suffix]
     if UNLOCK:
         flows = {name: flows[name] for name in _UNLOCK_FLOWS}
     elif only:
@@ -194,7 +226,7 @@ def main() -> None:
                 result = build().apply_async()
                 result.get(timeout=60, propagate=False, disable_sync_subtasks=False)
                 _settle()
-                key = f"{name}@chord_unlock" if UNLOCK else name
+                key = f"{name}@chord_unlock" if UNLOCK else f"{name}{suffix}"
                 captures[key] = [
                     _event_dict(e)
                     for e in MemoryTransport.events

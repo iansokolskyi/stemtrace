@@ -263,6 +263,71 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {},
     ),
+    # chord([a, b], group(c, d)): the headers name the chord's own group ID
+    # and both body tasks carry it; the body is drawn as a GROUP after the
+    # chord. chain(group(a, b), group(c, d)) is the same canvas to Celery.
+    "chord_group_body": (
+        {
+            "group:T1": (_C, None, ["T0", "T2", "group:T1:body"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", []),
+            "group:T1:body": (_G, "group:T1", ["T3", "T4"]),
+            "T3": (_T, "group:T1:body", []),
+            "T4": (_T, "group:T1:body", []),
+        },
+        {"group:T1": "group:T1:body"},
+    ),
+    "chain_group_group": (
+        {
+            "group:T1": (_C, None, ["T0", "T2", "group:T1:body"]),
+            "T0": (_T, "group:T1", []),
+            "T2": (_T, "group:T1", []),
+            "group:T1:body": (_G, "group:T1", ["T3", "T4"]),
+            "T3": (_T, "group:T1:body", []),
+            "T4": (_T, "group:T1:body", []),
+        },
+        {"group:T1": "group:T1:body"},
+    ),
+    # task.replace(): Celery gives the replacement's last task the replaced
+    # task's ID (T0), whose events then report a parent from the
+    # replacement. Only events under the task's first name report its
+    # parent, so T0 stays the root.
+    "replace_chain": (
+        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
+        {},
+    ),
+    # Replacing with a group makes a chord whose callback (accumulate)
+    # reuses T0's ID: it can't also be drawn after the chord.
+    "replace_group": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+        },
+        {"group:T2": None},
+    ),
+    "chain_replace_group_tsum": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+            "T4": (_T, "group:T2", []),
+        },
+        {"group:T2": "T4"},
+    ),
+    "group_of_chains_link_spawns@publish_headers": (
+        {
+            "T0": (_T, None, ["T2", "group:T4"]),
+            "T2": (_T, "T0", []),
+            "group:T4": (_G, "T0", ["T1", "T3"]),
+            "T3": (_T, "group:T4", []),
+            "T1": (_T, "group:T4", ["T5"]),
+            "T5": (_T, "T1", []),
+        },
+        {},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},
@@ -283,6 +348,10 @@ def _labels(events: list[dict[str, Any]]) -> dict[str, str]:
 def _label(labels: dict[str, str], node_id: str | None) -> str | None:
     if node_id is None:
         return None
+    if node_id.startswith("group:") and node_id.endswith(":body"):
+        return (
+            f"group:{labels[node_id.removeprefix('group:').removesuffix(':body')]}:body"
+        )
     if node_id.startswith("group:"):
         return f"group:{labels[node_id.removeprefix('group:')]}"
     return labels[node_id]
@@ -387,23 +456,129 @@ def _final_ancestors(graph: TaskGraph, node_id: str) -> set[str]:
     return ancestors
 
 
+def _assert_only_accepted_transients(graph: TaskGraph, final: TaskGraph) -> None:
+    """Accepted transients: a node is a root, under its reported parent (a
+    group's: one its members report), or under a node it ends up below; a
+    GROUP may still turn into a CHORD; a chord's callback is not drawn yet,
+    or is (part of) its final callback. Never a node in a container it
+    doesn't end up in, never a wrong callback."""
+    for node_id, node in graph.nodes.items():
+        end = final.nodes.get(node_id)
+        if end is None:
+            continue
+        ancestors = _final_ancestors(final, node_id)
+        if node.parent_id is not None:
+            reported = {node.reported_parent_id}
+            if node.node_type != _T:
+                reported |= {
+                    graph.nodes[c].reported_parent_id
+                    for c in node.children
+                    if c in graph.nodes
+                }
+            allowed = ancestors | reported
+            assert node.parent_id in allowed, (node_id, node.parent_id, end.parent_id)
+        if node.node_type != end.node_type:
+            assert (node.node_type, end.node_type) == (_G, _C), (
+                node_id,
+                node.node_type,
+            )
+        if node.chord_id is not None and node.chord_id != end.chord_id:
+            callback = node.chord_id
+            assert end.chord_id is not None, (node_id, callback)
+            assert callback in final.nodes, (node_id, callback)
+            assert end.chord_id in _final_ancestors(final, callback), (
+                node_id,
+                callback,
+            )
+
+
+def _from_this_release(events: list[dict[str, Any]]) -> bool:
+    """Whether a capture's senders put parent and group IDs on PENDING.
+
+    Older stemtrace senders (task_sent) never did; captures made with them
+    stay, as servers receive events from such workers too.
+    """
+    return any(
+        e["state"] == "PENDING" and (e["parent_id"] or e["group_id"]) for e in events
+    )
+
+
+def _causal_orders(
+    events: list[dict[str, Any]], count: int
+) -> list[list[dict[str, Any]]]:
+    """Random arrival orders concurrent workers can produce.
+
+    Each process's events keep their order: a task's worker events, with
+    the PENDINGs of the tasks it sends; the client's PENDINGs; and a task's
+    worker events come after its PENDING. Processes interleave freely.
+    """
+    task_ids = {e["task_id"] for e in events}
+
+    def producer(event: dict[str, Any]) -> str:
+        if event["state"] != "PENDING":
+            return event["task_id"]
+        parent = event["parent_id"]
+        return parent if parent in task_ids else "client"
+
+    orders = []
+    for seed in range(count):
+        rng = random.Random(seed)
+        streams: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            streams.setdefault(producer(event), []).append(event)
+        sent = {e["task_id"] for e in events if e["state"] != "PENDING"} - {
+            e["task_id"] for e in events if e["state"] == "PENDING"
+        }
+        order: list[dict[str, Any]] = []
+        while any(streams.values()):
+            ready = [
+                name
+                for name, stream in streams.items()
+                if stream
+                and (stream[0]["state"] == "PENDING" or stream[0]["task_id"] in sent)
+            ]
+            event = streams[rng.choice(ready)].pop(0)
+            if event["state"] == "PENDING":
+                sent.add(event["task_id"])
+            order.append(event)
+        orders.append(order)
+    return orders
+
+
 @pytest.mark.parametrize("flow", sorted(_EXPECTED))
-def test_replay_celery_flow_never_shows_a_node_off_its_final_path(flow: str) -> None:
-    """After every event (in arrival order), each node is a root, sits under
-    the parent its events reported, or under a node it ends up below: no
-    transient detours, such as a chain's first task drawn inside the group
-    it started for a while."""
+def test_replay_celery_flow_shows_only_accepted_transients(flow: str) -> None:
+    """After every event the graph only differs from its final shape in
+    accepted ways (see above): in arrival order, and for captures from this
+    release's senders also in causal orders concurrent workers can produce.
+    (With older senders, whose PENDING carries no parent, a parent's other
+    children can show up late enough for it to look like a chain link.)"""
     events = _CAPTURES[flow]
     final = _replay(events)
+    orders = [events]
+    if _from_this_release(events):
+        orders += _causal_orders(events, 8)
+    for order in orders:
+        graph = TaskGraph()
+        for event in order:
+            graph.add_event(TaskEvent.model_validate(event))
+            _assert_only_accepted_transients(graph, final)
+
+
+def test_replay_chain_link_spawning_task_with_delayed_subtask() -> None:
+    """group(chain(a, b), chain(c, d)) where a also sends a subtask whose
+    worker events arrive last: the PENDING of a's subtask carries a as its
+    parent, so a never looks like a one-child chain link."""
+    events = _CAPTURES["group_of_chains_link_spawns@publish_headers"]
+    labels = _labels(events)
+    subtask = _id(labels, "T2")
+    delayed = [e for e in events if e["task_id"] == subtask and e["state"] != "PENDING"]
+    order = [e for e in events if e not in delayed] + delayed
+    final = _replay(events)
     graph = TaskGraph()
-    for event in events:
+    for event in order:
         graph.add_event(TaskEvent.model_validate(event))
-        for node_id, node in graph.nodes.items():
-            if node.parent_id is None or node_id not in final.nodes:
-                continue
-            allowed = _final_ancestors(final, node_id) | {node.reported_parent_id}
-            assert node.parent_id in allowed, (
-                node_id,
-                node.parent_id,
-                final.nodes[node_id].parent_id,
-            )
+        _assert_only_accepted_transients(graph, final)
+    assert (
+        _labelled_shape(graph, labels)
+        == _EXPECTED["group_of_chains_link_spawns@publish_headers"][0]
+    )
