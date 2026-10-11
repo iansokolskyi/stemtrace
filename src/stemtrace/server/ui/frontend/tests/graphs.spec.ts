@@ -719,6 +719,42 @@ test.describe('Graph Page - Layout', () => {
 test.describe('Graph Page - Chord Bodies', () => {
   test.skip(isRealMode, 'Mock-only test')
 
+  test('draws a chord whose body is a group as a container after it', async ({ page }) => {
+    // As the server sends chord([a, b], group(c, d)): the body tasks carry
+    // the chord's group ID and sit in a "group:<id>:body" GROUP node, which
+    // the CHORD names as its callback (chord_id)
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...headers] = createGroup(2, { withCallback: false })
+    const groupId = chordNode.group_id as string
+    const [, ...bodyTasks] = createGroup(2, { withCallback: false })
+    const body = {
+      ...chordNode,
+      task_id: `group:${groupId}:body`,
+      name: 'group',
+      node_type: 'GROUP' as const,
+      parent_id: chordNode.task_id,
+      children: bodyTasks.map((t) => t.task_id),
+    }
+    for (const task of bodyTasks) {
+      task.group_id = groupId
+      task.parent_id = body.task_id
+      task.root_id = chordNode.task_id
+    }
+    chordNode.node_type = 'CHORD'
+    chordNode.chord_id = body.task_id
+    chordNode.children.push(body.task_id)
+    mockApi.addTasks([chordNode, ...headers, body, ...bodyTasks])
+
+    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
+    await page.waitForLoadState('load')
+
+    // Each container + its header label, 2 headers, 2 body tasks
+    await expect(page.locator('.react-flow__node')).toHaveCount(8)
+    await expect(page.locator(`.react-flow__node[data-id="${body.task_id}"]`)).toHaveCount(1)
+    // Each header -> the body container
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+  })
+
   test('draws a chord whose body is another chord as a container', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const [outer, ...outerRest] = createGroup(2, { withCallback: false })
