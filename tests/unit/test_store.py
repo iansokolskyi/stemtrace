@@ -10,6 +10,7 @@ from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.conftest import InterleavingLock
+from tests.graph_invariants import assert_graph_invariants
 
 _T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -1772,3 +1773,37 @@ class TestGraphStoreEvictionParentCleanup:
         )
 
         assert store.get_node("child") is None
+
+
+class TestGraphStoreEvictionGroupLinks:
+    @staticmethod
+    def _event(
+        task_id: str, seconds: int, state: TaskState = TaskState.SUCCESS, **kw: str
+    ) -> TaskEvent:
+        return TaskEvent(
+            task_id=task_id,
+            name="tests.task",
+            state=state,
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc)
+            + timedelta(seconds=seconds),
+            **kw,
+        )
+
+    def test_add_event_after_eviction_never_links_group_under_itself(
+        self,
+    ) -> None:
+        store = GraphStore(max_nodes=20)
+        store.add_event(self._event("m1", 1, group_id="g"))
+        store.add_event(self._event("m2", 100, group_id="g"))
+        store.add_event(self._event("m3", 100, group_id="g"))
+        for i in range(17):
+            store.add_event(self._event(f"x{i}", 10 + i))  # 21 nodes -> 18
+
+        store.add_event(self._event("m2", 101, TaskState.FAILURE, group_id="g"))
+
+        group = store._graph.nodes["group:g"]
+        assert group.parent_id is None
+        assert group.children == ["m2", "m3"]
+        assert "group:g" in store._graph.root_ids
+        assert group.state == TaskState.FAILURE
+        assert_graph_invariants(store._graph)

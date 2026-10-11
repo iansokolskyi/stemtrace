@@ -609,12 +609,4 @@ class GraphStore:
 
         to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)
         for node in nodes_by_age[:to_remove]:
-            if node.parent_id and node.parent_id in self._graph.nodes:
-                parent = self._graph.nodes[node.parent_id]
-                if node.task_id in parent.children:
-                    parent.children.remove(node.task_id)
-
-            if node.task_id in self._graph.root_ids:
-                self._graph.root_ids.remove(node.task_id)
-
-            del self._graph.nodes[node.task_id]
+            self._graph.remove_node(node.task_id)

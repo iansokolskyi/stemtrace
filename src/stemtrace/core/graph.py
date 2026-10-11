@@ -63,21 +63,6 @@ def _group_node_id(group_id: str) -> str:
     return f"{_GROUP_NODE_PREFIX}{group_id}"
 
 
-def _parent_upgrade(current: str | None, reported: str | None) -> str | None:
-    """Parent a node should switch to after an event, or None to keep its own.
-
-    A missing parent is filled in: the sender's PENDING carries no
-    ``parent_id``. A synthetic group parent gives way to a different real
-    parent, because the group can be created before the member's STARTED
-    arrives with its ``parent_id``. A real parent is never replaced.
-    """
-    if reported is None or reported == current:
-        return None
-    if current is None or current.startswith(_GROUP_NODE_PREFIX):
-        return reported
-    return None
-
-
 def _with_aware_timestamp(event: TaskEvent) -> TaskEvent:
     """Return the event with a naive timestamp interpreted as UTC.
 
@@ -190,6 +175,10 @@ class TaskNode(BaseModel):
     # Insert index (not serialized; rebuilt on first use, e.g. after
     # deserialization or when ``events`` was changed directly).
     _index: "_EventIndex | None" = PrivateAttr(default=None)
+    # First parent the task's events reported (not serialized). A group
+    # member's ``parent_id`` is its group node; this keeps the real parent,
+    # which places the group.
+    _reported_parent_id: str | None = PrivateAttr(default=None)
 
     @property
     def first_seen(self) -> datetime | None:
@@ -275,6 +264,19 @@ class TaskNode(BaseModel):
         if self.chord_id is None and event.chord_id is not None:
             self.chord_id = event.chord_id
 
+    def _note_reported_parent(self, parent_id: str | None) -> None:
+        """Remember the first parent the task's events reported.
+
+        The sender's PENDING carries no ``parent_id``; later events do. A
+        reported parent is never replaced, and a task can't be its own parent.
+        """
+        if (
+            self._reported_parent_id is None
+            and parent_id is not None
+            and parent_id != self.task_id
+        ):
+            self._reported_parent_id = parent_id
+
     def _become_chord(self, callback_id: str) -> None:
         """Make this synthetic node a CHORD that fires ``callback_id``.
 
@@ -306,15 +308,25 @@ class _EventIndex:
 class TaskGraph(BaseModel):
     """DAG of task executions, built incrementally from events.
 
-    Parent-child linking only occurs when parent exists at child insertion time.
-    Out-of-order events won't back-link.
+    Linking rules (a node listed in ``children`` has that ``parent_id``, and
+    a node without a parent is a root):
 
-    Synthetic nodes (GROUP, CHORD) are created when tasks share a group_id.
+    * A task sits under the parent its events reported; the first reported
+      parent is kept. A task whose parent isn't in the graph when that parent
+      is reported stays unlinked: not a root and in no ``children`` list (it
+      is still a node, e.g. in the task list). Out-of-order events don't
+      back-link it once the parent shows up.
+    * Synthetic GROUP/CHORD nodes are created when tasks share a
+      ``group_id`` (a CHORD from its first header). A member sits only under
+      its group, and the group sits under its members' common reported
+      parent if that parent is in the graph; otherwise the group is a root.
+    * A chord's callback is listed among the CHORD's children (that draws the
+      chord's edge to it) and sits under the chord unless it reported a
+      parent of its own.
+    * A node is never linked under itself or one of its descendants.
 
-    Nodes are keyed by their ``task_id``. Node IDs in ``children``,
-    ``parent_id``, ``root_ids`` and group membership may point at nodes that
-    are gone (the server store evicts old nodes), so lookups through them
-    check that the node exists.
+    Nodes are keyed by their ``task_id``. Remove nodes with ``remove_node``
+    so these links stay consistent.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -329,7 +341,7 @@ class TaskGraph(BaseModel):
     _chord_by_callback: dict[str, str] = PrivateAttr(default_factory=dict)
 
     def add_event(self, event: TaskEvent) -> TaskEvent | None:
-        """Add event, creating node if needed. Links child to parent if parent exists.
+        """Add event, creating node if needed, and update the graph's links.
 
         Events may arrive out of order. The node's events stay in lifecycle
         order (see ``_event_key``), and its state comes from the most advanced event (see
@@ -352,179 +364,230 @@ class TaskGraph(BaseModel):
             node = self._insert_node(event)
         elif not node._record_event(event):
             return None
-
-        node._fill_missing_ids(event)
-        new_parent = _parent_upgrade(node.parent_id, event.parent_id)
-        if new_parent is not None:
-            self._move_to_real_parent(node, new_parent)
+        else:
+            node._fill_missing_ids(event)
+            node._note_reported_parent(event.parent_id)
 
         if event.group_id is not None:
-            self._track_group_member(event.task_id, event.group_id)
+            self._track_group_member(node, event.group_id)
             # Only a chord's header tasks carry the callback's ID.
             if event.chord_callback_id is not None:
                 self._upgrade_to_chord(event.group_id, event.chord_callback_id)
-        self._link_chord_callback_if_needed(event.task_id)
+        self._link_chord_callback_if_needed(node)
+        self._place(node)
+        self._place_group_of(node)
         return event
 
-    def _insert_node(self, event: TaskEvent) -> TaskNode:
-        """Create the node for a task's first event and hang it in the graph.
+    def remove_node(self, task_id: str) -> None:
+        """Remove a node and every link to it; unknown IDs are ignored.
 
-        A task without a parent becomes a root; a task whose parent isn't in
-        the graph yet stays unlinked.
+        The node leaves its parent's children, the roots, its group's members
+        and, for a chord callback, the CHORD's children. Its task children
+        keep ``parent_id`` and stay unlinked, like tasks whose parent was never
+        seen. A removed GROUP/CHORD releases its members to their own parents
+        (or the roots) but keeps their membership, so a later member event
+        can recreate it; a group under the removed node becomes a root.
+
+        Args:
+            task_id: ID of the node to remove.
         """
+        node = self.nodes.get(task_id)
+        if node is None:
+            return
+        self._unlink(node)
+        chord_node = self._chord_of_callback(task_id)
+        if chord_node is not None and task_id in chord_node.children:
+            chord_node.children.remove(task_id)
+        if node.node_type == NodeType.TASK:
+            self._forget_member(node)
+        elif (
+            node.chord_callback_id is not None
+            and self._chord_by_callback.get(node.chord_callback_id) == task_id
+        ):
+            del self._chord_by_callback[node.chord_callback_id]
+        del self.nodes[task_id]
+        for child_id in node.children:
+            child = self.nodes.get(child_id)
+            if child is None or child.parent_id != task_id:
+                continue
+            if node.node_type == NodeType.TASK == child.node_type:
+                continue  # a task's subtasks stay unlinked, as for an unseen parent
+            self._place(child)
+        if node.group_id is not None and not self._group_members.get(node.group_id):
+            self._group_members.pop(node.group_id, None)
+
+    def _insert_node(self, event: TaskEvent) -> TaskNode:
+        """Create the node for a task's first event and link it."""
         node = TaskNode(
             task_id=event.task_id,
             name=event.name,
             state=event.state,
-            parent_id=event.parent_id,
             group_id=event.group_id,
             chord_id=event.chord_id,
         )
-        self.nodes[event.task_id] = node
-        if event.parent_id is None:
-            self.root_ids.append(event.task_id)
-        elif event.parent_id in self.nodes:
-            self.nodes[event.parent_id].children.append(event.task_id)
+        node._note_reported_parent(event.parent_id)
         node._record_event(event)
+        self.nodes[event.task_id] = node
+        node.parent_id = self._safe_parent(node, self._desired_parent(node))
+        self._link(node)
         return node
 
-    def _move_to_real_parent(self, node: TaskNode, parent_id: str) -> None:
-        """Re-parent a node to the parent a later event reported.
+    def _desired_parent(self, node: TaskNode) -> str | None:
+        """The parent the linking rules give a node (see the class docstring)."""
+        if node.node_type != NodeType.TASK:
+            return self._members_real_parent(node.group_id)
+        group_node_id = self._member_group_node_id(node)
+        if group_node_id is not None:
+            return group_node_id
+        if node._reported_parent_id is not None:
+            return node._reported_parent_id
+        chord_node = self._chord_of_callback(node.task_id)
+        return chord_node.task_id if chord_node is not None else None
 
-        The node stops being a root, leaves the children of a synthetic group
-        it was parked under, and joins the new parent's children if that
-        parent is known. Its group may then follow it (see
-        ``_move_group_to_members_parent``).
+    def _safe_parent(self, node: TaskNode, parent_id: str | None) -> str | None:
+        """``parent_id`` unless linking under it would create a cycle."""
+        if parent_id is None or self._is_self_or_ancestor(node.task_id, parent_id):
+            return None
+        return parent_id
+
+    def _is_self_or_ancestor(self, candidate_id: str, node_id: str) -> bool:
+        """Whether ``candidate_id`` is ``node_id`` or one of its ancestors."""
+        seen: set[str] = set()
+        current: str | None = node_id
+        while current is not None and current not in seen:
+            if current == candidate_id:
+                return True
+            seen.add(current)
+            current_node = self.nodes.get(current)
+            current = current_node.parent_id if current_node is not None else None
+        return False
+
+    def _place(self, node: TaskNode, *, ensure_linked: bool = False) -> None:
+        """Move a node to the parent the linking rules give it, if that changed.
+
+        A node already under the right ``parent_id`` is left alone, which is
+        what keeps a task that arrived before its parent unlinked. With
+        ``ensure_linked``, it is listed under that parent if it isn't yet.
         """
-        old_parent = node.parent_id
-        self._set_parent(node, parent_id)
-        if old_parent is not None and old_parent.startswith(_GROUP_NODE_PREFIX):
-            self._remove_child(old_parent, node.task_id)
-        self._add_child(parent_id, node.task_id)
-        if node.group_id is not None:
-            self._move_group_to_members_parent(node.group_id)
+        parent_id = self._safe_parent(node, self._desired_parent(node))
+        if parent_id == node.parent_id:
+            if ensure_linked:
+                self._link(node)
+            return
+        self._unlink(node)
+        node.parent_id = parent_id
+        self._link(node)
 
-    def _move_group_to_members_parent(self, group_id: str) -> None:
-        """Move a synthetic group under its members' real parent.
+    def _place_group_of(self, node: TaskNode) -> None:
+        """Re-place the synthetic node of a task's group, if there is one."""
+        if node.group_id is None:
+            return
+        group_node = self.nodes.get(_group_node_id(node.group_id))
+        if group_node is not None:
+            self._place(group_node)
 
-        Only members that already left the group for a real parent count. If
-        they all name the same one, the group moves there and is listed under
-        it in place of its members.
+    def _link(self, node: TaskNode) -> None:
+        """List a node under its ``parent_id``, or as a root if it has none.
+
+        A parent that isn't in the graph leaves the node unlinked.
         """
-        group_node_id = _group_node_id(group_id)
-        group_node = self.nodes.get(group_node_id)
-        if group_node is None:
+        if node.parent_id is None:
+            if node.task_id not in self.root_ids:
+                self.root_ids.append(node.task_id)
             return
-        members = self._group_members.get(group_id, [])
-        parent_id = self._members_real_parent(members, group_node_id)
-        if parent_id is None or group_node.parent_id == parent_id:
+        parent = self.nodes.get(node.parent_id)
+        if parent is not None and node.task_id not in parent.children:
+            parent.children.append(node.task_id)
+
+    def _unlink(self, node: TaskNode) -> None:
+        """Drop a node from its parent's children, or from the roots.
+
+        A CHORD keeps its callback listed: that entry draws the chord's edge.
+        """
+        if node.parent_id is None:
+            if node.task_id in self.root_ids:
+                self.root_ids.remove(node.task_id)
             return
-        self._set_parent(group_node, parent_id)
-        parent_node = self.nodes.get(parent_id)
-        if parent_node is not None:
-            self._nest_group(parent_node, group_node_id, members)
+        parent = self.nodes.get(node.parent_id)
+        if parent is None or node.task_id not in parent.children:
+            return
+        if parent.chord_callback_id == node.task_id:
+            return
+        parent.children.remove(node.task_id)
 
-    def _members_real_parent(
-        self, member_ids: list[str], group_node_id: str
-    ) -> str | None:
-        """The one real parent shared by members that have one, else None.
+    def _member_group_node_id(self, node: TaskNode) -> str | None:
+        """ID of the synthetic node a task sits in as a group member, if any."""
+        if node.group_id is None:
+            return None
+        group_node_id = _group_node_id(node.group_id)
+        if group_node_id not in self.nodes:
+            return None
+        if node.task_id not in self._group_members.get(node.group_id, ()):
+            return None
+        return group_node_id
 
-        Members without a parent or still parented to the group are ignored.
+    def _members_real_parent(self, group_id: str | None) -> str | None:
+        """The one parent a group's members reported, if it's in the graph.
+
+        Members that reported no parent are ignored; if the others disagree,
+        there is no common parent.
         """
         parents = {
-            member.parent_id
-            for member_id in member_ids
+            member._reported_parent_id
+            for member_id in self._group_members.get(group_id or "", ())
             if (member := self.nodes.get(member_id)) is not None
-            and member.parent_id is not None
-            and member.parent_id != group_node_id
+            and member._reported_parent_id is not None
         }
-        return parents.pop() if len(parents) == 1 else None
+        if len(parents) != 1:
+            return None
+        parent_id = parents.pop()
+        return parent_id if parent_id in self.nodes else None
 
-    def _track_group_member(self, task_id: str, group_id: str) -> None:
-        """Track task as member of a group and create synthetic node if needed.
+    def _track_group_member(self, node: TaskNode, group_id: str) -> None:
+        """Track a task as a member of its group, creating the group node.
 
-        Creates a synthetic GROUP node when 2+ tasks share a group_id.
-        If tasks share a common parent, the GROUP becomes a child of that parent.
-        Skips adding callback tasks (they're outside the group container).
+        A GROUP node is created once 2+ tasks share the ``group_id``. A chord's
+        callback shares its header's ``group_id`` but isn't a member.
         """
-        group_node_id = _group_node_id(group_id)
-        group_node = self.nodes.get(group_node_id)
+        group_node = self.nodes.get(_group_node_id(group_id))
         if (
             group_node is not None
             and group_node.node_type == NodeType.CHORD
-            and group_node.chord_id == task_id
+            and group_node.chord_callback_id == node.task_id
         ):
-            # The callback shares the header's group_id but isn't a member.
-            self._attach_chord_callback(group_node, self.nodes[task_id])
+            self._attach_chord_callback(group_node, node)
             return
 
         members = self._group_members.setdefault(group_id, [])
-        if task_id not in members:
-            members.append(task_id)
+        if node.task_id not in members:
+            members.append(node.task_id)
 
         if group_node is None:
-            if not self._should_create_group_node(members):
-                return
-            self._create_group_node(group_id)
-            group_node = self.nodes[group_node_id]
-
-        if task_id not in group_node.children:
-            group_node.children.append(task_id)
+            if len(members) >= 2:
+                self._create_group_node(group_id, NodeType.GROUP)
+            return
+        self._place(node)
         group_node.state = self._compute_group_state(members)
-        self._adopt_if_orphan(self.nodes[task_id], group_node_id)
 
-    def _should_create_group_node(self, member_ids: list[str]) -> bool:
-        """Determine if a synthetic GROUP node should be created.
-
-        Always returns True when there are 2+ members - we want to visualize
-        groups even when they have a common parent, to differentiate from
-        independent subtasks.
-        """
-        return len(member_ids) >= 2
-
-    def _get_common_parent(self, member_ids: list[str]) -> str | None:
-        """Get common parent_id if all members share the same parent.
-
-        Returns the parent_id if all members have the same parent,
-        or None if they have different parents or are standalone.
-        """
-        parents: set[str | None] = set()
-        for mid in member_ids:
-            if mid in self.nodes:
-                parents.add(self.nodes[mid].parent_id)
-
-        # Single shared non-None parent => common parent.
-        if len(parents) == 1 and None not in parents:
-            return parents.pop()
-        return None
-
-    def _create_group_node(self, group_id: str) -> None:
-        """Create a synthetic GROUP node for tasks sharing a group_id.
-
-        If all members share a common parent task, the GROUP becomes a child
-        of that parent. Otherwise, the GROUP is a root node.
-        """
+    def _create_group_node(self, group_id: str, node_type: NodeType) -> TaskNode:
+        """Create a synthetic GROUP/CHORD node and move its members into it."""
         group_node_id = _group_node_id(group_id)
         members = self._group_members.get(group_id, [])
-        common_parent = self._get_common_parent(members)
-
-        self.nodes[group_node_id] = TaskNode(
+        group_node = TaskNode(
             task_id=group_node_id,
-            name="group",
+            name="chord" if node_type == NodeType.CHORD else "group",
             state=self._compute_group_state(members),
-            node_type=NodeType.GROUP,
+            node_type=node_type,
             group_id=group_id,
-            children=list(members),
-            parent_id=common_parent,
         )
-
-        if common_parent is None:
-            self._add_root(group_node_id)
-        else:
-            parent_node = self.nodes.get(common_parent)
-            if parent_node is not None:
-                self._nest_group(parent_node, group_node_id, members)
-        self._move_members_into(group_node_id, members)
+        self.nodes[group_node_id] = group_node
+        group_node.parent_id = self._members_real_parent(group_id)
+        self._link(group_node)
+        for member_id in members:
+            member = self.nodes.get(member_id)
+            if member is not None:
+                self._place(member, ensure_linked=True)
+        return group_node
 
     def _compute_group_state(self, member_ids: list[str]) -> TaskState:
         """Compute aggregate state for a group based on member states.
@@ -542,124 +605,89 @@ class TaskGraph(BaseModel):
         return TaskState.SUCCESS
 
     def _upgrade_to_chord(self, group_id: str, callback_id: str) -> None:
-        """Upgrade a GROUP node to CHORD and register the callback.
+        """Make the group a CHORD (creating it if needed) firing ``callback_id``.
 
         Called when a header task has chord info (chord_callback_id set).
-        The callback will be linked outside the container.
+        The callback is linked outside the container.
         """
         chord_node = self.nodes.get(_group_node_id(group_id))
         if chord_node is None:
-            chord_node = self._create_chord_node(group_id, callback_id)
-        else:
-            previous = chord_node.chord_callback_id
-            if previous is not None and previous != callback_id:
-                self._chord_by_callback.pop(previous, None)
-            chord_node._become_chord(callback_id)
+            chord_node = self._create_group_node(group_id, NodeType.CHORD)
+        if chord_node.chord_callback_id != callback_id:
+            # A callback belongs to one chord: a chord naming a new callback,
+            # or a callback claimed by another chord, is released first.
+            self._release_callback(chord_node)
+            other_chord = self._chord_of_callback(callback_id)
+            if other_chord is not None:
+                self._release_callback(other_chord)
+        chord_node._become_chord(callback_id)
         self._chord_by_callback[callback_id] = chord_node.task_id
 
         callback_node = self.nodes.get(callback_id)
         if callback_node is None:
             return
-        self._attach_chord_callback(chord_node, callback_node)
         # A callback seen before the chord was tracked as a member; it isn't one.
         members = self._group_members.get(group_id)
         if members is not None and callback_id in members:
             members.remove(callback_id)
+            chord_node.state = self._compute_group_state(members)
+        self._attach_chord_callback(chord_node, callback_node)
 
-    def _create_chord_node(self, group_id: str, callback_id: str) -> TaskNode:
-        """Create a CHORD node directly, before a GROUP node exists.
+    def _release_callback(self, chord_node: TaskNode) -> None:
+        """Make a CHORD forget its callback, unlinking the callback from it."""
+        callback_id = chord_node.chord_callback_id
+        if callback_id is None:
+            return
+        if self._chord_by_callback.get(callback_id) == chord_node.task_id:
+            del self._chord_by_callback[callback_id]
+        chord_node.chord_id = None
+        chord_node.chord_callback_id = None
+        callback_node = self.nodes.get(callback_id)
+        if callback_node is None or callback_node.parent_id != chord_node.task_id:
+            if callback_id in chord_node.children:
+                chord_node.children.remove(callback_id)
+        else:
+            self._place(callback_node)
 
-        Unlike a GROUP, it always starts as a root, even when its members
-        share a parent.
-        """
-        chord_node_id = _group_node_id(group_id)
-        members = self._group_members.get(group_id, [])
-        chord_node = TaskNode(
-            task_id=chord_node_id,
-            name="chord",
-            state=TaskState.PENDING,
-            node_type=NodeType.CHORD,
-            group_id=group_id,
-            chord_id=callback_id,
-            chord_callback_id=callback_id,
-            children=list(members),
-        )
-        self.nodes[chord_node_id] = chord_node
-        self._add_root(chord_node_id)
-        self._move_members_into(chord_node_id, members)
-        return chord_node
+    def _chord_of_callback(self, task_id: str) -> TaskNode | None:
+        """The CHORD node that fires ``task_id`` as its callback, if any."""
+        chord_node_id = self._chord_by_callback.get(task_id)
+        return self.nodes.get(chord_node_id) if chord_node_id is not None else None
 
-    def _link_chord_callback_if_needed(self, task_id: str) -> None:
-        """Link a task to a CHORD node if it's the callback for that chord.
+    def _link_chord_callback_if_needed(self, node: TaskNode) -> None:
+        """Link a task to the CHORD node it is the callback of, if any.
 
         Called on every event, so it looks the chord up by callback ID.
         """
-        chord_node_id = self._chord_by_callback.get(task_id)
-        if chord_node_id is None:
-            return
-        chord_node = self.nodes.get(chord_node_id)
-        callback_node = self.nodes.get(task_id)
-        if chord_node is None or callback_node is None:
-            return
-        self._attach_chord_callback(chord_node, callback_node)
+        chord_node = self._chord_of_callback(node.task_id)
+        if chord_node is not None:
+            self._attach_chord_callback(chord_node, node)
 
     def _attach_chord_callback(
         self, chord_node: TaskNode, callback_node: TaskNode
     ) -> None:
         """Hang a chord's callback off the CHORD node, outside its container.
 
-        A callback that already has a parent keeps it. It is listed among the
-        chord's children either way, which is what draws the chord's edge to it.
+        A callback that reported a parent stays under it. It is listed among
+        the chord's children either way, which is what draws the chord's edge
+        to it.
         """
-        self._adopt_if_orphan(callback_node, chord_node.task_id)
+        self._place(callback_node)
         if callback_node.task_id not in chord_node.children:
             chord_node.children.append(callback_node.task_id)
 
-    def _move_members_into(self, group_node_id: str, member_ids: list[str]) -> None:
-        """Re-parent every known member to a newly created group node."""
-        for member_id in member_ids:
-            member = self.nodes.get(member_id)
-            if member is not None:
-                self._set_parent(member, group_node_id)
-
-    @staticmethod
-    def _nest_group(
-        parent_node: TaskNode, group_node_id: str, member_ids: list[str]
-    ) -> None:
-        """List a group among its parent's children in place of its members."""
-        if group_node_id not in parent_node.children:
-            parent_node.children.append(group_node_id)
-        for member_id in member_ids:
-            if member_id in parent_node.children:
-                parent_node.children.remove(member_id)
-
-    def _adopt_if_orphan(self, node: TaskNode, parent_id: str) -> None:
-        """Give a node a parent unless it already has one."""
-        if node.parent_id is None:
-            self._set_parent(node, parent_id)
-
-    def _set_parent(self, node: TaskNode, parent_id: str) -> None:
-        """Set a node's parent; a node with a parent is never a root."""
-        node.parent_id = parent_id
-        if node.task_id in self.root_ids:
-            self.root_ids.remove(node.task_id)
-
-    def _add_root(self, node_id: str) -> None:
-        """Add a node to the roots unless it is already there."""
-        if node_id not in self.root_ids:
-            self.root_ids.append(node_id)
-
-    def _add_child(self, parent_id: str, child_id: str) -> None:
-        """List a child under its parent, if the parent is known, at most once."""
-        parent = self.nodes.get(parent_id)
-        if parent is not None and child_id not in parent.children:
-            parent.children.append(child_id)
-
-    def _remove_child(self, parent_id: str, child_id: str) -> None:
-        """Drop a child from its parent's children, if both are there."""
-        parent = self.nodes.get(parent_id)
-        if parent is not None and child_id in parent.children:
-            parent.children.remove(child_id)
+    def _forget_member(self, node: TaskNode) -> None:
+        """Drop a task from its group's members and refresh the group node."""
+        if node.group_id is None:
+            return
+        members = self._group_members.get(node.group_id)
+        if members is None or node.task_id not in members:
+            return
+        members.remove(node.task_id)
+        group_node = self.nodes.get(_group_node_id(node.group_id))
+        if group_node is not None:
+            group_node.state = self._compute_group_state(members)
+            self._place(group_node)
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""
