@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import sys
 import threading
 from collections.abc import Callable
 
@@ -769,3 +770,87 @@ class TestPublishBreakerFork:
         assert worker.is_alive() is False
         assert len(result) == 1
         assert result[0] is not None
+
+
+class _OwnedLock:
+    """Lock that knows which thread holds it (threading.Lock doesn't)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.owner: int | None = None
+
+    def __enter__(self) -> "_OwnedLock":
+        self._lock.acquire()
+        self.owner = threading.get_ident()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.owner = None
+        self._lock.release()
+
+
+class _LockCheckingBreaker(PublishBreaker):
+    """Records every write of the failure counter made without the lock."""
+
+    unlocked_writes = 0
+
+    def __setattr__(self, name: str, value: object) -> None:
+        lock = self.__dict__.get("_lock")
+        if (
+            name == "_consecutive_failures"
+            and isinstance(lock, _OwnedLock)
+            and lock.owner != threading.get_ident()
+        ):
+            type(self).unlocked_writes += 1
+        super().__setattr__(name, value)
+
+
+class TestPublishBreakerConsecutiveFailureCounter:
+    """The failure run is counted under the lock from every thread."""
+
+    def test_concurrent_successes_and_failures_write_counter_under_lock(
+        self,
+    ) -> None:
+        clock = FakeClock()
+        breaker = _LockCheckingBreaker(
+            "TestBroker",
+            logger=logging.getLogger(LOGGER_NAME),
+            initial_cooldown=1.0,
+            max_cooldown=30.0,
+            log_interval=60.0,
+            probe_timeout=60.0,
+            slow_attempt=0.5,
+            # High enough that the hammering never opens the breaker, so
+            # every success and failure goes through the closed state.
+            failures_to_open=10**9,
+            monotonic=clock,
+        )
+        breaker._lock = _OwnedLock()  # type: ignore[assignment]  # instrumented stand-in
+        _LockCheckingBreaker.unlocked_writes = 0
+        previous_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # switch threads as often as possible
+        start = threading.Barrier(16)
+
+        def hammer(seed: int) -> None:
+            start.wait()
+            for i in range(500):
+                ticket = _take(breaker)
+                if (i + seed) % 2:
+                    breaker.record_failure(ticket, "evt", _error(), elapsed=FAST)
+                else:
+                    breaker.record_success(ticket)
+
+        try:
+            threads = [threading.Thread(target=hammer, args=(n,)) for n in range(16)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+        finally:
+            sys.setswitchinterval(previous_interval)
+
+        assert [t.is_alive() for t in threads] == [False] * 16
+        assert _LockCheckingBreaker.unlocked_writes == 0
+        assert breaker.is_open is False
+        _attempt_succeeds(breaker)
+        assert breaker._consecutive_failures == 0

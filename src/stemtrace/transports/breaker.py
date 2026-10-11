@@ -236,9 +236,18 @@ class PublishBreaker:
         """
         self._check_fork()
         if not self.is_open:
-            self._consecutive_failures = 0
-            if self._dropped or self._unconfirmed or self._recovery_owed is not None:
-                self._report_pending()
+            # Unlocked fast path: with no failure run to end and nothing to
+            # report, a success changes nothing (the reads are atomic, so
+            # skipping is equivalent to resetting a counter that is zero).
+            # Otherwise the reset happens under the lock, like the increments
+            # in record_failure(), so neither update can be lost.
+            if (
+                self._consecutive_failures
+                or self._dropped
+                or self._unconfirmed
+                or self._recovery_owed is not None
+            ):
+                self._on_closed_success()
             return
         with self._lock:
             if self._probe_ticket is None or ticket != self._probe_ticket:
@@ -270,9 +279,11 @@ class PublishBreaker:
                 losses,
             )
 
-    def _report_pending(self) -> None:
-        """Write an owed recovery line, or report pending losses, once due."""
+    def _on_closed_success(self) -> None:
+        """End the failure run; write an owed recovery line or pending losses once due."""
         with self._lock:
+            if self._open_until is None:
+                self._consecutive_failures = 0
             now = self._monotonic()
             owed = self._recovery_owed
             recovery_due = self._log_due(self._last_recovery_log, now)
