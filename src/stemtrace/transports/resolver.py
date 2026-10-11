@@ -247,7 +247,11 @@ class BoundedResolver:
     def _lookup(
         self, state: _State, key: tuple[Any, ...], entry: _Entry, done: threading.Event
     ) -> None:
-        """Run one getaddrinfo() call and store its outcome (helper thread)."""
+        """Run one lookup and store its outcome (background thread).
+
+        The lookup itself runs in a helper process by default (see
+        _default_getaddrinfo()), so this thread never enters glibc's DNS code.
+        """
         host, port, family, type_, proto = key
         addresses: list[AddrInfo] | None = None
         error: OSError | None = None

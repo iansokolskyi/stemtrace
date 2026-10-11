@@ -383,7 +383,8 @@ again once events are re-consumed.
     longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover). If the retry after
     such failures loses its reply too, the next retry waits the full 30s. An error reply
     (e.g. `LOADING`, `NOAUTH`, `OOM`) means Redis rejected the event: it counts as dropped.
-  - Workers resolve the broker's host name in a helper thread and wait at most the 2s connect
+  - Workers resolve the broker's host name in a short-lived helper process (the same Python,
+    so the same `/etc/hosts`, `resolv.conf` and name services) and wait at most the 2s connect
     timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it would
     otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached per
     worker process for 30s and refreshed in the background, keeping the last answer while DNS
@@ -391,14 +392,13 @@ again once events are re-consumed.
     every cached address fails, the answer is refreshed right away, so after a DNS failover the
     next attempt (at the latest the first retry after the breaker's cooldown) uses the new
     address; a host that moved while its old address still accepts connections is picked up
-    within the 30s cache time. TLS behavior is unchanged. A `fork()` (prefork pool) waits up
-    to 1s while a DNS lookup that started less than 5s ago (glibc's per-try timeout), or that
-    no earlier fork has waited for, is in flight, since a child forked while a lookup is
-    finishing inside glibc can deadlock. The cost: while a lookup is stuck on a dead
-    resolver, forks in its first 5s wait about 1s each. The risk is not zero with a resolver
-    that answers just slower than that 1s (1 hung child in 22,572 forks in a stress test,
-    against 5 in 28,150 when forks waited only once per lookup); a hung child stops publishing, and its tasks don't block. The same applies
-    to RabbitMQ.
+    within the 30s cache time. TLS behavior is unchanged. Each lookup starts one process
+    (about 60-80ms), at most once per host per 30s plus after failed connects; a helper that
+    hangs is killed after 30s. Lookups don't run in the worker process itself because glibc's
+    DNS code holds locks that `fork()` doesn't reset: a prefork child forked while a lookup
+    thread was inside it could deadlock. On Windows, or where there is no Python executable to
+    start (embedded interpreters), lookups run in-process instead. The same applies to
+    RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
