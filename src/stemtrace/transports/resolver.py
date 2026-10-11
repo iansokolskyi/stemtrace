@@ -88,10 +88,22 @@ class BoundedResolver:
         self._getaddrinfo = getaddrinfo
         self._monotonic = monotonic
         self._fork_wait = fork_wait
-        self._start_over()
+        # The lock and cache are created on first use in each process (see
+        # _started_here()), not here: PUBLISH_RESOLVER is built at import,
+        # possibly before gevent patches threading, and a real lock contended
+        # by greenlets blocks the whole hub (reproduced: a deadlock).
+        self._pid: int | None = None
+
+    def _started_here(self) -> None:
+        """Create the lock and cache for this process if not done yet.
+
+        Also covers a forked child that didn't run child_after_fork().
+        """
+        if self._pid != os.getpid():
+            self._start_over()
 
     def _start_over(self) -> None:
-        """Reset the cache and lock (at init and in a forked child)."""
+        """Reset the cache and lock (on first use and in a forked child)."""
         self._lock = threading.Lock()
         # Notified whenever a lookup ends; prepare_fork() waits on it.
         self._idle = threading.Condition(self._lock)
@@ -127,8 +139,7 @@ class BoundedResolver:
                 host, port, family, socktype, proto, socket.AI_NUMERICHOST
             )
         _check_host_name(host)
-        if os.getpid() != self._pid:
-            self._start_over()
+        self._started_here()
         key = (host, port, family, socktype, proto)
         with self._lock:
             entry = self._entries.setdefault(key, _Entry())
@@ -166,8 +177,7 @@ class BoundedResolver:
         instead of waiting for the TTL. The cached answer stays in use until
         the refresh succeeds. Does nothing for a host without an answer.
         """
-        if os.getpid() != self._pid:
-            self._start_over()
+        self._started_here()
         with self._lock:
             entry = self._entries.get((host, port, family, socktype, proto))
             if entry is None or entry.addresses is None:
@@ -187,6 +197,7 @@ class BoundedResolver:
         starting until parent_after_fork() (in the parent) or
         child_after_fork() (in the child) runs.
         """
+        self._started_here()
         self._lock.acquire()
         deadline = self._monotonic() + self._fork_wait
         while True:

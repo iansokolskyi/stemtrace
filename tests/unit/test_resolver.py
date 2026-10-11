@@ -338,6 +338,7 @@ class TestBoundedResolverFork:
 
     def test_publish_resolver_is_registered_for_fork(self) -> None:
         """A real fork while another thread holds the resolver's lock."""
+        PUBLISH_RESOLVER.invalidate("redis.local", 6379)  # creates the lock
         held, release = threading.Event(), threading.Event()
 
         def hold() -> None:
@@ -412,3 +413,28 @@ class TestBoundedResolverForkWaitsOnlyForYoungLookups:
             resolver.parent_after_fork()
 
         assert in_flight == 0  # it waited for the second lookup too
+
+
+class TestBoundedResolverCreatesLocksLazily:
+    """gevent may patch threading after stemtrace is imported (and
+    PUBLISH_RESOLVER built): the lock must be created when first used, so
+    it is gevent's cooperative lock rather than a real one that blocks the
+    hub when contended."""
+
+    def test_lock_is_created_on_first_use(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        created: list[object] = []
+        real_lock = threading.Lock
+
+        def recording_lock() -> Any:
+            lock = real_lock()
+            created.append(lock)
+            return lock
+
+        monkeypatch.setattr(threading, "Lock", recording_lock)
+
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        assert resolver._lock in created
