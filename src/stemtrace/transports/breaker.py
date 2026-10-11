@@ -2,10 +2,11 @@
 
 Publishing runs inside Celery signal handlers, in the task's own thread, so a
 broker outage must not slow tasks down. After a costly or persistent publish
-failure the breaker "opens": publish attempts are skipped (the events are
-dropped, never queued) for a cooldown that doubles after each failed retry, up
-to a cap, and resets once a publish succeeds. While open, each event costs a
-lock and a clock read.
+failure, or a run of publishes that succeeded but slowly (a degraded broker
+that still answers), the breaker "opens": publish attempts are skipped (the
+events are dropped, never queued) for a cooldown that doubles after each
+failed or slow retry, up to a cap, and resets once a publish succeeds fast.
+While open, each event costs a lock and a clock read.
 """
 
 from __future__ import annotations
@@ -42,14 +43,18 @@ class PublishBreaker:
             it was unconfirmed (sent, but the broker never acknowledged), or
             it was the ``failures_to_open``-th failure in a row. Otherwise
             only that event is dropped, so sporadic failures on a healthy
-            broker don't cost whole cooldowns of events.
+            broker don't cost whole cooldowns of events. A success that took
+            ``slow_attempt`` seconds or more counts toward that run like a
+            fast failure (its event was delivered), so ``failures_to_open``
+            slow publishes in a row open the breaker too: tasks stop waiting
+            on a broker that answers, but slowly. A fast success ends the run.
         Open: attempts are dropped until the cooldown expires. Then a single
             caller is let through as the probe; no other probe is admitted
             while it is outstanding (up to ``probe_timeout``, after which it
             is presumed lost and a new probe may start). Only the probe's
-            outcome changes the state: a failed probe doubles the cooldown
-            (capped at ``max_cooldown``) and restarts it; a successful one
-            closes the breaker and resets the cooldown. A probe that fails
+            outcome changes the state: a failed or slow probe doubles the
+            cooldown (capped at ``max_cooldown``) and restarts it; a fast
+            successful one closes the breaker and resets the cooldown. A probe that fails
             unconfirmed right after an unconfirmed failure (the one that
             opened the breaker or the previous probe) sets the cooldown
             straight to the cap and keeps it there: two in a row usually
@@ -68,12 +73,13 @@ class PublishBreaker:
 
     - one line for a failure while the breaker stays closed (WARNING with
       traceback);
-    - one line for a failure that opens the breaker (with traceback);
+    - one line for a failure (with traceback) or a run of slow successes
+      that opens the breaker;
     - one recovery line for an outage whose opening line was written (if
       that line is rate-limited, it is owed and written once one is due,
       on a later successful publish);
-    - one report line otherwise: a summary when a probe fails, a recovery
-      line for an outage whose opening line was suppressed, or, once
+    - one report line otherwise: a summary when a probe fails or is slow,
+      a recovery line for an outage whose opening line was suppressed, or, once
       publishing works again, a line with the losses still unreported.
       It is written once an interval has passed since the last line that
       reported losses (and, while open, when the next probe fails, at most
@@ -162,7 +168,8 @@ class PublishBreaker:
         self._cooldown = self._initial_cooldown
         self._opened_at = 0.0
         self._outage_reported = False
-        self._consecutive_failures = 0
+        # Failures and slow successes in a row while closed.
+        self._consecutive_degraded = 0
         # Whether the last failure that changed the open state was unconfirmed.
         self._last_unconfirmed = False
 
@@ -225,18 +232,25 @@ class PublishBreaker:
             self._dropped += 1
             return None
 
-    def record_success(self, ticket: int) -> None:
+    def record_success(self, ticket: int, *, elapsed: float) -> None:
         """Report a successful publish attempt.
 
-        While closed, ends the run of consecutive failures. While open,
-        closes the breaker if ``ticket`` is the outstanding probe's.
+        A fast success ends the run of consecutive failures and slow
+        successes while closed, and closes the breaker if ``ticket`` is the
+        outstanding probe's while open. A success that took ``slow_attempt``
+        seconds or more is handled like a degraded attempt instead (see the
+        class docstring): it never counts as lost.
 
         Args:
             ticket: The ticket ``allow()`` returned for the attempt.
+            elapsed: Seconds the attempt took.
         """
         self._check_fork()
+        if elapsed >= self._slow_attempt:
+            self._record_slow_success(ticket, elapsed)
+            return
         if not self.is_open:
-            self._consecutive_failures = 0
+            self._consecutive_degraded = 0
             if self._dropped or self._unconfirmed or self._recovery_owed is not None:
                 self._report_pending()
             return
@@ -269,6 +283,68 @@ class PublishBreaker:
                 outage,
                 losses,
             )
+
+    def _record_slow_success(self, ticket: int, elapsed: float) -> None:
+        """Count a delivered but slow publish toward opening the breaker."""
+        with self._lock:
+            now = self._monotonic()
+            kind = self._transition_on_slow_success(ticket, now)
+            if kind is None:
+                return
+            if kind == "opened":
+                if not self._log_due(self._last_open_log, now):
+                    return
+                self._last_open_log = now
+                self._outage_reported = True
+            elif not self._log_due(self._last_report, now):
+                return
+            losses = self._take_losses(now)
+            cooldown = self._cooldown
+            outage = now - self._opened_at
+
+        if kind == "opened":
+            self._logger.warning(
+                "Publishing to %s is slow (%d attempts in a row took %.1fs or "
+                "longer, the last %.1fs); dropping events for %.1fs before "
+                "trying again (%s since the last report)",
+                self._name,
+                self._failures_to_open,
+                self._slow_attempt,
+                elapsed,
+                cooldown,
+                losses,
+            )
+        else:
+            self._logger.warning(
+                "%s still slow after %.1fs (last attempt took %.1fs; %s since "
+                "the last report); next attempt in %.1fs",
+                self._name,
+                outage,
+                elapsed,
+                losses,
+                cooldown,
+            )
+
+    def _transition_on_slow_success(self, ticket: int, now: float) -> str | None:
+        """Apply a slow success to the state (lock held).
+
+        Returns:
+            "opened" when it completes a run that opens the breaker, "probe"
+            for a slow probe (the breaker stays open), None otherwise.
+        """
+        if self._open_until is None:
+            if ticket != self._epoch:
+                # Started before the breaker last opened and closed.
+                return None
+            self._consecutive_degraded += 1
+            if self._consecutive_degraded < self._failures_to_open:
+                return None
+            self._open(now, unconfirmed=False)
+            return "opened"
+        if self._probe_ticket is None or ticket != self._probe_ticket:
+            return None
+        self._reopen_after_probe(now, unconfirmed=False)
+        return "probe"
 
     def _report_pending(self) -> None:
         """Write an owed recovery line, or report pending losses, once due."""
@@ -404,18 +480,27 @@ class PublishBreaker:
                 # Started before the breaker last opened and closed: the event
                 # is lost, but it says nothing about the broker now.
                 return "closed"
-            self._consecutive_failures += 1
+            self._consecutive_degraded += 1
             costly = unconfirmed or elapsed >= self._slow_attempt
-            if not costly and self._consecutive_failures < self._failures_to_open:
+            if not costly and self._consecutive_degraded < self._failures_to_open:
                 return "closed"
-            self._epoch += 1
-            self._consecutive_failures = 0
-            self._opened_at = now
-            self._last_unconfirmed = unconfirmed
-            self._open_until = now + self._cooldown
+            self._open(now, unconfirmed=unconfirmed)
             return "opened"
         if self._probe_ticket is None or ticket != self._probe_ticket:
             return None
+        self._reopen_after_probe(now, unconfirmed=unconfirmed)
+        return "probe"
+
+    def _open(self, now: float, *, unconfirmed: bool) -> None:
+        """Open the closed breaker for the current cooldown (lock held)."""
+        self._epoch += 1
+        self._consecutive_degraded = 0
+        self._opened_at = now
+        self._last_unconfirmed = unconfirmed
+        self._open_until = now + self._cooldown
+
+    def _reopen_after_probe(self, now: float, *, unconfirmed: bool) -> None:
+        """Restart a longer cooldown after a failed or slow probe (lock held)."""
         self._probe_ticket = None
         if unconfirmed and self._last_unconfirmed:
             self._cooldown = self._max_cooldown
@@ -423,4 +508,3 @@ class PublishBreaker:
             self._cooldown = min(self._cooldown * 2, self._max_cooldown)
         self._last_unconfirmed = unconfirmed
         self._open_until = now + self._cooldown
-        return "probe"

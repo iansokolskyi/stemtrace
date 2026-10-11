@@ -270,7 +270,7 @@ class RabbitMQTransport:
                 elapsed=self._monotonic() - started,
             )
         else:
-            breaker.record_success(ticket)
+            breaker.record_success(ticket, elapsed=self._monotonic() - started)
 
     def _publish_payload(self, payload: dict[str, Any]) -> None:
         """Publish a JSON-serializable payload via kombu.
