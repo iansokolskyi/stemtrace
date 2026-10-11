@@ -21,6 +21,7 @@ from stemtrace.server.fastapi.form_auth import (
     check_session_cookie,
     warn_session_secret_mismatch,
 )
+from stemtrace.server.fastapi.paths import browser_path, strip_root_path
 
 FormAuthMiddleware = Callable[
     [Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]
@@ -76,7 +77,8 @@ def _unauthenticated_response(
     API paths get a 401 whose body carries the mismatch ``reason`` when the
     cookie was signed by another process's secret. UI paths redirect (303) to
     the login page with ``next`` set to the requested path and query, plus the
-    login-page ``reason`` for the same case.
+    login-page ``reason`` for the same case. ``path`` and ``login_path`` are
+    route paths; both are prefixed with the ASGI root_path for the browser.
     """
     if path.startswith(api_prefix):
         body = {"detail": "Authentication required"}
@@ -84,14 +86,15 @@ def _unauthenticated_response(
             body["reason"] = SESSION_SECRET_MISMATCH_REASON
         return JSONResponse(body, status_code=401)
 
-    next_target = path
+    next_target = browser_path(request.scope, path)
     if request.url.query:
-        next_target = f"{path}?{request.url.query}"
+        next_target = f"{next_target}?{request.url.query}"
     login_qs = {"next": next_target}
     if secret_mismatch:
         login_qs["reason"] = LOGIN_REASON_SESSION_MISMATCH
+    login_url = browser_path(request.scope, login_path)
     return RedirectResponse(
-        url=f"{login_path}?{urllib.parse.urlencode(login_qs)}", status_code=303
+        url=f"{login_url}?{urllib.parse.urlencode(login_qs)}", status_code=303
     )
 
 
@@ -107,8 +110,11 @@ def create_form_auth_middleware(
 ) -> FormAuthMiddleware:
     """Create an HTTP middleware that requires a valid session cookie.
 
-    All decisions use the decoded ASGI path (``scope["path"]``, what routing
-    matches) and the raw path. Paths containing '.' or '..' segments (in the
+    All decisions use the route path: the decoded ASGI path (``scope["path"]``)
+    and the raw path, each with the ASGI ``root_path`` removed the way
+    Starlette routing removes it. All path arguments are route paths too; the
+    login redirect and its ``next`` target get the root_path prepended, so the
+    middleware works behind a path-prefixing proxy (``uvicorn --root-path``). Paths containing '.' or '..' segments (in the
     decoded path or the raw, possibly percent-encoded one), or whose decoded
     path contains '?' or '#' (sent as ``%3F``/``%23``), are rejected with 404
     before any other decision, so prefix and open-path checks can never be
@@ -153,9 +159,12 @@ def create_form_auth_middleware(
         # The decoded ASGI path, as routing sees it. Not request.url.path: that
         # re-parses the path as a URL, so a decoded '?' or '#' (from %3F/%23)
         # would cut it short and e.g. "live%3Fx" would pass as an open path.
-        path: str = request.scope["path"]
+        root_path = str(request.scope.get("root_path") or "")
+        path = strip_root_path(request.scope["path"], root_path)
         raw = request.scope.get("raw_path")
-        raw_path = raw.decode("latin-1") if isinstance(raw, bytes) else ""
+        raw_path = strip_root_path(
+            raw.decode("latin-1") if isinstance(raw, bytes) else "", root_path
+        )
         in_scope = (
             protected_prefix is None
             or path.startswith(protected_prefix)

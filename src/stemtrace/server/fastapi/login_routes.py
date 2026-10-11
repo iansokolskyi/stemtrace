@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
+from stemtrace.server.fastapi.paths import browser_path, cookie_path_for
 
 if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
@@ -99,7 +100,8 @@ def create_login_router(
 
     Args:
         config: Form auth configuration.
-        default_next_path: Default redirect target after login (absolute path).
+        default_next_path: Default redirect target after login (absolute route
+            path; the ASGI root_path is prepended per request).
 
     Returns:
         A configured APIRouter.
@@ -118,7 +120,8 @@ def create_login_router(
         if error is None:
             error = _REASON_MESSAGES.get(request.query_params.get("reason") or "")
         next_path = _safe_next(
-            request.query_params.get("next"), default=default_next_path
+            request.query_params.get("next"),
+            default=browser_path(request.scope, default_next_path),
         )
         # Relative path (not an absolute URL): the browser submits using the
         # page's own scheme/host, so a TLS-terminating proxy that doesn't
@@ -163,7 +166,8 @@ def create_login_router(
             )
 
         effective_next = _safe_next(
-            next_path or request.query_params.get("next"), default=default_next_path
+            next_path or request.query_params.get("next"),
+            default=browser_path(request.scope, default_next_path),
         )
 
         response = RedirectResponse(url=effective_next, status_code=303)
@@ -173,7 +177,7 @@ def create_login_router(
             httponly=True,
             samesite="lax",
             secure=_request_is_https(request),
-            path=config.cookie_path,
+            path=cookie_path_for(request.scope, config.cookie_path),
         )
         return response
 
@@ -182,7 +186,10 @@ def create_login_router(
         """Clear the session cookie and redirect to login."""
         login_url = request.url_for("stemtrace_login_page").path
         response = RedirectResponse(url=login_url, status_code=303)
-        response.delete_cookie(key=config.cookie_name, path=config.cookie_path)
+        response.delete_cookie(
+            key=config.cookie_name,
+            path=cookie_path_for(request.scope, config.cookie_path),
+        )
         return response
 
     return router

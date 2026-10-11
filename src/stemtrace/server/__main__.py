@@ -80,6 +80,18 @@ def server(
             help="Login session TTL in seconds.",
         ),
     ] = 86400,
+    root_path: Annotated[
+        str,
+        typer.Option(
+            "--root-path",
+            envvar="STEMTRACE_ROOT_PATH",
+            help=(
+                "URL prefix when served behind a reverse proxy that strips it "
+                "(e.g. /stemtrace-ui): passed to uvicorn as root_path so links, "
+                "redirects and cookies include it."
+            ),
+        ),
+    ] = "",
     node_alias_from_arguments: Annotated[
         str | None,
         typer.Option(
@@ -181,7 +193,15 @@ def server(
     if ui_router is not None:
         fastapi_app.include_router(ui_router)
 
-    uvicorn.run(fastapi_app, host=host, port=port, reload=reload)
+    # uvicorn wants "/prefix": a leading slash and no trailing one.
+    normalized_root = root_path.strip().strip("/")
+    uvicorn.run(
+        fastapi_app,
+        host=host,
+        port=port,
+        reload=reload,
+        root_path=f"/{normalized_root}" if normalized_root else "",
+    )
 
 
 @app.command()

@@ -351,6 +351,7 @@ stemtrace.init_app(
 |----------|-------------|---------|
 | `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
+| `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Server Options](#server-options)). Same as `--root-path`. | Unset. |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node Names from Task Arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 
 ### Supported Brokers
@@ -486,8 +487,15 @@ stemtrace server \
     --host 0.0.0.0 \
     --port 8000 \
     --node-alias-from-arguments operator_type \
+    --root-path /monitoring \
     --reload  # For development
 ```
+
+`--root-path` (or `STEMTRACE_ROOT_PATH`) is for a reverse proxy that serves stemtrace under a
+path prefix and strips it before forwarding (e.g. `https://example.com/monitoring/` →
+`http://stemtrace:8000/`). It is passed to uvicorn as its `root_path`, so the UI, login
+redirects and session cookies use the prefixed URLs. Leave it unset when the proxy forwards
+the full path or serves stemtrace at the root of a host.
 
 #### Node Names from Task Arguments
 
@@ -602,6 +610,10 @@ random value everywhere, e.g. `python -c "import secrets; print(secrets.token_ur
 Without it, each process signs sessions with its own random secret, and users get logged out
 at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
 the problem when a session signed by another process is rejected.
+
+Behind a reverse proxy that strips a path prefix, run your app with uvicorn's `--root-path`
+(e.g. `uvicorn app:app --root-path /monitoring`); the login page, redirects and the session
+cookie then use `/monitoring/stemtrace/...`.
 
 #### Built-in Auth Helpers (Basic / API key)
 

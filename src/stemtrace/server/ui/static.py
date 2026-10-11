@@ -55,7 +55,7 @@ def _rewrite_html_for_prefix(
     html: str,
     prefix: str,
     *,
-    rewrite_assets: bool = True,
+    asset_prefix: str | None = None,
     show_logout: bool = False,
     logout_path: str | None = None,
 ) -> str:
@@ -64,16 +64,19 @@ def _rewrite_html_for_prefix(
     Args:
         html: The HTML content to rewrite.
         prefix: The base path prefix (e.g., "/stemtrace").
-        rewrite_assets: If True, rewrite asset paths. If False, only inject API base.
+        asset_prefix: Path the bundle's ``/assets/`` URLs are rewritten under
+            (None: same as ``prefix``; "": left as ``/assets/``). Must be a
+            sanitized prefix: it is written into HTML attributes unescaped.
         show_logout: If True, inject ``window.__STEMTRACE_LOGOUT_PATH__`` so the
             SPA renders a Logout control in its header (and knows form login is
             enabled, e.g. to redirect to the login page on 401).
         logout_path: Absolute logout endpoint path. If None and show_logout=True,
             defaults to f"{prefix}/logout" (or "/logout" if prefix is empty).
     """
-    if prefix and rewrite_assets:
-        html = html.replace('"/assets/', f'"{prefix}/assets/')
-        html = html.replace("'/assets/", f"'{prefix}/assets/")
+    assets_base = prefix if asset_prefix is None else asset_prefix
+    if assets_base:
+        html = html.replace('"/assets/', f'"{assets_base}/assets/')
+        html = html.replace("'/assets/", f"'{assets_base}/assets/")
     # Inject base path safely. The prefix may be user-provided (e.g. init_app(prefix=...))
     # or derived from a request path, so it must be serialized as a JS string literal.
     # Also, prevent `</script>` inside the string from terminating the script tag.
@@ -207,20 +210,24 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>UI not built</h1>", status_code=503)
 
         if api_base is not None:
-            # Explicit API base: don't rewrite assets (they're served at current mount)
-            prefix = api_base
-            rewrite_assets = False
+            # Explicit API base: UI at the app root, behind the ASGI root_path
+            # (reverse proxy prefix) when there is one.
+            root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            prefix = root + api_base
+            asset_prefix = root
+            effective_logout = root + logout_path if logout_path else None
         else:
             # Derive from URL: rewrite assets to match mount point
             prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
-            rewrite_assets = True
+            asset_prefix = prefix
+            effective_logout = logout_path
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),
                 prefix,
-                rewrite_assets=rewrite_assets,
+                asset_prefix=asset_prefix,
                 show_logout=show_logout,
-                logout_path=logout_path,
+                logout_path=effective_logout,
             )
         )
 
@@ -249,9 +256,12 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         if api_base is not None:
-            # Explicit API base: don't rewrite assets (they're served at current mount)
-            prefix = api_base
-            rewrite_assets = False
+            # Explicit API base: UI at the app root, behind the ASGI root_path
+            # (reverse proxy prefix) when there is one.
+            root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            prefix = root + api_base
+            asset_prefix = root
+            effective_logout = root + logout_path if logout_path else None
         else:
             # Extract prefix: /stemtrace/tasks/123 -> /stemtrace
             url_path = request.url.path
@@ -261,14 +271,15 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
                 else url_path.rstrip("/")
             )
             prefix = _sanitize_derived_prefix(derived)
-            rewrite_assets = True
+            asset_prefix = prefix
+            effective_logout = logout_path
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),
                 prefix,
-                rewrite_assets=rewrite_assets,
+                asset_prefix=asset_prefix,
                 show_logout=show_logout,
-                logout_path=logout_path,
+                logout_path=effective_logout,
             )
         )
 
