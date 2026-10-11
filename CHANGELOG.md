@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Graphs: a group's tasks are listed only inside the group, which sits under the task that started it; they used to also appear directly under that task once they started.
-- Graphs: a group whose parent task isn't in the store (e.g. evicted) is now listed as a graph of its own instead of being shown nowhere.
+- Graphs: a task or group whose parent task isn't in the store (not received yet, or evicted) is now listed as a graph of its own instead of being shown in no graph, and moves under its parent once the parent arrives. A task's `parent_id` is empty while it is listed that way.
 - Graphs: a group or task no longer stays listed under a parent it moved away from, a chord sits under the task that started it, and a task can no longer end up linked under itself (directly or through a cycle).
 - The server no longer evicts a group's or chord's node before its tasks; a recreated group used to be linked under itself, which left its graph page blank. Evicting a task also drops it from its group and from its chord.
 - Graph page: a malformed graph in which a group lists itself among its children is drawn instead of rendering blank.

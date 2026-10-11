@@ -1728,11 +1728,11 @@ class TestGraphStoreEvictionParentCleanup:
         assert "child" not in parent_node.children
 
     def test_eviction_does_not_require_child_in_parent_children(self) -> None:
-        """Eviction should handle nodes with parent_id that were never linked as children."""
+        """A child that arrived before its parent is linked, then evicted cleanly."""
         store = GraphStore(max_nodes=3)
         base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
-        # Child arrives first referencing a missing parent => no backlinking occurs.
+        # Child arrives first; it is linked once its parent arrives.
         store.add_event(
             TaskEvent(
                 task_id="child",
@@ -1753,7 +1753,7 @@ class TestGraphStoreEvictionParentCleanup:
 
         parent_node = store.get_node("parent")
         assert parent_node is not None
-        assert "child" not in parent_node.children
+        assert parent_node.children == ["child"]
 
         store.add_event(
             TaskEvent(
@@ -1773,6 +1773,43 @@ class TestGraphStoreEvictionParentCleanup:
         )
 
         assert store.get_node("child") is None
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert parent_node.children == []
+
+    def test_eviction_of_parent_lists_its_children_as_roots(self) -> None:
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        store.add_event(
+            TaskEvent(
+                task_id="parent", name="p", state=TaskState.SUCCESS, timestamp=base
+            )
+        )
+        for i in (1, 2):
+            store.add_event(
+                TaskEvent(
+                    task_id=f"child-{i}",
+                    name="c",
+                    state=TaskState.SUCCESS,
+                    timestamp=base + timedelta(seconds=i),
+                    parent_id="parent",
+                )
+            )
+        store.add_event(  # 4 nodes -> 2: the parent and child-1 go
+            TaskEvent(
+                task_id="other",
+                name="o",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=3),
+            )
+        )
+
+        roots, total = store.get_root_nodes()
+        assert sorted(r.task_id for r in roots) == ["child-2", "other"]
+        assert total == 2
+        child = store.get_node("child-2")
+        assert child is not None
+        assert child.parent_id is None
 
 
 class TestGraphStoreEvictionGroupLinks:

@@ -8,14 +8,6 @@ def _is_callback_edge(parent: TaskNode, child_id: str) -> bool:
     return parent.node_type == NodeType.CHORD and parent.chord_callback_id == child_id
 
 
-def _is_unlinked_task(graph: TaskGraph, node: TaskNode) -> bool:
-    """A task whose parent wasn't in the graph when it was reported (no back-link)."""
-    if node.node_type != NodeType.TASK or node.parent_id is None:
-        return False
-    parent = graph.nodes.get(node.parent_id)
-    return parent is None or node.task_id not in parent.children
-
-
 def _check_roots(graph: TaskGraph) -> set[str]:
     """Roots are unique, live and parentless; returns them as a set."""
     assert len(graph.root_ids) == len(set(graph.root_ids)), graph.root_ids
@@ -76,23 +68,17 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
     is a root; ``children`` lists have no duplicates, no dangling IDs and no
     self-links, and agree with ``parent_id`` (except a CHORD's callback
     edge); no node is its own ancestor; each node is a root or listed in
-    exactly one parent's children, except tasks left unlinked because their
-    parent wasn't known; every node is reachable from a root or such a task.
+    exactly its parent's children; every node is reachable from a root.
     """
     roots = _check_roots(graph)
     listed_in = _check_children(graph)
-    unlinked: set[str] = set()
     for node_id, node in graph.nodes.items():
         assert node.parent_id != node_id, f"{node_id} is its own parent"
         if node.parent_id is None:
             assert node_id in roots, f"parentless {node_id} is not a root"
             assert listed_in[node_id] == [], (node_id, listed_in[node_id])
-        elif _is_unlinked_task(graph, node):
-            assert node_id not in roots, f"unlinked {node_id} is a root"
-            assert listed_in[node_id] == [], (node_id, listed_in[node_id])
-            unlinked.add(node_id)
         else:
             assert node_id not in roots, f"{node_id} is a root with a parent"
             assert listed_in[node_id] == [node.parent_id], (node_id, listed_in)
         _check_no_cycle(graph, node_id)
-    _check_reachable(graph, roots | unlinked)
+    _check_reachable(graph, roots)

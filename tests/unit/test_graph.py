@@ -190,7 +190,7 @@ class TestTaskGraphParentChild:
         assert "child-1" not in graph.root_ids
         assert "child-1" in graph.nodes["parent-1"].children
 
-    def test_child_before_parent_stays_unlinked(self) -> None:
+    def test_child_before_parent_is_root_until_parent_arrives(self) -> None:
         graph = TaskGraph()
         graph.add_event(
             TaskEvent(
@@ -201,12 +201,11 @@ class TestTaskGraphParentChild:
                 parent_id="parent-1",
             )
         )
-        assert "child-1" not in graph.root_ids
-        assert "child-1" in graph.nodes
-        assert graph.nodes["child-1"].parent_id == "parent-1"
+        assert graph.root_ids == ["child-1"]
+        assert graph.nodes["child-1"].parent_id is None
         assert "parent-1" not in graph.nodes
 
-    def test_child_before_parent_no_backlink(self) -> None:
+    def test_child_before_parent_is_linked_when_parent_arrives(self) -> None:
         graph = TaskGraph()
         graph.add_event(
             TaskEvent(
@@ -225,9 +224,9 @@ class TestTaskGraphParentChild:
                 timestamp=datetime.now(timezone.utc),
             )
         )
-        # Child knows parent, but parent doesn't know child (no back-linking)
         assert graph.nodes["child-1"].parent_id == "parent-1"
-        assert "child-1" not in graph.nodes["parent-1"].children
+        assert graph.nodes["parent-1"].children == ["child-1"]
+        assert graph.root_ids == ["parent-1"]
 
     def test_multiple_children(self) -> None:
         graph = TaskGraph()
@@ -2121,15 +2120,15 @@ class TestGraphLinkingCharacterization:
             chord_callback_id=chord_callback_id,
         )
 
-    def test_add_event_unknown_late_parent_unroots_without_linking(self) -> None:
+    def test_add_event_unknown_late_parent_keeps_task_a_root(self) -> None:
         ev = self._event
         graph = self._graph(
             ev("m1", group_id="g"),
             ev("m1", TaskState.STARTED, parent_id="ghost", group_id="g"),
         )
 
-        assert _shape(graph) == {"m1": (NodeType.TASK, "ghost", [])}
-        assert graph.root_ids == []
+        assert _shape(graph) == {"m1": (NodeType.TASK, None, [])}
+        assert graph.root_ids == ["m1"]
         assert graph.get_group_members("g") == ["m1"]
 
     def test_add_event_member_real_parent_moves_group_under_it(self) -> None:
@@ -2438,6 +2437,38 @@ class TestGraphLinksStayConsistent:
         assert graph.nodes["m1"].parent_id == "group:g"
         assert graph.nodes["m2"].parent_id == "group:g"
 
+    def test_add_event_children_before_parent_are_linked_in_arrival_order(
+        self,
+    ) -> None:
+        graph = _build(
+            _ev("c1", parent_id="P"),
+            _ev("c2", TaskState.STARTED, parent_id="P"),
+            _ev("x"),
+            _ev("P"),
+        )
+
+        assert graph.nodes["P"].children == ["c1", "c2"]
+        assert graph.root_ids == ["x", "P"]
+        assert graph._awaiting_parent == {}
+
+    def test_add_event_group_waiting_for_parent_moves_under_it(self) -> None:
+        graph = _build(
+            _ev("m1", parent_id="W", group_id="g"),
+            _ev("m2", parent_id="W", group_id="g"),
+        )
+        assert graph.root_ids == ["group:g"]
+
+        graph.add_event(_ev("W"))
+
+        assert_graph_invariants(graph)
+        assert _shape(graph) == {
+            "m1": (NodeType.TASK, "group:g", []),
+            "m2": (NodeType.TASK, "group:g", []),
+            "group:g": (NodeType.GROUP, "W", ["m1", "m2"]),
+            "W": (NodeType.TASK, None, ["group:g"]),
+        }
+        assert graph.root_ids == ["W"]
+
     def test_add_event_task_naming_itself_as_parent_is_a_root(self) -> None:
         graph = _build(_ev("t", TaskState.STARTED, parent_id="t"))
 
@@ -2451,10 +2482,10 @@ class TestGraphLinksStayConsistent:
         graph = _build(_ev("a", parent_id="b"), _ev("b", parent_id="a"))
 
         assert _shape(graph) == {
-            "a": (NodeType.TASK, "b", []),
-            "b": (NodeType.TASK, None, []),
+            "a": (NodeType.TASK, None, ["b"]),
+            "b": (NodeType.TASK, "a", []),
         }
-        assert graph.root_ids == ["b"]
+        assert graph.root_ids == ["a"]
 
     def test_add_event_member_parented_by_other_member_makes_no_cycle(
         self,
@@ -2560,14 +2591,34 @@ class TestRemoveNode:
         assert graph.nodes["group:g"].parent_id is None
         assert graph.root_ids == ["group:g"]
 
-    def test_remove_node_parent_task_leaves_its_tasks_unlinked(self) -> None:
+    def test_remove_node_parent_task_makes_its_tasks_roots(self) -> None:
         graph = _build(_ev("P"), _ev("c", parent_id="P"))
 
         graph.remove_node("P")
 
         assert_graph_invariants(graph)
-        assert graph.nodes["c"].parent_id == "P"
-        assert graph.root_ids == []
+        assert graph.nodes["c"].parent_id is None
+        assert graph.root_ids == ["c"]
+
+    def test_remove_node_parent_then_parent_returns_relinks_tasks(self) -> None:
+        graph = _build(_ev("P"), _ev("c", parent_id="P"))
+        graph.remove_node("P")
+
+        graph.add_event(_ev("P", TaskState.STARTED))
+
+        assert_graph_invariants(graph)
+        assert graph.nodes["P"].children == ["c"]
+        assert graph.root_ids == ["P"]
+
+    def test_remove_node_waiting_child_is_forgotten_by_parent(self) -> None:
+        graph = _build(_ev("c", parent_id="P"))
+
+        graph.remove_node("c")
+        graph.add_event(_ev("P"))
+
+        assert_graph_invariants(graph)
+        assert graph.nodes["P"].children == []
+        assert graph._awaiting_parent == {}
 
     def test_remove_node_callback_with_own_parent_leaves_chord_children(
         self,
