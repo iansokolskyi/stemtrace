@@ -280,10 +280,13 @@ class BoundedResolver:
     ) -> list[AddrInfo]:
         """Resolve on the calling thread, without a wait bound (uWSGI master).
 
-        uWSGI's master forks its workers in C, without running Python's
+        The uWSGI master forks its workers in C, without running Python's
         at-fork hooks, so prepare_fork() can't keep a fork from catching a
         lookup thread inside glibc. A lookup on the calling thread is never
-        running while that thread forks. Cache rules are as in resolve().
+        running while that thread forks. Answers and failures are cached as
+        in resolve(), but past the TTL the refresh runs here too, so the
+        caller waits for it (falling back to the cached answer if it fails)
+        instead of getting the cached answer while it runs in the background.
         """
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -295,7 +298,7 @@ class BoundedResolver:
                     raise _fresh(entry.error)
         getaddrinfo = self._getaddrinfo or socket.getaddrinfo
         try:
-            addresses = getaddrinfo(*key)
+            addresses = _call_getaddrinfo(getaddrinfo, key)
         except OSError as exc:
             with state.lock:
                 entry.error = exc
@@ -476,7 +479,6 @@ class BoundedResolver:
         In-process, or in the helper process when ``use_helper`` (this
         process has forked; see the module docstring).
         """
-        host, port, family, type_, proto = key
         addresses: list[AddrInfo] | None = None
         error: OSError | None = None
         try:
@@ -485,14 +487,9 @@ class BoundedResolver:
                 getaddrinfo = _getaddrinfo_in_helper
             else:
                 getaddrinfo = self._getaddrinfo or socket.getaddrinfo
-            addresses = getaddrinfo(host, port, family, type_, proto)
+            addresses = _call_getaddrinfo(getaddrinfo, key)
         except OSError as exc:  # gaierror and friends: kept for the waiters
             error = exc
-        except Exception as exc:  # noqa: BLE001  e.g. idna's UnicodeError: reported to the waiters, never kills the entry
-            error = socket.gaierror(
-                socket.EAI_FAIL, f"Could not resolve {host!r}: {exc}"
-            )
-            error.__cause__ = exc
         finally:
             # Always release the entry, or every later caller would wait on
             # a lookup that never ends.
@@ -622,6 +619,26 @@ def _run_helper(command: list[str], timeout: float) -> tuple[int | Any, bytes]:
         process.communicate()
         raise
     return process.returncode, stdout
+
+
+def _call_getaddrinfo(
+    getaddrinfo: Callable[..., list[AddrInfo]], key: tuple[Any, ...]
+) -> list[AddrInfo]:
+    """Run a lookup; any error comes out as an OSError (gaierror).
+
+    Raises:
+        OSError: The lookup's own (gaierror and friends), or a gaierror
+            (EAI_FAIL) wrapping anything else it raised, e.g. idna's
+            UnicodeError, so callers handle one kind of failure.
+    """
+    try:
+        return getaddrinfo(*key)
+    except OSError:
+        raise
+    except Exception as exc:
+        raise socket.gaierror(
+            socket.EAI_FAIL, f"Could not resolve {key[0]!r}: {exc}"
+        ) from exc
 
 
 def _fresh(error: Exception) -> Exception:

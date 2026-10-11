@@ -876,6 +876,60 @@ class TestUwsgiMasterResolvesOnCallingThread:
 
         assert thread.startswith("stemtrace-dns-")
 
+    def test_master_cache_hit_needs_no_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, is_master=True)
+        dns, clock = FakeDns(), FakeClock()
+        resolver = _make(dns, clock)
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        clock.now += 29.0
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local"]
+
+    def test_master_failed_lookup_is_cached_as_new_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, is_master=True)
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
+        resolver = _make(dns, clock)
+        raised = []
+        for _ in range(3):
+            with pytest.raises(socket.gaierror, match="unknown host") as info:
+                resolver.resolve("redis.local", 6379, timeout=1.0)
+            raised.append(info.value)
+
+        assert dns.calls == ["redis.local"]
+        assert len({id(e) for e in raised}) == 3
+
+    def test_master_refresh_failure_falls_back_to_cached_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, is_master=True)
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [ADDRESS, socket.gaierror(socket.EAI_AGAIN, "no dns")]
+        resolver = _make(dns, clock)
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        clock.now += 31.0  # past the TTL: refreshes on the calling thread
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local", "redis.local"]
+
+    def test_master_unexpected_lookup_error_becomes_gaierror(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, is_master=True)
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [UnicodeError("label too long")]
+
+        with pytest.raises(socket.gaierror, match="label too long") as info:
+            _make(dns, clock).resolve("redis.local", 6379, timeout=1.0)
+
+        assert isinstance(info.value.__cause__, UnicodeError)
+
 
 class _ThreadRecordingDns(FakeDns):
     """FakeDns that also records which thread each lookup ran on."""
