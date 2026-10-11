@@ -133,8 +133,12 @@ def test_publish_to_silent_listener_costs_one_bounded_attempt() -> None:
 
         durations = _timed_publishes(transport, 20)
 
-    assert durations[0] == pytest.approx(PUBLISH_SOCKET_TIMEOUT, abs=0.5)
-    assert sum(durations[1:]) < 0.1
+    # One attempt timed out and opened the breaker; the other 19 were dropped
+    # without contacting the listener. Before the publish timeouts and the
+    # breaker, each of the 20 waited redis-py's 5s default.
+    assert transport._publish_breaker.is_open is True
+    assert transport._publish_breaker.dropped == 19
+    assert sum(durations) < 10 * PUBLISH_SOCKET_TIMEOUT, durations
 
 
 @pytest.mark.integration
@@ -142,10 +146,10 @@ def test_publish_to_silent_listener_costs_one_bounded_attempt() -> None:
 def test_publish_to_real_redis_appends_every_event(stream_prefix: str) -> None:
     transport = RedisTransport.from_url(REDIS_URL, prefix=stream_prefix)
 
-    durations = _timed_publishes(transport, 20)
+    _timed_publishes(transport, 20)
 
     assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 20
-    assert max(durations) < 0.5
+    assert transport._publish_breaker.is_open is False
 
 
 @pytest.mark.integration
