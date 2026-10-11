@@ -6,13 +6,16 @@ order (regenerate with ``tests/data/capture_celery_flows.py``). Each one is
 replayed as captured and in seeded shuffles: the graph must keep its
 invariants after every event and end in the same expected shape.
 
-Task and group IDs are UUIDs; shapes are written with labels ``T0``,
-``T1``, ... given in order of first appearance in the capture (task, parent,
-root, group, chord callback and chord IDs of each event in turn).
+Task and group IDs are UUIDs, so expected graphs are written by structure:
+names and topology (see ``_structure``), not IDs or arrival order. A
+capture regenerated with the script must build the same structure; tests
+that need a particular task pick it by its role in the events or the
+final graph.
 """
 
 import json
 import random
+from collections import Counter
 from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
@@ -21,473 +24,134 @@ from typing import Any
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType, TaskGraph
+from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.store import GraphStore
 from tests.graph_invariants import assert_graph_invariants
 
 _CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
     (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
 )
-_LABELLED_FIELDS = (
-    "task_id",
-    "parent_id",
-    "root_id",
-    "group_id",
-    "chord_callback_id",
-    "chord_id",
-)
-
 _G, _C, _T = NodeType.GROUP, NodeType.CHORD, NodeType.TASK
-# label -> (node type, parent label, sorted children labels)
-_Shape = dict[str, tuple[NodeType, str | None, list[str]]]
 
 
-def _chord_shape(header: list[str], body: str, tail: list[str], gid: str) -> _Shape:
-    """A root chord whose body is a chain ``body -> tail[0] -> tail[1] ...``."""
-    group = f"group:{gid}"
-    shape: _Shape = {h: (_T, group, []) for h in header}
-    shape[group] = (_C, None, sorted([*header, body]))
-    chain = [body, *tail]
-    for i, task in enumerate(chain):
-        parent = group if i == 0 else chain[i - 1]
-        shape[task] = (_T, parent, chain[i + 1 : i + 2])
-    return shape
+def _structure(graph: TaskGraph) -> str:
+    """The graph's names and topology, independent of IDs and arrival order.
+
+    A task is its name without the ``flows.`` prefix, followed by its
+    children in parentheses; a GROUP or CHORD node is ``group{...}`` or
+    ``chord{...}`` around its children. A chord's callback is marked ``*``
+    (``*?`` if it isn't one of the chord's children). Siblings are sorted,
+    graphs are joined with `` | ``.
+    """
+
+    def tree(node_id: str) -> str:
+        node = graph.nodes[node_id]
+        if node.node_type == _T:
+            parts = sorted(tree(c) for c in node.children)
+            head = node.name.removeprefix("flows.")
+            return f"{head}({', '.join(parts)})" if parts else head
+        callback = node.chord_id if node.node_type == _C else None
+        parts = sorted(("*" if c == callback else "") + tree(c) for c in node.children)
+        if callback is not None and callback not in node.children:
+            parts.append("*?")
+        return f"{node.node_type.value.lower()}{{{', '.join(parts)}}}"
+
+    return " | ".join(sorted(tree(root) for root in graph.root_ids))
 
 
-_EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
-    "chain": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", ["T2"]), "T2": (_T, "T1", [])},
-        {},
-    ),
-    "group": (
-        {
-            "group:T3": (_G, None, ["T0", "T1", "T2"]),
-            **{t: (_T, "group:T3", []) for t in ("T0", "T1", "T2")},
-        },
-        {},
-    ),
-    "chord": (_chord_shape(["T0", "T1", "T2"], "T4", [], "T3"), {"group:T3": "T4"}),
-    "chain_a_group_tsum_add": (
-        {
-            "T0": (_T, None, ["group:T3"]),
-            **_chord_shape(["T1", "T2"], "T4", ["T5"], "T3"),
-            "group:T3": (_C, "T0", ["T1", "T2", "T4"]),
-        },
-        {"group:T3": "T4"},
-    ),
-    "chain_a_group_tsum_add_add": (
-        {
-            "T0": (_T, None, ["group:T3"]),
-            **_chord_shape(["T1", "T2"], "T4", ["T5", "T6"], "T3"),
-            "group:T3": (_C, "T0", ["T1", "T2", "T4"]),
-        },
-        {"group:T3": "T4"},
-    ),
-    "chain_group_nested": (
-        {
-            "T0": (_T, None, ["group:T3"]),
-            "group:T3": (_G, "T0", ["T1", "T2"]),
-            "T1": (_T, "group:T3", []),
-            "T2": (_T, "group:T3", []),
-        },
-        {},
-    ),
-    "group_spawned_in_task": (
-        {
-            "T0": (_T, None, ["group:T4"]),
-            "group:T4": (_G, "T0", ["T1", "T2", "T3"]),
-            **{t: (_T, "group:T4", []) for t in ("T1", "T2", "T3")},
-        },
-        {},
-    ),
-    "chain_group_tsum_add": (
-        _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
-        {"group:T2": "T4"},
-    ),
-    "chord_retried_header": (
-        _chord_shape(["T0", "T1"], "T3", [], "T2"),
-        {"group:T2": "T3"},
-    ),
-    "chord_in_chord_body": (
-        {
-            **_chord_shape(["T0", "T1"], "group:T3", [], "T2"),
-            "group:T3": (_C, "group:T2", ["T4", "T5", "T6"]),
-            "T4": (_T, "group:T3", []),
-            "T5": (_T, "group:T3", []),
-            "T6": (_T, "group:T3", []),
-        },
-        {"group:T2": "group:T3", "group:T3": "T6"},
-    ),
+_EXPECTED: dict[str, str] = {
+    "chain": "add(add(add))",
+    "group": "group{add, add, add}",
+    "chord": "chord{*tsum, add, add, add}",
+    "chain_a_group_tsum_add": "add(chord{*tsum(add), add, add})",
+    "chain_a_group_tsum_add_add": "add(chord{*tsum(add(add)), add, add})",
+    "chain_group_nested": "add(group{add, add})",
+    "group_spawned_in_task": "spawn_group(group{add, add, add})",
+    "chain_group_tsum_add": "chord{*tsum(add), add, add}",
+    "chord_retried_header": "chord{*tsum, add, flaky_add}",
+    "chord_in_chord_body": "chord{*chord{*tsum, tsum, tsum}, add, add}",
     # group(chain(a1, b1), chain(a2, b2)): Celery stamps the group only on
     # b1 and b2; a1 and a2 are chain links drawn inside the group.
-    "group_of_chains": (
-        {
-            "group:T4": (_G, None, ["T0", "T1"]),
-            "T0": (_T, "group:T4", ["T2"]),
-            "T1": (_T, "group:T4", ["T3"]),
-            "T2": (_T, "T0", []),
-            "T3": (_T, "T1", []),
-        },
-        {},
-    ),
-    # A header's own subtask (T4) and the callback (T3) both hang from a
-    # header; only the callback the headers name is drawn after the chord.
-    "chord_header_subtask": (
-        {
-            **_chord_shape(["T0", "T1"], "T3", [], "T2"),
-            "T0": (_T, "group:T2", ["T4"]),
-            "T4": (_T, "T0", []),
-        },
-        {"group:T2": "T3"},
-    ),
-    "chord_header_fanout_group": (
-        {
-            **_chord_shape(["T0", "T1"], "T3", [], "T2"),
-            "T0": (_T, "group:T2", ["group:T6"]),
-            "group:T6": (_G, "T0", ["T4", "T5"]),
-            "T4": (_T, "group:T6", []),
-            "T5": (_T, "group:T6", []),
-        },
-        {"group:T2": "T3"},
-    ),
+    "group_of_chains": "group{add(add), add(add)}",
+    # A header's own subtask and the callback both hang from a header; only the callback the headers name is drawn after the chord.
+    "chord_header_subtask": "chord{*tsum, add, add_with_subtask(add)}",
+    "chord_header_fanout_group": "chord{*tsum, add, spawn_group(group{add, add})}",
     # The body never runs: nothing shows a callback, so none is drawn.
-    "chord_failed_header": (
-        {
-            "group:T2": (_C, None, ["T0", "T1"]),
-            "T0": (_T, "group:T2", []),
-            "T1": (_T, "group:T2", []),
-        },
-        {"group:T2": None},
-    ),
+    "chord_failed_header": "chord{add, fail}",
     # A header's subtask is no evidence: with the body never run, no callback.
-    "chord_failed_header_subtask": (
-        {
-            "group:T2": (_C, None, ["T0", "T1"]),
-            "T0": (_T, "group:T2", ["T4"]),
-            "T1": (_T, "group:T2", []),
-            "T4": (_T, "T0", []),
-        },
-        {"group:T2": None},
-    ),
-    # The header's subtask (T4) must not become the callback, whichever of
+    "chord_failed_header_subtask": "chord{add_with_subtask(add), fail}",
+    # The header's subtask must not become the callback, whichever of
     # the chain body's tasks arrives last.
-    "chain_chord_header_subtask_add_add": (
-        {
-            "T0": (_T, None, ["group:T3"]),
-            **_chord_shape(["T1", "T2"], "T5", ["T6", "T7"], "T3"),
-            "group:T3": (_C, "T0", ["T1", "T2", "T5"]),
-            "T1": (_T, "group:T3", ["T4"]),
-            "T4": (_T, "T1", []),
-        },
-        {"group:T3": "T5"},
-    ),
+    "chain_chord_header_subtask_add_add": "add(chord{*tsum(add(add)), add, add_with_subtask(add)})",
     # chain(a, group(chain(b1, c1), chain(b2, c2))): b1 and b2 are links.
-    "chain_group_of_chains": (
-        {
-            "T0": (_T, None, ["group:T5"]),
-            "group:T5": (_G, "T0", ["T1", "T2"]),
-            "T1": (_T, "group:T5", ["T3"]),
-            "T2": (_T, "group:T5", ["T4"]),
-            "T3": (_T, "T1", []),
-            "T4": (_T, "T2", []),
-        },
-        {},
-    ),
-    # T0 also spawned T2, so it isn't pulled into the group; T1 is.
-    "group_of_chains_link_spawns": (
-        {
-            "T0": (_T, None, ["T2", "group:T5"]),
-            "T2": (_T, "T0", []),
-            "group:T5": (_G, "T0", ["T1", "T3"]),
-            "T3": (_T, "group:T5", []),
-            "T1": (_T, "group:T5", ["T4"]),
-            "T4": (_T, "T1", []),
-        },
-        {},
-    ),
+    "chain_group_of_chains": "add(group{add(add), add(add)})",
+    # add_with_subtask also spawned a task, so it isn't pulled into the
+    # group as a chain link; the other chain's first task is.
+    "group_of_chains_link_spawns": "add_with_subtask(add, group{add, add(add)})",
     # Result backends without chord support: Celery's chord_unlock task
-    # (T0 here) fires the body, which reports it as its parent.
-    "chord@chord_unlock": (
-        {
-            **_chord_shape(["T1", "T2", "T3"], "T5", [], "T4"),
-            "group:T4": (_C, None, ["T0", "T1", "T2", "T3", "T5"]),
-            "T0": (_T, "group:T4", []),
-        },
-        {"group:T4": "T5"},
-    ),
-    "chain_a_group_tsum_add@chord_unlock": (
-        {
-            "T0": (_T, None, ["group:T4"]),
-            **_chord_shape(["T2", "T3"], "T5", ["T6"], "T4"),
-            "group:T4": (_C, "T0", ["T1", "T2", "T3", "T5"]),
-            "T1": (_T, "group:T4", []),
-        },
-        {"group:T4": "T5"},
-    ),
-    "chord_with_chain_body@chord_unlock": (
-        {
-            **_chord_shape(["T1", "T2"], "T5", ["T4"], "T3"),
-            "group:T3": (_C, None, ["T0", "T1", "T2", "T5"]),
-            "T0": (_T, "group:T3", []),
-        },
-        {"group:T3": "T5"},
-    ),
+    # fires the body, which reports it as its parent.
+    "chord@chord_unlock": "chord{*tsum, add, add, add, celery.chord_unlock}",
+    "chain_a_group_tsum_add@chord_unlock": "add(chord{*tsum(add), add, add, celery.chord_unlock})",
+    "chord_with_chain_body@chord_unlock": "chord{*tsum(add), add, add, celery.chord_unlock}",
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
     # the callback the header names.
-    "chain_single_header_chord": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-        },
-        {"group:T2": "T3"},
-    ),
-    "chain_chord": (
-        {
-            "T0": (_T, None, ["group:T3"]),
-            "group:T3": (_C, "T0", ["T1", "T2", "T4"]),
-            "T1": (_T, "group:T3", []),
-            "T2": (_T, "group:T3", []),
-            "T4": (_T, "group:T3", []),
-        },
-        {"group:T3": "T4"},
-    ),
+    "chain_single_header_chord": "add(chord{*tsum, add})",
+    "chain_chord": "add(chord{*tsum, add, add})",
     # group(chain(a, b), c): c has no parent (a top-level member) and b's
     # parent a has one child, so a is a chain link inside the group.
-    "group_chain_and_task": (
-        {
-            "group:T3": (_G, None, ["T0", "T1"]),
-            "T0": (_T, "group:T3", ["T2"]),
-            "T1": (_T, "group:T3", []),
-            "T2": (_T, "T0", []),
-        },
-        {},
-    ),
+    "group_chain_and_task": "group{add, add(add)}",
     # chord([a, b], group(c, d)): the headers name the chord's own group ID
     # and both body tasks carry it; the body is drawn as a GROUP after the
     # chord. chain(group(a, b), group(c, d)) is the same canvas to Celery.
-    "chord_group_body": (
-        {
-            "group:T1": (_C, None, ["T0", "T2", "group:T1:body"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", []),
-            "group:T1:body": (_G, "group:T1", ["T3", "T4"]),
-            "T3": (_T, "group:T1:body", []),
-            "T4": (_T, "group:T1:body", []),
-        },
-        {"group:T1": "group:T1:body"},
-    ),
-    "chain_group_group": (
-        {
-            "group:T1": (_C, None, ["T0", "T2", "group:T1:body"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", []),
-            "group:T1:body": (_G, "group:T1", ["T3", "T4"]),
-            "T3": (_T, "group:T1:body", []),
-            "T4": (_T, "group:T1:body", []),
-        },
-        {"group:T1": "group:T1:body"},
-    ),
+    "chord_group_body": "chord{*group{tsum, tsum}, add, add}",
+    "chain_group_group": "chord{*group{tsum, tsum}, add, add}",
     # task.replace(): Celery gives the replacement's last task the replaced
-    # task's ID (T0), whose events then report a parent from the
-    # replacement. Only events under the task's first name report its
-    # parent, so T0 stays the root.
-    "replace_chain": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
-        {},
-    ),
+    # task's ID, whose events then report a parent from the replacement.
+    # Only the task's own events report its parent, so it stays the root.
+    "replace_chain": "replace_with_chain(add)",
     # Replacing with a group makes a chord whose callback (accumulate)
-    # reuses T0's ID: it can't also be drawn after the chord.
-    "replace_group": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-        },
-        {"group:T2": None},
-    ),
-    "chain_replace_group_tsum": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-            "T4": (_T, "group:T2", []),
-        },
-        {"group:T2": "T4"},
-    ),
-    "group_of_chains_link_spawns@publish_headers": (
-        {
-            "T0": (_T, None, ["T2", "group:T4"]),
-            "T2": (_T, "T0", []),
-            "group:T4": (_G, "T0", ["T1", "T3"]),
-            "T3": (_T, "group:T4", []),
-            "T1": (_T, "group:T4", ["T5"]),
-            "T5": (_T, "T1", []),
-        },
-        {},
-    ),
+    # reuses the replaced task's ID: it can't also be drawn after the chord.
+    "replace_group": "replace_with_group(chord{add, add})",
+    "chain_replace_group_tsum": "replace_with_group(chord{*tsum, add, add})",
+    "group_of_chains_link_spawns@publish_headers": "add_with_subtask(add, group{add, add(add)})",
     # The same with the worker in its own process: it announces the
     # replacement's last task, under the replaced task's ID, with a second
     # attempt-0 PENDING (another name, a parent from the replacement).
-    "replace_chain@worker_process": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
-        {},
-    ),
-    "replace_group@worker_process": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-        },
-        {"group:T2": None},
-    ),
-    "chain_replace_group_tsum@worker_process": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-            "T4": (_T, "group:T2", []),
-        },
-        {"group:T2": "T4"},
-    ),
+    "replace_chain@worker_process": "replace_with_chain(add)",
+    "replace_group@worker_process": "replace_with_group(chord{add, add})",
+    "chain_replace_group_tsum@worker_process": "replace_with_group(chord{*tsum, add, add})",
     # Captured with Celery 5.2 (the lowest supported version). A group body
     # gets its own group ID there, which the headers name.
-    "chord_group_body@celery5.2": (
-        {
-            "group:T1": (_C, None, ["T0", "T2", "group:T3"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", []),
-            "group:T3": (_G, "group:T1", ["T4", "T5"]),
-            "T4": (_T, "group:T3", []),
-            "T5": (_T, "group:T3", []),
-        },
-        {"group:T1": "group:T3"},
-    ),
-    "chain_group_group@celery5.2": (
-        {
-            "group:T1": (_C, None, ["T0", "T2", "group:T3"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", []),
-            "group:T3": (_G, "group:T1", ["T4", "T5"]),
-            "T4": (_T, "group:T3", []),
-            "T5": (_T, "group:T3", []),
-        },
-        {"group:T1": "group:T3"},
-    ),
-    "chain_chord@celery5.2": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_C, "T0", ["T1", "T3", "T4"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", []),
-            "T4": (_T, "group:T2", []),
-        },
-        {"group:T2": "T4"},
-    ),
+    "chord_group_body@celery5.2": "chord{*group{tsum, tsum}, add, add}",
+    "chain_group_group@celery5.2": "chord{*group{tsum, tsum}, add, add}",
+    "chain_chord@celery5.2": "add(chord{*tsum, add, add})",
     # On Celery 5.2 the headers of a chord with a chain body, or of
     # chain(group, task), carry no chord callback ID: nothing shows they are
     # a chord, so they stay a GROUP with the chain hanging from its last
     # member (as on main).
-    "chain_group_tsum_add@celery5.2": (
-        {
-            "group:T1": (_G, None, ["T0", "T2"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", ["T3"]),
-            "T3": (_T, "T2", ["T4"]),
-            "T4": (_T, "T3", []),
-        },
-        {},
-    ),
-    "chord_with_chain_body@celery5.2": (
-        {
-            "group:T1": (_G, None, ["T0", "T2"]),
-            "T0": (_T, "group:T1", []),
-            "T2": (_T, "group:T1", ["T3"]),
-            "T3": (_T, "T2", ["T4"]),
-            "T4": (_T, "T3", []),
-        },
-        {},
-    ),
-    "chain_a_group_tsum_add@celery5.2": (
-        {
-            "T0": (_T, None, ["group:T2"]),
-            "group:T2": (_G, "T0", ["T1", "T3"]),
-            "T1": (_T, "group:T2", []),
-            "T3": (_T, "group:T2", ["T4"]),
-            "T4": (_T, "T3", ["T5"]),
-            "T5": (_T, "T4", []),
-        },
-        {},
-    ),
+    "chain_group_tsum_add@celery5.2": "group{add, add(tsum(add))}",
+    "chord_with_chain_body@celery5.2": "group{add, add(tsum(add))}",
+    "chain_a_group_tsum_add@celery5.2": "add(group{add, add(tsum(add))})",
     # self.replace(add.s()): the single replacement task takes over the ID
     # and reports it as its own parent.
-    "replace_task@worker_process": ({"T0": (_T, None, [])}, {}),
+    "replace_task@worker_process": "replace_with_task",
     # paginate(0) replaces itself with chain(paginate(1), paginate(2)): the
     # same task name, so only the structure shows the replacement.
-    "replace_same_name@worker_process": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
-        {},
-    ),
-    # chain(add, paginate(0)): the replaced task (T1) has a parent of its
-    # own, and its replacement's events report another (T2).
-    "chain_replace_same_name@worker_process": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", ["T2"]), "T2": (_T, "T1", [])},
-        {},
-    ),
-    "chord_header_replace_same_name@worker_process": (
-        {
-            "group:T1": (_C, None, ["T0", "T2", "T3"]),
-            "T0": (_T, "group:T1", ["T4"]),
-            "T2": (_T, "group:T1", []),
-            "T3": (_T, "group:T1", []),
-            "T4": (_T, "T0", []),
-        },
-        {"group:T1": "T3"},
-    ),
-    # add.apply_async(parent_id=T0) from a client: Celery defaults root_id
-    # to the task's own ID there, so T1 claims to be a root with a parent.
-    "client_explicit_parent": (
-        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
-        {},
-    ),
-    # The same from inside a task (T1): the root is the sender's.
-    "worker_explicit_parent": (
-        {"T0": (_T, None, ["T2"]), "T1": (_T, None, []), "T2": (_T, "T0", [])},
-        {},
-    ),
-    "chord_with_chain_body": (
-        _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
-        {"group:T2": "T4"},
-    ),
+    "replace_same_name@worker_process": "paginate(paginate)",
+    # chain(add, paginate(0)): the replaced task has a parent of its own,
+    # and its replacement's events report another (paginate(1)).
+    "chain_replace_same_name@worker_process": "add(paginate(paginate))",
+    "chord_header_replace_same_name@worker_process": "chord{*tsum, add, paginate(paginate)}",
+    # add.apply_async(parent_id=<an earlier add>) from a client: Celery
+    # defaults root_id to the task's own ID there, so the task claims to be
+    # a root with a parent.
+    "client_explicit_parent": "add(add)",
+    # The same from inside a task (send_with_parent): the root is the
+    # sender's.
+    "worker_explicit_parent": "add(add) | send_with_parent",
+    "chord_with_chain_body": "chord{*tsum(add), add, add}",
 }
-
-
-def _labels(events: list[dict[str, Any]]) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for event in events:
-        for field in _LABELLED_FIELDS:
-            value = event[field]
-            if value is not None and value not in labels:
-                labels[value] = f"T{len(labels)}"
-    return labels
-
-
-def _label(labels: dict[str, str], node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-    if node_id.startswith("group:") and node_id.endswith(":body"):
-        return (
-            f"group:{labels[node_id.removeprefix('group:').removesuffix(':body')]}:body"
-        )
-    if node_id.startswith("group:"):
-        return f"group:{labels[node_id.removeprefix('group:')]}"
-    return labels[node_id]
 
 
 def _replay(events: list[dict[str, Any]]) -> TaskGraph:
@@ -496,18 +160,6 @@ def _replay(events: list[dict[str, Any]]) -> TaskGraph:
         graph.add_event(TaskEvent.model_validate(event))
         assert_graph_invariants(graph)
     return graph
-
-
-def _labelled_shape(graph: TaskGraph, labels: dict[str, str]) -> _Shape:
-    shape: _Shape = {}
-    for node_id, node in graph.nodes.items():
-        children = sorted(str(_label(labels, c)) for c in node.children)
-        shape[str(_label(labels, node_id))] = (
-            node.node_type,
-            _label(labels, node.parent_id),
-            children,
-        )
-    return shape
 
 
 def _orders(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -521,30 +173,19 @@ def _orders(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 @pytest.mark.parametrize("flow", sorted(_EXPECTED))
 def test_replay_celery_flow_in_any_order_builds_expected_graph(flow: str) -> None:
-    events = _CAPTURES[flow]
-    labels = _labels(events)
-    expected_shape, expected_callbacks = _EXPECTED[flow]
-    for order in _orders(events):
+    for order in _orders(_CAPTURES[flow]):
         graph = _replay(order)
 
-        assert _labelled_shape(graph, labels) == expected_shape
-        callbacks = {
-            str(_label(labels, node_id)): _label(labels, node.chord_id)
-            for node_id, node in graph.nodes.items()
-            if node.node_type == NodeType.CHORD
-        }
-        assert callbacks == expected_callbacks
-        assert len(graph.root_ids) == sum(
-            parent is None for _, parent, _ in expected_shape.values()
-        )
+        assert _structure(graph) == _EXPECTED[flow]
         if flow in ("chord_failed_header", "chord_failed_header_subtask"):
-            assert graph.nodes[f"group:{_id(labels, 'T2')}"].state == TaskState.FAILURE
+            (chord_node,) = _nodes_of_type(graph, _C)
+            assert chord_node.state == TaskState.FAILURE
         else:
             assert {node.state for node in graph.nodes.values()} == {TaskState.SUCCESS}
 
 
-def _id(labels: dict[str, str], label: str) -> str:
-    return next(node_id for node_id, lab in labels.items() if lab == label)
+def _nodes_of_type(graph: TaskGraph, node_type: NodeType) -> list[TaskNode]:
+    return [node for node in graph.nodes.values() if node.node_type == node_type]
 
 
 @pytest.mark.parametrize("flow", sorted(_CAPTURES))
@@ -559,27 +200,26 @@ def test_replay_celery_flow_with_eviction_keeps_graph_invariants(flow: str) -> N
 def test_replay_chain_body_with_middle_task_last_finds_callback() -> None:
     """The chain body's middle task arriving last completes the tail walk.
 
-    Until then the walk from the stamped last task (T7) stops at the missing
-    T6, and the header's subtask (T4) must not be drawn as the callback.
+    Until then the walk from the stamped last task stops at the missing
+    middle one, and the header's subtask must not be drawn as the callback.
     """
     events = _CAPTURES["chain_chord_header_subtask_add_add"]
-    labels = _labels(events)
-    middle = _id(labels, "T6")
+    (final_chord,) = _nodes_of_type(_replay(events), _C)
+    callback = final_chord.chord_id
+    assert callback is not None
+    (middle,) = _replay(events).nodes[callback].children
     rest = [e for e in events if e["task_id"] != middle]
     late = [e for e in events if e["task_id"] == middle]
     graph = _replay(rest)
-    chord_node = graph.nodes[f"group:{_id(labels, 'T3')}"]
+    chord_node = graph.nodes[final_chord.task_id]
     assert chord_node.chord_id is None
 
     for event in late:
         graph.add_event(TaskEvent.model_validate(event))
         assert_graph_invariants(graph)
 
-    assert _label(labels, chord_node.chord_id) == "T5"
-    assert (
-        _labelled_shape(graph, labels)
-        == _EXPECTED["chain_chord_header_subtask_add_add"][0]
-    )
+    assert graph.nodes[final_chord.task_id].chord_id == callback
+    assert _structure(graph) == _EXPECTED["chain_chord_header_subtask_add_add"]
 
 
 def _final_ancestors(graph: TaskGraph, node_id: str) -> set[str]:
@@ -717,8 +357,15 @@ def test_replay_chain_link_spawning_task_with_delayed_subtask() -> None:
     worker events arrive last: the PENDING of a's subtask carries a as its
     parent, so a never looks like a one-child chain link."""
     events = _CAPTURES["group_of_chains_link_spawns@publish_headers"]
-    labels = _labels(events)
-    subtask = _id(labels, "T2")
+    spawner = next(
+        e["task_id"] for e in events if e["name"] == "flows.add_with_subtask"
+    )
+    (subtask,) = {
+        e["task_id"]
+        for e in events
+        if e["parent_id"] == spawner
+        and not any(o["group_id"] for o in events if o["task_id"] == e["task_id"])
+    }
     delayed = [e for e in events if e["task_id"] == subtask and e["state"] != "PENDING"]
     order = [e for e in events if e not in delayed] + delayed
     final = _replay(events)
@@ -726,22 +373,33 @@ def test_replay_chain_link_spawning_task_with_delayed_subtask() -> None:
     for event in order:
         graph.add_event(TaskEvent.model_validate(event))
         _assert_only_accepted_transients(graph, final)
-    assert (
-        _labelled_shape(graph, labels)
-        == _EXPECTED["group_of_chains_link_spawns@publish_headers"][0]
+    assert _structure(graph) == _EXPECTED["group_of_chains_link_spawns@publish_headers"]
+
+
+_REPLACE_FLOWS = (
+    "replace_chain@worker_process",
+    "replace_group@worker_process",
+    "chain_replace_group_tsum@worker_process",
+    "replace_task@worker_process",
+    "replace_same_name@worker_process",
+    "chord_header_replace_same_name@worker_process",
+    "chain_replace_same_name@worker_process",
+)
+
+
+def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
+    """The replaced task's ID and the parent its own events report.
+
+    A worker in its own process announces the replacement's last task, which
+    reuses the ID, with a second attempt-0 PENDING. The task's first event
+    in a capture is its sender's PENDING.
+    """
+    pending = Counter(
+        e["task_id"] for e in events if e["state"] == "PENDING" and e["retries"] == 0
     )
-
-
-# Flow -> label of the replaced task.
-_REPLACE_FLOWS = {
-    "replace_chain@worker_process": "T0",
-    "replace_group@worker_process": "T0",
-    "chain_replace_group_tsum@worker_process": "T0",
-    "replace_task@worker_process": "T0",
-    "replace_same_name@worker_process": "T0",
-    "chord_header_replace_same_name@worker_process": "T0",
-    "chain_replace_same_name@worker_process": "T1",
-}
+    (task_id,) = [t for t, count in pending.items() if count > 1]
+    parent = next(e["parent_id"] for e in events if e["task_id"] == task_id)
+    return task_id, parent
 
 
 @pytest.mark.parametrize("flow", sorted(_REPLACE_FLOWS))
@@ -753,10 +411,8 @@ def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
     host: with its clock skewed either way, the replaced task keeps its name
     and place, in any order."""
     events = _CAPTURES[flow]
-    labels = _labels(events)
-    original = _id(labels, _REPLACE_FLOWS[flow])
+    original, first_parent = _replaced_task(events)
     name = next(e["name"] for e in events if e["task_id"] == original)
-    first_parent = next(e["parent_id"] for e in events if e["task_id"] == original)
     skewed = []
     for event in events:
         if _is_replacement_event(event, original, first_parent):
@@ -769,7 +425,7 @@ def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
         graph = _replay(order)
 
         assert graph.nodes[original].name == name
-        assert _labelled_shape(graph, labels) == _EXPECTED[flow][0]
+        assert _structure(graph) == _EXPECTED[flow]
 
 
 def _graph_shape(
@@ -809,39 +465,46 @@ def _is_replacement_event(
     return event["task_id"] == task_id and event["parent_id"] != first_parent
 
 
-@pytest.mark.parametrize(
-    "flow", ["replace_chain@worker_process", "replace_same_name@worker_process"]
-)
-def test_replay_replaced_task_when_server_missed_its_start(flow: str) -> None:
-    """A server that starts mid-flow sees only the replacement's events for
-    the replaced task: the graph is the same, in any order."""
-    events = _CAPTURES[flow]
-    labels = _labels(events)
-    original = _id(labels, "T0")
-    late = [
+def _without_own_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The capture as a server that started mid-flow sees it: the replaced
+    task's own events are missing, only its replacement's remain."""
+    original, first_parent = _replaced_task(events)
+    return [
         e
         for e in events
-        if e["task_id"] != original or _is_replacement_event(e, original)
+        if e["task_id"] != original or _is_replacement_event(e, original, first_parent)
     ]
-    for order in _orders(late):
-        assert _labelled_shape(_replay(order), labels) == _EXPECTED[flow][0]
+
+
+@pytest.mark.parametrize(
+    ("flow", "expected"),
+    [
+        ("replace_chain@worker_process", "add(add)"),
+        ("replace_same_name@worker_process", "paginate(paginate)"),
+    ],
+)
+def test_replay_replaced_task_when_server_missed_its_start(
+    flow: str, expected: str
+) -> None:
+    """A server that starts mid-flow sees only the replacement's events for
+    a replaced root task: the node shows the replacement's name and stays
+    the root, with the replacement's first task under it, in any order."""
+    for order in _orders(_without_own_events(_CAPTURES[flow])):
+        assert _structure(_replay(order)) == expected
 
 
 def test_replay_non_root_replaced_task_when_server_missed_its_start() -> None:
-    """Without the replaced task's own events, its replacement's report the
-    replacement's previous task as parent, which reports it in turn: an ID
-    reuse cycle with nothing to tell the original. The result is stable in
-    any order (the larger task ID gives up its parent)."""
-    events = _CAPTURES["chain_replace_same_name@worker_process"]
-    labels = _labels(events)
-    original = _id(labels, "T1")
-    late = [
-        e
-        for e in events
-        if e["task_id"] != original
-        or _is_replacement_event(e, original, _id(labels, "T0"))
-    ]
-    shapes = {
-        repr(sorted(_labelled_shape(_replay(o), labels).items())) for o in _orders(late)
-    }
-    assert len(shapes) == 1
+    """chain(add, paginate(0)) without the replaced task's own events: nothing
+    left links it to add, which is a graph of its own. Its replacement's
+    events report the replacement's first task as parent, which reports it
+    in turn (an ID reuse cycle with nothing to tell the original): the two
+    make one graph, whose top is the task with the larger ID (it gives up
+    its parent), in any order."""
+    events = _without_own_events(_CAPTURES["chain_replace_same_name@worker_process"])
+    original, _ = _replaced_task(_CAPTURES["chain_replace_same_name@worker_process"])
+    (first,) = {e["task_id"] for e in events if e["parent_id"] == original}
+    for order in _orders(events):
+        graph = _replay(order)
+
+        assert _structure(graph) == "add | paginate(paginate)"
+        assert graph.nodes[min(original, first)].parent_id == max(original, first)

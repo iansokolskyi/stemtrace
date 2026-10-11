@@ -19,6 +19,10 @@ forget which tasks were already announced before each task, as a worker in
 its own process does (the client and the in-process worker otherwise share
 that memory, which hides a worker's republished PENDING, e.g. from
 ``task.replace()``).
+
+The graph tests compare names and topology, not task IDs or arrival order,
+so a regenerated capture must still pass them; keep the ``@`` variants made
+with older stemtrace or Celery versions (their keys say which).
 """
 
 import json
