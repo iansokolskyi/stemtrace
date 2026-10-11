@@ -63,8 +63,6 @@ class TestLibraryTransportsAlias:
         assert old_redis.XREAD_BLOCK_MS == redis.XREAD_BLOCK_MS
         assert old_rabbitmq.RabbitMQTransport is rabbitmq.RabbitMQTransport
         assert old_rabbitmq.CONNECT_TIMEOUT == rabbitmq.CONNECT_TIMEOUT
-        # Deprecated and unused, but exported since 0.3.8: imports keep working.
-        assert old_rabbitmq.PUBLISH_SLOW_ATTEMPT == rabbitmq.PUBLISH_SLOW_ATTEMPT == 0.5
         assert "PUBLISH_SLOW_ATTEMPT" in old_rabbitmq.__all__
         assert old_memory.MemoryTransport is memory.MemoryTransport
         assert old_breaker.PublishBreaker is breaker.PublishBreaker
@@ -76,5 +74,24 @@ class TestLibraryTransportsAlias:
             old = importlib.import_module(f"{OLD_PACKAGE}.{submodule}")
         new = importlib.import_module(f"stemtrace.transports.{submodule}")
 
-        for name in old.__all__:
-            assert getattr(old, name) is getattr(new, name), name
+        with warnings.catch_warnings():
+            # PUBLISH_SLOW_ATTEMPT warns on access (deprecated, see below).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            for name in old.__all__:
+                assert getattr(old, name) is getattr(new, name), name
+
+    @pytest.mark.parametrize(
+        "module", ["stemtrace.transports.rabbitmq", f"{OLD_PACKAGE}.rabbitmq"]
+    )
+    def test_publish_slow_attempt_access_warns_deprecation(self, module: str) -> None:
+        """Deprecated and unused, but exported since 0.3.8: imports keep working."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            mod = importlib.import_module(module)
+
+        with pytest.warns(
+            DeprecationWarning, match="PUBLISH_SLOW_ATTEMPT is deprecated"
+        ):
+            value = mod.PUBLISH_SLOW_ATTEMPT
+
+        assert value == 0.5

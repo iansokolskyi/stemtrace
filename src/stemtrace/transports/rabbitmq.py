@@ -19,6 +19,7 @@ import json
 import logging
 import socket
 import time
+import warnings
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -69,9 +70,12 @@ PUBLISH_PROBE_TIMEOUT = 60.0
 # thread waited for the GIL past its socket deadline).
 PUBLISH_FAILURES_TO_OPEN = 3
 
-# Deprecated and unused: a single slow failure no longer opens the breaker.
-# Kept so existing imports keep working; removed in 1.0.
-PUBLISH_SLOW_ATTEMPT = 0.5
+# Deprecated module constants, served with a DeprecationWarning by
+# __getattr__ so existing imports keep working until 1.0.
+_DEPRECATED_CONSTANTS: dict[str, Any] = {
+    # Unused: a single slow failure no longer opens the publish breaker.
+    "PUBLISH_SLOW_ATTEMPT": 0.5,
+}
 
 # While the breaker is open, events are dropped without connecting for a
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
@@ -810,3 +814,16 @@ class RabbitMQTransport:
     def from_url(cls, url: str, *, prefix: str = "stemtrace", ttl: int = 86400) -> Self:
         """Create transport from AMQP URL."""
         return cls(url, prefix=prefix, ttl=ttl)
+
+
+def __getattr__(name: str) -> Any:
+    """Serve deprecated module constants, warning that they go away in 1.0."""
+    if name in _DEPRECATED_CONSTANTS:
+        warnings.warn(
+            f"{name} is deprecated and unused (a single slow publish failure no "
+            "longer opens the circuit breaker); it will be removed in 1.0",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _DEPRECATED_CONSTANTS[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
