@@ -800,6 +800,24 @@ class TestPublicAssetsWithServedUi:
         assert shell.status_code == 200
         assert "app shell" in shell.text
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/stemtrace/assets/missing.js",
+            "/stemtrace/tasks/assets/index-abc123.js",
+            "/stemtrace/graph/x/assets/index-abc123.css",
+        ],
+    )
+    def test_misplaced_asset_path_with_session_returns_404_not_shell(
+        self, fake_dist: Path, path: str
+    ) -> None:
+        with TestClient(self._ui_app()) as client:
+            _login_and_get_cookie(client)
+            resp = client.get(path, follow_redirects=False)
+
+        assert resp.status_code == 404
+        assert "app shell" not in resp.text
+
 
 class TestLoginPageFavicon:
     """The login page carries the brand favicon without an extra request."""

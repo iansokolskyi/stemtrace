@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- UI: an asset path outside the bundle's own `assets/` directory (e.g. `/stemtrace/assets/<file>` on `stemtrace server`, which serves the bundle at `/assets/`) now returns 404 instead of the HTML app shell.
+
 ## [0.3.10] - 2026-10-11
 
 ### Changed

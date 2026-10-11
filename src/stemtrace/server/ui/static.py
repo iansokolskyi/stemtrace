@@ -133,6 +133,18 @@ def _is_under_assets(candidate: str) -> bool:
     return candidate == assets_dir or candidate.startswith(assets_dir + os.sep)
 
 
+def _is_misplaced_asset_path(path: str) -> bool:
+    """Return True if a request path reaches into an ``assets/`` segment.
+
+    The bundle lives only at the UI root's ``assets/`` (and is served by the
+    StaticFiles mount, or by the regular-file check for the root). A path like
+    ``stemtrace/assets/x.js`` (the CLI's API mount) or ``tasks/assets/x.js``
+    is never a client-side route, so it must 404 instead of returning the HTML
+    shell, which a browser would try to run as a script or stylesheet.
+    """
+    return "assets" in path.split("/")[:-1]
+
+
 def _is_regular_file(path: str) -> bool:
     """Return True if path is an existing regular file (symlinks followed).
 
@@ -219,7 +231,8 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
         Only regular files under the frontend directory are served. Paths
         that normalize to a location outside of it get a 404, and so do
         non-file paths under ``assets/`` (served without a session, so they
-        must not return the app shell); any other path that is not a servable
+        must not return the app shell) and paths with an ``assets`` segment
+        anywhere else (e.g. ``stemtrace/assets/x.js``); any other path that is not a servable
         file (missing, a directory, or not inspectable) falls back to
         index.html so client-side routes keep working.
         """
@@ -228,7 +241,7 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
         if _is_regular_file(file_path):
             return FileResponse(file_path)
-        if _is_under_assets(file_path):
+        if _is_under_assets(file_path) or _is_misplaced_asset_path(path):
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         index_path = _FRONTEND_DIR / "index.html"
