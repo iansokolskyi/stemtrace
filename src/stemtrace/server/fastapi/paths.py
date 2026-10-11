@@ -12,14 +12,42 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-# Private, but present with this signature in every supported version
-# (starlette>=0.38.6 through 1.7.0). Imported rather than copied on purpose:
-# see strip_root_path. If a future Starlette drops it, this import fails
-# loudly instead of the middleware silently diverging from routing.
-from starlette._utils import get_route_path
+import starlette._utils
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    import types
+    from collections.abc import Callable, Mapping
+
+
+def _literal_route_path(scope: Mapping[str, Any]) -> str:
+    """Copy of ``get_route_path`` from starlette 0.39.2+ (checked to 1.7.0)."""
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
+def _resolve_route_path(
+    module: types.ModuleType,
+) -> Callable[[Mapping[str, Any]], str]:
+    """Starlette's own ``get_route_path`` if it has one, else the literal copy.
+
+    ``get_route_path`` is private, but present in every supported version
+    (starlette>=0.38.6 through 1.7.0) and it is what routing uses, so it is
+    preferred (see strip_root_path). The fallback keeps ``import stemtrace``
+    working if a future Starlette drops the symbol; it matches what 0.39.2+
+    does.
+    """
+    found = getattr(module, "get_route_path", None)
+    return found if callable(found) else _literal_route_path
+
+
+_get_route_path = _resolve_route_path(starlette._utils)
 
 
 def root_path_of(scope: Mapping[str, Any]) -> str:
@@ -38,7 +66,7 @@ def root_path_of(scope: Mapping[str, Any]) -> str:
 def strip_root_path(path: str, root_path: str) -> str:
     """Remove ``root_path`` from ``path`` exactly as the installed Starlette does.
 
-    Delegates to ``starlette._utils.get_route_path``, the function
+    Delegates to ``starlette._utils.get_route_path`` when it exists, the function
     ``Router``/``Mount`` match routes with, so auth decisions always see the
     path routing sees. Its behavior differs across supported versions:
     starlette 0.38.6-0.39.1 strip with an unescaped regex (a "." in root_path
@@ -54,7 +82,7 @@ def strip_root_path(path: str, root_path: str) -> str:
     Returns:
         The path routing matches against.
     """
-    return get_route_path({"type": "http", "path": path, "root_path": root_path})
+    return _get_route_path({"type": "http", "path": path, "root_path": root_path})
 
 
 def browser_path(scope: Mapping[str, Any], path: str) -> str:

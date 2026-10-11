@@ -9,18 +9,20 @@ prepends it to ``scope["path"]``; Starlette strips it again before routing.
 from __future__ import annotations
 
 import logging
+import types
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import starlette._utils
 import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from starlette._utils import get_route_path
 from typer.testing import CliRunner
 
 import stemtrace
 from stemtrace.server import __main__ as cli
+from stemtrace.server.fastapi import paths
 from stemtrace.server.fastapi.login_routes import _safe_next
 from stemtrace.server.fastapi.paths import strip_root_path
 from stemtrace.server.ui import static
@@ -422,7 +424,35 @@ class TestStripRootPath:
         self, path: str, root_path: str, expected: str | None
     ) -> None:
         scope = {"type": "http", "path": path, "root_path": root_path}
+        starlette_route_path = getattr(starlette._utils, "get_route_path", None)
+        if starlette_route_path is None:  # pragma: no cover - future Starlette
+            pytest.skip("this Starlette has no get_route_path to compare with")
 
         if expected is not None:
             assert strip_root_path(path, root_path) == expected
-        assert strip_root_path(path, root_path) == get_route_path(scope)
+        assert strip_root_path(path, root_path) == starlette_route_path(scope)
+
+    def test_uses_starlette_route_path_when_present(self) -> None:
+        assert paths._get_route_path is getattr(
+            starlette._utils, "get_route_path", paths._literal_route_path
+        )
+
+    @pytest.mark.parametrize(
+        ("path", "root_path", "expected"),
+        [
+            ("/proxy/stemtrace/api", "/proxy", "/stemtrace/api"),
+            ("/proxy", "/proxy", ""),
+            ("/proxyx/stemtrace", "/proxy", "/proxyx/stemtrace"),
+            ("/apiXv1/stemtrace/api", "/api.v1", "/apiXv1/stemtrace/api"),
+            ("/stemtrace/api", "", "/stemtrace/api"),
+        ],
+    )
+    def test_fallback_without_starlette_symbol_strips_literal_prefix(
+        self, path: str, root_path: str, expected: str
+    ) -> None:
+        bare = types.ModuleType("starlette._utils_without_get_route_path")
+
+        route_path = paths._resolve_route_path(bare)
+
+        assert route_path is paths._literal_route_path
+        assert route_path({"path": path, "root_path": root_path}) == expected
