@@ -74,11 +74,43 @@ function containerRow(
   let current = nodes[headId]
   while (current && current.group_id !== groupId) {
     const next = childIdsOf(current, row[row.length - 1])
-    if (next.length !== 1 || row.includes(next[0]) || !nodes[next[0]]) break
+    const nextNode = next.length === 1 ? nodes[next[0]] : undefined
+    // Only tasks continue a row: a group or chord child is drawn as its own
+    // container next to the row, never inside it as well
+    if (!nextNode || (nextNode.node_type ?? 'TASK') !== 'TASK' || row.includes(next[0])) break
     row.push(next[0])
-    current = nodes[next[0]]
+    current = nextNode
   }
   return row
+}
+
+/** The longest row length (at least 1), without spreading large arrays. */
+function longestRow(rows: string[][]): number {
+  return rows.reduce((longest, row) => Math.max(longest, row.length), 1)
+}
+
+/**
+ * Children of a container's row cells that aren't the next cell of their row
+ * (e.g. a header's own subtasks): drawn outside the container, one level on.
+ */
+function cellChildren(
+  nodes: Record<string, GraphNode>,
+  rows: string[][],
+  containerChildren: Set<string>,
+): Array<[string, string]> {
+  const pairs: Array<[string, string]> = []
+  for (const row of rows) {
+    row.forEach((cellId, column) => {
+      const cell = nodes[cellId]
+      if (!cell) return
+      for (const childId of childIdsOf(cell, cellId)) {
+        if (childId !== row[column + 1] && !containerChildren.has(childId)) {
+          pairs.push([cellId, childId])
+        }
+      }
+    })
+  }
+  return pairs
 }
 
 function buildGraphElements(
@@ -141,6 +173,13 @@ function buildGraphElements(
         }
       }
     }
+    if (isContainer) {
+      const heads = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
+      const rows = heads.map((cid) => containerRow(nodes, cid, node.group_id))
+      for (const [, childId] of cellChildren(nodes, rows, containerChildren)) {
+        if (!visited.has(childId)) queue.push({ id: childId, level: level + 1 })
+      }
+    }
   }
 
   // Each level starts right of the widest node of the level before it
@@ -152,21 +191,17 @@ function buildGraphElements(
     let width = TASK_NODE_MIN_WIDTH
     if (node && (nodeType === 'GROUP' || nodeType === 'CHORD')) {
       const heads = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
-      const rowLength = Math.max(
-        1,
-        ...heads.map((cid) => containerRow(nodes, cid, node.group_id).length),
-      )
+      const rowLength = longestRow(heads.map((cid) => containerRow(nodes, cid, node.group_id)))
       width = rowLength * TASK_NODE_MIN_WIDTH + (rowLength - 1) * ROW_GAP + CONTAINER_PADDING * 2
     }
     levelWidths[level] = Math.max(levelWidths[level] ?? 0, width)
   }
-  const levelX = (level: number): number => {
-    let x = 0
-    for (let l = 0; l < level; l++) {
-      x += Math.max(LEVEL_SPACING, (levelWidths[l] ?? 0) + LEVEL_GAP)
-    }
-    return x
+  const levelStarts: number[] = [0]
+  for (let l = 1; l < levelWidths.length; l++) {
+    levelStarts[l] =
+      levelStarts[l - 1] + Math.max(LEVEL_SPACING, (levelWidths[l - 1] ?? 0) + LEVEL_GAP)
   }
+  const levelX = (level: number): number => levelStarts[level] ?? 0
 
   // Create flow nodes
   visited.clear()
@@ -194,7 +229,7 @@ function buildGraphElements(
       const headerChildren = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
       const rows = headerChildren.map((cid) => containerRow(nodes, cid, node.group_id))
       const childCount = rows.length
-      const rowLength = Math.max(1, ...rows.map((row) => row.length))
+      const rowLength = longestRow(rows)
 
       // Rows stacked in a column; a chain runs left to right within its row
       const containerWidth =
@@ -484,6 +519,24 @@ function buildGraphElements(
     for (const childId of childIdsOf(node, id)) {
       if (!visited.has(childId) && !containerChildren.has(childId)) {
         queue2.push(childId)
+      }
+    }
+    // A container's cells can have children of their own (a header's
+    // subtasks): edge from the cell, drawn outside like any child
+    if (isContainer) {
+      const heads = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
+      const rows = heads.map((cid) => containerRow(nodes, cid, node.group_id))
+      for (const [cellId, childId] of cellChildren(nodes, rows, containerChildren)) {
+        const childNode = nodes[childId]
+        if (!childNode) continue
+        flowEdges.push({
+          id: `${cellId}-${childId}`,
+          source: cellId,
+          target: childId,
+          animated: childNode.state === 'STARTED',
+          style: { stroke: '#475569' },
+        })
+        if (!visited.has(childId)) queue2.push(childId)
       }
     }
   }

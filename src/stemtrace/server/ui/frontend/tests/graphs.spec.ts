@@ -625,6 +625,51 @@ test.describe('Graph Page - Chains In Groups', () => {
   })
 })
 
+test.describe('Graph Page - Container Cell Children', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  // As the server sends the chord_header_subtask capture: chord([a, b], cb)
+  // where header a also sends a subtask of its own
+  test('draws a chord header subtask outside the chord', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+    const [header] = rest
+    const subtask = createSuccessTask('tasks.subtask')
+    subtask.parent_id = header.task_id
+    subtask.root_id = chordNode.task_id
+    header.children = [subtask.task_id]
+    mockApi.addTasks([chordNode, ...rest, subtask])
+
+    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
+    await page.waitForLoadState('load')
+
+    // CHORD container + header label + 2 headers + callback + subtask
+    await expect(page.locator('.react-flow__node')).toHaveCount(6)
+    await expect(page.locator(`.react-flow__node[data-id="${subtask.task_id}"]`)).toHaveCount(1)
+    // header -> subtask, and each header -> callback
+    await expect(page.locator('.react-flow__edge')).toHaveCount(3)
+  })
+
+  test('draws a group a header starts once, as its own container', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+    const [header] = rest
+    const [innerGroup, ...innerMembers] = createGroup(2, { withCallback: false })
+    innerGroup.parent_id = header.task_id
+    header.children = [innerGroup.task_id]
+    for (const task of [innerGroup, ...innerMembers]) task.root_id = chordNode.task_id
+    mockApi.addTasks([chordNode, ...rest, innerGroup, ...innerMembers])
+
+    await page.goto(`/graph/${encodeURIComponent(chordNode.task_id)}`)
+    await page.waitForLoadState('load')
+
+    // Each container + its header label, 2 chord headers, the callback and
+    // 2 inner members: every node exactly once
+    await expect(page.locator('.react-flow__node')).toHaveCount(9)
+    await expect(page.locator(`.react-flow__node[data-id="${innerGroup.task_id}"]`)).toHaveCount(1)
+  })
+})
+
 test.describe('Graph Page - Chord Bodies', () => {
   test.skip(isRealMode, 'Mock-only test')
 
