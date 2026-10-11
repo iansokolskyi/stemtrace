@@ -87,10 +87,15 @@ class BoundedResolver:
     PUBLISH_RESOLVER, therefore waits (up to FORK_WAIT in total) for every
     lookup in flight that no earlier fork waited for, including lookups that
     start or finish meanwhile, and keeps new ones from starting until the
-    fork is done. A lookup still running after such a wait is waiting on the
-    network, which holds no such lock (a child forked then resolved normally
-    in the same reproduction); later forks don't wait for it again, so a
-    lookup stuck on a dead resolver delays at most one fork.
+    fork is done. Later forks don't wait for a lookup again, so one stuck
+    on a dead resolver delays at most one fork; while it waits on the
+    network it holds no such lock (a child forked then resolved normally in
+    the same reproduction). Not fully closed: a lookup that outlives the wait
+    and then completes with several addresses can still coincide with a
+    later fork (measured: 1 hung child in 5090 forks with back-to-back 1.15s
+    lookups; the resolver refreshes once per TTL or after a failed connect).
+    A hung child's lookups then time out after the caller's bound, so its
+    tasks never block; that child stops publishing.
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
