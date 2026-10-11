@@ -270,6 +270,9 @@ class RabbitMQTransport:
                 elapsed=self._monotonic() - started,
             )
         else:
+            # Includes opening and closing a connection, so a healthy broker
+            # whose connection setup alone nears PUBLISH_SLOW_ATTEMPT (e.g.
+            # TLS across regions) counts as slow and gets events dropped.
             breaker.record_success(ticket, elapsed=self._monotonic() - started)
 
     def _publish_payload(self, payload: dict[str, Any]) -> None:
