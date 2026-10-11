@@ -450,6 +450,17 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {"group:T1": "T3"},
     ),
+    # add.apply_async(parent_id=T0) from a client: Celery defaults root_id
+    # to the task's own ID there, so T1 claims to be a root with a parent.
+    "client_explicit_parent": (
+        {"T0": (_T, None, ["T1"]), "T1": (_T, "T0", [])},
+        {},
+    ),
+    # The same from inside a task (T1): the root is the sender's.
+    "worker_explicit_parent": (
+        {"T0": (_T, None, ["T2"]), "T1": (_T, None, []), "T2": (_T, "T0", [])},
+        {},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},
@@ -523,7 +534,9 @@ def test_replay_celery_flow_in_any_order_builds_expected_graph(flow: str) -> Non
             if node.node_type == NodeType.CHORD
         }
         assert callbacks == expected_callbacks
-        assert len(graph.root_ids) == 1
+        assert len(graph.root_ids) == sum(
+            parent is None for _, parent, _ in expected_shape.values()
+        )
         if flow in ("chord_failed_header", "chord_failed_header_subtask"):
             assert graph.nodes[f"group:{_id(labels, 'T2')}"].state == TaskState.FAILURE
         else:

@@ -2662,6 +2662,7 @@ def _ev(
     /,
     *,
     parent_id: str | None = None,
+    root_id: str | None = None,
     group_id: str | None = None,
     chord_callback_id: str | None = None,
 ) -> TaskEvent:
@@ -2671,6 +2672,7 @@ def _ev(
         state=state,
         timestamp=_BASE_TIME,
         parent_id=parent_id,
+        root_id=root_id,
         group_id=group_id,
         chord_callback_id=chord_callback_id,
     )
@@ -2755,6 +2757,60 @@ class TestGraphLinksStayConsistent:
                 "b": (NodeType.TASK, None, ["a"]),
             }
             assert graph.root_ids == ["b"]
+
+    def test_add_event_client_sent_task_naming_itself_root_keeps_its_parent(
+        self,
+    ) -> None:
+        # apply_async(parent_id="x") from a client: Celery defaults root_id
+        # to the task's own ID, which doesn't make it a replacement.
+        x = _ev("x", root_id="x")
+        c_events = [
+            _ev("c", parent_id="x", root_id="c"),
+            _ev("c", TaskState.STARTED, parent_id="x", root_id="c"),
+        ]
+        for events in ([x, *c_events], [*c_events, x]):
+            graph = _build(*events)
+
+            assert _shape(graph) == {
+                "x": (NodeType.TASK, None, ["c"]),
+                "c": (NodeType.TASK, "x", []),
+            }
+
+    def test_add_event_root_claim_from_descendant_parent_is_a_replacement(
+        self,
+    ) -> None:
+        # r replaced itself with chain(s, r'): r' reuses r's ID, inherits its
+        # root and reports s as parent; s descends from r. Same name, and r
+        # sorts before s, so only the root claim tells, once s's events show
+        # its root (in either order).
+        original = _ev("r", root_id="r")
+        replacement = _ev("r", TaskState.STARTED, parent_id="s", root_id="r")
+        s_event = _ev("s", parent_id="r", root_id="r")
+        for events in (
+            [original, replacement, s_event],
+            [s_event, replacement, original],
+            [replacement, original, s_event],
+        ):
+            graph = _build(*events)
+
+            assert _shape(graph) == {
+                "r": (NodeType.TASK, None, ["s"]),
+                "s": (NodeType.TASK, "r", []),
+            }
+
+    def test_remove_node_descendant_withdraws_root_claim(self) -> None:
+        graph = _build(
+            _ev("r", root_id="r"),
+            _ev("r", TaskState.STARTED, parent_id="s", root_id="r"),
+            _ev("s", parent_id="r", root_id="r"),
+        )
+
+        graph.remove_node("s")
+
+        # The remaining events no longer show r's root claim is a
+        # replacement's: as a rebuild from them, r waits for s.
+        assert_graph_invariants(graph)
+        assert graph.nodes["r"].reported_parent_id == "s"
 
     def test_add_event_member_parented_by_other_member_breaks_cycle_at_group(
         self,

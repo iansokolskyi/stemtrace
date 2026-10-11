@@ -103,6 +103,19 @@ def paginate(self: Any, page: int) -> int:
     return page
 
 
+@app.task(name="flows.send_with_parent")
+def send_with_parent(parent_id: str) -> None:
+    """Send a task naming another, earlier task as its parent."""
+    add.apply_async((2, 2), parent_id=parent_id)
+
+
+def _after_earlier_task(build: Callable[[str], Signature]) -> Signature:
+    """Run a task first, then build the flow from its ID."""
+    earlier = add.delay(1, 1)
+    earlier.get(timeout=60)
+    return build(earlier.id)
+
+
 @app.task(name="flows.fail")
 def fail() -> int:
     """Raise, so a chord using it as a header never runs its body."""
@@ -187,6 +200,13 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         "replace_task": lambda: replace_with_task.s(),
         "replace_same_name": lambda: paginate.s(0),
         "chain_replace_same_name": lambda: chain(add.s(1, 1), paginate.si(0)),
+        # Celery defaults root_id to the task's own ID outside a worker.
+        "client_explicit_parent": lambda: _after_earlier_task(
+            lambda parent: add.s(2, 2).set(parent_id=parent)
+        ),
+        "worker_explicit_parent": lambda: _after_earlier_task(
+            lambda parent: send_with_parent.s(parent)
+        ),
         "chord_header_replace_same_name": lambda: chord(
             [paginate.si(0), add.si(1, 1)], tsum.s()
         ),

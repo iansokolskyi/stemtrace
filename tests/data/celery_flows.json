@@ -6470,5 +6470,189 @@
    "chord_callback_id": null,
    "retries": 0
   }
+ ],
+ "client_explicit_parent": [
+  {
+   "task_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-11T19:53:59.655530Z",
+   "parent_id": null,
+   "root_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-11T19:54:00.645709Z",
+   "parent_id": null,
+   "root_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-11T19:54:00.653180Z",
+   "parent_id": null,
+   "root_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-11T19:54:00.657458Z",
+   "parent_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "root_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-11T19:54:01.654747Z",
+   "parent_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "root_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-11T19:54:01.655058Z",
+   "parent_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388",
+   "root_id": "3bd72867-9a8a-44b3-b6c9-e65107554589",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  }
+ ],
+ "worker_explicit_parent": [
+  {
+   "task_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-11T19:54:02.159116Z",
+   "parent_id": null,
+   "root_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-11T19:54:02.655873Z",
+   "parent_id": null,
+   "root_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-11T19:54:02.656177Z",
+   "parent_id": null,
+   "root_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "name": "flows.send_with_parent",
+   "state": "PENDING",
+   "timestamp": "2026-10-11T19:54:02.661737Z",
+   "parent_id": null,
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "name": "flows.send_with_parent",
+   "state": "STARTED",
+   "timestamp": "2026-10-11T19:54:03.656889Z",
+   "parent_id": null,
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4e8957d0-84f4-4cd2-92ed-f168ba444f15",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-11T19:54:03.657682Z",
+   "parent_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "name": "flows.send_with_parent",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-11T19:54:03.657935Z",
+   "parent_id": null,
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4e8957d0-84f4-4cd2-92ed-f168ba444f15",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-11T19:54:03.658596Z",
+   "parent_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4e8957d0-84f4-4cd2-92ed-f168ba444f15",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-11T19:54:03.658835Z",
+   "parent_id": "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef",
+   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  }
  ]
 }

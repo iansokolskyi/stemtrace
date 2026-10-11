@@ -567,6 +567,16 @@ def _add_to(index: dict[str, dict[str, None]], key: str, value: str) -> None:
     index.setdefault(key, {})[value] = None
 
 
+def _named_ids(node: TaskNode) -> set[str]:
+    """IDs a task's events name as their parent or root."""
+    return {
+        named
+        for event in node.events
+        for named in (event.parent_id, event.root_id)
+        if named is not None
+    }
+
+
 def _drop_from(index: dict[str, dict[str, None]], key: str, value: str) -> None:
     """Remove ``value`` from the ordered set under ``key``, dropping it if empty."""
     values = index.get(key)
@@ -624,6 +634,9 @@ class TaskGraph(BaseModel):
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
     _raw_children: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
+    # Root ID -> other tasks with any event naming it as root (replace()
+    # detection: they descend from it).
+    _descendants: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     # Reported parent ID -> tasks that reported it, in arrival order.
     _reported_children: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     # Group member -> its chain links inside the group (bottom-up), and the
@@ -757,8 +770,11 @@ class TaskGraph(BaseModel):
 
         Such an event reports a parent the task can't have:
 
-        * any parent, when the event names the task as its own root (a
-          workflow's root has no parent; the replacement inherits the root);
+        * a parent that descends from the task, when the event names the
+          task as its own root (the replacement inherits the root and runs
+          after its other tasks). The root ID alone doesn't say it: Celery
+          5.6 (``amqp.as_task_v2``) defaults it to the task's own ID when a
+          client sends a task, also one sent with an explicit ``parent_id``;
         * for an ID carrying two tasks (two names or parents), the task
           itself (a single-signature replacement) or one of the tasks that
           report it as their parent (the replacement's previous task);
@@ -769,13 +785,18 @@ class TaskGraph(BaseModel):
         """
         task_id = node.task_id
         children = self._raw_children.get(task_id)
+        descendants = self._descendants.get(task_id)
 
         def check(event: TaskEvent) -> bool:
             """Whether the event comes from a replacement (see above)."""
             parent = event.parent_id
             if parent is None or (parent == task_id and not node._is_reused()):
                 return False
-            if event.root_id == task_id:
+            if (
+                event.root_id == task_id
+                and descendants is not None
+                and parent in descendants
+            ):
                 return True
             if node._is_reused():
                 return parent == task_id or (
@@ -796,14 +817,22 @@ class TaskGraph(BaseModel):
         )
 
     def _index_raw_parent(self, node: TaskNode, event: TaskEvent) -> None:
-        """Index the parent an event of ``node`` names (replace() detection).
+        """Index the parent and root an event of ``node`` names (replace() detection).
 
-        An event naming its own task as root is a replacement's (a root has
-        no parent): it says nothing about who sent the task.
+        An event naming its own task as root may be a replacement's: it isn't
+        indexed as naming its parent (the replacement's previous task would
+        look like the task's child).
         """
+        task_id = node.task_id
+        root_id = event.root_id
+        if root_id is not None and root_id != task_id:
+            descendants = self._descendants.get(root_id)
+            if descendants is None or task_id not in descendants:
+                _add_to(self._descendants, root_id, task_id)
+                self._recheck_identity(root_id, task_id)
         parent_id = event.parent_id
-        if parent_id is not None and node.task_id not in (parent_id, event.root_id):
-            self._note_raw_child(parent_id, node.task_id)
+        if parent_id is not None and task_id not in (parent_id, root_id):
+            self._note_raw_child(parent_id, task_id)
 
     def _note_raw_child(self, parent_id: str, child_id: str) -> None:
         """Index an event of ``child_id`` naming ``parent_id`` as parent."""
@@ -814,9 +843,11 @@ class TaskGraph(BaseModel):
         self._recheck_identity(parent_id, child_id)
 
     def _recheck_identity(self, parent_id: str, child_id: str) -> None:
-        """Re-pick a task's name and parent once a child of it reports it.
+        """Re-pick a task's name and parent once the index around it changed.
 
-        The task's events that name that child came from a replacement.
+        Called when ``child_id`` was found to report the task as its parent
+        or root, or was removed: the task's events naming ``child_id`` as
+        their parent may (no longer) come from a replacement.
         """
         parent = self.nodes.get(parent_id)
         if parent is None or not any(e.parent_id == child_id for e in parent.events):
@@ -892,6 +923,9 @@ class TaskGraph(BaseModel):
         else:
             self._forget_group_node(node)
         del self.nodes[task_id]
+        if node.node_type == NodeType.TASK:
+            for related in _named_ids(node) - {task_id}:
+                self._recheck_identity(related, task_id)
         if node.group_id is not None:
             self._dissolve_if_too_small(node.group_id)
         owner = self._link_owner.pop(task_id, None)
@@ -1556,6 +1590,8 @@ class TaskGraph(BaseModel):
         chords: set[str] = set()
         for parent in {e.parent_id for e in node.events if e.parent_id is not None}:
             _drop_from(self._raw_children, parent, node.task_id)
+        for root in {e.root_id for e in node.events if e.root_id is not None}:
+            _drop_from(self._descendants, root, node.task_id)
         owner = self._link_owner.pop(node.task_id, None)
         self._drop_chain(node.task_id)
         parent_id = node.reported_parent_id
