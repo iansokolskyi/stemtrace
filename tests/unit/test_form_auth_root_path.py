@@ -15,11 +15,13 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette._utils import get_route_path
 from typer.testing import CliRunner
 
 import stemtrace
 from stemtrace.server import __main__ as cli
 from stemtrace.server.fastapi.login_routes import _safe_next
+from stemtrace.server.fastapi.paths import strip_root_path
 from stemtrace.server.ui import static
 
 if TYPE_CHECKING:
@@ -354,3 +356,23 @@ class TestSafeNext:
     )
     def test_safe_next_keeps_local_paths(self, target: str) -> None:
         assert _safe_next(target, default="/stemtrace/") == target
+
+
+class TestStripRootPath:
+    @pytest.mark.parametrize(
+        ("path", "root_path", "expected"),
+        [
+            ("/proxy/stemtrace/api", "/proxy", "/stemtrace/api"),
+            ("/proxy", "/proxy", ""),
+            ("/proxyx/stemtrace", "/proxy", "/proxyx/stemtrace"),
+            ("/stemtrace/api", "/proxy", "/stemtrace/api"),
+            ("/stemtrace/api", "", "/stemtrace/api"),
+        ],
+    )
+    def test_strip_root_path_matches_starlette_routing(
+        self, path: str, root_path: str, expected: str
+    ) -> None:
+        scope = {"type": "http", "path": path, "root_path": root_path}
+
+        assert strip_root_path(path, root_path) == expected
+        assert strip_root_path(path, root_path) == get_route_path(scope)
