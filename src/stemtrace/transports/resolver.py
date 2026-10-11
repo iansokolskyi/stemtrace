@@ -350,6 +350,13 @@ class BoundedResolver:
         It first takes the helper spawn lock (see _spawn_lock()), so the fork
         never happens while a helper is being started.
         """
+        # No timeout, on purpose: Popen() holds the lock only until the helper
+        # has exec'd (normally milliseconds; longer only if exec itself is
+        # slow, e.g. on a stalled file system). Forking anyway would give the
+        # child the helper's pipes: a pool child never execs, so Popen() would
+        # wait for good for its exec status, or the helper's output would
+        # never end, leaving that host's lookup stuck in this process. Waiting
+        # delays the fork only for as long as Popen() takes.
         _spawn_lock().acquire()
         state = self._state()
         state.lock.acquire()

@@ -733,6 +733,45 @@ class TestHelperSpawnVersusFork:
         assert lock.acquire(blocking=False) is True
         lock.release()
 
+    def test_prepare_fork_waits_as_long_as_popen_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unbounded on purpose: forking during Popen() would hand the child
+        the helper's pipes (the bug the lock fixes); waiting is safe."""
+        unblock = threading.Event()
+        in_popen = threading.Event()
+
+        class BlockingPopen(_FakePopen):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                in_popen.set()
+                unblock.wait(JOIN_S)
+                self.returncode = 0
+
+        monkeypatch.setattr(resolver_module.subprocess, "Popen", BlockingPopen)
+        spawner = threading.Thread(
+            target=resolver_module._getaddrinfo_in_helper,
+            args=("redis.local", 1, 0, 0, 0),
+        )
+        spawner.start()
+        assert in_popen.wait(JOIN_S)
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+
+        def fork_hooks() -> None:
+            resolver.prepare_fork()
+            resolver.parent_after_fork()
+
+        forker = threading.Thread(target=fork_hooks)
+
+        forker.start()
+        forker.join(0.3)
+        still_waiting = forker.is_alive()
+        unblock.set()
+        forker.join(JOIN_S)
+        spawner.join(JOIN_S)
+
+        assert still_waiting is True
+        assert forker.is_alive() is False
+
     def test_prepare_fork_from_the_spawning_thread_does_not_deadlock(self) -> None:
         """gevent's subprocess forks with os.fork() from the spawning greenlet,
         which runs the at-fork hooks while it holds the spawn lock."""
