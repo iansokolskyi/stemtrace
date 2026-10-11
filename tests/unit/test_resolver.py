@@ -1,16 +1,15 @@
 """Tests for the bounded, cached host name resolver used by publishers."""
 
-import contextlib
 import os
 import socket
 import sys
 import threading
-import time
 import warnings
 from typing import Any
 
 import pytest
 
+from stemtrace.transports import resolver as resolver_module
 from stemtrace.transports.resolver import PUBLISH_RESOLVER, BoundedResolver
 
 AddrInfo = tuple[Any, ...]
@@ -237,10 +236,34 @@ class TestBoundedResolverRobustness:
 
         assert dns.calls == []
 
-    def test_resolve_uses_socket_getaddrinfo_patched_after_import(
+    def test_default_lookup_runs_in_helper_process(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """gevent patches socket.getaddrinfo after stemtrace may be imported."""
+        """glibc's getaddrinfo() never runs in this process's threads, so a
+        fork() can't inherit a lock it holds (see resolver docstring)."""
+        resolver = BoundedResolver(monotonic=FakeClock())
+        helper = FakeDns()
+        monkeypatch.setattr(resolver_module, "_getaddrinfo_in_helper", helper)
+
+        def in_process(*args: Any) -> Any:
+            raise AssertionError("getaddrinfo() ran in this process")
+
+        monkeypatch.setattr(socket, "getaddrinfo", in_process)
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert helper.calls == ["redis.local"]
+
+    @pytest.mark.parametrize("no_helper", ["no_fork", "no_executable"])
+    def test_default_lookup_without_helper_uses_socket_getaddrinfo(
+        self, no_helper: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No fork() (Windows) or no Python executable (embedded interpreters):
+        resolve in-process, with socket.getaddrinfo looked up at call time so
+        gevent's patched version is used."""
+        if no_helper == "no_fork":
+            monkeypatch.delattr(os, "fork", raising=False)
+        else:
+            monkeypatch.setattr(sys, "executable", "")
         resolver = BoundedResolver(monotonic=FakeClock())
         dns = FakeDns()
         monkeypatch.setattr(socket, "getaddrinfo", dns)
@@ -273,63 +296,13 @@ class TestBoundedResolverInvalidate:
 
 
 class TestBoundedResolverFork:
-    """Forking waits (boundedly) for lookups in flight, then blocks new ones.
-
-    glibc's getaddrinfo() takes internal locks that fork() doesn't reset; a
-    child forked while a lookup thread holds one deadlocks on its own first
-    lookup of the same kind.
-    """
-
-    def test_prepare_fork_waits_for_lookup_in_flight(self) -> None:
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()
-        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=JOIN_S)
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-        threading.Timer(0.05, dns.release.set).start()
-
-        resolver.prepare_fork()
-        try:
-            in_flight = len(resolver._state().in_flight)
-        finally:
-            resolver.parent_after_fork()
-
-        assert in_flight == 0
-        assert resolver.resolve("redis.local", 6379, timeout=0.0) == ADDRESS
-
-    def test_prepare_fork_gives_up_after_bound(self) -> None:
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()  # the lookup never ends on its own
-        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=0.05)
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-
-        resolver.prepare_fork()
-        try:
-            in_flight = len(resolver._state().in_flight)
-        finally:
-            resolver.parent_after_fork()
-            dns.release.set()
-
-        assert in_flight == 1
-
-    def test_prepare_fork_holds_lock_until_after_fork(self) -> None:
-        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
-
-        resolver.prepare_fork()
-        try:
-            assert resolver._state().lock.acquire(blocking=False) is False
-        finally:
-            resolver.parent_after_fork()
-
-        assert resolver._state().lock.acquire(blocking=False) is True
-        resolver._state().lock.release()
+    """A forked child starts with its own state, whatever the parent held."""
 
     def test_child_after_fork_starts_over_with_free_lock(self) -> None:
         dns, clock = FakeDns(), FakeClock()
         resolver = _make(dns, clock)
         resolver.resolve("redis.local", 6379, timeout=1.0)
-        resolver.prepare_fork()
+        resolver._state().lock.acquire()  # held by a parent thread at fork time
 
         resolver.child_after_fork()
 
@@ -338,7 +311,8 @@ class TestBoundedResolverFork:
         assert resolver._state().entries == {}
 
     def test_publish_resolver_is_registered_for_fork(self) -> None:
-        """A real fork while another thread holds the resolver's lock."""
+        """A real fork while another thread holds the resolver's lock: the
+        child resolves with its own state."""
         PUBLISH_RESOLVER.invalidate("redis.local", 6379)  # creates the lock
         held, release = threading.Event(), threading.Event()
 
@@ -365,101 +339,6 @@ class TestBoundedResolverFork:
         assert os.waitstatus_to_exitcode(status) == 0
         assert PUBLISH_RESOLVER._state().lock.acquire(blocking=False) is True
         PUBLISH_RESOLVER._state().lock.release()
-
-
-class TestBoundedResolverForkWaitsOncePerLookup:
-    """Each lookup is waited for by at most one fork (up to FORK_WAIT)."""
-
-    def test_prepare_fork_waits_for_old_lookup_no_fork_waited_for(self) -> None:
-        """An older lookup may be finishing inside glibc's locked section."""
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()
-        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=JOIN_S)
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-        clock.now += JOIN_S + 0.1  # in flight longer than fork_wait already
-        threading.Timer(0.05, dns.release.set).start()
-
-        resolver.prepare_fork()
-        try:
-            in_flight = len(resolver._state().in_flight)
-        finally:
-            resolver.parent_after_fork()
-
-        assert in_flight == 0  # it waited for the lookup to finish
-
-    def _forks(self, resolver: BoundedResolver, n: int) -> list[float]:
-        """Run ``n`` fork preparations; return how long each one waited."""
-        durations = []
-        for _ in range(n):
-            started = time.monotonic()
-            resolver.prepare_fork()
-            resolver.parent_after_fork()
-            durations.append(time.monotonic() - started)
-        return durations
-
-    def test_recent_lookup_is_waited_for_by_every_fork(self) -> None:
-        """A lookup younger than RECENT_LOOKUP_AGE may still finish (and sort
-        its answer under glibc's lock) at any moment, so no fork skips it."""
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()
-        resolver = BoundedResolver(
-            getaddrinfo=dns, monotonic=clock, fork_wait=0.1, recent_lookup_age=5.0
-        )
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-        clock.now += 4.9  # still recent
-
-        durations = self._forks(resolver, 3)
-        dns.release.set()
-
-        assert min(durations) >= 0.1
-
-    def test_stuck_lookup_past_recent_age_delays_only_one_fork(self) -> None:
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()  # stuck, like a lookup against a dead resolver
-        resolver = BoundedResolver(
-            getaddrinfo=dns, monotonic=clock, fork_wait=0.2, recent_lookup_age=5.0
-        )
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-        clock.now += 5.0  # no longer recent, and no fork waited for it yet
-
-        durations = self._forks(resolver, 3)
-        dns.release.set()
-
-        assert durations[0] >= 0.2
-        assert max(durations[1:]) < 0.1
-
-    def test_prepare_fork_waits_for_lookup_started_while_waiting(self) -> None:
-        first, second = FakeDns(), FakeDns()
-        first.release.clear()
-        second.release.clear()
-
-        def dns(host: str, *args: Any) -> list[AddrInfo]:
-            return (first if host == "a.local" else second)(host, *args)
-
-        resolver = BoundedResolver(
-            getaddrinfo=dns, monotonic=FakeClock(), fork_wait=JOIN_S
-        )
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("a.local", 6379, timeout=0.0)
-
-        def start_second_then_release_first() -> None:
-            with contextlib.suppress(socket.gaierror):
-                resolver.resolve("b.local", 6379, timeout=0.0)
-            first.release.set()
-            threading.Timer(0.1, second.release.set).start()
-
-        threading.Timer(0.05, start_second_then_release_first).start()
-
-        resolver.prepare_fork()
-        try:
-            in_flight = len(resolver._state().in_flight)
-        finally:
-            resolver.parent_after_fork()
-
-        assert in_flight == 0  # it waited for the second lookup too
 
 
 class TestBoundedResolverCreatesLocksLazily:

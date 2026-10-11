@@ -4,17 +4,31 @@ Socket timeouts don't cover ``socket.getaddrinfo()``: with an unreachable DNS
 resolver a lookup blocks for the resolver's own timeout (glibc: 5s per try and
 server), and redis-py and py-amqp both resolve the broker host on every new
 connection. Publishers run in the Celery task's thread, so they resolve
-through :data:`PUBLISH_RESOLVER` instead: lookups run in a helper thread, the
+through :data:`PUBLISH_RESOLVER` instead: lookups run in the background, the
 caller waits at most its timeout, and answers are cached and refreshed in the
 background, so a task only ever waits on DNS for a host it has no answer for.
+
+Each lookup runs getaddrinfo() in a short-lived helper process (the same
+Python, so the same glibc/NSS, /etc/hosts and resolv.conf), never in a
+thread of this process: glibc's getaddrinfo() takes internal locks that
+fork() doesn't reset (e.g. while sorting several addresses), so a Celery
+prefork child forked while a lookup thread held one deadlocked on its own
+next lookup (reproduced with glibc 2.41: 27 of 1000 children hung). Starting
+a process execs it at once without calling getaddrinfo() in between, so no
+fork of this process can inherit such a lock. Where that isn't possible (no
+fork(), e.g. Windows, which also has no fork() hazard; or no Python
+executable to run, e.g. an embedded interpreter), lookups run in-process.
 """
 
 from __future__ import annotations
 
 import contextlib
 import ipaddress
+import json
 import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -29,15 +43,24 @@ AddrInfo = tuple[Any, ...]
 # previous answer keeps being used until a refresh succeeds).
 DNS_CACHE_TTL = 30.0
 
-# Longest a fork() waits for lookups in flight (see prepare_fork()).
-FORK_WAIT = 1.0
+# Seconds a helper process may take before it is killed and the lookup fails
+# (EAI_AGAIN). Above glibc's worst case with default settings (5s per try,
+# 2 tries, up to 3 name servers); callers stop waiting long before, after
+# their own timeout, and the answer still fills the cache if it comes.
+HELPER_TIMEOUT = 30.0
 
-# Lookups younger than this are waited for by every fork (within FORK_WAIT
-# each). A lookup can finish, and sort a multi-address answer under a glibc
-# lock, at any moment while the resolver still answers; glibc gives each try
-# RES_TIMEOUT, 5s by default (resolv.conf(5) "timeout"), so a lookup older
-# than that is waiting on a resolver that didn't answer its first try.
-RECENT_LOOKUP_AGE = 5.0
+# Run by the helper process: argv holds host, port, family, socktype, proto;
+# prints the getaddrinfo() results (or the gaierror) as JSON.
+_HELPER_SCRIPT = """\
+import json, socket, sys
+host, port, family, socktype, proto = sys.argv[1], *map(int, sys.argv[2:6])
+try:
+    infos = socket.getaddrinfo(host, port, family, socktype, proto)
+except socket.gaierror as exc:
+    print(json.dumps({"errno": exc.errno, "message": exc.strerror or str(exc)}))
+else:
+    print(json.dumps({"infos": [[f, t, p, c, list(a)] for f, t, p, c, a in infos]}))
+"""
 
 
 @dataclass
@@ -52,60 +75,26 @@ class _Entry:
     lookup: threading.Event | None = None
 
 
-@dataclass
-class _InFlight:
-    """A lookup thread that is running."""
-
-    started: float
-    # Whether a fork already waited for it (so later forks don't).
-    waited: bool = False
-
-
 class _State:
     """Everything a resolver keeps per process, installed as one object.
 
     Created on first use in each process (not at import, so that under gevent
     the lock is gevent's) and swapped in whole, so threads racing to create
-    it all end up using the same lock, condition and maps.
+    it all end up using the same lock and cache.
     """
 
     def __init__(self) -> None:
         """Create an empty cache with its lock."""
         self.lock = threading.Lock()
-        # Notified whenever a lookup ends; prepare_fork() waits on it.
-        self.idle = threading.Condition(self.lock)
-        self.in_flight: dict[threading.Event, _InFlight] = {}
         self.entries: dict[tuple[Any, ...], _Entry] = {}
-        # Whether prepare_fork() holds the lock (released after the fork).
-        self.held_for_fork = False
 
 
 class BoundedResolver:
     """getaddrinfo() with a bounded wait and a per-process cache.
 
     Thread-safe. Fork-safe: a forked child starts with an empty cache and a
-    fresh lock, since the parent's lookup threads don't exist in it. Lookup
-    threads also make fork() itself risky: glibc's getaddrinfo() takes
-    internal locks that fork() doesn't reset (e.g. while sorting several
-    addresses), and a child forked while a lookup holds one deadlocks on its
-    own next lookup (reproduced with glibc 2.41: 27 of 1000 children hung
-    while PUBLISH_RESOLVER refreshed a dual-stack name in the background).
-    prepare_fork(), registered with os.register_at_fork() for
-    PUBLISH_RESOLVER, therefore waits (up to FORK_WAIT per fork) while any
-    lookup in flight is younger than RECENT_LOOKUP_AGE or hasn't been waited
-    for by a fork yet, including lookups that start or finish meanwhile, and
-    keeps new ones from starting until the fork is done. The cost: while a
-    lookup is stuck on a dead resolver, forks in its first RECENT_LOOKUP_AGE
-    seconds wait about FORK_WAIT each, and one fork after that (measured:
-    four forks waited 1.0s, the rest 2-4ms). While it waits on the network a
-    lookup holds no such lock (a child forked then resolved normally in the
-    same reproduction). Not fully closed: a fork whose FORK_WAIT runs out at
-    the very moment a slow lookup completes can still catch it inside glibc
-    (measured with a resolver answering after 1.15s and a lookup every ~1.3s:
-    1 hung child in 22572 forks, against 5 in 28150 when forks waited only
-    once per lookup; in production the resolver refreshes once per TTL or
-    after a failed connect). A hung child's lookups time out after the
-    caller's bound, so its tasks never block; that child stops publishing.
+    fresh lock, since the parent's lookup threads don't exist in it, and no
+    lookup runs getaddrinfo() in this process (see the module docstring).
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
@@ -116,27 +105,20 @@ class BoundedResolver:
         ttl: float = DNS_CACHE_TTL,
         getaddrinfo: Callable[..., list[AddrInfo]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
-        fork_wait: float = FORK_WAIT,
-        recent_lookup_age: float = RECENT_LOOKUP_AGE,
     ) -> None:
         """Initialize an empty resolver.
 
         Args:
             ttl: Seconds before a cached answer is refreshed.
             getaddrinfo: Lookup function (injectable for tests). By default
-                ``socket.getaddrinfo`` as it is at lookup time, so gevent's
-                monkey-patched version is used even if stemtrace was imported
-                before patching.
+                a helper process runs getaddrinfo() (see the module
+                docstring), or ``socket.getaddrinfo`` as it is at lookup time
+                (gevent's, if patched) where no helper can run.
             monotonic: Clock for the cache (injectable for tests).
-            fork_wait: Longest prepare_fork() waits for lookups in flight.
-            recent_lookup_age: Lookups younger than this are waited for by
-                every fork, not just the first.
         """
         self._ttl = ttl
         self._getaddrinfo = getaddrinfo
         self._monotonic = monotonic
-        self._fork_wait = fork_wait
-        self._recent_lookup_age = recent_lookup_age
         # Per-process state, by PID, created on first use (see _state()), not
         # here: PUBLISH_RESOLVER is built at import, possibly before gevent
         # patches threading, and a real lock contended by greenlets blocks the
@@ -231,45 +213,6 @@ class BoundedResolver:
             with contextlib.suppress(socket.gaierror):
                 self._start_lookup(state, key, entry)
 
-    def prepare_fork(self) -> None:
-        """Before fork(): wait for lookups that may finish, then hold the lock.
-
-        Waits up to fork_wait in total while any lookup in flight is recent
-        (younger than recent_lookup_age) or hasn't been waited for by a fork
-        yet; lookups that start or finish while this waits (the lock is
-        released meanwhile) are covered too. Whatever is still in flight when
-        the time is up is marked as waited for. So a lookup stuck on a dead
-        resolver delays the forks of its first recent_lookup_age seconds (by
-        up to fork_wait each) and one fork after that. Holding the lock
-        afterwards keeps new lookups from starting until parent_after_fork()
-        (in the parent) or child_after_fork() (in the child) runs.
-        """
-        state = self._state()
-        state.lock.acquire()
-        state.held_for_fork = True
-        deadline = self._monotonic() + self._fork_wait
-        while self._must_wait_for(state):
-            remaining = deadline - self._monotonic()
-            if remaining <= 0 or not state.idle.wait(remaining):
-                for lookup in state.in_flight.values():
-                    lookup.waited = True
-                return
-
-    def _must_wait_for(self, state: _State) -> bool:
-        """Whether a lookup in flight is recent or not yet waited for (lock held)."""
-        now = self._monotonic()
-        return any(
-            not lookup.waited or now - lookup.started < self._recent_lookup_age
-            for lookup in state.in_flight.values()
-        )
-
-    def parent_after_fork(self) -> None:
-        """After fork(), in the parent: let lookups start again."""
-        state = self._state()
-        if state.held_for_fork:
-            state.held_for_fork = False
-            state.lock.release()
-
     def child_after_fork(self) -> None:
         """After fork(), in the child: start over (the lookup threads are gone)."""
         self._states = {os.getpid(): _State()}
@@ -287,7 +230,6 @@ class BoundedResolver:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
-        state.in_flight[done] = _InFlight(started=self._monotonic())
         try:
             threading.Thread(
                 target=self._lookup,
@@ -297,7 +239,6 @@ class BoundedResolver:
             ).start()
         except RuntimeError as exc:  # e.g. "can't start new thread"
             entry.lookup = None
-            del state.in_flight[done]
             raise socket.gaierror(
                 socket.EAI_AGAIN, f"Could not look up {key[0]!r}: {exc}"
             ) from exc
@@ -311,7 +252,7 @@ class BoundedResolver:
         addresses: list[AddrInfo] | None = None
         error: OSError | None = None
         try:
-            getaddrinfo = self._getaddrinfo or socket.getaddrinfo
+            getaddrinfo = self._getaddrinfo or _default_getaddrinfo()
             addresses = getaddrinfo(host, port, family, type_, proto)
         except OSError as exc:  # gaierror and friends: kept for the waiters
             error = exc
@@ -330,9 +271,61 @@ class BoundedResolver:
                 # After a failure too: a stale answer is retried once per TTL.
                 entry.refresh_at = self._monotonic() + self._ttl
                 entry.lookup = None
-                state.in_flight.pop(done, None)
-                state.idle.notify_all()
             done.set()
+
+
+def _default_getaddrinfo() -> Callable[..., list[AddrInfo]]:
+    """The helper process where one can run, else in-process getaddrinfo()."""
+    if hasattr(os, "fork") and sys.executable:
+        return _getaddrinfo_in_helper
+    return socket.getaddrinfo
+
+
+def _getaddrinfo_in_helper(
+    host: str, port: int, family: int, socktype: int, proto: int
+) -> list[AddrInfo]:
+    """Run getaddrinfo() in a helper process and return its results.
+
+    The host goes in argv, never through a shell. ``-I -S`` keeps the helper
+    isolated from the environment and skips site packages, so it starts fast
+    (tens of milliseconds). subprocess.run() kills and reaps it on timeout.
+
+    Raises:
+        socket.gaierror: As getaddrinfo() would (same errno), or EAI_AGAIN
+            when the helper took longer than HELPER_TIMEOUT, or EAI_FAIL when
+            it couldn't run or answer.
+    """
+    command = [sys.executable, "-I", "-S", "-c", _HELPER_SCRIPT, host]
+    command += [str(int(value)) for value in (port or 0, family, socktype, proto)]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=HELPER_TIMEOUT,
+            check=False,
+        )
+        reply = json.loads(completed.stdout)
+    except subprocess.TimeoutExpired as exc:
+        raise socket.gaierror(
+            socket.EAI_AGAIN,
+            f"Resolving {host!r} timed out after {HELPER_TIMEOUT:g}s",
+        ) from exc
+    except (OSError, ValueError) as exc:  # couldn't start, or no JSON answer
+        raise socket.gaierror(
+            socket.EAI_FAIL, f"DNS helper failed for {host!r}: {exc}"
+        ) from exc
+    if "infos" not in reply:
+        raise socket.gaierror(reply.get("errno", socket.EAI_FAIL), reply.get("message"))
+    return [
+        (
+            socket.AddressFamily(f),
+            socket.SocketKind(t),
+            p,
+            c,
+            tuple(address),
+        )
+        for f, t, p, c, address in reply["infos"]
+    ]
 
 
 def _check_host_name(host: str) -> None:
@@ -363,8 +356,6 @@ def _is_ip_address(host: str) -> bool:
 PUBLISH_RESOLVER = BoundedResolver()
 
 if hasattr(os, "register_at_fork"):  # POSIX; prefork pools fork worker processes
-    os.register_at_fork(
-        before=PUBLISH_RESOLVER.prepare_fork,
-        after_in_parent=PUBLISH_RESOLVER.parent_after_fork,
-        after_in_child=PUBLISH_RESOLVER.child_after_fork,
-    )
+    # Not needed for correctness (state is per PID), but drops the parent's
+    # cache in the child at once.
+    os.register_at_fork(after_in_child=PUBLISH_RESOLVER.child_after_fork)
