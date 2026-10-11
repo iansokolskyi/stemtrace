@@ -45,6 +45,32 @@ class _Entry:
     lookup: threading.Event | None = None
 
 
+@dataclass
+class _InFlight:
+    """A lookup thread that is running."""
+
+    started: float
+
+
+class _State:
+    """Everything a resolver keeps per process, installed as one object.
+
+    Created on first use in each process (not at import, so that under gevent
+    the lock is gevent's) and swapped in whole, so threads racing to create
+    it all end up using the same lock, condition and maps.
+    """
+
+    def __init__(self) -> None:
+        """Create an empty cache with its lock."""
+        self.lock = threading.Lock()
+        # Notified whenever a lookup ends; prepare_fork() waits on it.
+        self.idle = threading.Condition(self.lock)
+        self.in_flight: dict[threading.Event, _InFlight] = {}
+        self.entries: dict[tuple[Any, ...], _Entry] = {}
+        # Whether prepare_fork() holds the lock (released after the fork).
+        self.held_for_fork = False
+
+
 class BoundedResolver:
     """getaddrinfo() with a bounded wait and a per-process cache.
 
@@ -88,29 +114,24 @@ class BoundedResolver:
         self._getaddrinfo = getaddrinfo
         self._monotonic = monotonic
         self._fork_wait = fork_wait
-        # The lock and cache are created on first use in each process (see
-        # _started_here()), not here: PUBLISH_RESOLVER is built at import,
-        # possibly before gevent patches threading, and a real lock contended
-        # by greenlets blocks the whole hub (reproduced: a deadlock).
-        self._pid: int | None = None
+        # Per-process state, by PID, created on first use (see _state()), not
+        # here: PUBLISH_RESOLVER is built at import, possibly before gevent
+        # patches threading, and a real lock contended by greenlets blocks the
+        # whole hub (reproduced: a deadlock).
+        self._states: dict[int, _State] = {}
 
-    def _started_here(self) -> None:
-        """Create the lock and cache for this process if not done yet.
+    def _state(self) -> _State:
+        """This process's state, creating it on first use.
 
-        Also covers a forked child that didn't run child_after_fork().
+        dict.setdefault() installs exactly one _State per PID even when
+        threads race here (CPython runs it atomically for int keys); a forked
+        child gets its own, without the parent's lock or lookups.
         """
-        if self._pid != os.getpid():
-            self._start_over()
-
-    def _start_over(self) -> None:
-        """Reset the cache and lock (on first use and in a forked child)."""
-        self._lock = threading.Lock()
-        # Notified whenever a lookup ends; prepare_fork() waits on it.
-        self._idle = threading.Condition(self._lock)
-        # Start time of each lookup in flight, keyed by its done event.
-        self._in_flight: dict[threading.Event, float] = {}
-        self._pid = os.getpid()
-        self._entries: dict[tuple[Any, ...], _Entry] = {}
+        pid = os.getpid()
+        state = self._states.get(pid)
+        if state is None:
+            state = self._states.setdefault(pid, _State())
+        return state
 
     def resolve(
         self,
@@ -139,27 +160,28 @@ class BoundedResolver:
                 host, port, family, socktype, proto, socket.AI_NUMERICHOST
             )
         _check_host_name(host)
-        self._started_here()
+        state = self._state()
         key = (host, port, family, socktype, proto)
-        with self._lock:
-            entry = self._entries.setdefault(key, _Entry())
+        with state.lock:
+            entry = state.entries.setdefault(key, _Entry())
             if entry.addresses is not None:
                 if self._monotonic() >= entry.refresh_at:
                     # Best effort: the cached answer serves this caller.
                     with contextlib.suppress(socket.gaierror):
-                        self._start_lookup(key, entry)
+                        self._start_lookup(state, key, entry)
                 return entry.addresses
-            done = self._start_lookup(key, entry)
+            done = self._start_lookup(state, key, entry)
         if not done.wait(timeout):
             raise socket.gaierror(
                 socket.EAI_AGAIN,
                 f"Timed out resolving {host!r} after {timeout:g}s",
             )
-        return self._outcome(entry, host)
+        return self._outcome(state, entry, host)
 
-    def _outcome(self, entry: _Entry, host: str) -> list[AddrInfo]:
+    @staticmethod
+    def _outcome(state: _State, entry: _Entry, host: str) -> list[AddrInfo]:
         """The answer a finished lookup left in ``entry``, or its error."""
-        with self._lock:
+        with state.lock:
             addresses, error = entry.addresses, entry.error
         if addresses is not None:
             return addresses
@@ -177,13 +199,14 @@ class BoundedResolver:
         instead of waiting for the TTL. The cached answer stays in use until
         the refresh succeeds. Does nothing for a host without an answer.
         """
-        self._started_here()
-        with self._lock:
-            entry = self._entries.get((host, port, family, socktype, proto))
+        state = self._state()
+        key = (host, port, family, socktype, proto)
+        with state.lock:
+            entry = state.entries.get(key)
             if entry is None or entry.addresses is None:
                 return
             with contextlib.suppress(socket.gaierror):
-                self._start_lookup((host, port, family, socktype, proto), entry)
+                self._start_lookup(state, key, entry)
 
     def prepare_fork(self) -> None:
         """Before fork(): wait for young lookups (up to fork_wait), then hold the lock.
@@ -197,28 +220,34 @@ class BoundedResolver:
         starting until parent_after_fork() (in the parent) or
         child_after_fork() (in the child) runs.
         """
-        self._started_here()
-        self._lock.acquire()
+        state = self._state()
+        state.lock.acquire()
+        state.held_for_fork = True
         deadline = self._monotonic() + self._fork_wait
         while True:
             now = self._monotonic()
             young = any(
-                now - started < self._fork_wait for started in self._in_flight.values()
+                now - f.started < self._fork_wait for f in state.in_flight.values()
             )
             if not young or now >= deadline:
                 return
-            if not self._idle.wait(deadline - now):
+            if not state.idle.wait(deadline - now):
                 return
 
     def parent_after_fork(self) -> None:
         """After fork(), in the parent: let lookups start again."""
-        self._lock.release()
+        state = self._state()
+        if state.held_for_fork:
+            state.held_for_fork = False
+            state.lock.release()
 
     def child_after_fork(self) -> None:
         """After fork(), in the child: start over (the lookup threads are gone)."""
-        self._start_over()
+        self._states = {os.getpid(): _State()}
 
-    def _start_lookup(self, key: tuple[Any, ...], entry: _Entry) -> threading.Event:
+    def _start_lookup(
+        self, state: _State, key: tuple[Any, ...], entry: _Entry
+    ) -> threading.Event:
         """Start a lookup for ``key`` unless one is running (lock held).
 
         Raises:
@@ -229,24 +258,24 @@ class BoundedResolver:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
-        self._in_flight[done] = self._monotonic()
+        state.in_flight[done] = _InFlight(started=self._monotonic())
         try:
             threading.Thread(
                 target=self._lookup,
-                args=(key, entry, done),
+                args=(state, key, entry, done),
                 name=f"stemtrace-dns-{key[0]}",
                 daemon=True,
             ).start()
         except RuntimeError as exc:  # e.g. "can't start new thread"
             entry.lookup = None
-            del self._in_flight[done]
+            del state.in_flight[done]
             raise socket.gaierror(
                 socket.EAI_AGAIN, f"Could not look up {key[0]!r}: {exc}"
             ) from exc
         return done
 
     def _lookup(
-        self, key: tuple[Any, ...], entry: _Entry, done: threading.Event
+        self, state: _State, key: tuple[Any, ...], entry: _Entry, done: threading.Event
     ) -> None:
         """Run one getaddrinfo() call and store its outcome (helper thread)."""
         host, port, family, type_, proto = key
@@ -265,15 +294,15 @@ class BoundedResolver:
         finally:
             # Always release the entry, or every later caller would wait on
             # a lookup that never ends.
-            with self._lock:
+            with state.lock:
                 if addresses is not None:
                     entry.addresses = addresses
                 entry.error = error
                 # After a failure too: a stale answer is retried once per TTL.
                 entry.refresh_at = self._monotonic() + self._ttl
                 entry.lookup = None
-                self._in_flight.pop(done, None)
-                self._idle.notify_all()
+                state.in_flight.pop(done, None)
+                state.idle.notify_all()
             done.set()
 
 

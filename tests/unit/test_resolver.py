@@ -3,6 +3,7 @@
 import contextlib
 import os
 import socket
+import sys
 import threading
 import time
 import warnings
@@ -186,7 +187,7 @@ class TestBoundedResolver:
         resolver = _make(dns, clock)
         resolver.resolve("redis.local", 6379, timeout=1.0)
         _wait_lookup(dns)
-        resolver._lock.acquire()  # held by a parent thread at fork time
+        resolver._state().lock.acquire()  # held by a parent thread at fork time
         parent_pid = os.getpid()
 
         monkeypatch.setattr(os, "getpid", lambda: parent_pid + 1)
@@ -289,7 +290,7 @@ class TestBoundedResolverFork:
 
         resolver.prepare_fork()
         try:
-            in_flight = len(resolver._in_flight)
+            in_flight = len(resolver._state().in_flight)
         finally:
             resolver.parent_after_fork()
 
@@ -305,7 +306,7 @@ class TestBoundedResolverFork:
 
         resolver.prepare_fork()
         try:
-            in_flight = len(resolver._in_flight)
+            in_flight = len(resolver._state().in_flight)
         finally:
             resolver.parent_after_fork()
             dns.release.set()
@@ -317,12 +318,12 @@ class TestBoundedResolverFork:
 
         resolver.prepare_fork()
         try:
-            assert resolver._lock.acquire(blocking=False) is False
+            assert resolver._state().lock.acquire(blocking=False) is False
         finally:
             resolver.parent_after_fork()
 
-        assert resolver._lock.acquire(blocking=False) is True
-        resolver._lock.release()
+        assert resolver._state().lock.acquire(blocking=False) is True
+        resolver._state().lock.release()
 
     def test_child_after_fork_starts_over_with_free_lock(self) -> None:
         dns, clock = FakeDns(), FakeClock()
@@ -332,9 +333,9 @@ class TestBoundedResolverFork:
 
         resolver.child_after_fork()
 
-        assert resolver._lock.acquire(blocking=False) is True
-        resolver._lock.release()
-        assert resolver._entries == {}
+        assert resolver._state().lock.acquire(blocking=False) is True
+        resolver._state().lock.release()
+        assert resolver._state().entries == {}
 
     def test_publish_resolver_is_registered_for_fork(self) -> None:
         """A real fork while another thread holds the resolver's lock."""
@@ -342,7 +343,7 @@ class TestBoundedResolverFork:
         held, release = threading.Event(), threading.Event()
 
         def hold() -> None:
-            with PUBLISH_RESOLVER._lock:
+            with PUBLISH_RESOLVER._state().lock:
                 held.set()
                 release.wait(JOIN_S)
 
@@ -356,14 +357,14 @@ class TestBoundedResolverFork:
             warnings.simplefilter("ignore", DeprecationWarning)
             pid = os.fork()
         if pid == 0:  # pragma: no cover - runs in the child process
-            ok = PUBLISH_RESOLVER._lock.acquire(timeout=1.0)
+            ok = PUBLISH_RESOLVER._state().lock.acquire(timeout=1.0)
             os._exit(0 if ok else 1)
         _, status = os.waitpid(pid, 0)
         holder.join(JOIN_S)
 
         assert os.waitstatus_to_exitcode(status) == 0
-        assert PUBLISH_RESOLVER._lock.acquire(blocking=False) is True
-        PUBLISH_RESOLVER._lock.release()
+        assert PUBLISH_RESOLVER._state().lock.acquire(blocking=False) is True
+        PUBLISH_RESOLVER._state().lock.release()
 
 
 class TestBoundedResolverForkWaitsOnlyForYoungLookups:
@@ -408,7 +409,7 @@ class TestBoundedResolverForkWaitsOnlyForYoungLookups:
 
         resolver.prepare_fork()
         try:
-            in_flight = len(resolver._in_flight)
+            in_flight = len(resolver._state().in_flight)
         finally:
             resolver.parent_after_fork()
 
@@ -437,4 +438,42 @@ class TestBoundedResolverCreatesLocksLazily:
 
         resolver.resolve("redis.local", 6379, timeout=1.0)
 
-        assert resolver._lock in created
+        assert resolver._state().lock in created
+
+
+class TestBoundedResolverConcurrentFirstUse:
+    """Threads resolving at once in a fresh process share one state."""
+
+    def test_concurrent_first_resolves_share_one_state(self) -> None:
+        previous = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # switch threads as often as possible
+        failures: list[BaseException] = []
+        try:
+            for _ in range(200):
+                resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+                start = threading.Barrier(8)
+
+                def resolve(
+                    resolver: BoundedResolver = resolver,
+                    start: threading.Barrier = start,
+                ) -> None:
+                    start.wait()
+                    try:
+                        assert (
+                            resolver.resolve("redis.local", 6379, timeout=0.5)
+                            == ADDRESS
+                        )
+                    except BaseException as exc:  # noqa: BLE001  collected for the assertion
+                        failures.append(exc)
+
+                threads = [threading.Thread(target=resolve) for _ in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(JOIN_S)
+                if failures:
+                    break
+        finally:
+            sys.setswitchinterval(previous)
+
+        assert failures == []
