@@ -367,23 +367,44 @@ class TestBoundedResolverFork:
         PUBLISH_RESOLVER._state().lock.release()
 
 
-class TestBoundedResolverForkWaitsOnlyForYoungLookups:
-    """A stuck lookup costs forks at most one FORK_WAIT in total."""
+class TestBoundedResolverForkWaitsOncePerLookup:
+    """Each lookup is waited for by at most one fork (up to FORK_WAIT)."""
 
-    def test_prepare_fork_skips_lookup_older_than_fork_wait(self) -> None:
+    def test_prepare_fork_waits_for_old_lookup_no_fork_waited_for(self) -> None:
+        """An older lookup may be finishing inside glibc's locked section."""
         dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()  # stuck, like a lookup against a dead resolver
+        dns.release.clear()
         resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=JOIN_S)
         with pytest.raises(socket.gaierror):
             resolver.resolve("redis.local", 6379, timeout=0.0)
-        clock.now += JOIN_S + 0.1  # it has been in flight longer than fork_wait
-        started = time.monotonic()
+        clock.now += JOIN_S + 0.1  # in flight longer than fork_wait already
+        threading.Timer(0.05, dns.release.set).start()
 
         resolver.prepare_fork()
-        resolver.parent_after_fork()
+        try:
+            in_flight = len(resolver._state().in_flight)
+        finally:
+            resolver.parent_after_fork()
 
-        assert time.monotonic() - started < 1.0  # didn't wait for it
+        assert in_flight == 0  # it waited for the lookup to finish
+
+    def test_stuck_lookup_delays_only_one_fork(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()  # stuck, like a lookup against a dead resolver
+        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=0.2)
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+
+        durations = []
+        for _ in range(3):
+            started = time.monotonic()
+            resolver.prepare_fork()
+            resolver.parent_after_fork()
+            durations.append(time.monotonic() - started)
         dns.release.set()
+
+        assert durations[0] >= 0.2
+        assert max(durations[1:]) < 0.1
 
     def test_prepare_fork_waits_for_lookup_started_while_waiting(self) -> None:
         first, second = FakeDns(), FakeDns()

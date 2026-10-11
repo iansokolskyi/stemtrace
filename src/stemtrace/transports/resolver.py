@@ -50,6 +50,8 @@ class _InFlight:
     """A lookup thread that is running."""
 
     started: float
+    # Whether a fork already waited for it (so later forks don't).
+    waited: bool = False
 
 
 class _State:
@@ -82,11 +84,13 @@ class BoundedResolver:
     own next lookup (reproduced with glibc 2.41: 27 of 1000 children hung
     while PUBLISH_RESOLVER refreshed a dual-stack name in the background).
     prepare_fork(), registered with os.register_at_fork() for
-    PUBLISH_RESOLVER, therefore waits up to FORK_WAIT for lookups that
-    started less than FORK_WAIT ago, and keeps new ones from starting until
-    the fork is done. An older lookup is waiting on the network, which holds
-    no such lock (a child forked then resolved normally in the same
-    reproduction), so a stuck lookup delays at most one fork.
+    PUBLISH_RESOLVER, therefore waits (up to FORK_WAIT in total) for every
+    lookup in flight that no earlier fork waited for, including lookups that
+    start or finish meanwhile, and keeps new ones from starting until the
+    fork is done. A lookup still running after such a wait is waiting on the
+    network, which holds no such lock (a child forked then resolved normally
+    in the same reproduction); later forks don't wait for it again, so a
+    lookup stuck on a dead resolver delays at most one fork.
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
     """
@@ -209,29 +213,26 @@ class BoundedResolver:
                 self._start_lookup(state, key, entry)
 
     def prepare_fork(self) -> None:
-        """Before fork(): wait for young lookups (up to fork_wait), then hold the lock.
+        """Before fork(): wait for lookups no fork waited for, then hold the lock.
 
-        Only lookups started less than fork_wait ago are waited for: glibc's
-        locked sections are short, so an older lookup is waiting on the
-        network (e.g. a dead resolver), and waiting for it would delay every
-        fork by fork_wait while it lasts. Lookups that start while this waits
-        (the lock is released meanwhile) are young and waited for too, within
-        the same fork_wait. Holding the lock afterwards keeps new lookups from
-        starting until parent_after_fork() (in the parent) or
-        child_after_fork() (in the child) runs.
+        Waits up to fork_wait in total, until every lookup in flight has
+        finished or been waited for by a fork (this one or an earlier one);
+        lookups that start or finish while this waits (the lock is released
+        meanwhile) are covered too. Whatever is still in flight when the time
+        is up is marked as waited for, so a stuck lookup delays only one fork.
+        Holding the lock afterwards keeps new lookups from starting until
+        parent_after_fork() (in the parent) or child_after_fork() (in the
+        child) runs.
         """
         state = self._state()
         state.lock.acquire()
         state.held_for_fork = True
         deadline = self._monotonic() + self._fork_wait
-        while True:
-            now = self._monotonic()
-            young = any(
-                now - f.started < self._fork_wait for f in state.in_flight.values()
-            )
-            if not young or now >= deadline:
-                return
-            if not state.idle.wait(deadline - now):
+        while any(not f.waited for f in state.in_flight.values()):
+            remaining = deadline - self._monotonic()
+            if remaining <= 0 or not state.idle.wait(remaining):
+                for lookup in state.in_flight.values():
+                    lookup.waited = True
                 return
 
     def parent_after_fork(self) -> None:
