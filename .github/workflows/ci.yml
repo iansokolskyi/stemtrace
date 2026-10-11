@@ -128,13 +128,16 @@ jobs:
         with:
           enable-cache: true
 
-      # The declared floors of the runtime dependencies (lowest-direct), with
-      # current test tools; nothing is built from source (--no-build).
+      # The declared floors of the runtime dependencies (lowest-direct), then
+      # current test tools constrained to what that installed, so they can't
+      # upgrade a runtime dependency (e.g. typing-extensions) under test.
+      # Nothing is built from source (--no-build).
       - name: Install the lowest declared versions
         run: |
           uv venv .venv-lowest
           uv pip install --python .venv-lowest --resolution lowest-direct --no-build -e .
-          uv pip install --python .venv-lowest --no-build pytest pytest-asyncio pytest-cov websockets hatchling
+          uv pip freeze --python .venv-lowest | grep -v '^-e ' > lowest-constraints.txt
+          uv pip install --python .venv-lowest --no-build -c lowest-constraints.txt pytest pytest-asyncio pytest-cov websockets hatchling
 
       # Old floors (e.g. typer) emit deprecation warnings under current click;
       # the suite turns warnings into errors, which isn't what this job checks.
