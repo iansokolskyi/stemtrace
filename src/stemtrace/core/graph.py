@@ -1546,6 +1546,7 @@ class TaskGraph(BaseModel):
         self._recount(tally)
         if group_node is not None:
             self._set_callback(group_node, group_id, None)
+            self._drop_body_group(group_id)
             named = group_node.chord_callback_id
             if named is not None and self._chord_by_callback.get(named) == group_id:
                 del self._chord_by_callback[named]
@@ -1876,7 +1877,11 @@ class TaskGraph(BaseModel):
         if named == group_id or group_node_id not in self.nodes or tally is None:
             return None
         parent_id = tally.parent()
-        if parent_id is not None and self._is_header(parent_id, group_id):
+        if parent_id is None:
+            return None
+        # It counts once that parent is (or becomes) one of our headers.
+        self._add_chord_dep(group_id, parent_id)
+        if self._is_header(parent_id, group_id):
             return group_node_id, None
         return None
 

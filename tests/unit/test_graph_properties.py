@@ -23,32 +23,83 @@ def _make_celery_shaped(
     rng: random.Random,
     group_of: dict[str, str | None],
     parent_of: dict[str, str | None],
-) -> dict[str, str | None]:
-    """Make the plan Celery-shaped; returns each chord's callback.
+) -> tuple[dict[str, str | None], set[str]]:
+    """Make the plan Celery-shaped; returns each chord's named callback and
+    the headers (the only tasks that name it).
 
-    A group's members are sent together, by one earlier parent; each chord
-    names its own callback, a later task outside the group that its last
-    header sends.
+    A group's members are sent together, by one earlier parent. A chord's
+    last header sends its body (see ``_plan_chord_body``).
     """
-    callback_of: dict[str, str | None] = {}
-    for g in _GROUP_IDS:
-        members = [i for i, t in enumerate(_TASK_IDS) if group_of[t] == g]
-        if not members:
-            callback_of[g] = None
-            continue
-        shared = rng.choice([*_TASK_IDS[: min(members)], "ghost", None])
-        for i in members:
-            parent_of[_TASK_IDS[i]] = shared
-        later = [
-            t
-            for t in _TASK_IDS[max(members) + 1 :]
-            if group_of[t] is None and t not in callback_of.values()
-        ]
-        callback = rng.choice([*later, None]) if later else None
-        callback_of[g] = callback
-        if callback is not None:
-            parent_of[callback] = _TASK_IDS[max(members)]
-    return callback_of
+    members_of = {
+        g: [i for i, t in enumerate(_TASK_IDS) if group_of[t] == g] for g in _GROUP_IDS
+    }
+    for members in members_of.values():
+        if members:
+            shared = rng.choice([*_TASK_IDS[: min(members)], "ghost", None])
+            for i in members:
+                parent_of[_TASK_IDS[i]] = shared
+    headers = {_TASK_IDS[i] for members in members_of.values() for i in members}
+    callback_of: dict[str, str | None] = dict.fromkeys(_GROUP_IDS)
+    used: set[str] = set()
+    for g, members in members_of.items():
+        if members:
+            callback_of[g] = _plan_chord_body(
+                rng,
+                g,
+                members,
+                members_of=members_of,
+                group_of=group_of,
+                parent_of=parent_of,
+                used=used,
+            )
+    return callback_of, headers
+
+
+def _plan_chord_body(
+    rng: random.Random,
+    g: str,
+    members: list[int],
+    *,
+    members_of: dict[str, list[int]],
+    group_of: dict[str, str | None],
+    parent_of: dict[str, str | None],
+    used: set[str],
+) -> str | None:
+    """Plan what chord ``g``'s last header sends; returns the named callback.
+
+    A later task outside any group (named), two later tasks stamped with
+    the chord's group ID (a group body: the headers name the chord's own
+    ID), or a later group (a chord or group body: they name that group).
+    """
+    last = _TASK_IDS[max(members)]
+    loose = [
+        t
+        for t in _TASK_IDS[max(members) + 1 :]
+        if group_of[t] is None and t not in used
+    ]
+    later_groups = [
+        g2
+        for g2, m2 in members_of.items()
+        if m2 and g2 != g and g2 not in used and min(m2) > max(members)
+    ]
+    mode = rng.choice(["task", "task", "own", "group"])
+    if mode == "own" and len(loose) >= 2:
+        for t in rng.sample(loose, 2):
+            group_of[t] = g
+            parent_of[t] = last
+            used.add(t)
+        return g
+    if mode == "group" and later_groups:
+        body = rng.choice(later_groups)
+        used.add(body)
+        for i in members_of[body]:
+            parent_of[_TASK_IDS[i]] = last
+        return body
+    callback = rng.choice([*loose, None]) if loose else None
+    if callback is not None:
+        used.add(callback)
+        parent_of[callback] = last
+    return callback
 
 
 def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[TaskEvent]:
@@ -86,8 +137,9 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
         for i, t in enumerate(_TASK_IDS)
     }
     callback_of = {g: rng.choice([*_TASK_IDS, None]) for g in _GROUP_IDS}
+    headers = set(_TASK_IDS)
     if acyclic:
-        callback_of = _make_celery_shaped(rng, group_of, parent_of)
+        callback_of, headers = _make_celery_shaped(rng, group_of, parent_of)
     events = []
     for i in range(count):
         task_id = rng.choice(_TASK_IDS)
@@ -100,7 +152,11 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
             parent_id = rng.choice([*_TASK_IDS, "ghost"])
         if rng.random() < 0.1 and not acyclic:
             group_id = rng.choice([*_GROUP_IDS, None])
-        callback = callback_of[group_id] if group_id and rng.random() < 0.5 else None
+        callback = (
+            callback_of[group_id]
+            if group_id and task_id in headers and rng.random() < 0.5
+            else None
+        )
         events.append(
             TaskEvent(
                 task_id=task_id,
@@ -153,10 +209,9 @@ def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
     """Removing tasks leaves the graph a rebuild from the other tasks'
     events would give (placement, children, chord callbacks, roots).
 
-    The plan is Celery-shaped (see ``_make_celery_shaped``). Steps where
-    the data still closes a cycle through groups, chain links and chord
-    bodies only check invariants: where a cycle breaks depends on which link
-    came first. (About 6% of steps.)
+    The plan is Celery-shaped (see ``_make_celery_shaped``). A step that
+    ends with a cycle still open only checks invariants (where it breaks
+    depends on which link came first); with this plan none does.
     """
     rng = random.Random(20_000 + seed)
     events = _random_events(seed, 60, acyclic=True)
@@ -180,9 +235,9 @@ def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
             if event.task_id not in removed:
                 rebuilt.add_event(event)
         assert_graph_invariants(rebuilt)
-        if graph._cycles_refused or rebuilt._cycles_refused:
-            # The data closed a cycle through groups, chain links and chord
-            # bodies. Where it breaks depends on which link came first, so
+        if graph._cycle_broken or rebuilt._cycle_broken:
+            # A cycle is still open (through groups, chain links and chord
+            # bodies): where it breaks depends on which link came first, so
             # only the invariants are comparable.
             continue
         assert _shape(graph) == _shape(rebuilt), (seed, removed)

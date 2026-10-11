@@ -14,6 +14,7 @@ root, group, chord callback and chord IDs of each event in turn).
 import json
 import random
 from datetime import datetime, timedelta
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -536,8 +537,11 @@ def _causal_orders(
     """Random arrival orders concurrent workers can produce.
 
     Each process's events keep their order: a task's worker events, with
-    the PENDINGs of the tasks it sends; the client's PENDINGs; and a task's
-    worker events come after its PENDING. Processes interleave freely.
+    the PENDINGs of the tasks it sends; the client's PENDINGs. A task runs
+    once its sender published it, so its worker events come after what the
+    sender emitted before that - but possibly before its own PENDING
+    (after_task_publish fires once the broker accepted the message, and a
+    fast worker can report first). Otherwise processes interleave freely.
     """
     task_ids = {e["task_id"] for e in events}
 
@@ -547,27 +551,37 @@ def _causal_orders(
         parent = event["parent_id"]
         return parent if parent in task_ids else "client"
 
+    # A task's worker stream waits until its sender emitted this many events.
+    gate: dict[str, tuple[str, int]] = {}
+    position: dict[str, int] = {}
+    for event in events:
+        name = producer(event)
+        if event["state"] == "PENDING" and event["task_id"] not in gate:
+            gate[event["task_id"]] = (name, position.get(name, 0))
+        position[name] = position.get(name, 0) + 1
+
     orders = []
     for seed in range(count):
         rng = random.Random(seed)
         streams: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             streams.setdefault(producer(event), []).append(event)
-        sent = {e["task_id"] for e in events if e["state"] != "PENDING"} - {
-            e["task_id"] for e in events if e["state"] == "PENDING"
-        }
+        emitted = dict.fromkeys(streams, 0)
         order: list[dict[str, Any]] = []
         while any(streams.values()):
             ready = [
                 name
                 for name, stream in streams.items()
                 if stream
-                and (stream[0]["state"] == "PENDING" or stream[0]["task_id"] in sent)
+                and (
+                    stream[0]["state"] == "PENDING"
+                    or name not in gate
+                    or emitted[gate[name][0]] >= gate[name][1]
+                )
             ]
-            event = streams[rng.choice(ready)].pop(0)
-            if event["state"] == "PENDING":
-                sent.add(event["task_id"])
-            order.append(event)
+            name = rng.choice(ready)
+            order.append(streams[name].pop(0))
+            emitted[name] += 1
         orders.append(order)
     return orders
 
@@ -643,3 +657,32 @@ def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
 
         assert graph.nodes[original].name == name
         assert _labelled_shape(graph, labels) == _EXPECTED[flow][0]
+
+
+def _graph_shape(
+    graph: TaskGraph,
+) -> dict[str, tuple[str | None, list[str], str | None]]:
+    return {
+        node_id: (node.parent_id, sorted(node.children), node.chord_id)
+        for node_id, node in graph.nodes.items()
+    }
+
+
+@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
+    """Removing any one or two tasks of a real capture leaves the graph that
+    the remaining events build, in arrival order and two shuffles."""
+    events = _CAPTURES[flow]
+    task_ids = sorted({e["task_id"] for e in events})
+    removals = [(t,) for t in task_ids] + list(combinations(task_ids, 2))
+    for order in _orders(events)[:3]:
+        for removed in removals:
+            graph = _replay(order)
+            for task_id in removed:
+                graph.remove_node(task_id)
+            assert_graph_invariants(graph)
+            rebuilt = _replay([e for e in order if e["task_id"] not in removed])
+            if graph._cycle_broken or rebuilt._cycle_broken:
+                continue  # a cycle is still open: where it breaks depends on order
+            assert _graph_shape(graph) == _graph_shape(rebuilt), (flow, removed)
+            assert sorted(graph.root_ids) == sorted(rebuilt.root_ids), (flow, removed)
