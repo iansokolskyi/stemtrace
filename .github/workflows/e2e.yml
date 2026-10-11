@@ -169,11 +169,12 @@ jobs:
         run: |
           # Submit some tasks to populate the UI for testing
           uv run --locked --no-build python -c "
-          from tests.e2e.tasks import add, create_workflow, always_fails
+          from tests.e2e.tasks import add, batch_processor, create_workflow, always_fails
           # Submit a few tasks
           add.delay(1, 2)
           add.delay(3, 4)
           create_workflow([1, 2, 3]).apply_async()
+          batch_processor.delay([1, 2])
           always_fails.delay('test failure')
           print('Tasks submitted!')
           "
@@ -188,7 +189,8 @@ jobs:
             "http://localhost:8000/stemtrace/api/tasks?limit=500" \
             --timeout 90 --interval 2 \
             --expect-task e2e.add=SUCCESS:2 \
-            --expect-task e2e.process_item=SUCCESS:3 \
+            --expect-task e2e.process_item=SUCCESS:5 \
+            --expect-task e2e.batch_processor=SUCCESS \
             --expect-task e2e.aggregate=SUCCESS \
             --expect-task e2e.always_fails=FAILURE
 
