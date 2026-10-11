@@ -149,8 +149,19 @@ jobs:
           always_fails.delay('test failure')
           print('Tasks submitted!')
           "
-          # Wait for tasks to complete
-          sleep 5
+
+      - name: Wait for seeded tasks to reach the API
+        run: |
+          # Events travel worker -> broker -> server consumer, so on RabbitMQ they
+          # can land well after the workers finish. Poll until every seeded task
+          # is in its terminal state (the script lists what it did see on timeout).
+          uv run --locked --no-build python scripts/wait_for_http.py \
+            "http://localhost:8000/stemtrace/api/tasks?limit=500" \
+            --timeout 90 --interval 2 \
+            --expect-task e2e.add=SUCCESS:2 \
+            --expect-task e2e.process_item=SUCCESS:3 \
+            --expect-task e2e.aggregate=SUCCESS \
+            --expect-task e2e.always_fails=FAILURE
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
