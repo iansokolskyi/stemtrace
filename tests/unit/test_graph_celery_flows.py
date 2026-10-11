@@ -716,9 +716,9 @@ def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
     skewed = []
     for event in events:
         if event["task_id"] == original and event["name"] != name:
-            shifted = datetime.fromisoformat(event["timestamp"]) + timedelta(
-                seconds=skew_s
-            )
+            shifted = datetime.fromisoformat(
+                event["timestamp"].replace("Z", "+00:00")
+            ) + timedelta(seconds=skew_s)
             event = {**event, "timestamp": shifted.isoformat()}
         skewed.append(event)
     for order in _orders(skewed):
