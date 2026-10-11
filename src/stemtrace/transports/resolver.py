@@ -239,7 +239,7 @@ class BoundedResolver:
         _check_host_name(host)
         state = self._state()
         key = (host, port, family, socktype, proto)
-        if _in_uwsgi_master():
+        if _forks_without_hooks():
             return self._resolve_on_this_thread(state, key)
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -655,16 +655,34 @@ def _fresh(error: Exception) -> Exception:
     return new
 
 
-def _in_uwsgi_master() -> bool:
-    """Whether this process is the uWSGI master.
+def _forks_without_hooks() -> bool:
+    """Whether this is a uWSGI process that forks in C, without Python's hooks.
 
-    The uWSGI master forks in C, without Python's at-fork hooks. Not
-    ``uwsgi.worker_id() == 0``: mules and spoolers report 0 too (pyuwsgi
-    2.0.30), and they don't fork.
+    That is the uWSGI master (``masterpid() == os.getpid()``) and, without
+    ``--master`` (uWSGI's default, where masterpid() returns 0), the first
+    process: it loads the app, then becomes worker 1 and forks the others
+    (``masterpid() == 0`` and ``worker_id() == 0``; pyuwsgi 2.0.30). Not
+    ``worker_id() == 0`` alone: mules and spoolers report 0 too, and they
+    don't fork (a mule has a mule_id() above 0).
     """
     uwsgi = sys.modules.get("uwsgi")
     masterpid = getattr(uwsgi, "masterpid", None)
-    return callable(masterpid) and masterpid() == os.getpid()
+    if not callable(masterpid):
+        return False
+    pid = masterpid()
+    if pid == os.getpid():
+        return True
+    return (
+        pid == 0
+        and _uwsgi_id(uwsgi, "worker_id") == 0
+        and (_uwsgi_id(uwsgi, "mule_id") == 0)
+    )
+
+
+def _uwsgi_id(uwsgi: Any, name: str) -> int | None:
+    """``uwsgi.<name>()`` (worker_id, mule_id), or None when it isn't there."""
+    function = getattr(uwsgi, name, None)
+    return function() if callable(function) else None
 
 
 def _check_host_name(host: str) -> None:

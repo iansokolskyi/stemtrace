@@ -863,21 +863,28 @@ class TestCachedErrorsAreRaisedFresh:
 
 
 class TestUwsgiMasterResolvesOnCallingThread:
-    """uWSGI's master forks in C, without Python's at-fork hooks, so it must
-    not have lookup threads that a fork could catch inside glibc. Workers,
-    mules and spoolers don't fork and keep the bounded background lookups."""
+    """uWSGI forks in C, without Python's at-fork hooks (the master, and the
+    first process of a no-master setup), so such a process must not have
+    lookup threads that a fork could catch inside glibc. Workers, mules and
+    spoolers don't fork and keep the bounded background lookups."""
 
     def _uwsgi(
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        is_master: bool,
+        is_master: bool = False,
+        no_master: bool = False,
         worker_id: int = 0,
         mule_id: int = 0,
     ) -> None:
-        """Install a fake ``uwsgi`` module as uWSGI (pyuwsgi 2.0.30) shows it."""
+        """Install a fake ``uwsgi`` module as uWSGI (pyuwsgi 2.0.30) shows it.
+
+        Without ``--master`` (``no_master``), masterpid() returns 0.
+        """
         fake = types.ModuleType("uwsgi")
         master_pid = os.getpid() if is_master else os.getpid() - 1
+        if no_master:
+            master_pid = 0
         fake.masterpid = lambda: master_pid  # type: ignore[attr-defined]
         fake.worker_id = lambda: worker_id  # type: ignore[attr-defined]
         fake.mule_id = lambda: mule_id  # type: ignore[attr-defined]
@@ -909,6 +916,32 @@ class TestUwsgiMasterResolvesOnCallingThread:
     ) -> None:
         """A mule (and a spooler) also reports worker_id 0, but isn't the master."""
         self._uwsgi(monkeypatch, is_master=False, worker_id=worker_id, mule_id=mule_id)
+        dns = _ThreadRecordingDns()
+
+        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
+
+        assert thread.startswith("stemtrace-dns-")
+
+    def test_no_master_first_process_resolves_on_calling_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without --master, masterpid() is 0 and worker_id() 0 until it forks."""
+        self._uwsgi(monkeypatch, no_master=True, worker_id=0)
+        dns = _ThreadRecordingDns()
+
+        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
+
+        assert thread == threading.current_thread().name
+
+    @pytest.mark.parametrize(
+        ("worker_id", "mule_id"),
+        [(1, 0), (2, 0), (0, 1)],
+        ids=["worker-1", "worker-2", "mule"],
+    )
+    def test_no_master_workers_and_mules_resolve_in_background(
+        self, worker_id: int, mule_id: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._uwsgi(monkeypatch, no_master=True, worker_id=worker_id, mule_id=mule_id)
         dns = _ThreadRecordingDns()
 
         thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
