@@ -4,9 +4,16 @@ Used by the E2E Makefile targets and CI workflow to wait for the Docker Compose
 stack. Only loopback hosts and the E2E Compose server service are accepted, so
 the script cannot be pointed at arbitrary internal or external network targets.
 
-With ``--expect-task NAME=STATE[:COUNT]`` (repeatable) the endpoint must also be
-the stemtrace task list (``/stemtrace/api/tasks``) and the wait only ends once
-it holds at least COUNT (default 1) tasks called exactly NAME in state STATE.
+A bare 2xx is not always "ready": the stemtrace health endpoint answers 200 while
+its broker consumer is still connecting, and events published before the consumer
+binds are lost. Two optional checks run against the JSON response body:
+
+* ``--expect-json KEY=VALUE`` (repeatable) requires a top-level field, e.g.
+  ``--expect-json consumer_connected=true`` on ``/stemtrace/api/health``. VALUE is
+  parsed as JSON (``true``, ``3``, ``null``) and otherwise taken as a string.
+* ``--expect-task NAME=STATE[:COUNT]`` (repeatable) requires the stemtrace task list
+  (``/stemtrace/api/tasks``) to hold at least COUNT (default 1) tasks called exactly
+  NAME in state STATE.
 """
 
 from __future__ import annotations
@@ -27,6 +34,21 @@ ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "server"})
 # cannot make the wait read without bound.
 MAX_BODY_BYTES = 16 * 1024 * 1024
 REQUEST_TIMEOUT_S = 2.0
+PROGRESS_INTERVAL_S = 10.0
+# Mirrors stemtrace.core.events.TaskState (a unit test keeps them in sync). Not
+# imported: importing the stemtrace package pulls in celery and fastapi, which
+# makes this stdlib-only poller take seconds to start.
+TASK_STATES = (
+    "PENDING",
+    "RECEIVED",
+    "STARTED",
+    "SUCCESS",
+    "FAILURE",
+    "REVOKED",
+    "REJECTED",
+    "RETRY",
+)
+_MISSING = object()
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -43,32 +65,57 @@ _OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 class TaskExpectation(typing.NamedTuple):
-    """At least ``count`` tasks named ``name`` must be in state ``state``."""
+    """At least ``min_count`` tasks named ``name`` must be in state ``state``."""
 
     name: str
     state: str
-    count: int = 1
+    min_count: int = 1
 
     def __str__(self) -> str:
         """Render as ``NAME=STATE`` for progress and timeout messages."""
         return f"{self.name}={self.state}"
 
 
-def _parse_expectation(spec: str) -> TaskExpectation:
+class JsonExpectation(typing.NamedTuple):
+    """The response's top-level field ``key`` must equal ``value``."""
+
+    key: str
+    value: object
+    text: str
+
+
+def _parse_task_expectation(spec: str) -> TaskExpectation:
     """Parse ``NAME=STATE[:COUNT]`` or raise ``ArgumentTypeError``."""
     name, _, rest = spec.partition("=")
     state, _, count_text = rest.partition(":")
-    count = 1
+    min_count = 1
     if count_text:
         try:
-            count = int(count_text)
+            min_count = int(count_text)
         except ValueError:
-            count = 0
-    if not name or not state or count < 1:
+            min_count = 0
+    if not name or not state or min_count < 1:
         raise argparse.ArgumentTypeError(
             f"{spec!r} is not NAME=STATE[:COUNT] with COUNT >= 1"
         )
-    return TaskExpectation(name=name, state=state, count=count)
+    if state not in TASK_STATES:
+        raise argparse.ArgumentTypeError(
+            f"{spec!r} has unknown state {state!r}; expected one of "
+            f"{', '.join(TASK_STATES)}"
+        )
+    return TaskExpectation(name=name, state=state, min_count=min_count)
+
+
+def _parse_json_expectation(spec: str) -> JsonExpectation:
+    """Parse ``KEY=VALUE`` (VALUE as JSON, else a string) or raise."""
+    key, _, text = spec.partition("=")
+    if not key or not text:
+        raise argparse.ArgumentTypeError(f"{spec!r} is not KEY=VALUE")
+    try:
+        value: object = json.loads(text)
+    except ValueError:
+        value = text
+    return JsonExpectation(key=key, value=value, text=text)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -77,35 +124,57 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=2.0)
     parser.add_argument(
+        "--expect-json",
+        action="append",
+        default=[],
+        type=_parse_json_expectation,
+        metavar="KEY=VALUE",
+        help="also require the JSON response to have top-level KEY equal to VALUE",
+    )
+    parser.add_argument(
         "--expect-task",
         action="append",
         default=[],
-        type=_parse_expectation,
+        type=_parse_task_expectation,
         metavar="NAME=STATE[:COUNT]",
         help="also require the response to list COUNT tasks named NAME in STATE",
     )
     return parser.parse_args()
 
 
-def _unmet_task_expectations(
-    body: bytes, expectations: list[TaskExpectation]
+def _unmet_json_expectations(
+    payload: dict[str, object], expectations: list[JsonExpectation]
 ) -> str | None:
-    """Return why ``body`` (a task list response) falls short, or None if it holds.
+    """Return which expected fields differ in ``payload``, or None if all match."""
+    unmet = []
+    for expected in expectations:
+        got = payload.get(expected.key, _MISSING)
+        # type() too, so that JSON true does not satisfy an expected 1.
+        if got == expected.value and type(got) is type(expected.value):
+            continue
+        shown = "missing" if got is _MISSING else f"got {json.dumps(got)}"
+        unmet.append(f"{expected.key}={expected.text} ({shown})")
+    return f"waiting for fields: {', '.join(unmet)}" if unmet else None
+
+
+def _unmet_task_expectations(
+    payload: dict[str, object], expectations: list[TaskExpectation]
+) -> str | None:
+    """Return why the task list in ``payload`` falls short, or None if it holds.
 
     Task names are compared exactly: the API's ``name`` filter is a substring
     match, so ``e2e.add`` must not be satisfied by ``e2e.add_many``.
     """
     try:
-        payload = json.loads(body)
-        tasks = payload["tasks"]
+        tasks = typing.cast("list[dict[str, str]]", payload["tasks"])
         seen = collections.Counter((task["name"], task["state"]) for task in tasks)
-    except (ValueError, KeyError, TypeError) as exc:
+    except (KeyError, TypeError) as exc:
         return f"unexpected task list response ({type(exc).__name__}: {exc})"
 
     unmet = [
-        f"{expected} ({seen[(expected.name, expected.state)]}/{expected.count})"
+        f"{expected} ({seen[(expected.name, expected.state)]}/{expected.min_count})"
         for expected in expectations
-        if seen[(expected.name, expected.state)] < expected.count
+        if seen[(expected.name, expected.state)] < expected.min_count
     ]
     if not unmet:
         return None
@@ -115,38 +184,82 @@ def _unmet_task_expectations(
     return f"waiting for tasks: {', '.join(unmet)}; seen: {found or 'none'}"
 
 
-def _poll(url: str, expectations: list[TaskExpectation]) -> str | None:
-    """Poll ``url`` once; return None when healthy, else why it is not."""
+def _unmet_expectations(
+    body: bytes,
+    json_expectations: list[JsonExpectation],
+    task_expectations: list[TaskExpectation],
+) -> str | None:
+    """Return why the response body is not ready yet, or None if it is."""
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:  # invalid or truncated JSON, or not UTF-8
+        return f"response is not valid JSON ({exc})"
+    if not isinstance(payload, dict):
+        return f"response is not a JSON object (got {type(payload).__name__})"
+
+    reasons = [
+        reason
+        for reason in (
+            _unmet_json_expectations(payload, json_expectations),
+            _unmet_task_expectations(payload, task_expectations)
+            if task_expectations
+            else None,
+        )
+        if reason
+    ]
+    return "; ".join(reasons) or None
+
+
+def _poll(
+    url: str,
+    json_expectations: list[JsonExpectation],
+    task_expectations: list[TaskExpectation],
+) -> str | None:
+    """Poll ``url`` once; return None when ready, else why it is not."""
     try:
         request = urllib.request.Request(url, method="GET")
         with _OPENER.open(request, timeout=REQUEST_TIMEOUT_S) as response:
             if not 200 <= response.status < 300:
                 return f"HTTP {response.status}"
-            if not expectations:
+            if not json_expectations and not task_expectations:
                 return None
-            return _unmet_task_expectations(response.read(MAX_BODY_BYTES), expectations)
+            return _unmet_expectations(
+                response.read(MAX_BODY_BYTES), json_expectations, task_expectations
+            )
     except urllib.error.HTTPError as exc:
         exc.close()
         return f"HTTP {exc.code}"
     except (OSError, http.client.HTTPException) as exc:
-        # URLError, timeouts and connection resets while the stack starts
+        # URLError, timeouts and connection resets while the stack starts, and
+        # IncompleteRead when the body is cut short.
         return str(exc)
 
 
 def main() -> None:
-    """Wait for a local HTTP endpoint to become healthy (2xx) or exit non-zero."""
+    """Wait for a local HTTP endpoint to become ready or exit non-zero."""
     args = _parse_args()
     url: str = args.url
     parsed = urlparse(url)
     if parsed.scheme in ALLOWED_SCHEMES and parsed.hostname in ALLOWED_HOSTS:
-        deadline = time.monotonic() + args.timeout
+        start = time.monotonic()
+        deadline = start + args.timeout
+        last_progress = start
+        now = start
         last_error: str | None = None
 
-        while time.monotonic() < deadline:
-            last_error = _poll(url, args.expect_task)
+        while now < deadline:
+            last_error = _poll(url, args.expect_json, args.expect_task)
             if last_error is None:
                 return
+            if now - last_progress >= PROGRESS_INTERVAL_S:
+                last_progress = now
+                print(
+                    f"still waiting after {now - start:.0f}s of {args.timeout:g}s: "
+                    f"{last_error}",
+                    flush=True,
+                )
             time.sleep(args.interval)
+            now = time.monotonic()
 
         raise SystemExit(f"Service not healthy within {args.timeout}s: {last_error}")
 
