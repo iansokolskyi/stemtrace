@@ -153,6 +153,12 @@ def _resolved_connect_mixin() -> type[Any]:
                 timeout=self.socket_connect_timeout or PUBLISH_CONNECT_TIMEOUT,
             )
 
+        def _connect_failed(self) -> None:
+            """Refresh the host's cached addresses: it may have moved."""
+            PUBLISH_RESOLVER.invalidate(
+                self.host, self.port, self.socket_type, socket.SOCK_STREAM
+            )
+
         def _connect(self) -> socket.socket:
             """Connect to the first resolved address that accepts."""
             err: OSError | None = None
@@ -177,6 +183,7 @@ def _resolved_connect_mixin() -> type[Any]:
                         sock.close()
                 else:
                     return sock
+            self._connect_failed()
             raise err if err is not None else OSError("No address to connect to")
 
     return ResolvedConnect

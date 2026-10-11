@@ -243,3 +243,26 @@ class TestBoundedResolverRobustness:
 
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local"]
+
+
+class TestBoundedResolverInvalidate:
+    """A failed connect refreshes the host's answer at once."""
+
+    def test_invalidate_refreshes_cached_answer_before_ttl(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [ADDRESS, NEW_ADDRESS]
+        resolver = _make(dns, clock)
+        resolver.resolve("redis.local", 6379, timeout=1.0)
+        _wait_lookup(dns)
+
+        resolver.invalidate("redis.local", 6379)
+        _wait_lookup(dns)
+
+        assert resolver.resolve("redis.local", 6379, timeout=0.0) == NEW_ADDRESS
+
+    def test_invalidate_unknown_host_does_nothing(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+
+        _make(dns, clock).invalidate("redis.local", 6379)
+
+        assert dns.calls == []

@@ -27,6 +27,7 @@ from stemtrace.transports import redis as redis_transport
 from stemtrace.transports.redis import (
     PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_SOCKET_TIMEOUT,
+    RECONNECT_INITIAL_BACKOFF,
     RedisTransport,
 )
 from stemtrace.transports.resolver import BoundedResolver
@@ -374,3 +375,80 @@ def test_publish_connects_to_address_from_publish_resolver(
 
     assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 3
     assert looked_up == ["redis-alias.stemtrace.test"]
+
+
+class _ScriptedDns:
+    """getaddrinfo stand-in returning ``answers`` in turn (the last one repeats)."""
+
+    def __init__(self, *answers: tuple[str, int]) -> None:
+        self._answers = list(answers)
+        self.calls = 0
+
+    def __call__(self, host: str, port: int, *args: Any) -> list[tuple[Any, ...]]:
+        self.calls += 1
+        ip, real_port = (
+            self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        )
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, real_port))]
+
+
+class _ManualClock:
+    """Monotonic clock for the publish breaker, advanced by the test."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.mark.integration
+def test_publish_after_dns_failover_recovers_within_one_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host moves to a new address while the old one refuses connections.
+
+    The failed connect refreshes the cached DNS answer at once, so the next
+    attempt reaches the new address (at the latest the first retry after the
+    breaker's 1s cooldown), instead of waiting for the 30s cache TTL and then
+    the next retry after it.
+    """
+    with socket.socket() as gone:
+        gone.bind(("127.0.0.1", 0))
+        old_port = gone.getsockname()[1]  # closed: connections are refused
+    server = _ReplyOnlyToHandshake(b"$3\r\n1-0\r\n")
+    new_port = int(server.url.rsplit(":", 1)[1].split("/")[0])
+    dns = _ScriptedDns(("127.0.0.1", old_port), ("127.0.0.1", new_port))
+    monkeypatch.setattr(
+        redis_transport, "PUBLISH_RESOLVER", BoundedResolver(getaddrinfo=dns)
+    )
+    clock = _ManualClock()
+    started = clock.now
+    try:
+        transport = RedisTransport(
+            client=redis.Redis(),  # consume client, unused here
+            prefix="failover",
+            ttl=60,
+            publish_client_factory=lambda: redis_transport._publish_client_from_url(
+                "redis://redis.failover.test:6379/0"
+            ),
+            monotonic=clock,
+        )
+        breaker = transport._publish_breaker
+        for i in range(10):
+            transport.publish(_event(i))
+            if server.xadds:
+                break
+            # Let the background refresh finish, as it would between events.
+            for thread in threading.enumerate():
+                if thread.name.startswith("stemtrace-dns-"):
+                    thread.join(5)
+            if breaker.is_open:
+                clock.now += breaker.cooldown
+    finally:
+        server.close()
+
+    assert server.xadds == 1
+    assert i == 1  # the second attempt already used the new address
+    assert clock.now - started <= RECONNECT_INITIAL_BACKOFF
+    assert breaker.is_open is False

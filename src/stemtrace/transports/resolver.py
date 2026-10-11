@@ -135,6 +135,25 @@ class BoundedResolver:
             raise error
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
 
+    def invalidate(
+        self, host: str, port: int, family: int = 0, socktype: int = 0, proto: int = 0
+    ) -> None:
+        """Refresh ``host``'s cached answer now, in the background.
+
+        Called after connecting to every cached address failed, so the next
+        attempt uses the new address if the host moved (e.g. a DNS failover)
+        instead of waiting for the TTL. The cached answer stays in use until
+        the refresh succeeds. Does nothing for a host without an answer.
+        """
+        if os.getpid() != self._pid:
+            self._start_over()
+        with self._lock:
+            entry = self._entries.get((host, port, family, socktype, proto))
+            if entry is None or entry.addresses is None:
+                return
+            with contextlib.suppress(socket.gaierror):
+                self._start_lookup((host, port, family, socktype, proto), entry)
+
     def _start_lookup(self, key: tuple[Any, ...], entry: _Entry) -> threading.Event:
         """Start a lookup for ``key`` unless one is running (lock held).
 

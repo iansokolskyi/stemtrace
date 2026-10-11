@@ -193,6 +193,15 @@ def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
                     self.sock.close()
                 self.sock = None
                 if i + 1 >= len(entries):
+                    # The host may have moved (e.g. a DNS failover): refresh
+                    # its cached addresses for the next attempt.
+                    PUBLISH_RESOLVER.invalidate(
+                        host,
+                        port,
+                        socket.AF_UNSPEC,
+                        socket.SOCK_STREAM,
+                        socket.IPPROTO_TCP,
+                    )
                     raise
             else:
                 break

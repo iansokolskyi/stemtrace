@@ -353,3 +353,46 @@ class TestRabbitMQPublishFailoverCredentials:
         assert [body["task_id"] for body in bodies] == ["cred-1", "cred-2", "cred-3"]
         assert _warnings(caplog) == []
         assert password not in caplog.text
+
+
+class _RecordingResolver:
+    """PUBLISH_RESOLVER stand-in: answers ``address`` and records invalidations."""
+
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.address = address
+        self.invalidated: list[tuple[Any, ...]] = []
+
+    def resolve(self, host: str, port: int, *args: Any, timeout: float) -> list[Any]:
+        del host, port, args, timeout
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", self.address)]
+
+    def invalidate(self, *key: Any) -> None:
+        self.invalidated.append(key)
+
+
+@pytest.mark.integration
+def test_publish_connect_failure_refreshes_cached_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host whose cached address refuses connections gets re-resolved."""
+    with socket.socket() as gone:
+        gone.bind(("127.0.0.1", 0))
+        refused = ("127.0.0.1", gone.getsockname()[1])
+    resolver = _RecordingResolver(refused)
+    monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", resolver)
+    conn = rabbitmq._resolving_connection_class(Connection)(
+        "amqp://guest:guest@rabbit.failover.test:5672//", connect_timeout=1
+    )
+
+    with pytest.raises(ConnectionRefusedError):
+        conn.transport.establish_connection()
+
+    assert resolver.invalidated == [
+        (
+            "rabbit.failover.test",
+            5672,
+            socket.AF_UNSPEC,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+        )
+    ]
