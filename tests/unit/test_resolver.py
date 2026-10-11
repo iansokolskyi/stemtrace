@@ -922,6 +922,30 @@ class TestUwsgiResolvesOnCallingThread:
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == NEW_ADDRESS
         assert dns.threads == [threading.current_thread().name] * 2
 
+    @_ALL_UWSGI_MODES
+    def test_fork_hooks_under_uwsgi_start_no_helper_check_thread(
+        self, mode: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With --py-call-uwsgi-fork-hooks Python's hooks run; they must not
+        start the helper check thread, since uWSGI never uses the helper."""
+        self._uwsgi(monkeypatch, mode)
+        checks: list[str] = []
+
+        def helper_usable() -> bool:
+            checks.append(threading.current_thread().name)
+            return True
+
+        monkeypatch.setattr(resolver_module, "_helper_usable", helper_usable)
+        resolver = BoundedResolver(monotonic=FakeClock())
+
+        resolver.prepare_fork()
+        resolver.parent_after_fork()
+        for thread in threading.enumerate():
+            if thread.name.startswith("stemtrace-dns-"):
+                thread.join(JOIN_S)
+
+        assert checks == []
+
     def test_uwsgi_waits_for_lookup_already_in_flight(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

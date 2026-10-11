@@ -422,8 +422,17 @@ class BoundedResolver:
         _SPAWN_LOCKS.clear()
 
     def _check_helper(self, state: _State) -> None:
-        """Check once, in the background, that the helper can run here."""
-        if self._getaddrinfo is not None or state.helper_check_started is not None:
+        """Check once, in the background, that the helper can run here.
+
+        Not under uWSGI: lookups never use the helper there (see
+        _under_uwsgi()), and its fork hooks (--py-call-uwsgi-fork-hooks) must
+        not leave a ``stemtrace-dns-*`` thread in the process.
+        """
+        if (
+            self._getaddrinfo is not None
+            or state.helper_check_started is not None
+            or _under_uwsgi()
+        ):
             return
         state.helper_check_started = self._monotonic()
 
