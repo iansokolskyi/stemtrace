@@ -47,7 +47,7 @@ interface TimelineSegment {
 
 /**
  * Attempt-0 PENDING/RECEIVED belong before the first run whatever their
- * timestamps (PENDING first): the sender's PENDING (task_sent fires after
+ * timestamps (PENDING first): the sender's PENDING (after_task_publish fires after
  * publish) can be stamped after the worker received, started or finished it.
  */
 function isPreStart(event: TaskEvent): boolean {

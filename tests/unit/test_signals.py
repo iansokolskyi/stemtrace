@@ -7,7 +7,9 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from celery import Celery, group
 from celery.signals import (
+    after_task_publish,
     task_failure,
     task_postrun,
     task_prerun,
@@ -26,12 +28,12 @@ from stemtrace.library.signals import (
     _format_exception,
     _format_traceback,
     _get_hostname_and_pid,
+    _on_after_task_publish,
     _on_task_failure,
     _on_task_postrun,
     _on_task_prerun,
     _on_task_retry,
     _on_task_revoked,
-    _on_task_sent,
     connect_signals,
     disconnect_signals,
     on_worker_ready,
@@ -627,20 +629,36 @@ class TestTaskRevoked:
         assert event.state == TaskState.REVOKED
 
 
-class TestTaskSent:
-    """Tests for task_sent signal handler (PENDING state)."""
+def _publish_headers(**overrides: Any) -> dict[str, Any]:
+    """Message headers as Celery 5's protocol 2 builds them."""
+    headers: dict[str, Any] = {
+        "lang": "py",
+        "task": "tests.sample_task",
+        "id": "task-123",
+        "eta": None,
+        "retries": 0,
+        "group": None,
+        "parent_id": None,
+        "root_id": "task-123",
+    }
+    headers.update(overrides)
+    return headers
 
-    def test_emits_pending_event(
-        self,
-        transport: MemoryTransport,
+
+class TestAfterTaskPublish:
+    """after_task_publish handler (the sender's PENDING event)."""
+
+    def test_emits_pending_with_parent_root_and_group(
+        self, transport: MemoryTransport
     ) -> None:
-        """task_sent emits PENDING event."""
-        _on_task_sent(
+        _on_after_task_publish(
             sender="tests.sample_task",
-            task_id="task-123",
-            task="tests.sample_task",
-            args=(),
-            kwargs={},
+            body=((1, 2), {"key": "value"}, {}),
+            headers=_publish_headers(
+                group="group-1", parent_id="parent-1", root_id="root-1"
+            ),
+            exchange="",
+            routing_key="celery",
         )
 
         assert len(MemoryTransport.events) == 1
@@ -648,35 +666,42 @@ class TestTaskSent:
         assert event.task_id == "task-123"
         assert event.name == "tests.sample_task"
         assert event.state == TaskState.PENDING
+        assert event.parent_id == "parent-1"
+        assert event.root_id == "root-1"
+        assert event.group_id == "group-1"
+        assert event.args == [1, 2]
+        assert event.kwargs == {"key": "value"}
 
-    def test_captures_args_and_kwargs(
-        self,
-        transport: MemoryTransport,
+    def test_protocol_1_body_gives_id_name_args_and_group(
+        self, transport: MemoryTransport
     ) -> None:
-        """task_sent captures args and kwargs."""
-        _on_task_sent(
+        _on_after_task_publish(
             sender="tests.sample_task",
-            task_id="task-123",
-            task="tests.sample_task",
-            args=("hello", 42),
-            kwargs={"key": "value"},
+            body={
+                "id": "task-9",
+                "task": "tests.other_task",
+                "args": [3],
+                "kwargs": {},
+                "taskset": "group-9",
+                "retries": 0,
+            },
+            headers={},
         )
 
         event = MemoryTransport.events[0]
-        assert event.args == ["hello", 42]
-        assert event.kwargs == {"key": "value"}
+        assert (event.task_id, event.name, event.group_id) == (
+            "task-9",
+            "tests.other_task",
+            "group-9",
+        )
+        assert event.args == [3]
+        assert event.parent_id is None
 
-    def test_scrubs_sensitive_kwargs(
-        self,
-        transport: MemoryTransport,
-    ) -> None:
-        """task_sent scrubs sensitive data in kwargs."""
-        _on_task_sent(
+    def test_scrubs_sensitive_kwargs(self, transport: MemoryTransport) -> None:
+        _on_after_task_publish(
             sender="tests.sample_task",
-            task_id="task-123",
-            task="tests.sample_task",
-            args=(),
-            kwargs={"password": "secret123", "username": "alice"},
+            body=((), {"password": "secret123", "username": "alice"}, {}),
+            headers=_publish_headers(),
         )
 
         event = MemoryTransport.events[0]
@@ -684,36 +709,92 @@ class TestTaskSent:
         assert event.kwargs["password"] == "[Filtered]"
         assert event.kwargs["username"] == "alice"
 
-    def test_handles_missing_task_id(
-        self,
-        transport: MemoryTransport,
-    ) -> None:
-        """task_sent ignores calls without task_id."""
-        _on_task_sent(
-            sender="tests.sample_task",
-            task_id=None,
-            task="tests.sample_task",
-            args=(),
-            kwargs={},
+    def test_ignores_message_without_task_id(self, transport: MemoryTransport) -> None:
+        _on_after_task_publish(
+            sender="tests.sample_task", body=((), {}, {}), headers={}
         )
 
-        assert len(MemoryTransport.events) == 0
+        assert MemoryTransport.events == []
 
-    def test_uses_sender_as_fallback_name(
-        self,
-        transport: MemoryTransport,
+    def test_uses_sender_when_headers_have_no_task_name(
+        self, transport: MemoryTransport
     ) -> None:
-        """task_sent uses sender if task is None."""
-        _on_task_sent(
+        _on_after_task_publish(
             sender="tests.fallback_task",
-            task_id="task-123",
-            task=None,
-            args=(),
-            kwargs={},
+            body=((), {}, {}),
+            headers=_publish_headers(task=None),
         )
 
-        event = MemoryTransport.events[0]
-        assert event.name == "tests.fallback_task"
+        assert MemoryTransport.events[0].name == "tests.fallback_task"
+
+    def test_skips_retry_and_later_emits_first_send(
+        self, transport: MemoryTransport
+    ) -> None:
+        _on_after_task_publish(
+            sender="tests.sample_task",
+            body=((), {}, {}),
+            headers=_publish_headers(retries=1),
+        )
+        assert MemoryTransport.events == []
+
+        # The retry skip must not mark the task as already announced.
+        _on_after_task_publish(
+            sender="tests.sample_task", body=((), {}, {}), headers=_publish_headers()
+        )
+        assert len(MemoryTransport.events) == 1
+
+    def test_deduplicates_pending_for_same_task_id(
+        self, transport: MemoryTransport
+    ) -> None:
+        for _ in range(2):
+            _on_after_task_publish(
+                sender="tests.sample_task",
+                body=((), {}, {}),
+                headers=_publish_headers(),
+            )
+
+        assert len(MemoryTransport.events) == 1
+
+    def test_never_raises_on_malformed_message(
+        self, transport: MemoryTransport
+    ) -> None:
+        _on_after_task_publish(sender="tests.sample_task", body=object(), headers=None)
+
+        assert MemoryTransport.events == []
+
+
+class TestRealPublish:
+    """PENDING events from real publishes through a memory broker."""
+
+    @pytest.fixture
+    def app(self, transport: MemoryTransport) -> Celery:
+        app = Celery("publish-tests", broker="memory://", backend="cache+memory://")
+
+        @app.task(name="tests.add")
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        return app
+
+    def test_send_task_pending_carries_parent_and_root(self, app: Celery) -> None:
+        app.send_task("tests.add", args=(1, 2), parent_id="parent-1", root_id="root-1")
+
+        [event] = MemoryTransport.events
+        assert event.state == TaskState.PENDING
+        assert (event.parent_id, event.root_id) == ("parent-1", "root-1")
+        assert event.args == [1, 2]
+
+    def test_group_apply_async_pending_carries_group_id(self, app: Celery) -> None:
+        add = app.tasks["tests.add"]
+        result = group(add.s(1, 1), add.s(2, 2)).apply_async()
+
+        assert {e.group_id for e in MemoryTransport.events} == {result.id}
+        assert len(MemoryTransport.events) == 2
+
+    def test_eager_apply_publishes_no_pending(self, app: Celery) -> None:
+        app.tasks["tests.add"].apply(args=(1, 2))
+
+        assert [e for e in MemoryTransport.events if e.state == TaskState.PENDING] == []
 
 
 class TestFireAndForget:
@@ -977,52 +1058,6 @@ class TestSignalsScrubbingAndCaptureBranches:
         assert event.result is None
 
 
-class TestTaskSentBranches:
-    """Cover task_sent retry skipping and deduplication branches."""
-
-    def test_task_sent_skips_pending_for_retry_headers(self) -> None:
-        """task_sent should skip PENDING for retries based on headers.retries."""
-        set_config(StemtraceConfig(transport_url="memory://"))
-        connect_signals(MemoryTransport())
-
-        _on_task_sent(
-            sender="tests.sample_task",
-            task_id="task-123",
-            task="tests.sample_task",
-            args=(),
-            kwargs={},
-            headers={"retries": 1, "group": "group-1"},
-        )
-        assert len(MemoryTransport.events) == 0
-
-        # Should still emit normally later (retry skip must not mark as emitted)
-        _on_task_sent(
-            sender="tests.sample_task",
-            task_id="task-123",
-            task="tests.sample_task",
-            args=(),
-            kwargs={},
-            headers=None,
-        )
-        assert len(MemoryTransport.events) == 1
-
-    def test_task_sent_deduplicates_pending_for_same_task_id(self) -> None:
-        """Duplicate task_sent calls should emit PENDING only once."""
-        set_config(StemtraceConfig(transport_url="memory://"))
-        connect_signals(MemoryTransport())
-
-        for _ in range(2):
-            _on_task_sent(
-                sender="tests.sample_task",
-                task_id="task-123",
-                task="tests.sample_task",
-                args=(),
-                kwargs={},
-            )
-
-        assert len(MemoryTransport.events) == 1
-
-
 class TestTaskRetryBranches:
     def test_task_retry_with_none_reason_uses_cancelled_message(self) -> None:
         """If task_retry has no reason and no einfo, use Celery's cancel reason."""
@@ -1206,8 +1241,24 @@ def _receiver_errors(responses: list[tuple[Any, Any]]) -> list[Any]:
 class TestCelerySignalDispatch:
     """Receivers called the way Celery 5.6 sends each signal (keywords only)."""
 
-    def test_task_sent_send_publishes_pending(self, transport: MemoryTransport) -> None:
+    def test_after_task_publish_send_publishes_pending(
+        self, transport: MemoryTransport
+    ) -> None:
         # Mirrors celery.app.amqp.AMQP.send_task_message (protocol 2).
+        responses = after_task_publish.send(
+            sender="tests.sample_task",
+            body=((1,), {}, {}),
+            headers=_publish_headers(),
+            exchange="",
+            routing_key="celery",
+        )
+
+        assert _receiver_errors(responses) == []
+        assert [e.state for e in MemoryTransport.events] == [TaskState.PENDING]
+
+    def test_task_sent_send_publishes_nothing(self, transport: MemoryTransport) -> None:
+        # Deprecated and sent after after_task_publish for the same message:
+        # handling it too would announce the task twice.
         responses = task_sent.send(
             sender="tests.sample_task",
             task_id="task-123",
@@ -1219,7 +1270,7 @@ class TestCelerySignalDispatch:
         )
 
         assert _receiver_errors(responses) == []
-        assert [e.state for e in MemoryTransport.events] == [TaskState.PENDING]
+        assert MemoryTransport.events == []
 
     def test_task_lifecycle_send_publishes_started_and_success(
         self, transport: MemoryTransport, mock_task: MagicMock
