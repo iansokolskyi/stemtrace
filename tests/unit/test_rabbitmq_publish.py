@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 import pytest
 from kombu import Connection as KombuConnection
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     PUBLISH_IO_TIMEOUT,
@@ -715,3 +715,14 @@ class TestRabbitMQPublishBreaker:
         # Three fast failures, then one connection per probe: after 1, 2, 4,
         # 8, 16, then every 30s.
         assert len(broker.connections) <= 3 + 5 + 300 // 30
+
+
+def test_event_identifier_for_worker_event_uses_event_type_value() -> None:
+    event = WorkerEvent(
+        event_type=WorkerEventType.WORKER_READY,
+        hostname="w1",
+        pid=42,
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert RabbitMQTransport._event_identifier(event) == "w1:42:worker_ready"

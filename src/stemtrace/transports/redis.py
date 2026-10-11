@@ -379,7 +379,7 @@ class RedisTransport:
         """Create a stable identifier for logging."""
         if isinstance(event, TaskEvent):
             return event.task_id
-        return f"{event.hostname}:{event.pid}:{event.event_type}"
+        return f"{event.hostname}:{event.pid}:{event.event_type.value}"
 
     def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.

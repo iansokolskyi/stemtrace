@@ -175,10 +175,9 @@ class TestRedisPublishBreaker:
 
         transport.publish(event)
 
-        message = _warnings(caplog)[0].getMessage()
-        assert message.startswith("Failed to publish event w1:42:")
-        assert message.endswith(
-            "to Redis; publishing continues (1 event(s) dropped since the last report)"
+        assert _warnings(caplog)[0].getMessage() == (
+            "Failed to publish event w1:42:worker_ready to Redis; publishing "
+            "continues (1 event(s) dropped since the last report)"
         )
 
 
