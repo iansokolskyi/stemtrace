@@ -530,7 +530,8 @@ Set `--login-secret` (or `STEMTRACE_LOGIN_SECRET`) to a long random value, and u
 value on every replica. Without it, each process generates its own random secret, so sessions
 only work within a single process and are lost on restart. Failed sign-ins are throttled per IP
 and per username or browser; see [With Built-in Login Page](#with-built-in-login-page-recommended-for-ui-first)
-for the limits and the proxy setting (`FORWARDED_ALLOW_IPS`) that keeps client IPs correct.
+for the limits and the proxy setting (`FORWARDED_ALLOW_IPS`, set to your proxies' addresses,
+never `*`) that keeps client IPs correct.
 
 #### High-Scale Production Setup
 
@@ -618,31 +619,45 @@ the problem when a session signed by another process is rejected.
 
 Failed sign-ins are throttled in memory, per client IP and per username or browser:
 
-- After 5 failures from one IP, further attempts from it get `429 Too Many Requests` with a
-  `Retry-After` header, without the credentials being checked. The first lockout is 30
-  seconds; each further failure doubles it, up to 15 minutes.
-- A successful sign-in sets a *device cookie* (`stemtrace_session_device`, signed, valid for 90
-  days, kept on logout). A browser that sends a valid one for the username it signs in with
-  gets its own limit of 5 failures. Every other browser shares a per-username limit of 20
-  failures, from all IPs together.
-- That shared limit can be held by anyone who knows the username: about one failed attempt
-  every 15 minutes keeps sign-in locked, **indefinitely**, for every browser without a device
-  cookie, e.g. a new laptop or a cleared browser. Browsers that signed in within the last 90
-  days are not affected. Restarting stemtrace clears all limits. If that's a concern, put
-  stemtrace behind your own auth (see below) or a proxy with its own rate limits.
-- A successful sign-in clears the counts for its IP, username and device; other failures are
-  forgotten an hour after the last one. The response is the same whether the username exists
-  or not.
-- The client IP is the one your ASGI server reports. Behind a reverse proxy or load balancer,
-  configure the server to trust it (uvicorn `--forwarded-allow-ips` or the `FORWARDED_ALLOW_IPS`
-  env var, which `stemtrace server` also reads), otherwise every user shares the proxy's address
-  and its IP limit. `X-Forwarded-For` is never read directly. Requests without a client address
-  (e.g. uvicorn `--uds`) have no IP limit; the username and device limits still apply.
+- After 5 failures from one IP (IPv6: one /64 network), further attempts from it get
+  `429 Too Many Requests` with a `Retry-After` header, without the credentials being checked.
+  The first lockout is 30 seconds; each further failure doubles it, up to 15 minutes.
+- A successful sign-in sets a *device cookie* (`stemtrace_session_device`, signed, kept on
+  logout). A browser that sends a valid one for the username it signs in with gets its own
+  limit of 5 failures and skips the IP limit (its failures still count against the IP). Every
+  other browser shares a per-username limit of 20 failures, from all IPs together.
+- Device cookies stay valid for 90 days only with a configured `STEMTRACE_LOGIN_SECRET`
+  (`login_secret` / `--login-secret`). With a generated per-process secret they stop working
+  on every restart and aren't recognized by other workers or replicas.
+- The per-username limit can be held by anyone who knows the username: about one failed
+  attempt every 15 minutes keeps sign-in locked, **indefinitely**, for every browser without a
+  valid device cookie, e.g. a new laptop or a cleared browser. Browsers that signed in within
+  the last 90 days are not affected. Restarting stemtrace clears all limits. If that's a
+  concern, put stemtrace behind your own auth (see below) or a proxy with its own rate limits.
+- Guessing costs the same for every username, real or not: 20 guesses, then one per lockout
+  (about 4 an hour at the 15-minute cap). Flooding with other usernames can't reset a count:
+  to make room, stemtrace only drops counts at no more than half their limit (or forgotten
+  ones), so a count is reset only by an hour without failures or by a successful sign-in,
+  which clears the counts for its IP, username and device. The response is the same whether
+  the username exists or not.
+- The client IP is the one your ASGI server reports; `X-Forwarded-For` is never read directly.
+  Behind a reverse proxy or load balancer, tell the server which proxies to trust with uvicorn
+  `--forwarded-allow-ips` or the `FORWARDED_ALLOW_IPS` env var (which `stemtrace server` also
+  reads), listing their IPs or CIDRs, e.g. `FORWARDED_ALLOW_IPS=10.0.0.0/8`. Don't use `*` with
+  a proxy that appends to `X-Forwarded-For`: uvicorn then takes the leftmost entry, which the
+  client sets, so anyone can claim a new IP on every request. Without the setting, every user
+  shares the proxy's address and its IP limit (browsers with a device cookie aren't held up by
+  that). Requests without a client address (e.g. uvicorn `--uds`) have no IP limit; the
+  username and device limits still apply.
 - Limits are per process: with several workers or replicas, each counts on its own. Each
-  process tracks up to 10,000 unlocked and 10,000 locked IPs (and as many usernames and
-  devices). Unlocked entries beyond that are dropped, oldest first. Locks are never dropped
-  early: while 10,000 IPs (or usernames) are locked, sign-ins from new ones get 429 until a lock
-  ends, except from browsers with a device cookie.
+  process tracks up to 10,000 unlocked and 10,000 locked keys of each kind (IPs, usernames,
+  devices). Locks are never dropped early. When a table is full, sign-ins from browsers
+  without a device cookie fail closed: every IP or username that isn't already tracked gets
+  429, for as long as the table stays full. Filling an IP table takes about 10,000 distinct IPs
+  (or IPv6 /64s) with 3 to 5 failures each; holding the lock table at the 15-minute cap takes
+  about one request per IP every 15 minutes (~11 requests/s). Filling the username table takes
+  about 10,000 usernames with 11 or more failures each. Browsers with a device cookie keep
+  working.
 
 Behind a reverse proxy that strips a path prefix, run your app with uvicorn's `--root-path`
 (e.g. `uvicorn app:app --root-path /monitoring`); the login page, redirects and the session
