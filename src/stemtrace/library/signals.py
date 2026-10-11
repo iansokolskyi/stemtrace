@@ -4,6 +4,7 @@ import inspect
 import logging
 import threading
 import traceback as tb_module
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +41,44 @@ logger = logging.getLogger(__name__)
 
 _transport: EventTransport | None = None
 # Track task IDs that have received PENDING to avoid duplicates from retries
-_pending_emitted: set[str] = set()
+# Task IDs this process already sent a PENDING for (a task republished
+# with the same ID, e.g. a retry re-queue, is announced once). A process that
+# only sends tasks (a web app) never runs them, so nothing removes their IDs:
+# the set keeps the most recent _PENDING_DEDUP_SIZE IDs only.
+_PENDING_DEDUP_SIZE = 10_000
+
+
+class _RecentIds:
+    """Insertion-ordered set of IDs that forgets the oldest past a limit."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self._ids: OrderedDict[str, None] = OrderedDict()
+
+    def __contains__(self, task_id: object) -> bool:
+        """Whether the ID is remembered."""
+        return task_id in self._ids
+
+    def __len__(self) -> int:
+        """How many IDs are remembered."""
+        return len(self._ids)
+
+    def add(self, task_id: str) -> None:
+        """Remember an ID, forgetting the oldest beyond the limit."""
+        self._ids[task_id] = None
+        while len(self._ids) > _PENDING_DEDUP_SIZE:
+            self._ids.popitem(last=False)
+
+    def discard(self, task_id: str) -> None:
+        """Forget an ID if remembered."""
+        self._ids.pop(task_id, None)
+
+    def clear(self) -> None:
+        """Forget every ID."""
+        self._ids.clear()
+
+
+_pending_emitted = _RecentIds()
 _pending_emitted_lock = threading.RLock()
 
 # Guard against overly-large docstrings bloating broker events.
@@ -457,6 +495,14 @@ def _published_message(
     return None
 
 
+def _retries(value: Any) -> int:
+    """A message's retry count; 0 if it isn't a number (non-Celery producers)."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _on_after_task_publish(
     *,
     sender: str | None = None,
@@ -479,7 +525,7 @@ def _on_after_task_publish(
         message = _published_message(body, headers)
     except (IndexError, KeyError, TypeError):  # not a task message we know
         return
-    if message is None or message["retries"] > 0:
+    if message is None or _retries(message["retries"]) > 0:
         return
     task_id = str(message["id"])
 

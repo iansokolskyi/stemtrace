@@ -18,6 +18,7 @@ from celery.signals import (
     task_sent,
 )
 
+import stemtrace.library.signals as signals_module
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
 from stemtrace.library.signals import (
@@ -761,6 +762,46 @@ class TestAfterTaskPublish:
         _on_after_task_publish(sender="tests.sample_task", body=object(), headers=None)
 
         assert MemoryTransport.events == []
+
+
+class TestPendingDedupBound:
+    def test_send_only_process_keeps_a_bounded_dedup_set(
+        self, transport: MemoryTransport, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A web app only sends tasks: nothing ever runs them in-process, so
+        # nothing removes their IDs again.
+        monkeypatch.setattr(signals_module, "_PENDING_DEDUP_SIZE", 100)
+        for i in range(1000):
+            _on_after_task_publish(
+                sender="tests.sample_task",
+                body=((), {}, {}),
+                headers=_publish_headers(id=f"task-{i}"),
+            )
+
+        assert len(MemoryTransport.events) == 1000
+        assert len(signals_module._pending_emitted) == 100
+
+        # Recent IDs are still deduplicated.
+        _on_after_task_publish(
+            sender="tests.sample_task",
+            body=((), {}, {}),
+            headers=_publish_headers(id="task-999"),
+        )
+        assert len(MemoryTransport.events) == 1000
+
+    @pytest.mark.parametrize("retries", ["1", "lots", None, 2.5])
+    def test_odd_retries_value_never_raises(
+        self, transport: MemoryTransport, retries: object
+    ) -> None:
+        # Non-Celery producers can put anything in the headers.
+        _on_after_task_publish(
+            sender="tests.sample_task",
+            body=((), {}, {}),
+            headers=_publish_headers(retries=retries),
+        )
+
+        expected = 0 if retries in ("1", 2.5) else 1
+        assert len(MemoryTransport.events) == expected
 
 
 class TestRealPublish:

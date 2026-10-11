@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading:** upgrade the server before (or together with) the workers. Workers of this release put the parent and group IDs on the PENDING event they send; an older server draws such tasks as extra separate graphs.
+
 ### Changed
 - Minimum dependency versions raised to the lowest ones the test suite passes with: `celery>=5.2.0`, `pydantic>=2.2.0`, `typer>=0.13.0`; `kombu>=5.2.1`, which stemtrace imports, is now declared. A new CI job runs the unit tests against the declared minimums.
 - Graph data: a node's `parent_id` is where it sits in the graph. For a group's task that is the GROUP/CHORD node, for a chord's callback the CHORD node, and a task whose parent isn't in the store yet has none. The parent a task's events reported is in the new `reported_parent_id` field, on `TaskNode` and in the API's task and graph node responses.
@@ -24,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graphs: a chord whose body is a group, such as `chord([a, b], group(c, d))` (or `chain(group(a, b), group(c, d))`, which Celery turns into one), draws the body as a group after the chord, whatever order events arrive in; one body task used to be drawn as a header's subtask.
 - Graphs: `task.replace()` no longer makes the graph depend on event order. Celery gives the replacement's last task the replaced task's ID, so that ID reports two parents; a task's parent now comes from its own events in lifecycle order (under its original name), and the replaced task stays where it was sent.
 - Graph page: sibling chords whose headers send subtasks no longer draw those subtasks on top of the chords' callbacks.
-- Worker events: the sender's PENDING event now carries the parent, root and group IDs (taken from `after_task_publish`; Celery's deprecated `task_sent` signal, used until now, never passes them), so tasks are placed under their parent and in their group as soon as they are sent.
+- Worker events: the sender's PENDING event now carries the parent, root and group IDs (taken from `after_task_publish`; Celery's deprecated `task_sent` signal, used until now, never passes them), so tasks are placed under their parent and in their group as soon as they are sent. The set of task IDs a process already announced is now bounded (10,000 most recent), so processes that only send tasks (web apps) no longer grow it forever, and a non-numeric `retries` header from a non-Celery producer no longer raises.
 - Graphs: a chord's callback is only drawn on evidence from the events (the callback the headers name, or the chord's group ID Celery stamps on a chain body's last task, traced back to a header). A header's own subtask or sub-group is no longer drawn as the callback, including when a header failed and the body never ran; such a chord shows no callback. Chords run through Celery's `chord_unlock` task (result backends without chord support) link their callback too.
 - The server no longer evicts a group's or chord's node before its tasks; a recreated group used to be linked under itself, which left its graph page blank. Evicting a task also drops it from its group and from its chord.
 - Graph page: a malformed graph in which a group lists itself among its children is drawn instead of rendering blank.
