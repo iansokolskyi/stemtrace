@@ -948,7 +948,7 @@ class TestWorkersAndRegistryOnDemandInspect:
         data = response.json()
         assert data["total"] == 1
         worker = data["workers"][0]
-        assert worker["hostname"] == "worker-1"
+        assert worker["hostname"] == "celery@worker-1"
         assert worker["pid"] == 1111
         assert worker["status"] == "online"
         assert worker["registered_tasks"] == ["myapp.tasks.process"]
@@ -1093,8 +1093,8 @@ class TestInspectRefreshBranches:
     def test_refresh_worker_registry_ping_fallback_marks_workers_online(self) -> None:
         """If stats is unavailable but ping() responds, mark known workers online."""
         worker_registry = WorkerRegistry()
-        worker_registry.register_worker("worker-1", 1111, ["a"])
-        worker_registry.mark_shutdown("worker-1", 1111)
+        worker_registry.register_worker("celery@worker-1", 1111, ["a"])
+        worker_registry.mark_shutdown("celery@worker-1", 1111)
 
         class _Inspect:
             def stats(self) -> None:
@@ -1110,7 +1110,7 @@ class TestInspectRefreshBranches:
 
         workers = worker_registry.get_all_workers()
         assert len(workers) == 1
-        assert workers[0].hostname == "worker-1"
+        assert workers[0].hostname == "celery@worker-1"
         assert workers[0].pid == 1111
         assert workers[0].status == "online"
 
@@ -1119,7 +1119,9 @@ class TestInspectRefreshBranches:
     ) -> None:
         """If registered() fails, we keep the existing task list for that worker."""
         worker_registry = WorkerRegistry()
-        worker_registry.register_worker("worker-1", 1111, ["myapp.tasks.process"])
+        worker_registry.register_worker(
+            "celery@worker-1", 1111, ["myapp.tasks.process"]
+        )
 
         class _Inspect:
             def stats(self) -> dict[str, object]:
@@ -1135,14 +1137,14 @@ class TestInspectRefreshBranches:
 
         workers = worker_registry.get_all_workers()
         assert len(workers) == 1
-        assert workers[0].hostname == "worker-1"
+        assert workers[0].hostname == "celery@worker-1"
         assert workers[0].registered_tasks == ["myapp.tasks.process"]
 
     def test_refresh_worker_registry_marks_missing_workers_offline(self) -> None:
         """Workers not present in stats responders are marked offline."""
         worker_registry = WorkerRegistry()
-        worker_registry.register_worker("worker-1", 1111, ["a"])
-        worker_registry.register_worker("worker-2", 2222, ["b"])
+        worker_registry.register_worker("celery@worker-1", 1111, ["a"])
+        worker_registry.register_worker("celery@worker-2", 2222, ["b"])
 
         class _Inspect:
             def stats(self) -> dict[str, object]:
@@ -1159,8 +1161,8 @@ class TestInspectRefreshBranches:
         status_by_host = {
             w.hostname: w.status for w in worker_registry.get_all_workers()
         }
-        assert status_by_host["worker-1"] == "online"
-        assert status_by_host["worker-2"] == "offline"
+        assert status_by_host["celery@worker-1"] == "online"
+        assert status_by_host["celery@worker-2"] == "offline"
 
     def test_refresh_worker_registry_handles_bad_stats_payloads(self) -> None:
         """Non-dict stats payloads and invalid pids are ignored."""
@@ -1185,9 +1187,99 @@ class TestInspectRefreshBranches:
 
         workers = worker_registry.get_all_workers()
         assert len(workers) == 1
-        assert workers[0].hostname == "worker-3"
+        assert workers[0].hostname == "celery@worker-3"
         assert workers[0].pid == 3333
         assert workers[0].registered_tasks == []
+
+
+class TestInspectRefreshUsesCeleryNodenames:
+    """Refresh keys workers by Celery nodename, the name worker events carry.
+
+    ``worker_ready``/``worker_shutdown`` publish ``WorkController.hostname``,
+    which Celery 5.6.3 always sets to a nodename (``default_nodename`` in
+    celery/worker/worker.py), e.g. ``w1@devbox`` for ``celery multi start w1``.
+    Inspect replies are keyed by the same nodename. Values below are what a
+    real ``celery multi start w1 w2`` reported.
+    """
+
+    def test_refresh_with_multi_nodes_keeps_one_online_entry_per_node(self) -> None:
+        """Each node stays a single online worker, never a bare-host duplicate."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
+        worker_registry.register_worker("w2@devbox", 297962, ["app.add"])
+        fake = _FakeInspect(
+            ping_result=None,
+            stats_result={
+                "w1@devbox": {"pid": 296481},
+                "w2@devbox": {"pid": 297962},
+            },
+            registered_result={"w1@devbox": ["app.add"], "w2@devbox": ["app.add"]},
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, fake)  # type: ignore[arg-type]
+
+        workers = {
+            (w.hostname, w.pid): (w.status, w.registered_tasks)
+            for w in worker_registry.get_all_workers()
+        }
+        assert workers == {
+            ("w1@devbox", 296481): ("online", ["app.add"]),
+            ("w2@devbox", 297962): ("online", ["app.add"]),
+        }
+
+    def test_refresh_without_registered_keeps_event_task_list(self) -> None:
+        """A failed registered() reply keeps the tasks worker_ready reported."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("w1@devbox", 296481, ["app.add", "app.mul"])
+        fake = _FakeInspect(
+            ping_result=None,
+            stats_result={"w1@devbox": {"pid": 296481}},
+            registered_result=None,
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, fake)  # type: ignore[arg-type]
+
+        workers = [
+            (w.hostname, w.status, w.registered_tasks)
+            for w in worker_registry.get_all_workers()
+        ]
+        assert workers == [("w1@devbox", "online", ["app.add", "app.mul"])]
+
+    def test_refresh_marks_only_the_silent_node_on_a_shared_host_offline(
+        self,
+    ) -> None:
+        """Nodes sharing a host are told apart: only the missing one goes offline."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
+        worker_registry.register_worker("w2@devbox", 297962, ["app.add"])
+        fake = _FakeInspect(
+            ping_result=None,
+            stats_result={"w1@devbox": {"pid": 296481}},
+            registered_result={"w1@devbox": ["app.add"]},
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, fake)  # type: ignore[arg-type]
+
+        status_by_node = {
+            w.hostname: w.status for w in worker_registry.get_all_workers()
+        }
+        assert status_by_node == {"w1@devbox": "online", "w2@devbox": "offline"}
+
+    def test_ping_fallback_marks_node_online_by_nodename(self) -> None:
+        """Without stats, a ping reply from the node brings it back online."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
+        worker_registry.mark_shutdown("w1@devbox", 296481)
+        fake = _FakeInspect(
+            ping_result={"w1@devbox": {"ok": "pong"}},
+            stats_result=None,
+            registered_result=None,
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, fake)  # type: ignore[arg-type]
+
+        workers = [(w.hostname, w.status) for w in worker_registry.get_all_workers()]
+        assert workers == [("w1@devbox", "online")]
 
 
 class TestInspectRateLimiting:

@@ -52,15 +52,6 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
-def _hostname_from_worker_key(worker_key: str) -> str:
-    """Extract hostname from Celery worker key.
-
-    Celery typically prefixes worker keys with `celery@`, but some brokers or
-    setups may return plain hostnames.
-    """
-    return worker_key.split("@", 1)[1] if "@" in worker_key else worker_key
-
-
 def _pid_from_stats_payload(payload: object) -> int | None:
     """Extract PID from Celery inspect stats payload."""
     if not isinstance(payload, dict):
@@ -282,6 +273,11 @@ def _refresh_worker_registry_from_inspect(
 
     The refresh is intentionally best-effort and must never raise.
 
+    Inspect replies are keyed by Celery nodename (``name@host``), the same
+    name worker events carry, so the keys are used as-is. Shortening them to
+    the host listed every worker twice and couldn't tell ``celery multi``
+    nodes on one host apart.
+
     Args:
         worker_registry: Worker registry to populate/update.
         inspector: Celery inspector to query.
@@ -305,38 +301,31 @@ def _refresh_worker_registry_from_inspect(
             active = inspector.ping()
         if not active:
             return
-        active_hostnames = {
-            _hostname_from_worker_key(worker_key) for worker_key in active
-        }
-
         for worker in worker_registry.get_all_workers():
-            if worker.hostname in active_hostnames:
+            if worker.hostname in active:
                 worker_registry.mark_online(worker.hostname, worker.pid)
         return
 
     # Treat stats responders as active workers and update online/offline state.
-    active_hostnames = {_hostname_from_worker_key(worker_key) for worker_key in stats}
-
     # If we got a non-empty stats response, mark known workers offline if they
     # didn't respond. This makes the Workers view accurate even without events.
     for worker in worker_registry.get_all_workers():
-        if worker.hostname not in active_hostnames:
+        if worker.hostname not in stats:
             worker_registry.mark_shutdown(worker.hostname, worker.pid)
 
     now = datetime.now(timezone.utc)
 
     # Prefer canonical worker keys from stats (they include the pid).
-    for worker_key, payload in stats.items():
-        hostname = _hostname_from_worker_key(worker_key)
+    for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
         if pid is None:
             continue
 
-        tasks = _tasks_for_worker_key(registered, worker_key)
+        tasks = _tasks_for_worker_key(registered, nodename)
         if tasks is None:
-            tasks = worker_registry.get_registered_tasks(hostname, pid)
+            tasks = worker_registry.get_registered_tasks(nodename, pid)
         worker_registry.register_worker(
-            hostname=hostname,
+            hostname=nodename,
             pid=pid,
             tasks=tasks,
             task_definitions=None,
