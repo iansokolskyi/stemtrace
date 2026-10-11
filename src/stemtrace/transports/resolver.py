@@ -28,14 +28,13 @@ doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
 can't run this Python (a frozen application, an embedded interpreter such as
 uWSGI's, whose sys.executable is the uwsgi binary), lookups stay in-process
 and every fork waits for them as above (one WARNING says so). A helper is
-never started while the process forks (see _run_helper()). uWSGI forks in C,
-without Python's at-fork hooks (unless started with --py-call-uwsgi-fork-hooks,
-which the resolver doesn't detect), in its master and, without --master
-(uWSGI's default), in its first process, which loads the app and then forks
-the other workers; there lookups run on the calling thread, without the wait
-bound, and invalidate() only marks the answer due (see
-_forks_without_hooks()). uWSGI workers, mules and spoolers don't fork and use
-the background threads as usual.
+never started while the process forks (see _run_helper()). Under uWSGI (the
+``uwsgi`` module is importable), which forks in C without Python's at-fork
+hooks (unless started with --py-call-uwsgi-fork-hooks, which the resolver
+doesn't detect), no fork can wait for lookup threads, so every lookup runs on
+the calling thread, without the wait bound, and invalidate() only marks the
+answer due (see _under_uwsgi()). This holds in every uWSGI process: master or
+not, workers, mules and spoolers.
 Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
 custom resolver shim) is no longer consulted for its lookups.
 """
@@ -244,7 +243,7 @@ class BoundedResolver:
         _check_host_name(host)
         state = self._state()
         key = (host, port, family, socktype, proto)
-        if _forks_without_hooks():
+        if _under_uwsgi():
             return self._resolve_on_this_thread(state, key, timeout)
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -283,19 +282,19 @@ class BoundedResolver:
     def _resolve_on_this_thread(
         self, state: _State, key: tuple[Any, ...], timeout: float
     ) -> list[AddrInfo]:
-        """Resolve on the calling thread, without a wait bound (see _forks_without_hooks()).
+        """Resolve on the calling thread, without a wait bound (see _under_uwsgi()).
 
         uWSGI forks in C, without running Python's at-fork hooks, so
         prepare_fork() can't keep a fork from catching a lookup thread inside
-        glibc. A lookup on the calling thread is never running while that
-        thread forks. Answers and failures are cached as in resolve(), but
+        glibc, in whichever of its processes forks. A lookup on the calling
+        thread is never running while that thread forks. Answers and failures are cached as in resolve(), but
         past the TTL the refresh runs here too, so the caller waits for it
         (falling back to the cached answer if it fails) instead of getting the
         cached answer while it runs in the background.
 
-        A lookup already running for the host (a background one, started
-        before uWSGI's module could be seen) isn't repeated: the cached answer
-        is used, or without one the caller waits for it up to ``timeout``.
+        A lookup already running for the host isn't repeated: the cached
+        answer is used, or without one the caller waits for it up to
+        ``timeout``.
         """
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -344,7 +343,7 @@ class BoundedResolver:
         instead of waiting for the TTL. The cached answer stays in use until
         the refresh succeeds. Does nothing for a host without an answer.
 
-        Where lookups run on the calling thread (see _forks_without_hooks()),
+        Where lookups run on the calling thread (under uWSGI, see _under_uwsgi()),
         no thread is started: the answer is only marked due, and the next
         resolve() refreshes it on its calling thread.
         """
@@ -354,7 +353,7 @@ class BoundedResolver:
             entry = state.entries.get(key)
             if entry is None or entry.addresses is None:
                 return
-            if _forks_without_hooks():
+            if _under_uwsgi():
                 entry.refresh_at = self._monotonic()
                 return
             with contextlib.suppress(socket.gaierror):
@@ -681,34 +680,17 @@ def _fresh(error: Exception) -> Exception:
     return new
 
 
-def _forks_without_hooks() -> bool:
-    """Whether this is a uWSGI process that forks in C, without Python's hooks.
+def _under_uwsgi() -> bool:
+    """Whether this process runs under uWSGI (or pyuwsgi).
 
-    That is the uWSGI master (``masterpid() == os.getpid()``) and, without
-    ``--master`` (uWSGI's default, where masterpid() returns 0), the first
-    process: it loads the app, then becomes worker 1 and forks the others
-    (``masterpid() == 0`` and ``worker_id() == 0``; pyuwsgi 2.0.30). Not
-    ``worker_id() == 0`` alone: mules and spoolers report 0 too, and they
-    don't fork (a mule has a mule_id() above 0).
+    uWSGI forks in C, without Python's at-fork hooks, in any of its processes
+    (the master, or without ``--master`` the first worker; workers can fork
+    too), so a bare check for its built-in ``uwsgi`` module is used instead of
+    working out which process forks: masterpid(), worker_id() and mule_id()
+    can't tell (a mule and a spooler report worker_id() 0, a no-master
+    process masterpid() 0).
     """
-    uwsgi = sys.modules.get("uwsgi")
-    masterpid = getattr(uwsgi, "masterpid", None)
-    if not callable(masterpid):
-        return False
-    pid = masterpid()
-    if pid == os.getpid():
-        return True
-    return (
-        pid == 0
-        and _uwsgi_id(uwsgi, "worker_id") == 0
-        and (_uwsgi_id(uwsgi, "mule_id") == 0)
-    )
-
-
-def _uwsgi_id(uwsgi: Any, name: str) -> int | None:
-    """``uwsgi.<name>()`` (worker_id, mule_id), or None when it isn't there."""
-    function = getattr(uwsgi, name, None)
-    return function() if callable(function) else None
+    return sys.modules.get("uwsgi") is not None
 
 
 def _check_host_name(host: str) -> None:

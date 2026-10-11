@@ -862,98 +862,51 @@ class TestCachedErrorsAreRaisedFresh:
         assert info.value is not entry.error
 
 
-class TestUwsgiMasterResolvesOnCallingThread:
-    """uWSGI forks in C, without Python's at-fork hooks (the master, and the
-    first process of a no-master setup), so such a process must not have
-    lookup threads that a fork could catch inside glibc. Workers, mules and
-    spoolers don't fork and keep the bounded background lookups."""
+# (masterpid, worker_id, mule_id) as pyuwsgi 2.0.30 reports them; None masterpid
+# is this process. Every uWSGI process is covered, not just those that fork.
+UWSGI_MODES = {
+    "master": (None, 0, 0),
+    "no-master-import": (0, 0, 0),
+    "no-master-worker": (0, 2, 0),
+    "worker": (-1, 1, 0),
+    "mule": (-1, 0, 1),
+    "spooler": (-1, 0, 0),
+}
+_ALL_UWSGI_MODES = pytest.mark.parametrize("mode", list(UWSGI_MODES))
 
-    def _uwsgi(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        is_master: bool = False,
-        no_master: bool = False,
-        worker_id: int = 0,
-        mule_id: int = 0,
-    ) -> None:
-        """Install a fake ``uwsgi`` module as uWSGI (pyuwsgi 2.0.30) shows it.
 
-        Without ``--master`` (``no_master``), masterpid() returns 0.
-        """
+class TestUwsgiResolvesOnCallingThread:
+    """uWSGI forks in C, without Python's at-fork hooks, in any process, so no
+    uWSGI process may have lookup threads that a fork could catch inside
+    glibc: they all resolve on the calling thread."""
+
+    def _uwsgi(self, monkeypatch: pytest.MonkeyPatch, mode: str = "master") -> None:
+        """Install a fake ``uwsgi`` module as uWSGI (pyuwsgi 2.0.30) shows ``mode``."""
+        masterpid, worker_id, mule_id = UWSGI_MODES[mode]
+        master_pid = os.getpid() if masterpid is None else masterpid
         fake = types.ModuleType("uwsgi")
-        master_pid = os.getpid() if is_master else os.getpid() - 1
-        if no_master:
-            master_pid = 0
         fake.masterpid = lambda: master_pid  # type: ignore[attr-defined]
         fake.worker_id = lambda: worker_id  # type: ignore[attr-defined]
         fake.mule_id = lambda: mule_id  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "uwsgi", fake)
 
-    def _lookup_thread(
-        self, resolver: BoundedResolver, dns: "_ThreadRecordingDns"
-    ) -> str:
-        resolver.resolve("redis.local", 6379, timeout=1.0)
-        return dns.threads[0]
-
-    def test_uwsgi_master_resolves_on_calling_thread(
-        self, monkeypatch: pytest.MonkeyPatch
+    @_ALL_UWSGI_MODES
+    def test_uwsgi_process_resolves_on_calling_thread(
+        self, mode: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch, mode)
         dns = _ThreadRecordingDns()
 
-        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
+        _make(dns, FakeClock()).resolve("redis.local", 6379, timeout=1.0)  # type: ignore[arg-type]
 
-        assert thread == threading.current_thread().name
+        assert dns.threads == [threading.current_thread().name]
 
-    @pytest.mark.parametrize(
-        ("worker_id", "mule_id"),
-        [(1, 0), (0, 1), (0, 0)],
-        ids=["worker", "mule", "spooler"],
-    )
-    def test_other_uwsgi_processes_resolve_in_background(
-        self, worker_id: int, mule_id: int, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A mule (and a spooler) also reports worker_id 0, but isn't the master."""
-        self._uwsgi(monkeypatch, is_master=False, worker_id=worker_id, mule_id=mule_id)
-        dns = _ThreadRecordingDns()
-
-        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
-
-        assert thread.startswith("stemtrace-dns-")
-
-    def test_no_master_first_process_resolves_on_calling_thread(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without --master, masterpid() is 0 and worker_id() 0 until it forks."""
-        self._uwsgi(monkeypatch, no_master=True, worker_id=0)
-        dns = _ThreadRecordingDns()
-
-        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
-
-        assert thread == threading.current_thread().name
-
-    @pytest.mark.parametrize(
-        ("worker_id", "mule_id"),
-        [(1, 0), (2, 0), (0, 1)],
-        ids=["worker-1", "worker-2", "mule"],
-    )
-    def test_no_master_workers_and_mules_resolve_in_background(
-        self, worker_id: int, mule_id: int, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._uwsgi(monkeypatch, no_master=True, worker_id=worker_id, mule_id=mule_id)
-        dns = _ThreadRecordingDns()
-
-        thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
-
-        assert thread.startswith("stemtrace-dns-")
-
-    @pytest.mark.parametrize("no_master", [False, True], ids=["master", "no-master"])
+    @_ALL_UWSGI_MODES
     def test_invalidate_then_resolve_stays_on_calling_thread(
-        self, no_master: bool, monkeypatch: pytest.MonkeyPatch
+        self, mode: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """invalidate() must not start a lookup thread that a fork could catch."""
-        self._uwsgi(monkeypatch, is_master=not no_master, no_master=no_master)
+        self._uwsgi(monkeypatch, mode)
         dns = _ThreadRecordingDns()
         dns.answers = [ADDRESS, NEW_ADDRESS]
         resolver = _make(dns, FakeClock())  # type: ignore[arg-type]
@@ -969,12 +922,11 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == NEW_ADDRESS
         assert dns.threads == [threading.current_thread().name] * 2
 
-    def test_master_waits_for_lookup_already_in_flight(
+    def test_uwsgi_waits_for_lookup_already_in_flight(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No second lookup for a host while one runs (e.g. started before
-        uWSGI's module was importable)."""
-        self._uwsgi(monkeypatch, is_master=True)
+        """No second lookup for a host while one runs."""
+        self._uwsgi(monkeypatch)
         dns = FakeDns()
         resolver = _make(dns, FakeClock())
         state = resolver._state()
@@ -989,10 +941,10 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert info.value.errno == socket.EAI_AGAIN
         assert dns.calls == []
 
-    def test_master_serves_cached_answer_while_lookup_in_flight(
+    def test_uwsgi_serves_cached_answer_while_lookup_in_flight(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         resolver = _make(dns, clock)
         resolver.resolve("redis.local", 6379, timeout=1.0)
@@ -1003,10 +955,10 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local"]
 
-    def test_master_cache_hit_needs_no_lookup(
+    def test_uwsgi_cache_hit_needs_no_lookup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         resolver = _make(dns, clock)
         resolver.resolve("redis.local", 6379, timeout=1.0)
@@ -1015,10 +967,10 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local"]
 
-    def test_master_failed_lookup_is_cached_as_new_errors(
+    def test_uwsgi_failed_lookup_is_cached_as_new_errors(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
         resolver = _make(dns, clock)
@@ -1031,10 +983,10 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert dns.calls == ["redis.local"]
         assert len({id(e) for e in raised}) == 3
 
-    def test_master_refresh_failure_falls_back_to_cached_answer(
+    def test_uwsgi_refresh_failure_falls_back_to_cached_answer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [ADDRESS, socket.gaierror(socket.EAI_AGAIN, "no dns")]
         resolver = _make(dns, clock)
@@ -1045,10 +997,10 @@ class TestUwsgiMasterResolvesOnCallingThread:
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local", "redis.local"]
 
-    def test_master_unexpected_lookup_error_becomes_gaierror(
+    def test_uwsgi_unexpected_lookup_error_becomes_gaierror(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, is_master=True)
+        self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [UnicodeError("label too long")]
 
