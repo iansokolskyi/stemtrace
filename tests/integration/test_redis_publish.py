@@ -17,16 +17,19 @@ import urllib.parse
 import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 import redis
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.transports import redis as redis_transport
 from stemtrace.transports.redis import (
     PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_SOCKET_TIMEOUT,
     RedisTransport,
 )
+from stemtrace.transports.resolver import BoundedResolver
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 
@@ -341,3 +344,33 @@ def test_publish_in_forked_child_while_parent_thread_holds_pool_lock(
 
     assert os.waitstatus_to_exitcode(status) == 0
     assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 2
+
+
+@pytest.mark.integration
+@requires_redis
+def test_publish_connects_to_address_from_publish_resolver(
+    stream_prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publish client takes Redis's address from the bounded resolver."""
+    parsed = urllib.parse.urlsplit(REDIS_URL)
+    real_host, real_port = parsed.hostname or "localhost", parsed.port or 6379
+    looked_up: list[str] = []
+
+    def lookup(host: str, port: int, *args: Any) -> list[tuple[Any, ...]]:
+        looked_up.append(host)
+        return socket.getaddrinfo(real_host, real_port, *args)
+
+    monkeypatch.setattr(
+        redis_transport, "PUBLISH_RESOLVER", BoundedResolver(getaddrinfo=lookup)
+    )
+    userinfo, _, _ = parsed.netloc.rpartition("@")
+    alias = "redis-alias.stemtrace.test:6379"
+    netloc = f"{userinfo}@{alias}" if userinfo else alias
+    transport = RedisTransport.from_url(
+        parsed._replace(netloc=netloc).geturl(), prefix=stream_prefix
+    )
+
+    _timed_publishes(transport, 3)
+
+    assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 3
+    assert looked_up == ["redis-alias.stemtrace.test"]

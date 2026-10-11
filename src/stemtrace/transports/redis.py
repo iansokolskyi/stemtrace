@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import socket
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
+from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 if TYPE_CHECKING:
     import threading
@@ -49,8 +51,8 @@ RECONNECT_MAX_BACKOFF = 30.0
 # client whose connect (per address the host name resolves to) and socket
 # reads/writes time out after these many seconds (redis-py 8.1 defaults both
 # to 5s), with no redis-py retries: a silent or blackholed Redis costs a few
-# bounded attempts, not 5s per event. Host name resolution (getaddrinfo) is
-# not covered by these timeouts. Not lower: the deadlines are wall-clock, and
+# bounded attempts, not 5s per event. Host name resolution waits at most the
+# connect timeout too (see PUBLISH_RESOLVER). Not lower: the deadlines are wall-clock, and
 # a thread that waits for the GIL while another holds it in a long C call
 # (measured: 1.3s) can miss a 1s TLS handshake deadline on a healthy Redis.
 PUBLISH_CONNECT_TIMEOUT = 2.0
@@ -124,15 +126,84 @@ def _without_query_params(url: str, names: tuple[str, ...]) -> str:
 _XADD_SENT: ContextVar[bool] = ContextVar("stemtrace_redis_xadd_sent", default=False)
 
 
-def _with_xadd_tracking(connection_class: type[Any]) -> type[Any]:
-    """Subclass a redis-py connection class to set _XADD_SENT once XADD is written.
+@functools.cache
+def _resolved_connect_mixin() -> type[Any]:
+    """A redis-py Connection whose TCP connect resolves via PUBLISH_RESOLVER.
 
-    redis-py 8.1 Redis._send_command_parse_response() calls
+    redis-py 8.1 Connection._connect() calls socket.getaddrinfo() itself, which
+    no socket timeout bounds. This copy of it (same socket options and
+    per-address connect timeout) takes the addresses from PUBLISH_RESOLVER,
+    which waits at most the connect timeout. Only the TCP socket changes:
+    SSLConnection._connect() wraps the returned socket with
+    ``server_hostname=self.host``, so TLS still sends SNI for, and verifies
+    the certificate against, the host name in the URL.
+    """
+    from redis.connection import Connection
+
+    class ResolvedConnect(Connection):
+        """redis-py TCP connection that takes its addresses from PUBLISH_RESOLVER."""
+
+        def _resolved_addresses(self) -> list[tuple[Any, ...]]:
+            """Addresses for this connection's host, from the bounded resolver."""
+            return PUBLISH_RESOLVER.resolve(
+                self.host,
+                self.port,
+                self.socket_type,
+                socket.SOCK_STREAM,
+                timeout=self.socket_connect_timeout or PUBLISH_CONNECT_TIMEOUT,
+            )
+
+        def _connect(self) -> socket.socket:
+            """Connect to the first resolved address that accepts."""
+            err: OSError | None = None
+            for family, socktype, proto, _, address in self._resolved_addresses():
+                sock = None
+                try:
+                    sock = socket.socket(family, socktype, proto)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    if self.socket_keepalive:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                        # Mapping[int, int | bytes] at runtime; redis-py's
+                        # annotations are looser (they include object).
+                        options: Any = self.socket_keepalive_options
+                        for k, v in options.items():
+                            sock.setsockopt(socket.IPPROTO_TCP, k, v)
+                    sock.settimeout(self.socket_connect_timeout)
+                    sock.connect(address)
+                    sock.settimeout(self.socket_timeout)
+                except OSError as exc:
+                    err = exc
+                    if sock is not None:
+                        sock.close()
+                else:
+                    return sock
+            raise err if err is not None else OSError("No address to connect to")
+
+    return ResolvedConnect
+
+
+def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
+    """Subclass the URL's redis-py connection class for publishing.
+
+    TCP and TLS connections resolve the host through PUBLISH_RESOLVER (Unix
+    sockets need no lookup), and every connection sets _XADD_SENT once an
+    XADD is written: redis-py 8.1 Redis._send_command_parse_response() calls
     ``connection.send_command(command_name, *args)`` and only then reads the
     reply; send_command() returns once the whole command was written (the
     handshake commands sent while connecting go through it too, hence the
     name check).
     """
+    from redis.connection import Connection
+
+    mixin = _resolved_connect_mixin()
+    if connection_class is Connection:
+        bases: tuple[type[Any], ...] = (mixin,)
+    elif issubclass(connection_class, Connection):
+        # E.g. SSLConnection: its _connect() calls super()._connect(), which
+        # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.
+        bases = (connection_class, mixin)
+    else:
+        bases = (connection_class,)
 
     def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
         """Send a command; note an XADD once it was written in full."""
@@ -141,9 +212,7 @@ def _with_xadd_tracking(connection_class: type[Any]) -> type[Any]:
             _XADD_SENT.set(True)
 
     return type(
-        f"Publish{connection_class.__name__}",
-        (connection_class,),
-        {"send_command": send_command},
+        f"Publish{connection_class.__name__}", bases, {"send_command": send_command}
     )
 
 
@@ -175,7 +244,7 @@ def _publish_client_from_url(url: str) -> Redis[Any]:
         retry=Retry(NoBackoff(), 0),
     )
     # from_url() picked the class for the scheme (TCP, TLS or Unix socket).
-    pool.connection_class = _with_xadd_tracking(pool.connection_class)
+    pool.connection_class = _publish_connection_class(pool.connection_class)
     return RedisClient(connection_pool=pool)
 
 
@@ -398,9 +467,9 @@ class RedisTransport:
 
         Fire-and-forget: never raises, and events that can't be published are
         dropped, not queued. With a transport from from_url(), an attempt
-        takes at most PUBLISH_CONNECT_TIMEOUT per address to connect plus
-        PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries, plus
-        however long resolving the host name takes (not bounded here).
+        takes at most PUBLISH_CONNECT_TIMEOUT to resolve the host when it has
+        no cached address, PUBLISH_CONNECT_TIMEOUT per address to connect,
+        and PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
 
         Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure. A failure
         after the XADD was written (a timeout or lost connection) counts the

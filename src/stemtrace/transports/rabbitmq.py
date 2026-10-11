@@ -27,6 +27,7 @@ from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
+from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,114 @@ def _normalize_prefix(prefix: str) -> str:
     normalized = normalized.strip("/")
     normalized = normalized.replace("/", ".")
     return normalized or "stemtrace"
+
+
+@functools.cache
+def _resolving_connection_class(connection_cls: type[Any]) -> type[Any]:
+    """Subclass kombu's Connection so py-amqp resolves hosts via PUBLISH_RESOLVER.
+
+    py-amqp 5.3 _AbstractTransport._connect() calls socket.getaddrinfo(),
+    which no socket timeout bounds. kombu 5.6 asks get_transport_cls() for
+    the transport class each time it creates a transport (including after
+    switching failover hosts), so overriding it reaches every host. Other
+    transports (e.g. memory://) are returned unchanged.
+    """
+
+    class ResolvingConnection(connection_cls):  # type: ignore[misc]  # kombu is untyped
+        """kombu Connection whose py-amqp transports resolve hosts boundedly."""
+
+        def get_transport_cls(self) -> Any:
+            """The URL's transport, with py-amqp sockets resolved boundedly."""
+            return _resolving_transport_class(super().get_transport_cls())
+
+    return ResolvingConnection
+
+
+@functools.cache
+def _resolving_transport_class(transport_cls: Any) -> Any:
+    """Subclass a kombu py-amqp transport so its connections resolve boundedly."""
+    from kombu.transport import pyamqp
+
+    amqp_connection = getattr(transport_cls, "Connection", None)
+    if not (
+        isinstance(transport_cls, type) and issubclass(transport_cls, pyamqp.Transport)
+    ):
+        return transport_cls
+    return type(
+        f"Resolving{transport_cls.__name__}",
+        (transport_cls,),
+        {"Connection": _resolving_amqp_connection_class(amqp_connection)},
+    )
+
+
+@functools.cache
+def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
+    """py-amqp Connection whose transports connect to resolved addresses.
+
+    Mirrors py-amqp 5.3 Connection.Transport() and transport.Transport()
+    (SSL when ``ssl`` is set, TCP otherwise), with _connect() taking the
+    addresses from PUBLISH_RESOLVER, which waits at most the connect timeout.
+    Everything else is py-amqp's own: TLS gets SNI and the hostname check
+    from the ``ssl`` options as before, independent of the address used.
+    """
+    from amqp.transport import SSLTransport, TCPTransport
+    from amqp.utils import set_cloexec
+
+    def _connect(self: Any, host: str, port: int, timeout: float | None) -> None:
+        """Connect to the first resolved address that accepts (py-amqp's loop)."""
+        entries = PUBLISH_RESOLVER.resolve(
+            host,
+            port,
+            socket.AF_UNSPEC,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            timeout=timeout or CONNECT_TIMEOUT,
+        )
+        for i, (family, socktype, proto, _, address) in enumerate(entries):
+            try:
+                self.sock = socket.socket(family, socktype, proto)
+                with contextlib.suppress(NotImplementedError):
+                    set_cloexec(self.sock, True)
+                self.sock.settimeout(timeout)
+                self.sock.connect(address)
+            except OSError:
+                if self.sock:
+                    self.sock.close()
+                self.sock = None
+                if i + 1 >= len(entries):
+                    raise
+            else:
+                break
+
+    tcp = type("ResolvingTCPTransport", (TCPTransport,), {"_connect": _connect})
+    tls = type("ResolvingSSLTransport", (SSLTransport,), {"_connect": _connect})
+
+    def transport(  # noqa: PLR0917  py-amqp 5.3 Connection.connect() passes these positionally
+        _self: Any,
+        host: str,
+        connect_timeout: float | None,
+        ssl: Any = False,
+        read_timeout: float | None = None,
+        write_timeout: float | None = None,
+        socket_settings: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Create the TLS or TCP transport for ``host``."""
+        return (tls if ssl else tcp)(
+            host,
+            connect_timeout=connect_timeout,
+            ssl=ssl,
+            read_timeout=read_timeout,
+            write_timeout=write_timeout,
+            socket_settings=socket_settings,
+            **kwargs,
+        )
+
+    return type(
+        f"Resolving{connection_cls.__name__}",
+        (connection_cls,),
+        {"Transport": transport},
+    )
 
 
 class RabbitMQTransport:
@@ -307,7 +416,9 @@ class RabbitMQTransport:
         # cost every event a connect timeout.
         hosts = self._publish_host_count()
         first = self._publish_first_host % hosts
-        with self._publish_connection(Connection, first) as conn:
+        with self._publish_connection(
+            _resolving_connection_class(Connection), first
+        ) as conn:
             # One connection attempt per host, without sleeping: kombu raises
             # once retries reach max_retries (before switching hosts), so
             # max_retries=0 would never try the alternates of a failover URL.

@@ -3,6 +3,7 @@
 import inspect
 import logging
 import os
+import socket
 from datetime import datetime, timezone
 from typing import Any
 
@@ -426,3 +427,50 @@ def test_lost_reply_messages_match_installed_redis_py() -> None:
 
     assert redis_transport._SERVER_CLOSED_CONNECTION == SERVER_CLOSED_CONNECTION_ERROR
     assert f'f"{redis_transport._READ_FAILED_PREFIX}{{host_error}}' in connection_source
+
+
+class FakeResolver:
+    """PUBLISH_RESOLVER stand-in: maps names to addresses or raises."""
+
+    def __init__(self, answer: list[tuple[Any, ...]] | Exception) -> None:
+        self.answer = answer
+        self.calls: list[tuple[str, int, float]] = []
+
+    def resolve(
+        self, host: str, port: int, *args: Any, timeout: float
+    ) -> list[tuple[Any, ...]]:
+        self.calls.append((host, port, timeout))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+class TestRedisPublishConnectionResolvesWithBound:
+    """The publish client resolves the Redis host through PUBLISH_RESOLVER."""
+
+    @pytest.mark.parametrize(
+        "url", ["redis://redis.test:6379/0", "rediss://redis.test:6380/0"]
+    )
+    def test_connect_uses_bounded_resolver_not_getaddrinfo(
+        self, url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeResolver(socket.gaierror(socket.EAI_AGAIN, "Timed out resolving"))
+        monkeypatch.setattr(redis_transport, "PUBLISH_RESOLVER", fake)
+
+        def no_dns(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("socket.getaddrinfo called directly")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+        transport = RedisTransport.from_url(url)
+        connection = transport.publish_client.connection_pool.make_connection()
+
+        with pytest.raises(RedisConnectionError, match="Timed out resolving"):
+            connection.connect()
+
+        assert fake.calls == [("redis.test", int(url.rsplit(":", 1)[1][:4]), 2.0)]
+
+    def test_unix_socket_publish_client_has_no_resolver(self) -> None:
+        transport = RedisTransport.from_url("unix:///tmp/redis.sock")
+        connection_class = transport.publish_client.connection_pool.connection_class
+
+        assert not hasattr(connection_class, "_resolved_addresses")
