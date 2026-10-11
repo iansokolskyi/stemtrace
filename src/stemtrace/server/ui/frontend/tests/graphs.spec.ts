@@ -581,10 +581,10 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Should have 5 nodes: 1 CHORD + 3 members + 1 callback
-    const nodes = page.locator('.react-flow__node')
-    const nodeCount = await nodes.count()
-    expect(nodeCount).toBe(5)
+    // 1 CHORD container + 1 header label + 3 members + 1 callback
+    await expect(page.locator('.react-flow__node')).toHaveCount(6)
+    // One edge from each header task to the callback
+    await expect(page.locator('.react-flow__edge')).toHaveCount(3)
 
     // CHORD label should be visible
     const chordText = page.getByText('CHORD')
@@ -625,5 +625,33 @@ test.describe('Graph Page - Malformed Links', () => {
     await page.waitForLoadState('networkidle')
 
     await expect(page.locator('.react-flow__node')).toHaveCount(2)
+  })
+
+  test('draws a chord callback once when its parent lists it first', async ({ page }) => {
+    // The server sends this shape when the callback reported its parent
+    // before the chord was created under the same parent
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [chordNode, ...rest] = createGroup(2, { withCallback: true })
+    const callback = rest[rest.length - 1]
+    const parent = createSuccessTask('tasks.parent')
+    parent.children = [callback.task_id, chordNode.task_id]
+    chordNode.parent_id = parent.task_id
+    callback.parent_id = parent.task_id
+    for (const task of [chordNode, ...rest]) task.root_id = parent.task_id
+    mockApi.addTasks([parent, chordNode, ...rest])
+    const messages: string[] = []
+    page.on('console', (msg) => {
+      if (msg.type() === 'warning' || msg.type() === 'error') messages.push(msg.text())
+    })
+
+    await page.goto(`/graph/${parent.task_id}`)
+    await page.waitForLoadState('load')
+
+    // parent + CHORD container + header label + 2 headers + callback
+    await expect(page.locator('.react-flow__node')).toHaveCount(6)
+    await expect(page.locator(`.react-flow__node[data-id="${callback.task_id}"]`)).toHaveCount(1)
+    // parent -> callback, parent -> chord, and one edge per header -> callback
+    await expect(page.locator('.react-flow__edge')).toHaveCount(4)
+    expect(messages.filter((text) => /key|duplicate|React Flow/i.test(text))).toEqual([])
   })
 })

@@ -283,10 +283,10 @@ export function createGroup(
         }),
       ],
     }
-    // Each member points to callback
-    for (const member of members) {
-      member.children.push(callback_id)
-    }
+    // As the server sends it: the CHORD names its callback (chord_id) and
+    // lists it among its children, which draws the header -> callback edges
+    groupNode.chord_id = callback_id
+    groupNode.children.push(callback_id)
     allTasks.push(callback)
   }
 
