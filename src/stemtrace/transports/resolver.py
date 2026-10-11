@@ -32,6 +32,7 @@ and every fork waits for them as above (one WARNING says so).
 from __future__ import annotations
 
 import contextlib
+import copy
 import ipaddress
 import json
 import logging
@@ -247,7 +248,7 @@ class BoundedResolver:
                 done = self._start_lookup(state, key, entry)
         if cached_error is not None:
             # A recent failure (negative caching, see DNS_NEGATIVE_TTL).
-            raise cached_error
+            raise _fresh(cached_error)
         if not done.wait(timeout):
             raise socket.gaierror(
                 socket.EAI_AGAIN,
@@ -263,7 +264,7 @@ class BoundedResolver:
         if addresses is not None:
             return addresses
         if error is not None:
-            raise error
+            raise _fresh(error)
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
 
     def invalidate(
@@ -576,6 +577,13 @@ def _run_helper(command: list[str], timeout: float) -> tuple[int | Any, bytes]:
         process.communicate()
         raise
     return process.returncode, stdout
+
+
+def _fresh(error: Exception) -> Exception:
+    """A new exception like ``error``, so re-raising never grows one traceback."""
+    new = copy.copy(error)
+    new.__cause__ = error.__cause__
+    return new
 
 
 def _check_host_name(host: str) -> None:

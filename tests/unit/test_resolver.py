@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 import warnings
 from typing import Any, ClassVar
 
@@ -787,3 +788,35 @@ class TestHelperSpawnVersusFork:
         assert helper.calls == []
         assert resolver._state().helper_usable is False
         assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+class TestCachedErrorsAreRaisedFresh:
+    """Re-raising one exception object grows its traceback on every raise."""
+
+    def test_negative_cache_raises_a_new_error_each_time(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
+        resolver = _make(dns, clock)
+        raised = []
+        for _ in range(3):
+            with pytest.raises(socket.gaierror) as info:
+                resolver.resolve("redis.local", 6379, timeout=1.0)
+            raised.append(info.value)
+
+        assert len({id(e) for e in raised}) == 3
+        assert {(e.errno, e.strerror) for e in raised} == {
+            (socket.EAI_NONAME, "unknown host")
+        }
+        depths = [len(traceback.extract_tb(e.__traceback__)) for e in raised]
+        assert depths[1] == depths[2]
+
+    def test_waiters_get_a_new_error_not_the_cached_one(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
+        resolver = _make(dns, clock)
+
+        with pytest.raises(socket.gaierror) as info:
+            resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        entry = resolver._state().entries[("redis.local", 6379, 0, 0, 0)]
+        assert info.value is not entry.error
