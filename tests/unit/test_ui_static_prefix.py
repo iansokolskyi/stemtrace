@@ -44,20 +44,20 @@ class TestRewriteHtmlForPrefix:
     def test_rewrite_assets_when_enabled(self) -> None:
         """Asset paths are rewritten to include the mount prefix."""
         html = '<html><head></head><body><script src="/assets/index.js"></script></body></html>'
-        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", rewrite_assets=True)
+        rewritten = _rewrite_html_for_prefix(html, "/stemtrace")
         assert 'src="/stemtrace/assets/index.js"' in rewritten
 
     def test_does_not_rewrite_assets_when_disabled(self) -> None:
-        """Asset paths are not rewritten when rewrite_assets=False."""
+        """Asset paths are not rewritten when asset_prefix is empty."""
         html = '<html><head></head><body><script src="/assets/index.js"></script></body></html>'
-        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", rewrite_assets=False)
+        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", asset_prefix="")
         assert 'src="/assets/index.js"' in rewritten
 
     def test_injects_base_as_json_string_literal(self) -> None:
         """The injected base is JSON encoded so it is valid JS and safe."""
         html = "<html><head></head><body>OK</body></html>"
         prefix = "/stemtrace"
-        rewritten = _rewrite_html_for_prefix(html, prefix, rewrite_assets=False)
+        rewritten = _rewrite_html_for_prefix(html, prefix, asset_prefix="")
         assert f"window.__STEMTRACE_BASE__={json.dumps(prefix)};" in rewritten
 
     def test_injects_logout_path_only_when_enabled(self) -> None:
@@ -70,7 +70,7 @@ class TestRewriteHtmlForPrefix:
         rewritten = _rewrite_html_for_prefix(
             html,
             "/stemtrace",
-            rewrite_assets=False,
+            asset_prefix="",
             show_logout=True,
             logout_path="/logout",
         )
@@ -85,7 +85,7 @@ class TestRewriteHtmlForPrefix:
         """Without an explicit logout_path, the mount prefix's /logout is used."""
         html = "<html><head></head><body>OK</body></html>"
         rewritten = _rewrite_html_for_prefix(
-            html, "/stemtrace", rewrite_assets=False, show_logout=True
+            html, "/stemtrace", asset_prefix="", show_logout=True
         )
         assert 'window.__STEMTRACE_LOGOUT_PATH__="/stemtrace/logout";' in rewritten
 
@@ -95,7 +95,7 @@ class TestRewriteHtmlForPrefix:
         rewritten = _rewrite_html_for_prefix(
             html,
             "",
-            rewrite_assets=False,
+            asset_prefix="",
             show_logout=True,
             logout_path="/x</script><script>alert(1)//",
         )
@@ -105,5 +105,5 @@ class TestRewriteHtmlForPrefix:
     def test_does_not_inject_logout_when_disabled(self) -> None:
         """No logout path is exposed when form login is off."""
         html = "<html><head></head><body>OK</body></html>"
-        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", rewrite_assets=False)
+        rewritten = _rewrite_html_for_prefix(html, "/stemtrace", asset_prefix="")
         assert "__STEMTRACE_LOGOUT_PATH__" not in rewritten

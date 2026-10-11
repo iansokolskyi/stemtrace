@@ -13,11 +13,15 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from stemtrace.server.fastapi.paths import is_misplaced_asset_path, strip_root_path
+
 logger = logging.getLogger(__name__)
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 
 _PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+_unsafe_root_path_warned = False
 
 
 def _sanitize_derived_prefix(prefix: str) -> str:
@@ -51,11 +55,44 @@ def _sanitize_derived_prefix(prefix: str) -> str:
     return "/" + "/".join(segments)
 
 
+def is_usable_mount_prefix(prefix: str) -> bool:
+    """Whether the UI can serve under ``prefix`` (e.g. an ASGI root_path).
+
+    The UI only writes prefixes that pass its sanitizer into the page (see
+    ``_sanitize_derived_prefix``); anything else is dropped, so the UI would
+    load its assets and API from the wrong URLs.
+
+    Args:
+        prefix: Absolute path prefix such as "/monitoring"; "" means none.
+
+    Returns:
+        True if the prefix is empty or survives sanitization unchanged.
+    """
+    normalized = prefix.rstrip("/")
+    return _sanitize_derived_prefix(normalized) == normalized
+
+
+def _warn_if_unsafe_root_path(root_path: object) -> None:
+    """Log once per process when the ASGI root_path can't be used by the UI."""
+    global _unsafe_root_path_warned
+    if _unsafe_root_path_warned or not isinstance(root_path, str):
+        return
+    if is_usable_mount_prefix(root_path):
+        return
+    _unsafe_root_path_warned = True
+    logger.warning(
+        "Ignoring ASGI root_path %r in the stemtrace UI: only segments of "
+        "letters, digits, '.', '_' and '-' (up to 64 characters each) are "
+        "supported, so UI links will miss the reverse-proxy prefix.",
+        root_path,
+    )
+
+
 def _rewrite_html_for_prefix(
     html: str,
     prefix: str,
     *,
-    rewrite_assets: bool = True,
+    asset_prefix: str | None = None,
     show_logout: bool = False,
     logout_path: str | None = None,
 ) -> str:
@@ -64,16 +101,19 @@ def _rewrite_html_for_prefix(
     Args:
         html: The HTML content to rewrite.
         prefix: The base path prefix (e.g., "/stemtrace").
-        rewrite_assets: If True, rewrite asset paths. If False, only inject API base.
+        asset_prefix: Path the bundle's ``/assets/`` URLs are rewritten under
+            (None: same as ``prefix``; "": left as ``/assets/``). Must be a
+            sanitized prefix: it is written into HTML attributes unescaped.
         show_logout: If True, inject ``window.__STEMTRACE_LOGOUT_PATH__`` so the
             SPA renders a Logout control in its header (and knows form login is
             enabled, e.g. to redirect to the login page on 401).
         logout_path: Absolute logout endpoint path. If None and show_logout=True,
             defaults to f"{prefix}/logout" (or "/logout" if prefix is empty).
     """
-    if prefix and rewrite_assets:
-        html = html.replace('"/assets/', f'"{prefix}/assets/')
-        html = html.replace("'/assets/", f"'{prefix}/assets/")
+    assets_base = prefix if asset_prefix is None else asset_prefix
+    if assets_base:
+        html = html.replace('"/assets/', f'"{assets_base}/assets/')
+        html = html.replace("'/assets/", f"'{assets_base}/assets/")
     # Inject base path safely. The prefix may be user-provided (e.g. init_app(prefix=...))
     # or derived from a request path, so it must be serialized as a JS string literal.
     # Also, prevent `</script>` inside the string from terminating the script tag.
@@ -195,20 +235,31 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>UI not built</h1>", status_code=503)
 
         if api_base is not None:
-            # Explicit API base: don't rewrite assets (they're served at current mount)
-            prefix = api_base
-            rewrite_assets = False
+            # Explicit API base: UI at the app root, behind the ASGI root_path
+            # (reverse proxy prefix) when there is one.
+            root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            prefix = root + api_base
+            asset_prefix = root
+            effective_logout = root + logout_path if logout_path else None
         else:
-            # Derive from URL: rewrite assets to match mount point
-            prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
-            rewrite_assets = True
+            # Derive the mount point from the route path (root_path removed as
+            # routing removes it), then put the browser's root_path in front:
+            # uvicorn < 0.26 doesn't prepend root_path to the scope path.
+            root_path = request.scope.get("root_path") or ""
+            route_path = strip_root_path(request.scope["path"], root_path)
+            prefix = _sanitize_derived_prefix(root_path) + _sanitize_derived_prefix(
+                route_path.rstrip("/")
+            )
+            asset_prefix = prefix
+            effective_logout = logout_path
+        _warn_if_unsafe_root_path(request.scope.get("root_path"))
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),
                 prefix,
-                rewrite_assets=rewrite_assets,
+                asset_prefix=asset_prefix,
                 show_logout=show_logout,
-                logout_path=logout_path,
+                logout_path=effective_logout,
             )
         )
 
@@ -219,7 +270,8 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
         Only regular files under the frontend directory are served. Paths
         that normalize to a location outside of it get a 404, and so do
         non-file paths under ``assets/`` (served without a session, so they
-        must not return the app shell); any other path that is not a servable
+        must not return the app shell) and paths with an ``assets`` segment
+        anywhere else (e.g. ``stemtrace/assets/x.js``); any other path that is not a servable
         file (missing, a directory, or not inspectable) falls back to
         index.html so client-side routes keep working.
         """
@@ -228,7 +280,7 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
         if _is_regular_file(file_path):
             return FileResponse(file_path)
-        if _is_under_assets(file_path):
+        if _is_under_assets(file_path) or is_misplaced_asset_path(path):
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         index_path = _FRONTEND_DIR / "index.html"
@@ -236,26 +288,36 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         if api_base is not None:
-            # Explicit API base: don't rewrite assets (they're served at current mount)
-            prefix = api_base
-            rewrite_assets = False
+            # Explicit API base: UI at the app root, behind the ASGI root_path
+            # (reverse proxy prefix) when there is one.
+            root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            prefix = root + api_base
+            asset_prefix = root
+            effective_logout = root + logout_path if logout_path else None
         else:
-            # Extract prefix: /stemtrace/tasks/123 -> /stemtrace
-            url_path = request.url.path
+            # Extract the mount point from the route path (/stemtrace/tasks/123
+            # -> /stemtrace), then put the browser's root_path in front (see
+            # serve_index).
+            root_path = request.scope.get("root_path") or ""
+            route_path = strip_root_path(request.scope["path"], root_path)
             derived = (
-                url_path[: -len(path)].rstrip("/")
-                if path and url_path.endswith(path)
-                else url_path.rstrip("/")
+                route_path[: -len(path)].rstrip("/")
+                if path and route_path.endswith(path)
+                else route_path.rstrip("/")
             )
-            prefix = _sanitize_derived_prefix(derived)
-            rewrite_assets = True
+            prefix = _sanitize_derived_prefix(root_path) + _sanitize_derived_prefix(
+                derived
+            )
+            asset_prefix = prefix
+            effective_logout = logout_path
+        _warn_if_unsafe_root_path(request.scope.get("root_path"))
         return HTMLResponse(
             _rewrite_html_for_prefix(
                 index_path.read_text(),
                 prefix,
-                rewrite_assets=rewrite_assets,
+                asset_prefix=asset_prefix,
                 show_logout=show_logout,
-                logout_path=logout_path,
+                logout_path=effective_logout,
             )
         )
 

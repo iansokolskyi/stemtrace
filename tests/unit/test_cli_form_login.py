@@ -278,3 +278,47 @@ class TestCliPublicAssets:
         assert asset.status_code == 200
         assert asset.text == "console.log('ui')"
         assert shell.status_code == 303
+
+
+# The CLI serves the bundle at /assets/; these sit next to the API mount or a
+# client-side route and must not get the HTML shell (a browser would try to run
+# it as a script or stylesheet).
+_CLI_MISPLACED_ASSET_PATHS = [
+    "/stemtrace/assets/index-abc123.js",
+    "/stemtrace/assets/missing.css",
+    "/tasks/assets/index-abc123.js",
+]
+
+
+class TestCliMisplacedAssets:
+    @pytest.mark.parametrize("path", _CLI_MISPLACED_ASSET_PATHS)
+    def test_cli_misplaced_asset_path_with_session_returns_404_not_shell(
+        self, real_ui: Callable[[], FastAPI], path: str
+    ) -> None:
+        with TestClient(real_ui()) as client:
+            _login(client)
+            resp = client.get(path, follow_redirects=False)
+            shell = client.get("/workers", follow_redirects=False)
+
+        assert resp.status_code == 404
+        assert "app shell" not in resp.text
+        assert shell.status_code == 200
+        assert "app shell" in shell.text
+
+    @pytest.mark.parametrize("path", _CLI_MISPLACED_ASSET_PATHS)
+    def test_cli_misplaced_asset_path_without_session_returns_404(
+        self, real_ui: Callable[[], FastAPI], path: str
+    ) -> None:
+        with TestClient(real_ui()) as client:
+            resp = client.get(path, follow_redirects=False)
+
+        assert resp.status_code == 404
+        assert "location" not in resp.headers
+
+    def test_cli_api_path_with_assets_segment_without_session_returns_401(
+        self, real_ui: Callable[[], FastAPI]
+    ) -> None:
+        with TestClient(real_ui()) as client:
+            resp = client.get("/stemtrace/api/tasks/assets/children")
+
+        assert resp.status_code == 401

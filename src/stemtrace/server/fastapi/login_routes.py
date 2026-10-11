@@ -10,9 +10,18 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Final
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from stemtrace.server.fastapi.form_auth import LOGIN_REASON_SESSION_MISMATCH
+from stemtrace.server.fastapi.login_throttle import (
+    DEVICE_COOKIE_TTL_SECONDS,
+    LoginAttempt,
+    LoginThrottle,
+    create_device_cookie_value,
+    device_cookie_name,
+    device_id_from_cookie,
+)
+from stemtrace.server.fastapi.paths import browser_path, cookie_path_for
 
 if TYPE_CHECKING:
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
@@ -29,6 +38,9 @@ _REASON_MESSAGES: Final[dict[str, str]] = {
     ),
 }
 _LOGIN_TEMPLATE_PATH: Final[str] = "templates/login.html"
+_THROTTLED_MESSAGE: Final[str] = (
+    "Too many failed sign-in attempts. Try again in {seconds} seconds."
+)
 
 
 @lru_cache(maxsize=1)
@@ -42,12 +54,18 @@ def _load_login_template() -> str:
 
 
 def _safe_next(next_path: str | None, *, default: str) -> str:
-    """Validate a next redirect path to avoid open redirects."""
-    if not next_path:
-        return default
-    if not next_path.startswith("/"):
+    r"""Validate a next redirect path to avoid open redirects.
+
+    Only same-origin absolute paths pass. Backslashes and control characters
+    are rejected too, as defense in depth: browsers read "/\evil.example" as
+    "//evil.example" and drop tabs/newlines, although Starlette's
+    RedirectResponse (0.38.6 through 1.7.0) percent-encodes both in Location.
+    """
+    if not next_path or not next_path.startswith("/"):
         return default
     if next_path.startswith("//"):
+        return default
+    if "\\" in next_path or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in next_path):
         return default
     return next_path
 
@@ -90,21 +108,49 @@ def _login_page_html(*, action_path: str, error: str | None, next_path: str) -> 
     )
 
 
+def _throttled_response(
+    request: Request, next_path: str | None, wait_s: int, default_next_path: str
+) -> HTMLResponse:
+    """Render the sign-in page with a fixed lockout message, as a 429.
+
+    The same response for every username and password, so it reveals nothing
+    about which part was wrong.
+    """
+    safe_next = _safe_next(
+        next_path or request.query_params.get("next"),
+        default=browser_path(request.scope, default_next_path),
+    )
+    page = _login_page_html(
+        action_path=request.url_for("stemtrace_login_submit").path,
+        error=_THROTTLED_MESSAGE.format(seconds=wait_s),
+        next_path=safe_next,
+    )
+    return HTMLResponse(page, status_code=429, headers={"Retry-After": str(wait_s)})
+
+
 def create_login_router(
     config: FormAuthConfig,
     *,
     default_next_path: str,
+    throttle: LoginThrottle | None = None,
 ) -> APIRouter:
     """Create router that serves /login and /logout for stemtrace.
 
+    Failed sign-ins are throttled per client IP and per username (see
+    :class:`LoginThrottle`): once over the limit, ``POST /login`` answers 429
+    with ``Retry-After`` without checking the credentials.
+
     Args:
         config: Form auth configuration.
-        default_next_path: Default redirect target after login (absolute path).
+        default_next_path: Default redirect target after login (absolute route
+            path; the ASGI root_path is prepended per request).
+        throttle: Failed-attempt throttle; a new in-memory one if None.
 
     Returns:
         A configured APIRouter.
     """
     router = APIRouter(tags=["stemtrace-auth"])
+    login_throttle = throttle or LoginThrottle()
 
     @router.get(
         "/login",
@@ -118,7 +164,8 @@ def create_login_router(
         if error is None:
             error = _REASON_MESSAGES.get(request.query_params.get("reason") or "")
         next_path = _safe_next(
-            request.query_params.get("next"), default=default_next_path
+            request.query_params.get("next"),
+            default=browser_path(request.scope, default_next_path),
         )
         # Relative path (not an absolute URL): the browser submits using the
         # page's own scheme/host, so a TLS-terminating proxy that doesn't
@@ -130,7 +177,7 @@ def create_login_router(
         return HTMLResponse(rendered_html, status_code=200)
 
     @router.post("/login", include_in_schema=False, name="stemtrace_login_submit")
-    async def login_submit(request: Request) -> RedirectResponse:
+    async def login_submit(request: Request) -> Response:
         """Handle login form submit and set session cookie."""
         # Avoid python-multipart dependency: our login form uses the default
         # application/x-www-form-urlencoded encoding, so we can parse it ourselves.
@@ -144,6 +191,19 @@ def create_login_router(
         next_values = form.get("next")
         next_path = next_values[0] if next_values else None
 
+        # No client address (e.g. a Unix socket): skip the per-IP limit
+        # rather than putting every such client in one shared bucket.
+        attempt = LoginAttempt(
+            client_ip=(request.client.host if request.client else None) or None,
+            username=username,
+            device_id=device_id_from_cookie(
+                request.cookies.get(device_cookie_name(config)), config, username
+            ),
+        )
+        wait = login_throttle.retry_after(attempt)
+        if wait > 0:
+            return _throttled_response(request, next_path, wait, default_next_path)
+
         username_ok = secrets.compare_digest(
             username.encode("utf-8"), config.username.encode("utf-8")
         )
@@ -151,6 +211,10 @@ def create_login_router(
             password.encode("utf-8"), config.password.encode("utf-8")
         )
         if not (username_ok and password_ok):
+            login_throttle.record_failure(attempt)
+            wait = login_throttle.retry_after(attempt)
+            if wait > 0:
+                return _throttled_response(request, next_path, wait, default_next_path)
             # Preserve next parameter if present.
             next_param = (next_path or request.query_params.get("next")) or None
             qs = {"error": "Invalid username or password"}
@@ -162,8 +226,10 @@ def create_login_router(
                 status_code=303,
             )
 
+        login_throttle.record_success(attempt)
         effective_next = _safe_next(
-            next_path or request.query_params.get("next"), default=default_next_path
+            next_path or request.query_params.get("next"),
+            default=browser_path(request.scope, default_next_path),
         )
 
         response = RedirectResponse(url=effective_next, status_code=303)
@@ -173,7 +239,19 @@ def create_login_router(
             httponly=True,
             samesite="lax",
             secure=_request_is_https(request),
-            path=config.cookie_path,
+            path=cookie_path_for(request.scope, config.cookie_path),
+        )
+        # Long-lived "this browser signed in before" proof: lets it keep
+        # signing in while strangers' failures lock the username (see
+        # LoginThrottle). Logout keeps it on purpose.
+        response.set_cookie(
+            key=device_cookie_name(config),
+            value=create_device_cookie_value(config),
+            max_age=DEVICE_COOKIE_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=_request_is_https(request),
+            path=cookie_path_for(request.scope, config.cookie_path),
         )
         return response
 
@@ -182,7 +260,10 @@ def create_login_router(
         """Clear the session cookie and redirect to login."""
         login_url = request.url_for("stemtrace_login_page").path
         response = RedirectResponse(url=login_url, status_code=303)
-        response.delete_cookie(key=config.cookie_name, path=config.cookie_path)
+        response.delete_cookie(
+            key=config.cookie_name,
+            path=cookie_path_for(request.scope, config.cookie_path),
+        )
         return response
 
     return router

@@ -5,9 +5,12 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, Any, overload
 
+# Runtime import: FastAPI resolves endpoint annotations when registering routes.
+from fastapi import Request  # noqa: TC002
 from fastapi.responses import RedirectResponse
 
 from stemtrace.server.consumer import AsyncEventConsumer
+from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.ui.static import get_static_router
@@ -167,8 +170,10 @@ class StemtraceExtension:
 
         # Add redirect for no-trailing-slash (prevents fall-through to catch-all mounts)
         @app.get(mount_prefix, include_in_schema=False)
-        async def _stemtrace_redirect() -> RedirectResponse:
-            return RedirectResponse(url=f"{mount_prefix}/", status_code=307)
+        async def _stemtrace_redirect(request: Request) -> RedirectResponse:
+            return RedirectResponse(
+                url=browser_path(request.scope, f"{mount_prefix}/"), status_code=307
+            )
 
         app.include_router(self.router, prefix=mount_prefix)
 

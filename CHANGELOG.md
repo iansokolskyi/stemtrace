@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Built-in login: failed sign-ins are throttled in memory, per client IP (5 failures; IPv6 per /64) and per username (20, from all IPs) or, for browsers that signed in before, per device (5). Further attempts get 429 with `Retry-After`, starting at 30 seconds and doubling up to 15 minutes. A successful sign-in sets a signed device cookie (`stemtrace_session_device`, 90 days with a configured `STEMTRACE_LOGIN_SECRET`) so strangers' failures, by username or from a shared IP, can't lock out browsers that have signed in before; anyone who knows the username can still keep it locked for other browsers. Limits are per process, and the client IP comes from the ASGI server (behind a proxy, list its addresses in uvicorn's `--forwarded-allow-ips` / `FORWARDED_ALLOW_IPS`, never `*`). See the README.
+- `stemtrace server --root-path /prefix` (or `STEMTRACE_ROOT_PATH`) for a reverse proxy that serves stemtrace under a path prefix and strips it; it is passed to uvicorn as `root_path`. Prefixes the UI can't use (characters other than letters, digits, `.`, `_`, `-`) are rejected at startup.
+
+### Changed
+- Login: a `next` target containing a backslash or a control character now falls back to the default page after sign-in. This is hardening: Starlette percent-encodes the redirect, so such targets didn't lead off-site.
+
+### Deprecated
+- `stemtrace.transports.rabbitmq.PUBLISH_SLOW_ATTEMPT` (also exported by the deprecated `stemtrace.library.transports.rabbitmq`) is no longer used, since a single slow publish failure no longer opens the circuit breaker; accessing it emits a `DeprecationWarning`, and it will be removed in 1.0.
+- `PublishBreaker(slow_attempt=...)` and `PublishBreaker.record_failure(elapsed=...)` are ignored and emit a `DeprecationWarning`; they will be removed in 1.0.
+
 ### Fixed
+- `init_app()` with the built-in login behind a path-prefixing reverse proxy (ASGI `root_path`, e.g. `uvicorn --root-path /monitoring`): the API and UI under the prefix were served without a session, and the login redirect and session cookie path left out the prefix. The login check now sees paths the way routing does, and redirects, `next` targets, the cookie path and the UI's API and asset URLs include the root path, also on uvicorn versions before 0.26 (which leave it out of the request path).
+- UI: an asset path outside the bundle's own `assets/` directory (e.g. `/stemtrace/assets/<file>` on `stemtrace server`, which serves the bundle at `/assets/`) now returns 404, with or without a session, instead of the HTML app shell or a login redirect.
 - Redis: publishing from workers no longer waits 5s per event (redis-py's default timeout) while Redis is down, hung or unreachable. Workers publish through a separate connection with 2s timeouts and no retries, and three failures in a row open the same circuit breaker RabbitMQ uses, which drops events (instead of queueing them) and retries once per cooldown (1s, growing to 30s). A reply slower than 2s counts as a failure; an event whose reply timed out after it was sent is reported as "sent but unconfirmed", since Redis may still have written it. The server's consumer keeps its timeouts.
 - Redis and RabbitMQ: publishing no longer blocks a task for the DNS resolver's own timeouts (20s measured with an unreachable resolver). Workers resolve the broker host in a background thread, wait at most the 2s connect timeout, and cache answers for 30s with background refresh (an immediate refresh after a failed connect, so a DNS failover is picked up on the next attempt; a failed first lookup is retried after 5s). A process that forks (the Celery prefork master) waits briefly for its lookups before forking and then resolves in a short-lived helper process, so a child can't inherit a lock from glibc's DNS code. TLS behavior is unchanged.
 - RabbitMQ: a single timed-out publish no longer opens the circuit breaker (dropping events for a cooldown); like quick failures, it takes three failures in a row. A healthy broker can miss a deadline now and then, e.g. over TLS while another worker thread holds the GIL.
@@ -15,10 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis: unknown or misspelled options in the broker URL (e.g. `?sockt_timeout=5`) are now ignored for publishing, with a one-time warning naming them; redis-py rejects them, which used to make every publish fail. The server's consumer still rejects them.
 - Redis: each worker process (e.g. each prefork child) now builds its own publish connection pool instead of reusing one inherited from the parent, which could hang the child's first publish if another parent thread held the pool's lock at fork.
 - Redis and RabbitMQ: worker event ids in publish failure logs read `host:pid:worker_ready` instead of `host:pid:WorkerEventType.WORKER_READY`.
-
-### Deprecated
-- `stemtrace.transports.rabbitmq.PUBLISH_SLOW_ATTEMPT` (also exported by the deprecated `stemtrace.library.transports.rabbitmq`) is no longer used, since a single slow publish failure no longer opens the circuit breaker; accessing it emits a `DeprecationWarning`, and it will be removed in 1.0.
-- `PublishBreaker(slow_attempt=...)` and `PublishBreaker.record_failure(elapsed=...)` are ignored and emit a `DeprecationWarning`; they will be removed in 1.0.
 
 ## [0.3.10] - 2026-10-11
 
