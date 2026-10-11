@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from celery import Celery, group
+from celery import Celery, chain, group
 from celery.signals import (
     after_task_publish,
     task_failure,
@@ -831,6 +831,41 @@ class TestRealPublish:
 
         assert {e.group_id for e in MemoryTransport.events} == {result.id}
         assert len(MemoryTransport.events) == 2
+
+    @pytest.mark.parametrize(
+        ("protocol", "body_type"),
+        [(2, tuple), (1, dict)],
+        ids=["protocol2", "protocol1"],
+    )
+    @pytest.mark.parametrize("how", ["apply_async", "send_task", "chain"])
+    def test_json_publish_body_is_unserialized_and_args_are_kept(
+        self, app: Celery, protocol: int, body_type: type, how: str
+    ) -> None:
+        # after_task_publish gets the body Celery built, before the json
+        # serializer runs (celery 5.6.3 amqp.send_task_message passes the
+        # same object to producer.publish and the signal): a tuple for
+        # protocol 2, a dict for protocol 1, never a list, even for list args.
+        app.conf.update(task_serializer="json", task_protocol=protocol)
+        bodies: list[Any] = []
+
+        def record(body: Any = None, **_: Any) -> None:
+            bodies.append(body)
+
+        after_task_publish.connect(record, weak=False)
+        try:
+            add = app.tasks["tests.add"]
+            if how == "apply_async":
+                add.apply_async([1, 2])
+            elif how == "send_task":
+                app.send_task("tests.add", args=[1, 2])
+            else:
+                chain(add.s(1, 2), add.s(3)).apply_async()
+        finally:
+            after_task_publish.disconnect(record)
+
+        assert [type(body) for body in bodies] == [body_type]
+        [event] = MemoryTransport.events
+        assert event.args == [1, 2]
 
     def test_eager_apply_publishes_no_pending(self, app: Celery) -> None:
         app.tasks["tests.add"].apply(args=(1, 2))
