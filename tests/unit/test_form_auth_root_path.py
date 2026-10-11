@@ -169,6 +169,18 @@ class TestEmbeddedBehindRootPath:
 
         assert status == 401
 
+    @pytest.mark.parametrize(
+        "path", ["/apiXv1/stemtrace/api/tasks", "/api.v1/stemtrace/api/tasks"]
+    )
+    async def test_metacharacter_root_path_never_serves_api_without_session(
+        self, fake_dist: Path, path: str
+    ) -> None:
+        # Whatever the installed Starlette routes, the middleware must see the
+        # same path: protected (401) or unroutable (404), never 200.
+        status = await _send(_embedded_app(), path, root_path="/api.v1")
+
+        assert status in {401, 404}
+
     async def test_dot_segments_under_root_path_rejected(self, fake_dist: Path) -> None:
         status = await _send(
             _embedded_app(),
@@ -367,12 +379,17 @@ class TestStripRootPath:
             ("/proxyx/stemtrace", "/proxy", "/proxyx/stemtrace"),
             ("/stemtrace/api", "/proxy", "/stemtrace/api"),
             ("/stemtrace/api", "", "/stemtrace/api"),
+            # Regex metacharacters: starlette 0.38.x strips with an unescaped
+            # regex, where "." matches any character.
+            ("/apiXv1/stemtrace/api", "/api.v1", None),
+            ("/api.v1/stemtrace/api", "/api.v1", "/stemtrace/api"),
         ],
     )
     def test_strip_root_path_matches_starlette_routing(
-        self, path: str, root_path: str, expected: str
+        self, path: str, root_path: str, expected: str | None
     ) -> None:
         scope = {"type": "http", "path": path, "root_path": root_path}
 
-        assert strip_root_path(path, root_path) == expected
+        if expected is not None:
+            assert strip_root_path(path, root_path) == expected
         assert strip_root_path(path, root_path) == get_route_path(scope)

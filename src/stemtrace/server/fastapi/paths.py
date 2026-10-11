@@ -12,6 +12,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+# Private, but present with this signature in every supported version
+# (starlette>=0.38.6 through 1.7.0). Imported rather than copied on purpose:
+# see strip_root_path. If a future Starlette drops it, this import fails
+# loudly instead of the middleware silently diverging from routing.
+from starlette._utils import get_route_path
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -30,12 +36,16 @@ def root_path_of(scope: Mapping[str, Any]) -> str:
 
 
 def strip_root_path(path: str, root_path: str) -> str:
-    """Remove ``root_path`` from ``path`` exactly as Starlette routing does.
+    """Remove ``root_path`` from ``path`` exactly as the installed Starlette does.
 
-    Mirrors ``starlette._utils.get_route_path`` (starlette 1.7.0), which
-    ``Router``/``Mount`` use to match routes: the prefix is removed only when
-    the path starts with it at a segment boundary; otherwise the path is
-    returned unchanged (servers that don't prepend root_path to the path).
+    Delegates to ``starlette._utils.get_route_path``, the function
+    ``Router``/``Mount`` match routes with, so auth decisions always see the
+    path routing sees. Its behavior differs across supported versions:
+    starlette 0.38.6-0.39.1 strip with an unescaped regex (a "." in root_path
+    matches any character), 0.39.2+ (checked up to 1.7.0) strip a literal
+    prefix at a segment boundary. A private copy of either would let a request
+    route to a protected endpoint while the middleware sees another path
+    (e.g. root_path "/api.v1" and path "/apiXv1/stemtrace/api/tasks" on 0.38).
 
     Args:
         path: Decoded (or raw) request path from the scope.
@@ -44,13 +54,7 @@ def strip_root_path(path: str, root_path: str) -> str:
     Returns:
         The path routing matches against.
     """
-    if not root_path or not path.startswith(root_path):
-        return path
-    if path == root_path:
-        return ""
-    if path[len(root_path)] == "/":
-        return path[len(root_path) :]
-    return path
+    return get_route_path({"type": "http", "path": path, "root_path": root_path})
 
 
 def browser_path(scope: Mapping[str, Any], path: str) -> str:
