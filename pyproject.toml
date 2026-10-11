@@ -58,6 +58,8 @@ dev = [
     "build>=1.0.0",  # For local package builds
     "twine>=5.0.0",  # For package verification
     "import-linter>=2.0",  # Enforces the core/library/server import boundaries (make lint, CI)
+    "gevent>=25.4.1",  # DNS helper tests under gevent's monkey-patching
+    "eventlet>=0.39.0",  # DNS helper tests under eventlet's monkey-patching
 ]
 
 [project.urls]

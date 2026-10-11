@@ -255,6 +255,7 @@ def test_fork_storm_while_helpers_start_leaves_nothing_stuck() -> None:
 
 # Under gevent, subprocess starts the helper with os.fork() from the spawning
 # greenlet, which runs prepare_fork() while that greenlet holds the spawn lock.
+# The same script runs under eventlet, with its monkey-patching swapped in.
 _GEVENT_SCRIPT = """\
 from gevent import monkey
 monkey.patch_all()
@@ -277,10 +278,21 @@ print(json.dumps({"helper_usable": r._state().helper_usable, "resolved": bool(ad
 """
 
 
-def test_helper_under_gevent_does_not_deadlock() -> None:
-    pytest.importorskip("gevent")
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "from gevent import monkey\nmonkey.patch_all()",
+        "import eventlet\neventlet.monkey_patch()",
+    ],
+    ids=["gevent", "eventlet"],
+)
+def test_helper_under_green_threads_does_not_deadlock(patch: str) -> None:
+    pytest.importorskip(patch.split()[1].split(".")[0])
+    script = _GEVENT_SCRIPT.replace(
+        "from gevent import monkey\nmonkey.patch_all()", patch
+    )
     completed = subprocess.run(
-        [sys.executable, "-c", _GEVENT_SCRIPT],
+        [sys.executable, "-c", script],
         capture_output=True,
         timeout=60,
         check=True,
