@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { setupMockApi } from './fixtures/mock-api'
+import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import { createGroup, createWorkflowWithGroup } from './fixtures/mock-data'
 
 /**
@@ -32,6 +32,69 @@ async function navigateToFirstGraph(page: import('@playwright/test').Page): Prom
   await graphLink.click()
   await page.waitForLoadState('networkidle')
   return true
+}
+
+/** Which graph a test needs. Data for these exists in both modes (see below). */
+interface GraphTarget {
+  /** Root node type, e.g. 'CHORD'. */
+  nodeType?: string
+  /** Root task name. */
+  name?: RegExp
+}
+
+/**
+ * A chord: a group of tasks followed by a callback. Mock mode: DEFAULT_TASKS
+ * createGroup(3, { withCallback: true }). Real mode: the E2E seed's
+ * create_workflow (tests/e2e/tasks.py).
+ */
+const CHORD_GRAPH: GraphTarget = { nodeType: 'CHORD' }
+
+/**
+ * A parent task that spawns a group. Mock mode: tasks.batch_processor from
+ * createWorkflowWithGroup. Real mode: e2e.batch_processor from the E2E seed.
+ */
+const PARENT_WITH_GROUP_GRAPH: GraphTarget = { name: /batch_processor$/ }
+
+/** Root graphs, from the mocked store or (real mode) the stemtrace API. */
+async function listRootGraphs(
+  page: import('@playwright/test').Page,
+  mockApi: MockApiContext | null,
+): Promise<{ task_id: string; name: string; node_type: string }[]> {
+  if (mockApi) return mockApi.getRootTasks()
+
+  const response = await page.request.get('/stemtrace/api/graphs?limit=100')
+  expect(response.ok()).toBe(true)
+  return (await response.json()).graphs
+}
+
+/**
+ * Open a specific graph from the graphs list.
+ *
+ * Unlike navigateToFirstGraph this never skips: the data it looks for is
+ * created by the E2E seed (real mode) or the mock fixtures (mock mode), so a
+ * missing graph is a broken setup and fails the test with the graphs it did find.
+ */
+async function openGraph(
+  page: import('@playwright/test').Page,
+  mockApi: MockApiContext | null,
+  target: GraphTarget,
+): Promise<void> {
+  const graphs = await listRootGraphs(page, mockApi)
+  const match = graphs.find(
+    (graph) =>
+      (!target.nodeType || graph.node_type === target.nodeType) &&
+      (!target.name || target.name.test(graph.name)),
+  )
+  if (!match) {
+    const found = graphs.map((graph) => `${graph.name} (${graph.node_type})`).join(', ')
+    throw new Error(`No graph matching ${JSON.stringify(target)}; found: ${found || 'none'}`)
+  }
+
+  await page.goto('/graphs')
+  const link = page.locator('a[href*="/graph/"]').filter({ hasText: match.task_id })
+  await expect(link).toBeVisible({ timeout: 15_000 })
+  await link.click()
+  await page.waitForLoadState('networkidle')
 }
 
 test.describe('Graphs Page', () => {
@@ -160,10 +223,10 @@ test.describe('Graph Detail Page', () => {
 })
 
 test.describe('Graph Edges', () => {
+  let mockApi: MockApiContext | null = null
+
   test.beforeEach(async ({ page }) => {
-    if (!isRealMode) {
-      await setupMockApi(page)
-    }
+    mockApi = isRealMode ? null : await setupMockApi(page)
   })
 
   test('edges are rendered in the graph', async ({ page }) => {
@@ -204,25 +267,12 @@ test.describe('Graph Edges', () => {
   })
 
   test('edges connect parent to child nodes', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    // Check for edges using accessible role
+    // Edges are SVG groups with accessible names "Edge from X to Y"
     const edges = page.getByRole('group', { name: /Edge from/ })
-    const edgeCount = await edges.count()
-
-    if (edgeCount === 0) {
-      test.skip()
-      return
-    }
-
-    // Verify at least one edge is visible
-    const firstEdge = edges.first()
-    await expect(firstEdge).toBeVisible()
-    expect(edgeCount).toBeGreaterThan(0)
+    await expect(edges.first()).toBeVisible()
+    expect(await edges.count()).toBeGreaterThan(0)
   })
 
   test('edges have appropriate styling', async ({ page }) => {
@@ -277,10 +327,10 @@ test.describe('Graph Edges', () => {
 })
 
 test.describe('Container Nodes (GROUP/CHORD)', () => {
+  let mockApi: MockApiContext | null = null
+
   test.beforeEach(async ({ page }) => {
-    if (!isRealMode) {
-      await setupMockApi(page)
-    }
+    mockApi = isRealMode ? null : await setupMockApi(page)
   })
 
   test('container nodes are rendered with dashed borders', async ({ page }) => {
@@ -309,27 +359,16 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
   })
 
   test('container nodes contain child task nodes', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, CHORD_GRAPH)
 
     const containerNodes = page.locator('.container-node')
-    const containerCount = await containerNodes.count()
+    await expect(containerNodes.first()).toBeVisible()
 
-    if (containerCount === 0) {
-      test.skip()
-      return
-    }
-
-    // Container nodes should have child nodes rendered inside them
-    // We verify by checking for .container-child class nodes which are task nodes inside containers
+    // Container nodes should have task nodes rendered inside them: .container-child
+    // marks the task nodes inside a container. The chord has 3 members plus a callback.
     const childNodes = page.locator('.container-child')
-    const childCount = await childNodes.count()
-
-    // Container should have task nodes inside (at least 1)
-    expect(childCount).toBeGreaterThanOrEqual(1)
+    await expect(childNodes.first()).toBeVisible()
+    expect(await childNodes.count()).toBeGreaterThanOrEqual(1)
   })
 
   test('container header shows GROUP or CHORD label', async ({ page }) => {
@@ -362,10 +401,10 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
 })
 
 test.describe('Edge Visibility Regression Tests', () => {
+  let mockApi: MockApiContext | null = null
+
   test.beforeEach(async ({ page }) => {
-    if (!isRealMode) {
-      await setupMockApi(page)
-    }
+    mockApi = isRealMode ? null : await setupMockApi(page)
   })
 
   /**
@@ -374,44 +413,28 @@ test.describe('Edge Visibility Regression Tests', () => {
    * had missing incoming edges.
    */
   test('parent task has edge to GROUP container', async ({ page }) => {
-    await page.goto('/graphs')
-    await page.waitForLoadState('networkidle')
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    // Find a graph that starts with a task name (not 'group:' or 'chord:')
-    // These are graphs where a parent task spawns a group
-    const parentGraphLink = page
-      .locator('a[href*="/graph/"]')
-      .filter({ hasText: /batch_processor|workflow/ })
-      .first()
-
-    const hasParentGraph = await parentGraphLink.isVisible().catch(() => false)
-    if (!hasParentGraph) {
-      test.skip()
-      return
-    }
-
-    await parentGraphLink.click()
-    await page.waitForLoadState('networkidle')
-
-    // Count nodes and edges
+    // The graph has a parent task, a GROUP container (with its header label) and
+    // members, so there are several nodes and exactly one container
     const nodes = page.locator('.react-flow__node')
-    const nodeCount = await nodes.count()
-    const containerNodes = page.locator('.container-node')
-    const containerCount = await containerNodes.count()
+    await expect(nodes.first()).toBeVisible()
+    expect(await nodes.count()).toBeGreaterThan(1)
+    await expect(page.locator('.container-node')).toHaveCount(1)
 
-    // If we have both a parent task and a container, we MUST have an edge
-    if (nodeCount > 1 && containerCount > 0) {
-      const edges = page.locator('.react-flow__edge')
-      const edgeCount = await edges.count()
-
-      // This is the critical assertion: parent-to-container edge must exist
-      expect(edgeCount).toBeGreaterThan(0)
-
-      // Verify edge SVG paths are actually rendered (not just elements)
-      const edgePaths = page.locator('.react-flow__edge path[d]')
-      const renderedPathCount = await edgePaths.count()
-      expect(renderedPathCount).toBeGreaterThan(0)
-    }
+    // This is the critical assertion: parent-to-container edge must exist, and its
+    // SVG path must actually be rendered (not just the element). Poll: edges are
+    // drawn a moment after their nodes.
+    await expect
+      .poll(() => page.locator('.react-flow__edge').count(), {
+        message: 'parent-to-container edge should be rendered',
+      })
+      .toBeGreaterThan(0)
+    await expect
+      .poll(() => page.locator('.react-flow__edge path[d]').count(), {
+        message: 'edge SVG paths should be rendered',
+      })
+      .toBeGreaterThan(0)
   })
 
   /**
@@ -464,29 +487,17 @@ test.describe('Edge Visibility Regression Tests', () => {
    * Each header task contributes to triggering the callback.
    */
   test('chord has edges from all header tasks to callback', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, CHORD_GRAPH)
 
-    // Check if this graph contains a CHORD container
-    const chordLabel = page.locator('.header-label-node:has-text("CHORD")')
-    const hasChord = await chordLabel
-      .first()
-      .isVisible()
-      .catch(() => false)
+    await expect(page.locator('.header-label-node:has-text("CHORD")').first()).toBeVisible()
 
-    if (!hasChord) {
-      // Skip if no chord in this graph - informational test
-      test.skip()
-      return
-    }
-
-    // Count edges in a chord graph - should have at least 3 (one from each header task)
-    const edges = page.locator('.react-flow__edge')
-    const edgeCount = await edges.count()
-    expect(edgeCount).toBeGreaterThanOrEqual(3)
+    // A chord with 3 header tasks has at least 3 edges (one from each header task
+    // to the callback). Poll: edges are drawn a moment after their nodes.
+    await expect
+      .poll(() => page.locator('.react-flow__edge').count(), {
+        message: 'chord should have an edge from each of its 3 header tasks',
+      })
+      .toBeGreaterThanOrEqual(3)
   })
 })
 
@@ -554,10 +565,10 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Should have 5 nodes: 1 CHORD + 3 members + 1 callback
+    // Should have 6 nodes: 1 CHORD container + 1 header label + 3 members + 1 callback
     const nodes = page.locator('.react-flow__node')
     const nodeCount = await nodes.count()
-    expect(nodeCount).toBe(5)
+    expect(nodeCount).toBe(6)
 
     // CHORD label should be visible
     const chordText = page.getByText('CHORD')
