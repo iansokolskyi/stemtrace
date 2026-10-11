@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading:** upgrade the server before (or together with) the workers. This release's workers put the parent and group IDs on the PENDING event they send. A 0.3.10 server shows more tasks twice when it gets those events: on Celery 5.2, both headers of `chain(a, chord([b, c], d))` also appear directly under `a` (one does with older workers). This release's server draws the same graphs from older workers' events as from this release's (checked on every captured test workflow).
+
 ### Added
 - Built-in login: failed sign-ins are throttled in memory, per client IP (5 failures; IPv6 per /64) and per username (20, from all IPs) or, for browsers that signed in before, per device (5). Further attempts get 429 with `Retry-After`, starting at 30 seconds and doubling up to 15 minutes. A successful sign-in sets a signed device cookie (`stemtrace_session_device`, 90 days with a configured `STEMTRACE_LOGIN_SECRET`) so strangers' failures, by username or from a shared IP, can't lock out browsers that have signed in before; anyone who knows the username can still keep it locked for other browsers. Limits are per process, and the client IP comes from the ASGI server (behind a proxy, list its addresses in uvicorn's `--forwarded-allow-ips` / `FORWARDED_ALLOW_IPS`, never `*`). See the README.
 - `stemtrace server --root-path /prefix` (or `STEMTRACE_ROOT_PATH`) for a reverse proxy that serves stemtrace under a path prefix and strips it; it is passed to uvicorn as `root_path`. Prefixes the UI can't use (characters other than letters, digits, `.`, `_`, `-`) are rejected at startup.
