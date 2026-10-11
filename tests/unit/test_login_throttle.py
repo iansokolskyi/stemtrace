@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -121,6 +122,15 @@ class TestLoginThrottle:
         _fail(throttle, LOGIN_IP_MAX_FAILURES - 1, _attempt())
         assert throttle.retry_after(_attempt()) == 0
 
+    def test_failure_after_memory_window_starts_a_new_count(self) -> None:
+        clock = FakeClock()
+        throttle = LoginThrottle(clock=clock)
+        _fail(throttle, LOGIN_IP_MAX_FAILURES - 1, _attempt())
+        clock.now += LOGIN_FAILURE_MEMORY_S
+        throttle.record_failure(_attempt())  # no retry_after in between
+
+        assert throttle.retry_after(_attempt()) == 0
+
     def test_username_locked_from_many_ips_without_device(self) -> None:
         throttle = LoginThrottle(clock=FakeClock())
         for i in range(LOGIN_USERNAME_MAX_FAILURES):
@@ -146,11 +156,41 @@ class TestLoginThrottle:
         # Device failures don't count against the username.
         assert throttle.retry_after(_attempt("10.0.1.1")) == 0
 
-    def test_known_device_still_subject_to_ip_limit(self) -> None:
+    def test_known_device_skips_ip_lock_but_its_failures_count(self) -> None:
         throttle = LoginThrottle(clock=FakeClock())
         _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt(user="x"))
 
-        assert throttle.retry_after(_attempt(device="dev-1")) == 30
+        assert throttle.retry_after(_attempt(user="y")) == 30
+        assert throttle.retry_after(_attempt(device="dev-1")) == 0
+        throttle.record_failure(_attempt(device="dev-1"))
+        # The device's failure escalated the IP lock (6th failure: 60s).
+        assert throttle.retry_after(_attempt(user="y")) == 60
+
+    @pytest.mark.parametrize(
+        ("first", "same_client", "other_client"),
+        [
+            ("2001:db8::1", "2001:db8::ffff:1", "2001:db8:0:1::1"),
+            ("::ffff:203.0.113.7", "203.0.113.7", "203.0.113.8"),
+        ],
+    )
+    def test_ipv6_clients_are_limited_per_64_network(
+        self, first: str, same_client: str, other_client: str
+    ) -> None:
+        throttle = LoginThrottle(clock=FakeClock())
+        for i in range(LOGIN_IP_MAX_FAILURES):
+            ip = first if i == 0 else same_client
+            throttle.record_failure(_attempt(ip, f"user-{i}"))
+
+        assert throttle.retry_after(_attempt(same_client, "u")) == 30
+        assert throttle.retry_after(_attempt(first, "u")) == 30
+        assert throttle.retry_after(_attempt(other_client, "u")) == 0
+
+    def test_non_ip_client_names_are_used_verbatim(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock())
+        _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt("testclient", "x"))
+
+        assert throttle.retry_after(_attempt("testclient", "y")) == 30
+        assert throttle.retry_after(_attempt("testclient2", "y")) == 0
 
     def test_no_client_address_skips_ip_limit(self) -> None:
         throttle = LoginThrottle(clock=FakeClock())
@@ -220,22 +260,117 @@ class TestLoginThrottle:
 
         assert throttle.retry_after(_attempt("new", "un")) == 0
 
-    def test_expired_keys_are_purged_when_a_new_key_arrives(self) -> None:
+    def test_forgotten_keys_make_room_before_low_count_ones(self) -> None:
         clock = FakeClock()
-        throttle = LoginThrottle(clock=clock, max_keys=10)
-        throttle.record_failure(_attempt("old-1", "old-1"))
-        throttle.record_failure(_attempt("old-2", "old-2"))
+        throttle = LoginThrottle(clock=clock, max_keys=2)
+        _fail(throttle, 3, _attempt(None, "old"))
         clock.now += LOGIN_FAILURE_MEMORY_S
-        throttle.record_failure(_attempt("new", "new"))
+        throttle.record_failure(_attempt(None, "fresh"))
+        throttle.record_failure(_attempt(None, "new"))
 
-        assert throttle.tracked_keys == 2
+        held = set(throttle._by_username._bucket_of)
+        assert held == {
+            login_throttle._username_key("fresh"),
+            login_throttle._username_key("new"),
+        }
 
     def test_long_usernames_are_stored_as_fixed_size_keys(self) -> None:
         throttle = LoginThrottle(clock=FakeClock())
         throttle.record_failure(_attempt(user="x" * 1_000_000))
 
-        keys = list(throttle._by_username._unlocked)
+        keys = list(throttle._by_username._bucket_of)
         assert [len(k) for k in keys] == [64]
+
+
+def _flood(throttle: LoginThrottle, count: int, *, tag: str) -> None:
+    """Junk usernames, one failure each, as an attacker without a client IP."""
+    for i in range(count):
+        junk = _attempt(None, f"{tag}-{i}")
+        if throttle.retry_after(junk) == 0:
+            throttle.record_failure(junk)
+
+
+class TestUsernameEvictionResistance:
+    _CAP = 100
+
+    def test_junk_username_flood_cannot_reset_a_near_lock_count(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
+        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES - 1, _attempt(None))
+        _flood(throttle, 30 * self._CAP, tag="junk")
+        throttle.record_failure(_attempt(None))
+
+        assert throttle.retry_after(_attempt(None)) == LOGIN_LOCKOUT_BASE_S
+
+    def test_reviewer_attack_gets_no_more_than_the_limit_of_guesses(self) -> None:
+        # Guess, flood junk usernames to push the count out, repeat.
+        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
+        guesses = 0
+        for round_ in range(5):
+            for _ in range(LOGIN_USERNAME_MAX_FAILURES - 1):
+                if throttle.retry_after(_attempt(None)) == 0:
+                    throttle.record_failure(_attempt(None))
+                    guesses += 1
+            _flood(throttle, 3 * self._CAP, tag=f"junk{round_}")
+
+        assert guesses == LOGIN_USERNAME_MAX_FAILURES
+        assert throttle.retry_after(_attempt(None)) > 0
+
+    @pytest.mark.parametrize("username", [_USER, "no-such-user"])
+    def test_eviction_sequence_is_the_same_for_any_username(
+        self, username: str
+    ) -> None:
+        # No oracle: fail X 19 times, flood, fail X once -> locked either way.
+        throttle = LoginThrottle(clock=FakeClock(), max_keys=self._CAP)
+        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES - 1, _attempt(None, username))
+        _flood(throttle, 3 * self._CAP, tag="junk")
+        throttle.record_failure(_attempt(None, username))
+
+        assert throttle.retry_after(_attempt(None, username)) == 30
+
+    def test_low_count_keys_are_evicted_before_higher_ones(self) -> None:
+        throttle = LoginThrottle(clock=FakeClock(), max_keys=3)
+        _fail(throttle, 3, _attempt(None, "warm"))
+        throttle.record_failure(_attempt(None, "cold-1"))
+        throttle.record_failure(_attempt(None, "cold-2"))
+        throttle.record_failure(_attempt(None, "new"))
+
+        held = set(throttle._by_username._bucket_of)
+        assert len(held) == 3
+        assert login_throttle._username_key("warm") in held
+        assert login_throttle._username_key("cold-1") not in held
+
+    def test_table_full_of_warm_keys_fails_closed_for_new_usernames(self) -> None:
+        clock = FakeClock()
+        throttle = LoginThrottle(clock=clock, max_keys=3)
+        warm = LOGIN_USERNAME_MAX_FAILURES // 2 + 1
+        for name in ("w1", "w2", "w3"):
+            _fail(throttle, warm, _attempt(None, name))
+            clock.now += 10
+
+        # Refused until the oldest ("w1", 20s ago) is forgotten.
+        assert (
+            throttle.retry_after(_attempt(None, "new")) == LOGIN_FAILURE_MEMORY_S - 30
+        )
+        assert throttle.retry_after(_attempt(None, "w2")) == 0
+        assert throttle.retry_after(_attempt(None, "new", device="dev")) == 0
+        throttle.record_failure(_attempt(None, "new"))
+        assert len(throttle._by_username) == 3
+        clock.now += LOGIN_FAILURE_MEMORY_S
+        assert throttle.retry_after(_attempt(None, "new")) == 0
+
+    def test_released_lock_keeps_its_count_when_table_is_full(self) -> None:
+        clock = FakeClock()
+        throttle = LoginThrottle(clock=clock, max_keys=2)
+        _fail(throttle, LOGIN_USERNAME_MAX_FAILURES, _attempt(None))
+        warm = LOGIN_USERNAME_MAX_FAILURES // 2 + 1
+        _fail(throttle, warm, _attempt(None, "w1"))
+        _fail(throttle, warm, _attempt(None, "w2"))
+        clock.now += LOGIN_LOCKOUT_BASE_S
+
+        assert throttle.retry_after(_attempt(None)) == 0
+        throttle.record_failure(_attempt(None))
+        assert throttle.retry_after(_attempt(None)) == 2 * LOGIN_LOCKOUT_BASE_S
+        assert throttle.tracked_keys == 3
 
 
 def _config() -> FormAuthConfig:
@@ -264,6 +399,17 @@ class TestDeviceCookie:
         cookie = create_device_cookie_value(other)
 
         assert device_id_from_cookie(cookie, _config(), _USER) is None
+
+    def test_cookie_does_not_carry_the_username_in_clear(self) -> None:
+        config = FormAuthConfig(
+            username="ops-admin@example.com", password=_PASSWORD, secret=_SECRET
+        )
+        cookie = create_device_cookie_value(config)
+        payload_b64 = cookie.split(".", 1)[0]
+        payload = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+
+        assert b"ops-admin" not in payload
+        assert device_id_from_cookie(cookie, config, "ops-admin@example.com")
 
     def test_session_cookie_is_not_a_device_cookie(self) -> None:
         config = _config()
@@ -412,6 +558,20 @@ class TestLoginEndpointThrottling:
         assert stranger_try.status_code == 429
         assert owner_try.status_code == 303
         assert owner_try.headers["location"] == "/graphs"
+
+    def test_known_browser_signs_in_while_strangers_locked_shared_ip(self) -> None:
+        # Behind a proxy whose address isn't trusted, everyone shares its IP.
+        app = _router_app(LoginThrottle(clock=FakeClock()))
+        with TestClient(app) as owner, TestClient(app) as stranger:
+            _post(owner, _USER, _PASSWORD)
+            owner.cookies.delete(_SESSION)
+            for i in range(LOGIN_IP_MAX_FAILURES):
+                _post(stranger, f"guess-{i}", "wrong")
+            stranger_try = _post(stranger, _USER, _PASSWORD)
+            owner_try = _post(owner, _USER, _PASSWORD)
+
+        assert stranger_try.status_code == 429
+        assert owner_try.status_code == 303
 
     def test_device_cookie_failures_lock_only_that_device(self) -> None:
         app = _ClientFromHeader(_router_app(LoginThrottle(clock=FakeClock())))
