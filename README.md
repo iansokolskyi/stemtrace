@@ -359,6 +359,7 @@ stemtrace.init_app(
 |----------|-------------|---------|
 | `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
+| `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Server Options](#server-options)). Same as `--root-path`. | Unset. |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node Names from Task Arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 
 ### Supported Brokers
@@ -494,8 +495,18 @@ stemtrace server \
     --host 0.0.0.0 \
     --port 8000 \
     --node-alias-from-arguments operator_type \
+    --root-path /monitoring \
     --reload  # For development
 ```
+
+`--root-path` (or `STEMTRACE_ROOT_PATH`) is for a reverse proxy that serves stemtrace under a
+path prefix and strips it before forwarding (e.g. `https://example.com/monitoring/` →
+`http://stemtrace:8000/`). It is passed to uvicorn as its `root_path`, so the UI, login
+redirects and session cookies use the prefixed URLs. Leave it unset when the proxy forwards
+the full path or serves stemtrace at the root of a host. The prefix may only contain
+`/`-separated segments of letters, digits, `.`, `_` and `-` (up to 64 characters each);
+`stemtrace server` refuses to start with anything else, and an embedded app whose `root_path`
+breaks this rule logs a warning and serves UI links without the prefix.
 
 #### Node Names from Task Arguments
 
@@ -525,7 +536,10 @@ stemtrace server \
 
 Set `--login-secret` (or `STEMTRACE_LOGIN_SECRET`) to a long random value, and use the same
 value on every replica. Without it, each process generates its own random secret, so sessions
-only work within a single process and are lost on restart.
+only work within a single process and are lost on restart. Failed sign-ins are throttled per IP
+and per username or browser; see [With Built-in Login Page](#with-built-in-login-page-recommended-for-ui-first)
+for the limits and the proxy setting (`FORWARDED_ALLOW_IPS`, set to your proxies' addresses,
+never `*`) that keeps client IPs correct.
 
 #### High-Scale Production Setup
 
@@ -610,6 +624,56 @@ random value everywhere, e.g. `python -c "import secrets; print(secrets.token_ur
 Without it, each process signs sessions with its own random secret, and users get logged out
 at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
 the problem when a session signed by another process is rejected.
+
+Failed sign-ins are throttled in memory, per client IP and per username or browser:
+
+- After 5 failures from one IP (IPv6: one /64 network), further attempts from it get
+  `429 Too Many Requests` with a `Retry-After` header, without the credentials being checked.
+  The first lockout is 30 seconds; each further failure doubles it, up to 15 minutes.
+- A successful sign-in sets a *device cookie* (`stemtrace_session_device`, signed, kept on
+  logout). A browser that sends a valid one for the username it signs in with gets its own
+  limit of 5 failures and skips the IP limit (its failures still count against the IP). Every
+  other browser shares a per-username limit of 20 failures, from all IPs together.
+- Device cookies stay valid for 90 days only with a configured `STEMTRACE_LOGIN_SECRET`
+  (`login_secret` / `--login-secret`). With a generated per-process secret they stop working
+  on every restart and aren't recognized by other workers or replicas.
+- The per-username limit can be held by anyone who knows the username: about one failed
+  attempt every 15 minutes keeps sign-in locked, **indefinitely**, for every browser without a
+  valid device cookie, e.g. a new laptop or a cleared browser. Browsers that signed in within
+  the last 90 days are not affected. Restarting stemtrace clears all limits. If that's a
+  concern, put stemtrace behind your own auth (see below) or a proxy with its own rate limits.
+- Guessing costs the same for every username, real or not: 20 guesses, then one per lockout
+  (about 4 an hour at the 15-minute cap), or, waiting out the hour after which failures are
+  forgotten, another burst of 20. So the sustained maximum is about 20 guesses an hour per
+  username. A count goes down only after an hour without failures or after a successful
+  sign-in, which clears the counts for its IP, username and device. The response is the same
+  whether the username exists or not.
+- The client IP is the one your ASGI server reports; `X-Forwarded-For` is never read directly.
+  Behind a reverse proxy or load balancer, tell the server which proxies to trust with uvicorn
+  `--forwarded-allow-ips` or the `FORWARDED_ALLOW_IPS` env var (which `stemtrace server` also
+  reads), listing their IPs or CIDRs, e.g. `FORWARDED_ALLOW_IPS=10.0.0.0/8`. Don't use `*` with
+  a proxy that appends to `X-Forwarded-For`: uvicorn then takes the leftmost entry, which the
+  client sets, so anyone can claim a new IP on every request. Without the setting, every user
+  shares the proxy's address and its IP limit (browsers with a device cookie aren't held up by
+  that). Requests without a client address (e.g. uvicorn `--uds`) have no IP limit; the
+  username and device limits still apply.
+- Limits are per process: with several workers or replicas, each counts on its own.
+- Failures are counted in fixed tables of 65,536 buckets per kind (IP, username, device;
+  about 1.5 MB each), not per key, so memory never grows and failure traffic can't push out or
+  lower another key's count. Each key maps to two buckets through a hash keyed with a random
+  per-process secret, and is locked only if both are. Keys that share buckets can therefore
+  only be locked early, never late. (A successful sign-in clears its own two buckets, so with a
+  probability of about 0.006% per sign-in it can also lift the lock of a key sharing both.)
+  False locks for a username that never failed: about 0.02% with 500 usernames locked at
+  once, 0.08% with 1,000, 2% with 5,000 and 21% with 20,000 (an attacker locking junk
+  usernames on purpose); IPs behave the same. Junk-IP floods are cheap for anyone with many
+  addresses (an IP locks after 5 failures, so 5,000 IPs take 25,000 requests) and lock out
+  that share of other IPs, for browsers without a device cookie. Browsers with a device cookie
+  are never affected by IP or username buckets.
+
+Behind a reverse proxy that strips a path prefix, run your app with uvicorn's `--root-path`
+(e.g. `uvicorn app:app --root-path /monitoring`); the login page, redirects and the session
+cookie then use `/monitoring/stemtrace/...`.
 
 #### Built-in Auth Helpers (Basic / API key)
 

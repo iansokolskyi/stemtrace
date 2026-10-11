@@ -9,10 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Upgrading:** upgrade the server before (or together with) the workers. Workers of this release put the parent and group IDs on the PENDING event they send, which this release's server uses to place a task as soon as it is sent. (A 0.3.10 server, checked against the same workflow, draws the same graphs from either worker version.)
 
+### Added
+- Built-in login: failed sign-ins are throttled in memory, per client IP (5 failures; IPv6 per /64) and per username (20, from all IPs) or, for browsers that signed in before, per device (5). Further attempts get 429 with `Retry-After`, starting at 30 seconds and doubling up to 15 minutes. A successful sign-in sets a signed device cookie (`stemtrace_session_device`, 90 days with a configured `STEMTRACE_LOGIN_SECRET`) so strangers' failures, by username or from a shared IP, can't lock out browsers that have signed in before; anyone who knows the username can still keep it locked for other browsers. Limits are per process, and the client IP comes from the ASGI server (behind a proxy, list its addresses in uvicorn's `--forwarded-allow-ips` / `FORWARDED_ALLOW_IPS`, never `*`). See the README.
+- `stemtrace server --root-path /prefix` (or `STEMTRACE_ROOT_PATH`) for a reverse proxy that serves stemtrace under a path prefix and strips it; it is passed to uvicorn as `root_path`. Prefixes the UI can't use (characters other than letters, digits, `.`, `_`, `-`) are rejected at startup.
+
 ### Changed
 - Minimum dependency versions raised to the lowest ones the test suite passes with: `celery>=5.2.0`, `pydantic>=2.2.0`, `typer>=0.13.0`; `kombu>=5.2.1`, which stemtrace imports, is now declared. A new CI job runs the unit tests against the declared minimums.
 - Graph data: a node's `parent_id` is where it sits in the graph. For a group's task that is the GROUP/CHORD node, for a chord's callback the CHORD node, and a task whose parent isn't in the store yet has none. The parent a task's events reported is in the new `reported_parent_id` field, on `TaskNode` and in the API's task and graph node responses.
 - `TaskGraph.root_ids` is now computed and returns a copy: appending to it no longer changes the graph. `TaskGraph.model_validate` rebuilds the graph from its nodes' events, so a deserialized graph keeps its groups and links and accepts more events.
+- Login: a `next` target containing a backslash or a control character now falls back to the default page after sign-in. This is hardening: Starlette percent-encodes the redirect, so such targets didn't lead off-site.
 
 ### Fixed
 - Graphs: a group's tasks are listed only inside the group, which sits under the task that started it; they used to also appear directly under that task once they started.
@@ -33,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Group state: a group with a `REJECTED` task shows `REJECTED` (ranked right below `FAILURE`) instead of depending on the order of its tasks.
 - Server: handling events no longer scans every stored node for chord callbacks, which made each event slower as the store filled (about 3.5 ms per event at 10,000 nodes, now about 0.06 ms).
 - Server: an event for a task in a large group no longer rescans the whole group (a 2,000-task group took 5.6 s to ingest, now 1.0 s), a chord's callback is no longer re-derived from all its headers on every event (2,000 headers with a subtask each: 7.3 s, now under 1 s) and a long chain body costs the same in any arrival order, and a long chain of tasks that schedule the next one no longer slows down as it grows (10,000 tasks: 30 s, now 3.3 s).
+- `init_app()` with the built-in login behind a path-prefixing reverse proxy (ASGI `root_path`, e.g. `uvicorn --root-path /monitoring`): the API and UI under the prefix were served without a session, and the login redirect and session cookie path left out the prefix. The login check now sees paths the way routing does, and redirects, `next` targets, the cookie path and the UI's API and asset URLs include the root path, also on uvicorn versions before 0.26 (which leave it out of the request path).
+- UI: an asset path outside the bundle's own `assets/` directory (e.g. `/stemtrace/assets/<file>` on `stemtrace server`, which serves the bundle at `/assets/`) now returns 404, with or without a session, instead of the HTML app shell or a login redirect.
 
 ## [0.3.10] - 2026-10-11
 
