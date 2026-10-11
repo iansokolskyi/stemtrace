@@ -127,6 +127,14 @@ class TestRedisPublishBreaker:
 
         assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN
 
+    def test_publish_single_very_slow_success_opens_breaker(self) -> None:
+        transport, publisher, _ = _make([(2 * PUBLISH_SLOW_ATTEMPT, None)])
+
+        for i in range(10):
+            transport.publish(_event(f"t-{i}"))
+
+        assert len(publisher.calls) == 1
+
     def test_publish_slow_successes_open_breaker(self) -> None:
         transport, publisher, _ = _make([(0.9, None)] * 10)
 

@@ -377,9 +377,9 @@ again once events are re-consumed.
     quick failures in a row make the worker skip publishing for a cooldown that grows from 1s to
     30s and resets on the next fast successful publish. So a Redis that stops answering costs a
     task about one second per cooldown, not 5 seconds (redis-py's default) per event.
-  - A Redis that still answers but slowly is handled the same way: three publishes in a row
-    that succeed but take 0.5s or more open the breaker, and a retry that is still slow keeps it
-    open. While the breaker is open, events are dropped.
+  - A Redis that still answers but slowly is handled the same way: a publish that succeeds but
+    takes 1s or more, or three in a row that take 0.5s or more, open the breaker, and a retry
+    that still takes 0.5s or more keeps it open. While the breaker is open, events are dropped.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
     number of events dropped since the previous one.
 - **RabbitMQ (fanout + per-consumer queue)**:
@@ -405,11 +405,12 @@ again once events are re-consumed.
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
     about 1.5 minutes even when the broker flaps.
-  - A broker that still answers but slowly is handled the same way: three publishes in a row
-    that succeed but take 0.5s or more open the breaker, and a retry that is still slow keeps it
-    open, so tasks stop waiting on it. While the breaker is open, events are dropped. Each
-    publish opens its own connection, so a healthy broker whose connection setup alone takes
-    about 0.5s (e.g. TLS across regions) will have events dropped this way too.
+  - A broker that still answers but slowly is handled the same way: a publish that succeeds but
+    takes 1s or more, or three in a row that take 0.5s or more, open the breaker, and a retry
+    that still takes 0.5s or more keeps it open, so tasks stop waiting on it. While the breaker
+    is open, events are dropped. Each publish opens its own connection, so a healthy broker
+    whose connection setup alone takes about 0.5s (e.g. TLS across regions) will have events
+    dropped this way too.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)

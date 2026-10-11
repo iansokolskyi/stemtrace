@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Callable
 
+# A success that took this many times ``slow_attempt`` opens the breaker on
+# its own: waiting for a run of such publishes would cost tasks seconds each.
+VERY_SLOW_FACTOR = 2.0
+
 
 def _losses(dropped: int, unconfirmed: int) -> str:
     """Describe lost events for a log line."""
@@ -46,8 +50,10 @@ class PublishBreaker:
             broker don't cost whole cooldowns of events. A success that took
             ``slow_attempt`` seconds or more counts toward that run like a
             fast failure (its event was delivered), so ``failures_to_open``
-            slow publishes in a row open the breaker too: tasks stop waiting
-            on a broker that answers, but slowly. A fast success ends the run.
+            slow publishes in a row open the breaker too, and a single one
+            that took ``VERY_SLOW_FACTOR`` times ``slow_attempt`` or more
+            opens it at once: tasks stop waiting on a broker that answers,
+            but slowly. A fast success ends the run.
         Open: attempts are dropped until the cooldown expires. Then a single
             caller is let through as the probe; no other probe is admitted
             while it is outstanding (up to ``probe_timeout``, after which it
@@ -134,6 +140,7 @@ class PublishBreaker:
         self._log_interval = log_interval
         self._probe_timeout = probe_timeout
         self._slow_attempt = slow_attempt
+        self._very_slow_attempt = slow_attempt * VERY_SLOW_FACTOR
         self._failures_to_open = failures_to_open
         self._monotonic = monotonic
         self._start_over()
@@ -288,7 +295,7 @@ class PublishBreaker:
         """Count a delivered but slow publish toward opening the breaker."""
         with self._lock:
             now = self._monotonic()
-            kind = self._transition_on_slow_success(ticket, now)
+            kind = self._transition_on_slow_success(ticket, now, elapsed)
             if kind is None:
                 return
             if kind == "opened":
@@ -304,12 +311,10 @@ class PublishBreaker:
 
         if kind == "opened":
             self._logger.warning(
-                "Publishing to %s is slow (%d attempts in a row took %.1fs or "
-                "longer, the last %.1fs); dropping events for %.1fs before "
-                "trying again (%s since the last report)",
+                "Publishing to %s is slow (the last attempt took %.1fs); "
+                "dropping events for %.1fs before trying again (%s since the "
+                "last report)",
                 self._name,
-                self._failures_to_open,
-                self._slow_attempt,
                 elapsed,
                 cooldown,
                 losses,
@@ -325,19 +330,23 @@ class PublishBreaker:
                 cooldown,
             )
 
-    def _transition_on_slow_success(self, ticket: int, now: float) -> str | None:
+    def _transition_on_slow_success(
+        self, ticket: int, now: float, elapsed: float
+    ) -> str | None:
         """Apply a slow success to the state (lock held).
 
         Returns:
-            "opened" when it completes a run that opens the breaker, "probe"
-            for a slow probe (the breaker stays open), None otherwise.
+            "opened" when it is very slow or completes a run that opens the
+            breaker, "probe" for a slow probe (the breaker stays open), None
+            otherwise.
         """
         if self._open_until is None:
             if ticket != self._epoch:
                 # Started before the breaker last opened and closed.
                 return None
             self._consecutive_degraded += 1
-            if self._consecutive_degraded < self._failures_to_open:
+            very_slow = elapsed >= self._very_slow_attempt
+            if not very_slow and self._consecutive_degraded < self._failures_to_open:
                 return None
             self._open(now, unconfirmed=False)
             return "opened"

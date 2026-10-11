@@ -795,10 +795,26 @@ class TestPublishBreakerSlowSuccesses:
         assert records[0].levelno == logging.WARNING
         assert records[0].exc_info is None
         assert records[0].getMessage() == (
-            "Publishing to TestBroker is slow (3 attempts in a row took 0.5s or "
-            "longer, the last 0.5s); dropping events for 1.0s before trying "
-            "again (0 event(s) dropped since the last report)"
+            "Publishing to TestBroker is slow (the last attempt took 0.5s); "
+            "dropping events for 1.0s before trying again (0 event(s) dropped "
+            "since the last report)"
         )
+
+    def test_single_success_twice_as_slow_as_threshold_opens(self) -> None:
+        breaker = _make_breaker(FakeClock())
+
+        _attempt_succeeds(breaker, elapsed=1.0)
+
+        assert breaker.is_open is True
+        assert breaker.allow() is None
+
+    def test_single_success_just_below_twice_threshold_does_not_open(self) -> None:
+        breaker = _make_breaker(FakeClock())
+
+        _attempt_succeeds(breaker, elapsed=0.99)
+        _attempt_succeeds(breaker, elapsed=0.99)
+
+        assert breaker.is_open is False
 
     def test_fast_success_resets_slow_success_count(self) -> None:
         breaker = _make_breaker(FakeClock())
@@ -845,7 +861,7 @@ class TestPublishBreakerSlowSuccesses:
         assert breaker.cooldown == 1.0
         # The slow probe's summary is rate-limited by the opening line.
         assert [r.getMessage()[:42] for r in _records(caplog)] == [
-            "Publishing to TestBroker is slow (3 attemp",
+            "Publishing to TestBroker is slow (the last",
             "Publishing to TestBroker recovered after 3",
         ]
 
