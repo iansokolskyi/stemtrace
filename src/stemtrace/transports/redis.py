@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
@@ -373,7 +372,7 @@ class RedisTransport:
         data_str = data.decode() if isinstance(data, bytes) else data
         try:
             return self._parse_event(data_str)
-        except (json.JSONDecodeError, ValidationError, ValueError):
+        except ValueError:  # includes JSONDecodeError and pydantic's ValidationError
             logger.warning(
                 "Failed to parse event from Redis stream %s at id %s",
                 self._stream_key,
@@ -411,6 +410,8 @@ class RedisTransport:
         """Parse JSON into appropriate event type."""
         # Peek at JSON to determine event type
         parsed = json.loads(data_str)
+        if not isinstance(parsed, dict):
+            raise ValueError("Event payload is not a JSON object")
         if "event_type" in parsed:
             # WorkerEvent has event_type field
             return WorkerEvent.model_validate(parsed)

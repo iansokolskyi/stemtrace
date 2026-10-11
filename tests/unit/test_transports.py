@@ -603,6 +603,35 @@ class TestRedisTransport:
         with pytest.raises(ValueError):  # noqa: PT011
             transport._parse_event('{"unexpected": "value"}')
 
+    @pytest.mark.parametrize("payload", ["42", '"text"', "[1, 2]", "null"])
+    def test_parse_event_rejects_non_object_payload(
+        self, transport: RedisTransport, payload: str
+    ) -> None:
+        """A JSON value that isn't an object is a parse error, not a crash."""
+        with pytest.raises(ValueError, match="not a JSON object"):
+            transport._parse_event(payload)
+
+    def test_consume_skips_scalar_payload_and_keeps_reading(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+    ) -> None:
+        """A scalar JSON entry is skipped; the iterator keeps going."""
+        mock_client.xread.return_value = [
+            (
+                b"test:events",
+                [
+                    (b"1-0", {b"data": b"42"}),
+                    (b"1-1", {b"data": sample_event.model_dump_json().encode()}),
+                ],
+            )
+        ]
+
+        received = next(transport.consume())
+
+        assert received.task_id == sample_event.task_id
+
     def test_consume_skips_empty_reads_and_logs_parse_errors(
         self,
         transport: RedisTransport,

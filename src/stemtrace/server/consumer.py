@@ -183,6 +183,8 @@ class EventConsumer:
             self._process_event(event)
             self._maybe_check_stale_workers()
         except Exception:
+            # Deliberately broad: a bad event or store bug must not stop
+            # consumption; the traceback is logged.
             logger.exception("Error processing event")
 
     def _on_iterator_end(self) -> None:

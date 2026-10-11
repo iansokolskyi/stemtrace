@@ -164,7 +164,7 @@ def _spa_shell_response(
     index_path: Path,
     *,
     api_base: str | None,
-    derived_prefix: str,
+    safe_prefix: str,
     show_logout: bool,
     logout_path: str | None,
 ) -> HTMLResponse:
@@ -172,20 +172,21 @@ def _spa_shell_response(
 
     With an explicit ``api_base`` (standalone server: UI at '/', API at
     '/stemtrace') assets stay as built, since they are served at the current
-    mount. Otherwise the request-derived prefix is sanitized and both the API
-    base and asset paths are rewritten to it.
+    mount. Otherwise both the API base and asset paths are rewritten to the
+    request-derived prefix.
 
     Args:
         index_path: The built index.html.
-        api_base: Fixed API base path, or None to derive it from the request.
-        derived_prefix: Mount prefix taken from the request path (untrusted).
+        api_base: Fixed API base path, or None to use ``safe_prefix``.
+        safe_prefix: Mount prefix derived from the request path, already passed
+            through ``_sanitize_derived_prefix`` by the caller.
         show_logout: Inject the logout path so the SPA shows a Logout control.
         logout_path: Absolute logout endpoint path.
     """
     if api_base is not None:
         prefix, rewrite_assets = api_base, False
     else:
-        prefix, rewrite_assets = _sanitize_derived_prefix(derived_prefix), True
+        prefix, rewrite_assets = safe_prefix, True
     return HTMLResponse(
         _rewrite_html_for_prefix(
             index_path.read_text(),
@@ -248,7 +249,8 @@ def get_static_router_with_base(
         return _spa_shell_response(
             index_path,
             api_base=api_base,
-            derived_prefix=request.url.path.rstrip("/"),
+            # Sanitize where the untrusted path is read (allow-listed segments only).
+            safe_prefix=_sanitize_derived_prefix(request.url.path.rstrip("/")),
             show_logout=show_logout,
             logout_path=logout_path,
         )
@@ -278,7 +280,7 @@ def get_static_router_with_base(
         return _spa_shell_response(
             index_path,
             api_base=api_base,
-            derived_prefix=_mount_prefix(request.url.path, path),
+            safe_prefix=_sanitize_derived_prefix(_mount_prefix(request.url.path, path)),
             show_logout=show_logout,
             logout_path=logout_path,
         )

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development: ruff now also enforces complexity, function-size, blind-`except` and dead-code rules, and [import-linter](https://import-linter.readthedocs.io/) checks the `core`/`library`/`server` import boundaries in `make lint` and CI (see CONTRIBUTING.md). No runtime change.
 - The broker transports moved from `stemtrace.library.transports` to `stemtrace.transports`, so the Celery integration and the server share them without importing each other. The old module paths (`stemtrace.library.transports` and its `redis`, `rabbitmq`, `memory` and `breaker` submodules) still import the same public classes and functions but emit a `DeprecationWarning`, and will be removed in 1.0; patching module internals through the old paths (e.g. `mock.patch("stemtrace.library.transports.redis.time.sleep")`) no longer reaches the real code, so update such patches to `stemtrace.transports`. The transports' loggers are renamed to match (e.g. `stemtrace.transports.rabbitmq`); logging configured for the `stemtrace` logger is unaffected.
 
+### Fixed
+- Redis: a stream entry whose payload is valid JSON but not an object (e.g. `42`) is now skipped with a warning; it used to end the consumer's read loop and trigger a restart.
+
 ## [0.3.9] - 2026-10-10
 
 ### Added
