@@ -145,65 +145,12 @@ def _is_regular_file(path: str) -> bool:
         return False
 
 
-def _mount_prefix(url_path: str, spa_path: str) -> str:
-    """Strip the SPA route from a request path: /stemtrace/tasks/1 -> /stemtrace.
-
-    Args:
-        url_path: Full request path.
-        spa_path: The part of it matched by the catch-all route.
-
-    Returns:
-        The unsanitized mount prefix, without a trailing slash.
-    """
-    if spa_path and url_path.endswith(spa_path):
-        return url_path[: -len(spa_path)].rstrip("/")
-    return url_path.rstrip("/")
-
-
-def _spa_shell_response(
-    index_path: Path,
-    *,
-    api_base: str | None,
-    safe_prefix: str,
-    show_logout: bool,
-    logout_path: str | None,
-) -> HTMLResponse:
-    """Render index.html configured for the mount it is served from.
-
-    With an explicit ``api_base`` (standalone server: UI at '/', API at
-    '/stemtrace') assets stay as built, since they are served at the current
-    mount. Otherwise both the API base and asset paths are rewritten to the
-    request-derived prefix.
-
-    Args:
-        index_path: The built index.html.
-        api_base: Fixed API base path, or None to use ``safe_prefix``.
-        safe_prefix: Mount prefix derived from the request path, already passed
-            through ``_sanitize_derived_prefix`` by the caller.
-        show_logout: Inject the logout path so the SPA shows a Logout control.
-        logout_path: Absolute logout endpoint path.
-    """
-    if api_base is not None:
-        prefix, rewrite_assets = api_base, False
-    else:
-        prefix, rewrite_assets = safe_prefix, True
-    return HTMLResponse(
-        _rewrite_html_for_prefix(
-            index_path.read_text(),
-            prefix,
-            rewrite_assets=rewrite_assets,
-            show_logout=show_logout,
-            logout_path=logout_path,
-        )
-    )
-
-
 def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
     """Create router for UI static files. Returns None if dist/ missing."""
     return get_static_router_with_base(None, show_logout=show_logout)
 
 
-def get_static_router_with_base(
+def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML sink in each handler so taint analysis can see it
     api_base: str | None,
     *,
     show_logout: bool = False,
@@ -246,13 +193,23 @@ def get_static_router_with_base(
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
             return HTMLResponse("<h1>UI not built</h1>", status_code=503)
-        return _spa_shell_response(
-            index_path,
-            api_base=api_base,
-            # Sanitize where the untrusted path is read (allow-listed segments only).
-            safe_prefix=_sanitize_derived_prefix(request.url.path.rstrip("/")),
-            show_logout=show_logout,
-            logout_path=logout_path,
+
+        if api_base is not None:
+            # Explicit API base: don't rewrite assets (they're served at current mount)
+            prefix = api_base
+            rewrite_assets = False
+        else:
+            # Derive from URL: rewrite assets to match mount point
+            prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
+            rewrite_assets = True
+        return HTMLResponse(
+            _rewrite_html_for_prefix(
+                index_path.read_text(),
+                prefix,
+                rewrite_assets=rewrite_assets,
+                show_logout=show_logout,
+                logout_path=logout_path,
+            )
         )
 
     @router.get("/{path:path}", response_model=None)
@@ -277,12 +234,29 @@ def get_static_router_with_base(
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
-        return _spa_shell_response(
-            index_path,
-            api_base=api_base,
-            safe_prefix=_sanitize_derived_prefix(_mount_prefix(request.url.path, path)),
-            show_logout=show_logout,
-            logout_path=logout_path,
+
+        if api_base is not None:
+            # Explicit API base: don't rewrite assets (they're served at current mount)
+            prefix = api_base
+            rewrite_assets = False
+        else:
+            # Extract prefix: /stemtrace/tasks/123 -> /stemtrace
+            url_path = request.url.path
+            derived = (
+                url_path[: -len(path)].rstrip("/")
+                if path and url_path.endswith(path)
+                else url_path.rstrip("/")
+            )
+            prefix = _sanitize_derived_prefix(derived)
+            rewrite_assets = True
+        return HTMLResponse(
+            _rewrite_html_for_prefix(
+                index_path.read_text(),
+                prefix,
+                rewrite_assets=rewrite_assets,
+                show_logout=show_logout,
+                logout_path=logout_path,
+            )
         )
 
     return router
