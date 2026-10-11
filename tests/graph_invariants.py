@@ -5,7 +5,7 @@ from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 
 def _is_callback_edge(parent: TaskNode, child_id: str) -> bool:
     """A CHORD lists its callback to draw its edge, whatever the callback's parent."""
-    return parent.node_type == NodeType.CHORD and parent.chord_callback_id == child_id
+    return parent.node_type == NodeType.CHORD and parent.chord_id == child_id
 
 
 def _check_roots(graph: TaskGraph) -> set[str]:

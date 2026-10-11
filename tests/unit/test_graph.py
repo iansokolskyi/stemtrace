@@ -1282,10 +1282,9 @@ class TestChordNodeCreation:
 class TestGraphCoverageEdgeCases:
     """Targeted tests to cover edge-case branches in TaskGraph."""
 
-    def test_compute_group_state_with_no_known_members_returns_pending(self) -> None:
-        """If member IDs aren't present in the graph, group state should be PENDING."""
-        graph = TaskGraph()
-        assert graph._compute_group_state(["missing-task"]) == TaskState.PENDING
+    def test_aggregate_group_state_without_members_returns_pending(self) -> None:
+        """A group without known members is PENDING."""
+        assert graph_module._aggregate_group_state(set()) == TaskState.PENDING
 
     def test_group_state_any_retry(self) -> None:
         """GROUP state should be RETRY when any member is RETRY and none are PENDING/STARTED."""
@@ -1883,6 +1882,73 @@ class TestOutOfOrderEvents:
         assert graph.nodes["group:cg1"].children == ["c1-h0", "c1-h1", "c1-cb"]
         assert graph.nodes["c1-cb"].parent_id == "group:cg1"
 
+    def test_add_event_to_big_group_never_scans_its_members(self) -> None:
+        graph = TaskGraph()
+        graph.add_event(_ordered_event(TaskState.STARTED, 0, task_id="P"))
+        for i in range(300):
+            graph.add_event(_ordered_event(TaskState.PENDING, 1, task_id=f"m{i}"))
+            graph.add_event(
+                TaskEvent(
+                    task_id=f"m{i}",
+                    name="myapp.tasks.process",
+                    state=TaskState.STARTED,
+                    timestamp=_BASE_TIME + timedelta(seconds=2),
+                    parent_id="P",
+                    group_id="g",
+                )
+            )
+        tally = graph._groups["g"]
+        members = _ScanCountingDict(tally.members)
+        tally.members = members  # type: ignore[assignment]  # counting wrapper
+
+        for i in range(300):
+            graph.add_event(
+                TaskEvent(
+                    task_id=f"m{i}",
+                    name="myapp.tasks.process",
+                    state=TaskState.SUCCESS,
+                    timestamp=_BASE_TIME + timedelta(seconds=3),
+                    parent_id="P",
+                    group_id="g",
+                )
+            )
+        graph.remove_node("m0")
+
+        assert members.scans == 0
+        assert graph.nodes["group:g"].state == TaskState.SUCCESS
+        assert graph.nodes["group:g"].parent_id == "P"
+        assert len(graph.nodes["group:g"].children) == 299
+
+    def test_add_event_self_rescheduling_chain_never_walks_ancestors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        walks = 0
+        real_is_ancestor = TaskGraph._is_ancestor
+
+        def counting(self: TaskGraph, candidate_id: str, node_id: str) -> bool:
+            nonlocal walks
+            walks += 1
+            return real_is_ancestor(self, candidate_id, node_id)
+
+        monkeypatch.setattr(TaskGraph, "_is_ancestor", counting)
+        graph = TaskGraph()
+        for i in range(500):
+            # Each task sends the next: its PENDING has no parent yet.
+            graph.add_event(_ordered_event(TaskState.PENDING, 2 * i, task_id=f"c{i}"))
+            graph.add_event(
+                TaskEvent(
+                    task_id=f"c{i}",
+                    name="myapp.tasks.process",
+                    state=TaskState.STARTED,
+                    timestamp=_BASE_TIME + timedelta(seconds=2 * i + 1),
+                    parent_id=f"c{i - 1}" if i else None,
+                )
+            )
+
+        assert walks == 0
+        assert graph.root_ids == ["c0"]
+        assert graph.nodes["c499"].parent_id == "c498"
+
     def test_add_event_same_timestamp_flood_does_constant_work_per_event(
         self, op_counter: dict[str, int]
     ) -> None:
@@ -2182,7 +2248,7 @@ class TestGraphLinkingCharacterization:
         assert graph.root_ids == ["P"]
         assert graph.nodes["group:g"].state == TaskState.STARTED
 
-    def test_add_event_members_with_different_parents_group_is_root(
+    def test_add_event_members_with_different_parents_group_takes_one(
         self,
     ) -> None:
         ev = self._event
@@ -2195,14 +2261,15 @@ class TestGraphLinkingCharacterization:
             ev("m2", TaskState.STARTED, parent_id="P2", group_id="g"),
         )
 
+        # One vote each: the smaller ID wins, whatever the event order.
         assert _shape(graph) == {
-            "P1": (NodeType.TASK, None, []),
+            "P1": (NodeType.TASK, None, ["group:g"]),
             "P2": (NodeType.TASK, None, []),
             "m1": (NodeType.TASK, "group:g", []),
             "m2": (NodeType.TASK, "group:g", []),
-            "group:g": (NodeType.GROUP, None, ["m1", "m2"]),
+            "group:g": (NodeType.GROUP, "P1", ["m1", "m2"]),
         }
-        assert graph.root_ids == ["P1", "P2", "group:g"]
+        assert graph.root_ids == ["P1", "P2"]
 
     def test_add_event_member_reporting_other_parent_keeps_group_in_place(
         self,
@@ -2520,17 +2587,19 @@ class TestGraphLinksStayConsistent:
         }
         assert graph.root_ids == ["a"]
 
-    def test_add_event_member_parented_by_other_member_makes_no_cycle(
+    def test_add_event_member_parented_by_other_member_breaks_cycle_at_group(
         self,
     ) -> None:
         graph = _build(_ev("m2", group_id="g"), _ev("m1", parent_id="m2", group_id="g"))
 
+        # The group can't hang below its own member: it is a root instead,
+        # and both members stay inside it.
         assert _shape(graph) == {
-            "m2": (NodeType.TASK, None, ["group:g"]),
+            "m2": (NodeType.TASK, "group:g", []),
             "m1": (NodeType.TASK, "group:g", []),
-            "group:g": (NodeType.GROUP, "m2", ["m1"]),
+            "group:g": (NodeType.GROUP, None, ["m2", "m1"]),
         }
-        assert graph.root_ids == ["m2"]
+        assert graph.root_ids == ["group:g"]
 
     def test_add_event_chord_naming_new_callback_unlinks_old_one(self) -> None:
         graph = _build(
@@ -2580,7 +2649,7 @@ class TestRemoveNode:
 
         assert graph.nodes == {}
         assert graph.root_ids == []
-        assert graph._group_members == {}
+        assert graph._groups == {}
 
     def test_remove_node_group_releases_members_to_their_parent(self) -> None:
         graph = _build(
@@ -2676,7 +2745,7 @@ class TestRemoveNode:
         graph.add_event(_ev("cb"))
 
         assert_graph_invariants(graph)
-        assert graph._chord_by_callback == {}
+        assert graph._callback_of == {}
         assert graph.nodes["cb"].parent_id is None
 
     def test_remove_node_unknown_id_is_ignored(self) -> None:
@@ -2707,11 +2776,13 @@ class TestGroupStatePriority:
     ) -> None:
         for order in ((higher, lower), (lower, higher)):
             graph, ids = _graph_with_states(*order)
-            assert graph._compute_group_state(ids) == higher, order
+            states = {graph.nodes[i].state for i in ids}
+            assert graph_module._aggregate_group_state(states) == higher, order
 
     def test_group_state_with_received_member_counts_as_started(self) -> None:
         graph, ids = _graph_with_states(TaskState.SUCCESS, TaskState.RECEIVED)
-        assert graph._compute_group_state(ids) == TaskState.STARTED
+        states = {graph.nodes[i].state for i in ids}
+        assert graph_module._aggregate_group_state(states) == TaskState.STARTED
 
 
 class TestRealParentIsKept:
