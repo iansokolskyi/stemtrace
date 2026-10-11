@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graph page: a malformed graph in which a group lists itself among its children is drawn instead of rendering blank.
 - Group state: a group with a `REJECTED` task shows `REJECTED` (ranked right below `FAILURE`) instead of depending on the order of its tasks.
 - Server: handling events no longer scans every stored node for chord callbacks, which made each event slower as the store filled (about 3.5 ms per event at 10,000 nodes, now about 0.06 ms).
-- Server: an event for a task in a large group no longer rescans the whole group (a 2,000-task group took 5.6 s to ingest, now 1.0 s), a chord's callback is no longer re-derived from all its headers on every event (2,000 headers with a subtask each: 7.3 s, now 1.4 s), and a long chain of tasks that schedule the next one no longer slows down as it grows (10,000 tasks: 30 s, now 3.3 s).
+- Server: an event for a task in a large group no longer rescans the whole group (a 2,000-task group took 5.6 s to ingest, now 1.0 s), a chord's callback is no longer re-derived from all its headers on every event (2,000 headers with a subtask each: 7.3 s, now under 1 s) and a long chain body costs the same in any arrival order, and a long chain of tasks that schedule the next one no longer slows down as it grows (10,000 tasks: 30 s, now 3.3 s).
 
 ## [0.3.10] - 2026-10-11
 

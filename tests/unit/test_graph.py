@@ -1504,6 +1504,16 @@ class _ScanCountingDict(dict[str, TaskNode]):
         return super().__iter__()
 
 
+class _GetCountingDict(dict[str, TaskNode]):
+    """Node map that counts ``get`` lookups."""
+
+    gets = 0
+
+    def get(self, key: str, default: TaskNode | None = None) -> TaskNode | None:  # type: ignore[override]  # counting wrapper
+        self.gets += 1
+        return super().get(key, default)
+
+
 def _ordered_event(
     state: TaskState,
     offset_s: float,
@@ -2003,6 +2013,44 @@ class TestOutOfOrderEvents:
         # Work doesn't grow with the number of headers or subtasks.
         assert calls["resolve"] <= 5
         assert calls["ancestor"] <= calls["resolve"]
+
+    def test_add_event_long_chord_body_in_reverse_order_walks_linearly(
+        self,
+    ) -> None:
+        n = 5000
+        graph = TaskGraph()
+        lookups = _GetCountingDict(graph.nodes)
+        graph.__dict__["nodes"] = lookups  # bypass validation, which would copy it
+        for header in ("h0", "h1"):
+            graph.add_event(
+                TaskEvent(
+                    task_id=header,
+                    name="myapp.tasks.header",
+                    state=TaskState.SUCCESS,
+                    timestamp=_BASE_TIME,
+                    group_id="g",
+                    chord_callback_id=f"t{n - 1}",
+                )
+            )
+        # chord(headers, chain(t0, ..., t4999)) with the body arriving last
+        # task first: Celery names and stamps the chain's last task.
+        for i in reversed(range(n)):
+            graph.add_event(
+                TaskEvent(
+                    task_id=f"t{i}",
+                    name="myapp.tasks.step",
+                    state=TaskState.SUCCESS,
+                    timestamp=_BASE_TIME,
+                    parent_id=f"t{i - 1}" if i else "h1",
+                    group_id="g" if i == n - 1 else None,
+                )
+            )
+        lookups_after_body = lookups.gets
+
+        assert graph.nodes["group:g"].chord_id == "t0"
+        assert graph.nodes[f"t{n - 1}"].parent_id == f"t{n - 2}"
+        # Re-walking the body on every arrival would take ~n^2/2 lookups.
+        assert lookups_after_body < 60 * n
 
     def test_add_event_self_rescheduling_chain_never_walks_ancestors(
         self, monkeypatch: pytest.MonkeyPatch
