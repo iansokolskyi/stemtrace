@@ -369,20 +369,22 @@ again once events are re-consumed.
 - **Redis (Streams)**: On restart, the server can rebuild state by replaying events that are
   still retained in the stream (bounded by `ttl` / stream trimming).
   - Events that can't be published to Redis are dropped, not buffered on the worker. Workers
-    publish through their own connection with a 1s connect timeout (per address the host name
-    resolves to), 1s per read or write and no redis-py retries (`socket_timeout` and
+    publish through their own connection with a 2s connect timeout (per address the host name
+    resolves to), 2s per read or write and no redis-py retries (`socket_timeout` and
     `socket_connect_timeout` in the broker URL apply to the server's consumer, not to
-    publishing). A single quick failure, such as a refused connection, drops only that event; a
-    failure that took 0.5s or more (a timeout: a hung, silent or unreachable Redis) or three
-    quick failures in a row make the worker skip publishing for a cooldown that grows from 1s to
-    30s and resets on the next successful publish. During an outage a task therefore waits for
-    at most one attempt per cooldown (about 1s per address) instead of 5s (redis-py's default)
-    per event.
+    publishing). Any reply slower than 2s counts as a failure. A single failure loses only its
+    own event; three failures in a row (timeouts included) make the worker skip publishing for a
+    cooldown that grows from 1s to 30s and resets on the next successful publish. So when Redis
+    hangs or becomes unreachable, a task waits for at most three bounded attempts (about 2s each
+    per address) and then one per cooldown, instead of 5s (redis-py's default) for every event.
+  - An event whose reply timed out (or whose connection dropped) after it was sent counts as
+    "sent but unconfirmed", not dropped: Redis may still have written it, e.g. after a stall
+    longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover).
   - Host name resolution isn't covered by these timeouts: if the DNS resolver is unreachable, a
     connection attempt can block a task for as long as the resolver takes to give up (glibc's
-    default is 5s per try), once per cooldown.
-  - A Redis that still answers, but slowly, doesn't open the breaker: each publish waits for its
-    reply, up to the 1s read timeout (plus connecting, when a new connection is needed).
+    default is 5s per try), on each attempt.
+  - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
+    waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
     number of events dropped since the previous one.
 - **RabbitMQ (fanout + per-consumer queue)**:
@@ -391,29 +393,28 @@ again once events are re-consumed.
     durable per-consumer queue still exists and the messages are still within TTL.
   - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Each
     publish tries every host of the broker URL once (2s connect timeout per address, 2s per read
-    or write after that). A single quick failure, such as a refused connection, drops only that
-    event; a failure that took 0.5s or more (a timeout) or three quick failures in a row make the
-    worker skip publishing for a cooldown that grows from 1s to 30s and resets on the next
-    successful publish, so during an outage a task waits for at most one attempt per cooldown.
-    As with Redis, resolving host names isn't covered by these timeouts: an unreachable DNS
-    resolver can block a task for the resolver's timeout (glibc's default is 5s per try), once
-    per cooldown.
+    or write after that). A single failure, quick or timed out, loses only its own event; three
+    failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
+    and resets on the next successful publish, so during an outage a task waits for at most
+    three bounded attempts and then one per cooldown. As with Redis, resolving host names isn't
+    covered by these timeouts: an unreachable DNS resolver can block a task for the resolver's
+    timeout (glibc's default is 5s per try) on each attempt.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
     from publishers, so a publish is sent but never confirmed. The worker counts such events as
-    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); after two
-    unconfirmed attempts in a row it retries only every 30s. Each attempt leaves one blocked
-    connection on the broker until the alarm clears, so expect 2 to 3 connections per worker
-    process in the first minute of an alarm and about 2 per minute after that, all released
-    when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
+    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
+    row open the breaker, and once an unconfirmed retry follows it retries only every 30s. Each
+    attempt leaves one blocked connection on the broker until the alarm clears, so expect up to
+    about 5 connections per worker process in the first minute of an alarm and about 2 per
+    minute after that, all released when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
     from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
     notice arriving while the connection closes.
   - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
     about 1.5 minutes even when the broker flaps.
-  - Limitation: a broker that still answers, but slowly, doesn't open the breaker. Each publish
-    opens its own connection, so it waits for several round trips (connect, handshake, channel,
-    publish, close), each bounded by the 2s timeout: a broker that takes about 1s per reply costs
+  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open
+    the breaker. Each publish opens its own connection, so it waits for several round trips
+    (connect, handshake, channel, publish, close): a broker that takes about 1s per reply costs
     each event several seconds.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
