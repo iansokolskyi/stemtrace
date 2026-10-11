@@ -50,9 +50,11 @@ RECONNECT_MAX_BACKOFF = 30.0
 # reads/writes time out after these many seconds (redis-py 8.1 defaults both
 # to 5s), with no redis-py retries: a silent or blackholed Redis costs a few
 # bounded attempts, not 5s per event. Host name resolution (getaddrinfo) is
-# not covered by these timeouts.
-PUBLISH_CONNECT_TIMEOUT = 1.0
-PUBLISH_SOCKET_TIMEOUT = 1.0
+# not covered by these timeouts. Not lower: the deadlines are wall-clock, and
+# a thread that waits for the GIL while another holds it in a long C call
+# (measured: 1.3s) can miss a 1s TLS handshake deadline on a healthy Redis.
+PUBLISH_CONNECT_TIMEOUT = 2.0
+PUBLISH_SOCKET_TIMEOUT = 2.0
 
 # Seconds after which a breaker probe that never reported back is presumed
 # lost. Far longer than any real attempt.
