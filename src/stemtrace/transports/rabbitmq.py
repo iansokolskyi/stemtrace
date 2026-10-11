@@ -62,11 +62,10 @@ PUBLISH_IO_TIMEOUT = 2.0
 # any real attempt.
 PUBLISH_PROBE_TIMEOUT = 60.0
 
-# A failed publish attempt that took this long (a timeout or stall, which is
-# what blocks tasks) opens the publish circuit breaker at once; fast failures
-# (e.g. a refused connection) open it after PUBLISH_FAILURES_TO_OPEN in a row.
-# Until then, a failure drops only its own event.
-PUBLISH_SLOW_ATTEMPT = 0.5
+# PUBLISH_FAILURES_TO_OPEN failed publish attempts in a row (timeouts included)
+# open the publish circuit breaker. Until then, a failure loses only its own
+# event: a single timeout may come from a healthy broker (e.g. the publishing
+# thread waited for the GIL past its socket deadline).
 PUBLISH_FAILURES_TO_OPEN = 3
 
 # While the breaker is open, events are dropped without connecting for a
@@ -158,7 +157,6 @@ class RabbitMQTransport:
             max_cooldown=RECONNECT_MAX_BACKOFF,
             log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
             probe_timeout=PUBLISH_PROBE_TIMEOUT,
-            slow_attempt=PUBLISH_SLOW_ATTEMPT,
             failures_to_open=PUBLISH_FAILURES_TO_OPEN,
             monotonic=monotonic,
         )
@@ -225,9 +223,9 @@ class RabbitMQTransport:
         publishers) makes the Close-Ok wait time out, and the event counts as
         sent but unconfirmed.
 
-        A failure that took PUBLISH_SLOW_ATTEMPT or longer, an unconfirmed
-        one, or PUBLISH_FAILURES_TO_OPEN fast failures in a row open a circuit
-        breaker; a single fast failure drops only its own event. While open,
+        PUBLISH_FAILURES_TO_OPEN failures in a row (timeouts and unconfirmed
+        ones included) open a circuit breaker; until then a failure loses
+        only its own event. While open,
         events are dropped without connecting for a cooldown (1s, doubling per
         failed retry up to 30s; 30s after two unconfirmed attempts in a row,
         i.e. while the broker blocks publishers; reset by a successful
@@ -238,7 +236,8 @@ class RabbitMQTransport:
         PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written
         (a failure while closed, an outage starting, an outage ending, and a
         report of losses still unreported), each with the number of events
-        lost since the previous line; each dropped event gets a DEBUG line.
+        lost since the previous line; each event dropped while the breaker
+        is open also gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -251,7 +250,6 @@ class RabbitMQTransport:
                 self._event_identifier(event),
             )
             return
-        started = self._monotonic()
         try:
             self._publish_payload(event.model_dump(mode="json"))
         except _PublishUnconfirmedError as exc:
@@ -259,7 +257,6 @@ class RabbitMQTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
-                elapsed=self._monotonic() - started,
                 unconfirmed=True,
             )
         except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
@@ -267,7 +264,6 @@ class RabbitMQTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
-                elapsed=self._monotonic() - started,
             )
         else:
             breaker.record_success(ticket)

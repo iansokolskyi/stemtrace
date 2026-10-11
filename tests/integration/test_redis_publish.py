@@ -23,6 +23,7 @@ import redis
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports.redis import (
+    PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_SOCKET_TIMEOUT,
     RedisTransport,
 )
@@ -123,8 +124,10 @@ def stream_prefix() -> Iterator[str]:
 
 
 @pytest.mark.integration
-def test_publish_to_silent_listener_costs_one_bounded_attempt() -> None:
-    """A Redis that accepts but never answers blocks one publish, not each one."""
+def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts() -> (
+    None
+):
+    """A Redis that accepts but never answers costs three attempts, then none."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(16)
@@ -133,11 +136,15 @@ def test_publish_to_silent_listener_costs_one_bounded_attempt() -> None:
 
         durations = _timed_publishes(transport, 20)
 
-    # One attempt timed out and opened the breaker; the other 19 were dropped
-    # without contacting the listener. Before the publish timeouts and the
-    # breaker, each of the 20 waited redis-py's 5s default.
-    assert transport._publish_breaker.is_open is True
-    assert transport._publish_breaker.dropped == 19
+    breaker = transport._publish_breaker
+    attempts = durations[:PUBLISH_FAILURES_TO_OPEN]
+    # Each attempt is one bounded read timeout: hidden retries would double it.
+    assert all(d < 2 * PUBLISH_SOCKET_TIMEOUT for d in attempts), durations
+    assert breaker.is_open is True
+    # The events after the third failure were dropped without an attempt.
+    # Before the publish timeouts and the breaker, each of the 20 waited
+    # redis-py's 5s default.
+    assert breaker.dropped == 20 - PUBLISH_FAILURES_TO_OPEN
     assert sum(durations) < 10 * PUBLISH_SOCKET_TIMEOUT, durations
 
 

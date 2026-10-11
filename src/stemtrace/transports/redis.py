@@ -47,9 +47,9 @@ RECONNECT_MAX_BACKOFF = 30.0
 # Publishing runs in the Celery task's thread, so from_url() gives it its own
 # client whose connect (per address the host name resolves to) and socket
 # reads/writes time out after these many seconds (redis-py 8.1 defaults both
-# to 5s), with no redis-py retries: a silent or blackholed Redis costs one
-# bounded attempt, not 5s per event. Host name resolution (getaddrinfo) is not
-# covered by these timeouts.
+# to 5s), with no redis-py retries: a silent or blackholed Redis costs a few
+# bounded attempts, not 5s per event. Host name resolution (getaddrinfo) is
+# not covered by these timeouts.
 PUBLISH_CONNECT_TIMEOUT = 1.0
 PUBLISH_SOCKET_TIMEOUT = 1.0
 
@@ -57,11 +57,10 @@ PUBLISH_SOCKET_TIMEOUT = 1.0
 # lost. Far longer than any real attempt.
 PUBLISH_PROBE_TIMEOUT = 60.0
 
-# A failed publish that took this long (a timeout, which is what blocks tasks)
-# opens the publish circuit breaker at once; fast failures (e.g. a refused
-# connection) open it after PUBLISH_FAILURES_TO_OPEN in a row. Until then, a
-# failure drops only its own event.
-PUBLISH_SLOW_ATTEMPT = 0.5
+# PUBLISH_FAILURES_TO_OPEN failed publishes in a row (timeouts included) open
+# the publish circuit breaker. Until then, a failure loses only its own event:
+# a single timeout may come from a healthy Redis (e.g. the publishing thread
+# waited for the GIL past its socket deadline, or Redis stalled briefly).
 PUBLISH_FAILURES_TO_OPEN = 3
 
 # While the breaker is open, events are dropped without contacting Redis for
@@ -266,7 +265,6 @@ class RedisTransport:
             max_cooldown=RECONNECT_MAX_BACKOFF,
             log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
             probe_timeout=PUBLISH_PROBE_TIMEOUT,
-            slow_attempt=PUBLISH_SLOW_ATTEMPT,
             failures_to_open=PUBLISH_FAILURES_TO_OPEN,
             monotonic=monotonic,
         )
@@ -337,17 +335,17 @@ class RedisTransport:
         PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries, plus
         however long resolving the host name takes (not bounded here).
 
-        A failure that took PUBLISH_SLOW_ATTEMPT or longer, or
-        PUBLISH_FAILURES_TO_OPEN fast failures in a row, open a circuit
-        breaker; a single fast failure drops only its own event. While open,
-        events are dropped without contacting Redis for a cooldown (1s,
-        doubling per failed retry up to 30s, reset by a successful publish),
-        so an outage costs tasks about one bounded attempt per cooldown
-        instead of one per event. A Redis that answers slowly doesn't open
-        the breaker: each publish waits for it, up to the timeouts above. Per
-        PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written,
-        each with the number of events lost since the previous line; each
-        dropped event gets a DEBUG line.
+        Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure.
+        PUBLISH_FAILURES_TO_OPEN failures
+        in a row open a circuit breaker; until then a failure loses only its
+        own event. While open, events are dropped without contacting Redis
+        for a cooldown (1s, doubling per failed retry up to 30s, reset by a
+        successful publish), so an outage costs tasks
+        PUBLISH_FAILURES_TO_OPEN bounded attempts, then about one per
+        cooldown, instead of one per event. Per PUBLISH_FAILURE_LOG_INTERVAL,
+        at most four WARNING lines are written, each with the number of
+        events lost since the previous line; each event dropped while the
+        breaker is open also gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -360,7 +358,6 @@ class RedisTransport:
                 self._event_identifier(event),
             )
             return
-        started = self._monotonic()
         try:
             self.publish_client.xadd(
                 self._stream_key,
@@ -373,7 +370,6 @@ class RedisTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
-                elapsed=self._monotonic() - started,
             )
         else:
             breaker.record_success(ticket)

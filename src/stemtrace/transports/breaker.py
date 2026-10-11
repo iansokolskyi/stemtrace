@@ -1,8 +1,8 @@
 """Circuit breaker that keeps event publishing cheap while a broker is down.
 
 Publishing runs inside Celery signal handlers, in the task's own thread, so a
-broker outage must not slow tasks down. After a costly or persistent publish
-failure the breaker "opens": publish attempts are skipped (the events are
+broker outage must not slow tasks down. After a run of failed publishes the
+breaker "opens": publish attempts are skipped (the events are
 dropped, never queued) for a cooldown that doubles after each failed retry, up
 to a cap, and resets once a publish succeeds. While open, each event costs a
 lock and a clock read.
@@ -36,13 +36,12 @@ class PublishBreaker:
     ``record_failure()``.
 
     States:
-        Closed: every attempt is allowed. A failure opens the breaker only if
-            it was costly or persistent: the attempt took ``slow_attempt``
-            seconds or more (a timeout or stall, which is what blocks tasks),
-            it was unconfirmed (sent, but the broker never acknowledged), or
-            it was the ``failures_to_open``-th failure in a row. Otherwise
-            only that event is dropped, so sporadic failures on a healthy
-            broker don't cost whole cooldowns of events.
+        Closed: every attempt is allowed. The ``failures_to_open``-th failure
+            in a row opens the breaker; a success ends the run. Every failure
+            counts the same, however long it took and whether or not the
+            event was sent: a healthy broker can look slow (e.g. a thread
+            waiting for the GIL misses its socket deadline), so a single
+            timeout only loses its own event and never a cooldown's worth.
         Open: attempts are dropped until the cooldown expires. Then a single
             caller is let through as the probe; no other probe is admitted
             while it is outstanding (up to ``probe_timeout``, after which it
@@ -100,7 +99,6 @@ class PublishBreaker:
         max_cooldown: float,
         log_interval: float,
         probe_timeout: float,
-        slow_attempt: float,
         failures_to_open: int,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -115,8 +113,6 @@ class PublishBreaker:
             probe_timeout: Seconds after which an outstanding probe that never
                 reported back is presumed lost and another may start. Must
                 exceed the longest possible publish attempt.
-            slow_attempt: A failed attempt that took at least this many
-                seconds opens the breaker immediately.
             failures_to_open: Consecutive failures that open the breaker even
                 when each one was fast.
             monotonic: Clock (injectable for tests).
@@ -127,7 +123,6 @@ class PublishBreaker:
         self._max_cooldown = max_cooldown
         self._log_interval = log_interval
         self._probe_timeout = probe_timeout
-        self._slow_attempt = slow_attempt
         self._failures_to_open = failures_to_open
         self._monotonic = monotonic
         self._start_over()
@@ -324,7 +319,6 @@ class PublishBreaker:
         event_id: str,
         exc: BaseException,
         *,
-        elapsed: float,
         unconfirmed: bool = False,
     ) -> None:
         """Report a failed publish attempt; the event counts as lost.
@@ -333,12 +327,13 @@ class PublishBreaker:
             ticket: The ticket ``allow()`` returned for the attempt.
             event_id: Identifier of the event that failed, for the log.
             exc: The exception the publish attempt raised.
-            elapsed: Seconds the attempt took.
             unconfirmed: The event was sent but the broker never acknowledged
                 it (e.g. a RabbitMQ that blocks publishers during a memory or
-                disk alarm stops reading, so the connection close times out).
-                It counts as unconfirmed rather than dropped; two in a row
-                set the cooldown to the maximum.
+                disk alarm stops reading, so the connection close times out;
+                or a Redis reply that timed out after the command was sent).
+                It counts as unconfirmed rather than dropped; an unconfirmed
+                probe right after an unconfirmed failure sets the cooldown to
+                the maximum.
         """
         self._check_fork()
         with self._lock:
@@ -347,7 +342,7 @@ class PublishBreaker:
                 self._unconfirmed += 1
             else:
                 self._dropped += 1
-            kind = self._transition_on_failure(ticket, now, elapsed, unconfirmed)
+            kind = self._transition_on_failure(ticket, unconfirmed, now)
             if kind is None:
                 return
             if kind == "closed":
@@ -401,7 +396,7 @@ class PublishBreaker:
         return last is None or now - last >= self._log_interval
 
     def _transition_on_failure(
-        self, ticket: int, now: float, elapsed: float, unconfirmed: bool
+        self, ticket: int, unconfirmed: bool, now: float
     ) -> str | None:
         """Apply a failure to the state (lock held).
 
@@ -416,8 +411,7 @@ class PublishBreaker:
                 # is lost, but it says nothing about the broker now.
                 return "closed"
             self._consecutive_failures += 1
-            costly = unconfirmed or elapsed >= self._slow_attempt
-            if not costly and self._consecutive_failures < self._failures_to_open:
+            if self._consecutive_failures < self._failures_to_open:
                 return "closed"
             self._epoch += 1
             self._consecutive_failures = 0

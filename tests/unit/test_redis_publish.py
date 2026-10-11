@@ -14,7 +14,6 @@ from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEvent
 from stemtrace.transports.redis import (
     PUBLISH_CONNECT_TIMEOUT,
     PUBLISH_FAILURES_TO_OPEN,
-    PUBLISH_SLOW_ATTEMPT,
     PUBLISH_SOCKET_TIMEOUT,
     RECONNECT_INITIAL_BACKOFF,
     RedisTransport,
@@ -35,14 +34,19 @@ class FakeClock:
         return self.now
 
 
+Step = tuple[float, Exception | None] | tuple[float, Exception | None, bool]
+
+
 class FakePublishRedis:
     """Scripted XADD: each call takes ``delay`` seconds, then fails or succeeds.
 
-    A script item is ``(delay, error_or_None)``; once the script is used up,
-    calls succeed instantly.
+    A script item is ``(delay, error_or_None)`` or ``(delay, error, sent)``;
+    ``sent`` marks the XADD as written to Redis before the error, like the
+    publish client's connection does. Once the script is used up, calls
+    succeed instantly.
     """
 
-    def __init__(self, clock: FakeClock, script: list[tuple[float, Exception | None]]):
+    def __init__(self, clock: FakeClock, script: list[Step]):
         self.clock = clock
         self.script = list(script)
         self.calls: list[str] = []
@@ -50,7 +54,8 @@ class FakePublishRedis:
     def xadd(self, key: str, fields: dict[str, str], **kwargs: Any) -> bytes:
         del fields, kwargs
         self.calls.append(key)
-        delay, error = self.script.pop(0) if self.script else (0.0, None)
+        step = self.script.pop(0) if self.script else (0.0, None)
+        delay, error = step[0], step[1]
         self.clock.now += delay
         if error is not None:
             raise error
@@ -74,7 +79,7 @@ def _event(task_id: str = "t-1") -> TaskEvent:
 
 
 def _make(
-    script: list[tuple[float, Exception | None]],
+    script: list[Step],
 ) -> tuple[RedisTransport, FakePublishRedis, FakeClock]:
     clock = FakeClock()
     publisher = FakePublishRedis(clock, script)
@@ -104,20 +109,35 @@ class TestRedisPublishBreaker:
 
         assert publisher.calls == ["test:events"]
 
-    def test_publish_timeout_opens_breaker_and_skips_redis(
+    def test_publish_single_timeout_drops_only_its_event(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """One timeout may come from a healthy Redis (e.g. the thread waited
+        for the GIL past its deadline): it must not drop a cooldown of events."""
         transport, publisher, _ = _make([(PUBLISH_CONNECT_TIMEOUT, TIMED_OUT)])
+
+        for i in range(10):
+            transport.publish(_event(f"t-{i}"))
+
+        assert len(publisher.calls) == 10
+        assert transport._publish_breaker.is_open is False
+        assert [r.getMessage() for r in _warnings(caplog)] == [
+            "Failed to publish event t-0 to Redis; publishing continues "
+            "(1 event(s) dropped since the last report)"
+        ]
+
+    def test_publish_hung_redis_opens_breaker_after_three_timeouts(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport, publisher, _ = _make([(PUBLISH_SOCKET_TIMEOUT, TIMED_OUT)] * 50)
 
         for i in range(50):
             transport.publish(_event(f"t-{i}"))
 
-        assert len(publisher.calls) == 1
-        records = _warnings(caplog)
-        assert len(records) == 1
-        assert records[0].getMessage() == (
-            "Failed to publish event t-0 to Redis; dropping events for 1.0s "
-            "before trying again (1 event(s) dropped since the last report)"
+        assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN
+        assert [r.getMessage() for r in _warnings(caplog)][-1] == (
+            "Failed to publish event t-2 to Redis; dropping events for 1.0s "
+            "before trying again (2 event(s) dropped since the last report)"
         )
 
     def test_publish_fast_refusals_open_after_threshold(self) -> None:
@@ -142,16 +162,16 @@ class TestRedisPublishBreaker:
     def test_publish_probes_after_cooldown_and_recovers(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        transport, publisher, clock = _make([(PUBLISH_SLOW_ATTEMPT, TIMED_OUT)])
-        transport.publish(_event("t-0"))
-        transport.publish(_event("t-1"))
-        assert len(publisher.calls) == 1
+        transport, publisher, clock = _make([(PUBLISH_SOCKET_TIMEOUT, TIMED_OUT)] * 3)
+        for i in range(4):
+            transport.publish(_event(f"t-{i}"))
+        assert len(publisher.calls) == 3
 
         clock.now += RECONNECT_INITIAL_BACKOFF
-        transport.publish(_event("t-2"))
-        transport.publish(_event("t-3"))
+        transport.publish(_event("t-4"))
+        transport.publish(_event("t-5"))
 
-        assert len(publisher.calls) == 3
+        assert len(publisher.calls) == 5
         assert _warnings(caplog)[-1].getMessage() == (
             "Publishing to Redis recovered after 1.0s "
             "(1 event(s) dropped since the last report)"
