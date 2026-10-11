@@ -212,21 +212,24 @@ test.describe('Graph Edges', () => {
     // Also check for SVG paths in the edges layer
     const edgePathsInSvg = page.locator('.react-flow__edges path, svg g path').first()
 
-    const edgeCountByClass = await edgesByClass.count()
-    const edgeCountByName = await edgesByAccessibleName.count()
-    const hasEdgePaths = await edgePathsInSvg.isVisible().catch(() => false)
-
-    // Use whichever finds edges
-    const edgeCount = Math.max(edgeCountByClass, edgeCountByName)
-
-    // If there are multiple nodes, there should be edges
+    // Nodes and edges render after the page's data loads and React Flow lays them out,
+    // so wait for the first node instead of counting whatever is in the DOM right now
     const nodes = page.locator('.react-flow__node')
+    await expect(nodes.first()).toBeVisible()
     const nodeCount = await nodes.count()
 
     if (nodeCount > 1) {
-      // With multiple nodes, we expect at least one edge or visible edge paths
-      const hasEdges = edgeCount > 0 || hasEdgePaths
-      expect(hasEdges).toBe(true)
+      // With multiple nodes, we expect at least one edge or visible edge paths;
+      // poll because edges are drawn a moment after their nodes
+      await expect
+        .poll(
+          async () =>
+            (await edgesByClass.count()) > 0 ||
+            (await edgesByAccessibleName.count()) > 0 ||
+            (await edgePathsInSvg.isVisible().catch(() => false)),
+          { message: 'multi-node graph should render at least one edge' },
+        )
+        .toBe(true)
     }
   })
 
