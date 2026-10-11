@@ -34,7 +34,8 @@ hooks (unless started with --py-call-uwsgi-fork-hooks, which the resolver
 doesn't detect), no fork can wait for lookup threads, so every lookup runs on
 the calling thread, without the wait bound, and invalidate() only marks the
 answer due (see _under_uwsgi()). This holds in every uWSGI process: master or
-not, workers, mules and spoolers.
+not, workers, mules and spoolers; none of them starts a ``stemtrace-dns-*``
+thread or a helper process.
 Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
 custom resolver shim) is no longer consulted for its lookups.
 """

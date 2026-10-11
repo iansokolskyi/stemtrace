@@ -406,18 +406,18 @@ again once events are re-consumed.
     every fork waits up to 1s while a lookup that started less than 5s ago (glibc's per-try
     timeout), or that no fork waited for yet, is in flight; stemtrace logs a warning once. A
     helper is never started while the process forks, so a child can't inherit its pipes.
-  - uWSGI forks its workers in C, without running Python's fork hooks (unless it runs with
-    `--py-call-uwsgi-fork-hooks`, which makes it run them; stemtrace doesn't detect that flag), so
-    the forking process can't wait for lookups. That is the uWSGI master and, without
-    `--master` (uWSGI's default), the first process, which loads the app and then forks the
-    other workers. There (e.g. when the app publishes at import time) stemtrace resolves on
-    the calling thread instead, without the 2s bound: with a dead DNS resolver such a publish
-    waits for the resolver's own timeouts (20s measured), and after a failed connect the next
-    publish re-resolves on its own thread rather than in the background. uWSGI workers, mules
-    and spoolers resolve in the background as usual. A background thread of the app that
-    publishes in the forking process resolves on that thread, so a fork can still catch it
-    inside glibc: the same exposure as that thread's own broker lookups (pyuwsgi 2.0.30 runs
-    threads without `--enable-threads`). On Windows (no fork) lookups always run in-process.
+  - Under uWSGI (or pyuwsgi), stemtrace resolves on the calling thread, without the 2s bound,
+    in every uWSGI process (master or not, workers, mules, spoolers, lazy apps), as before
+    0.3.11: with a dead DNS resolver a publish waits for the resolver's own timeouts (20s
+    measured). uWSGI forks in C without running Python's fork hooks (unless started with
+    `--py-call-uwsgi-fork-hooks`, which stemtrace doesn't act on), and any of its processes
+    may fork (the master, the first process when there is no `--master`, or app code calling
+    `os.fork()`), so a fork can't wait for lookup threads. These processes therefore start no
+    lookup thread or helper process at all. After a failed connect, the next publish
+    re-resolves on its own thread rather than in the background. A background thread of the
+    app that publishes can still be inside glibc's DNS code during a fork: the same exposure
+    as that thread's own broker lookups (pyuwsgi 2.0.30 runs threads without
+    `--enable-threads`). On Windows (no fork) lookups always run in-process.
   - Once a forking process uses the helper, it resolves with the system's resolver in a new
     Python process, so a monkeypatched `socket.getaddrinfo` (a custom resolver shim, or
     gevent's c-ares resolver) isn't used for its lookups. Under gevent, `subprocess` starts
