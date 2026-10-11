@@ -388,19 +388,44 @@ class TestBoundedResolverForkWaitsOncePerLookup:
 
         assert in_flight == 0  # it waited for the lookup to finish
 
-    def test_stuck_lookup_delays_only_one_fork(self) -> None:
-        dns, clock = FakeDns(), FakeClock()
-        dns.release.clear()  # stuck, like a lookup against a dead resolver
-        resolver = BoundedResolver(getaddrinfo=dns, monotonic=clock, fork_wait=0.2)
-        with pytest.raises(socket.gaierror):
-            resolver.resolve("redis.local", 6379, timeout=0.0)
-
+    def _forks(self, resolver: BoundedResolver, n: int) -> list[float]:
+        """Run ``n`` fork preparations; return how long each one waited."""
         durations = []
-        for _ in range(3):
+        for _ in range(n):
             started = time.monotonic()
             resolver.prepare_fork()
             resolver.parent_after_fork()
             durations.append(time.monotonic() - started)
+        return durations
+
+    def test_recent_lookup_is_waited_for_by_every_fork(self) -> None:
+        """A lookup younger than RECENT_LOOKUP_AGE may still finish (and sort
+        its answer under glibc's lock) at any moment, so no fork skips it."""
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()
+        resolver = BoundedResolver(
+            getaddrinfo=dns, monotonic=clock, fork_wait=0.1, recent_lookup_age=5.0
+        )
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+        clock.now += 4.9  # still recent
+
+        durations = self._forks(resolver, 3)
+        dns.release.set()
+
+        assert min(durations) >= 0.1
+
+    def test_stuck_lookup_past_recent_age_delays_only_one_fork(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.release.clear()  # stuck, like a lookup against a dead resolver
+        resolver = BoundedResolver(
+            getaddrinfo=dns, monotonic=clock, fork_wait=0.2, recent_lookup_age=5.0
+        )
+        with pytest.raises(socket.gaierror):
+            resolver.resolve("redis.local", 6379, timeout=0.0)
+        clock.now += 5.0  # no longer recent, and no fork waited for it yet
+
+        durations = self._forks(resolver, 3)
         dns.release.set()
 
         assert durations[0] >= 0.2

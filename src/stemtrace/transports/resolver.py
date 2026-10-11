@@ -32,6 +32,13 @@ DNS_CACHE_TTL = 30.0
 # Longest a fork() waits for lookups in flight (see prepare_fork()).
 FORK_WAIT = 1.0
 
+# Lookups younger than this are waited for by every fork (within FORK_WAIT
+# each). A lookup can finish, and sort a multi-address answer under a glibc
+# lock, at any moment while the resolver still answers; glibc gives each try
+# RES_TIMEOUT, 5s by default (resolv.conf(5) "timeout"), so a lookup older
+# than that is waiting on a resolver that didn't answer its first try.
+RECENT_LOOKUP_AGE = 5.0
+
 
 @dataclass
 class _Entry:
@@ -107,6 +114,7 @@ class BoundedResolver:
         getaddrinfo: Callable[..., list[AddrInfo]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         fork_wait: float = FORK_WAIT,
+        recent_lookup_age: float = RECENT_LOOKUP_AGE,
     ) -> None:
         """Initialize an empty resolver.
 
@@ -118,11 +126,14 @@ class BoundedResolver:
                 before patching.
             monotonic: Clock for the cache (injectable for tests).
             fork_wait: Longest prepare_fork() waits for lookups in flight.
+            recent_lookup_age: Lookups younger than this are waited for by
+                every fork, not just the first.
         """
         self._ttl = ttl
         self._getaddrinfo = getaddrinfo
         self._monotonic = monotonic
         self._fork_wait = fork_wait
+        self._recent_lookup_age = recent_lookup_age
         # Per-process state, by PID, created on first use (see _state()), not
         # here: PUBLISH_RESOLVER is built at import, possibly before gevent
         # patches threading, and a real lock contended by greenlets blocks the
@@ -218,27 +229,36 @@ class BoundedResolver:
                 self._start_lookup(state, key, entry)
 
     def prepare_fork(self) -> None:
-        """Before fork(): wait for lookups no fork waited for, then hold the lock.
+        """Before fork(): wait for lookups that may finish, then hold the lock.
 
-        Waits up to fork_wait in total, until every lookup in flight has
-        finished or been waited for by a fork (this one or an earlier one);
-        lookups that start or finish while this waits (the lock is released
-        meanwhile) are covered too. Whatever is still in flight when the time
-        is up is marked as waited for, so a stuck lookup delays only one fork.
-        Holding the lock afterwards keeps new lookups from starting until
-        parent_after_fork() (in the parent) or child_after_fork() (in the
-        child) runs.
+        Waits up to fork_wait in total while any lookup in flight is recent
+        (younger than recent_lookup_age) or hasn't been waited for by a fork
+        yet; lookups that start or finish while this waits (the lock is
+        released meanwhile) are covered too. Whatever is still in flight when
+        the time is up is marked as waited for. So a lookup stuck on a dead
+        resolver delays the forks of its first recent_lookup_age seconds (by
+        up to fork_wait each) and one fork after that. Holding the lock
+        afterwards keeps new lookups from starting until parent_after_fork()
+        (in the parent) or child_after_fork() (in the child) runs.
         """
         state = self._state()
         state.lock.acquire()
         state.held_for_fork = True
         deadline = self._monotonic() + self._fork_wait
-        while any(not f.waited for f in state.in_flight.values()):
+        while self._must_wait_for(state):
             remaining = deadline - self._monotonic()
             if remaining <= 0 or not state.idle.wait(remaining):
                 for lookup in state.in_flight.values():
                     lookup.waited = True
                 return
+
+    def _must_wait_for(self, state: _State) -> bool:
+        """Whether a lookup in flight is recent or not yet waited for (lock held)."""
+        now = self._monotonic()
+        return any(
+            not lookup.waited or now - lookup.started < self._recent_lookup_age
+            for lookup in state.in_flight.values()
+        )
 
     def parent_after_fork(self) -> None:
         """After fork(), in the parent: let lookups start again."""
