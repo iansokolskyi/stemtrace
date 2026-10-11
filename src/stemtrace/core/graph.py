@@ -771,6 +771,7 @@ class TaskGraph(BaseModel):
         children = self._raw_children.get(task_id)
 
         def check(event: TaskEvent) -> bool:
+            """Whether the event comes from a replacement (see above)."""
             parent = event.parent_id
             if parent is None or (parent == task_id and not node._is_reused()):
                 return False
