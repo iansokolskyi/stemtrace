@@ -387,8 +387,13 @@ again once events are re-consumed.
     timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it would
     otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached per
     worker process for 30s and refreshed in the background, keeping the last answer while DNS
-    fails, so tasks don't wait on DNS while the host has a cached address. TLS still checks the
-    certificate against the host name in the URL. The same applies to RabbitMQ.
+    fails, so tasks don't wait on DNS while the host has a cached address. When connecting to
+    every cached address fails, the answer is refreshed right away, so after a DNS failover the
+    next attempt (at the latest the first retry after the breaker's cooldown) uses the new
+    address; a host that moved while its old address still accepts connections is picked up
+    within the 30s cache time. TLS behavior is unchanged. A `fork()` (prefork pool) waits up
+    to 1s for lookups in flight, since a child forked in the middle of one can deadlock in
+    glibc. The same applies to RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
@@ -404,8 +409,9 @@ again once events are re-consumed.
     and resets on the next successful publish, so during an outage each worker process makes
     at most three bounded attempts (plus any its other threads already had in flight) and then
     one per cooldown. Host names are resolved as for Redis: waiting at most the 2s connect
-    timeout, cached for 30s and refreshed in the background; TLS settings (SNI, certificate
-    checks) apply to the host name as before.
+    timeout, cached for 30s, refreshed in the background and right after a failed connect.
+    TLS behavior is unchanged: as with py-amqp alone, `amqps://` checks the certificate's host
+    name only when the `ssl` options set `server_hostname`.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
     from publishers, so a publish is sent but never confirmed. The worker counts such events as
     "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
