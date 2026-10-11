@@ -230,7 +230,11 @@ def _format_traceback(einfo: Any = None) -> str | None:
     return None
 
 
+# The task receivers below take keyword-only arguments: Celery 5.6.3's
+# Signal.send() (celery/utils/dispatch/signal.py) calls every receiver as
+# receiver(signal=..., sender=..., **named), never with positional ones.
 def _on_task_prerun(
+    *,
     task_id: str,
     task: "Task",
     args: tuple[Any, ...],
@@ -262,6 +266,7 @@ def _on_task_prerun(
 
 
 def _on_task_postrun(
+    *,
     task_id: str,
     task: "Task",
     args: tuple[Any, ...],
@@ -307,6 +312,7 @@ def _on_task_postrun(
 
 
 def _on_task_failure(
+    *,
     task_id: str,
     exception: BaseException,
     args: tuple[Any, ...],
@@ -347,6 +353,7 @@ def _on_task_failure(
 
 
 def _on_task_retry(
+    *,
     sender: "Task",
     request: Any,
     reason: Any = None,
@@ -389,6 +396,7 @@ def _on_task_retry(
 
 
 def _on_task_revoked(
+    *,
     request: Any,
     terminated: bool,
     signum: int | None,
@@ -415,6 +423,7 @@ def _on_task_revoked(
 
 
 def _on_task_sent(
+    *,
     sender: str | None = None,
     task_id: str | None = None,
     task: str | None = None,

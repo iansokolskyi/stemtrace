@@ -150,7 +150,7 @@ def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
     return get_static_router_with_base(None, show_logout=show_logout)
 
 
-def get_static_router_with_base(
+def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML sink in each handler so taint analysis can see it
     api_base: str | None,
     *,
     show_logout: bool = False,

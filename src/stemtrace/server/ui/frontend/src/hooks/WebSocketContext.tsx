@@ -157,8 +157,18 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
-      if (wsRef.current) {
-        wsRef.current.close()
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws) {
+        // Detach before closing: the close event arrives after StrictMode's
+        // second mount has opened a replacement, and the handler would then
+        // null that socket's ref, report "disconnected" (turning polling on)
+        // and schedule a reconnect that opens a second live socket.
+        ws.onopen = null
+        ws.onmessage = null
+        ws.onerror = null
+        ws.onclose = null
+        ws.close()
       }
     }
   }, [connect])

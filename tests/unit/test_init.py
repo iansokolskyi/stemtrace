@@ -22,7 +22,7 @@ from stemtrace import (
     is_initialized,
 )
 from stemtrace.library.signals import disconnect_signals
-from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.transports.memory import MemoryTransport
 
 _INIT_LOGGER = "stemtrace"
 
@@ -185,7 +185,6 @@ class TestInit:
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
                 del prefix
-                return None
 
         monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
 
@@ -238,7 +237,6 @@ class TestInit:
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
                 del prefix
-                return None
 
         monkeypatch.setenv(
             "STEMTRACE_BROKER_URL", "amqp://guest:guest@localhost:5672//"
@@ -274,7 +272,7 @@ class TestInit:
         app = MagicMock()
         caplog.set_level(logging.WARNING, logger=_INIT_LOGGER)
 
-        with pytest.warns(DeprecationWarning) as record:
+        with pytest.warns(DeprecationWarning) as record:  # noqa: PT030, PT031
             for _ in range(2):
                 init_worker(
                     app,

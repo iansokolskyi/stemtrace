@@ -1,6 +1,6 @@
 [project]
 name = "stemtrace"
-version = "0.3.9"
+version = "0.3.10"
 description = "A lightweight Celery task flow visualizer"
 readme = "README.md"
 license = { text = "MIT" }
@@ -57,6 +57,7 @@ dev = [
     "websockets>=12.0",  # For WebSocket E2E tests
     "build>=1.0.0",  # For local package builds
     "twine>=5.0.0",  # For package verification
+    "import-linter>=2.0",  # Enforces the core/library/server import boundaries (make lint, CI)
 ]
 
 [project.urls]
@@ -137,14 +138,43 @@ select = [
     "TCH",    # flake8-type-checking
     "PTH",    # flake8-use-pathlib
     "RUF",    # Ruff-specific
+    "PGH004", # blanket noqa (always name the rule)
     "D",      # pydocstyle
+    "C90",    # mccabe complexity
+    "PLR0911", # too many return statements
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR0917", # too many positional arguments (make extra params keyword-only)
+    "BLE",    # blind except (allowed only with `# noqa: BLE001  <reason>`)
+    "ERA",    # commented-out code
+    "RET",    # flake8-return
+    "PT",     # flake8-pytest-style
+    "PLR0402", # manual from-import
+    "PLR1711", # useless return
+    "PLR1714", # repeated equality comparison
+    "PLR5501", # collapsible else-if
 ]
+# Baseline: code that predates the rules above carries a per-line
+# `# noqa: <codes>` (added with `ruff check --add-noqa`), to be removed by
+# refactors. Don't add bare noqa comments: a new one needs a reason after the
+# codes, e.g. `# noqa: BLE001  fire-and-forget: ...`. RUF100 (via "RUF") flags
+# any noqa that no longer suppresses anything, so the baseline only shrinks.
 ignore = [
     "E501",   # Line too long (handled by formatter)
     "D100",   # Missing docstring in public module
     "D104",   # Missing docstring in public package
     "D107",   # Missing docstring in __init__
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+# pylint defaults, written down so the limits are visible
+max-branches = 12
+max-returns = 6
+max-statements = 50
+max-positional-args = 5
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -155,6 +185,53 @@ known-first-party = ["stemtrace"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D", "ARG"]  # No docstrings required in tests
 "examples/**/*.py" = ["ARG001", "D417"]  # bind=True tasks have unused self
+
+# =============================================================================
+# import-linter (architecture boundaries, see CONTRIBUTING.md)
+# =============================================================================
+[tool.importlinter]
+root_package = "stemtrace"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "core is independent of library, server and transports"
+type = "forbidden"
+source_modules = ["stemtrace.core"]
+forbidden_modules = ["stemtrace.library", "stemtrace.server", "stemtrace.transports"]
+
+[[tool.importlinter.contracts]]
+name = "core uses no broker, Celery or web libraries"
+type = "forbidden"
+source_modules = ["stemtrace.core"]
+forbidden_modules = [
+    "amqp",
+    "celery",
+    "fastapi",
+    "httpx",
+    "kombu",
+    "redis",
+    "starlette",
+    "typer",
+    "uvicorn",
+]
+
+[[tool.importlinter.contracts]]
+name = "library does not import server"
+type = "forbidden"
+source_modules = ["stemtrace.library"]
+forbidden_modules = ["stemtrace.server"]
+
+[[tool.importlinter.contracts]]
+name = "server does not import library"
+type = "forbidden"
+source_modules = ["stemtrace.server"]
+forbidden_modules = ["stemtrace.library"]
+
+[[tool.importlinter.contracts]]
+name = "transports import only core (library and server both use them)"
+type = "forbidden"
+source_modules = ["stemtrace.transports"]
+forbidden_modules = ["stemtrace.library", "stemtrace.server"]
 
 # =============================================================================
 # pytest

@@ -14,6 +14,7 @@ htmlcov/
 # Type checking / linting
 .mypy_cache/
 .ruff_cache/
+.import_linter_cache/
 
 # Virtual environments
 .venv/

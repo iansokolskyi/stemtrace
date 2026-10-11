@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings. The rules behind these instructions are summarized
+# in CONTRIBUTING.md; ruff, mypy and import-linter already run in CI, so reviews
+# should focus on what tools can't check.
+language: en-US
+tone_instructions: >-
+  Be concise and specific. Skip praise and style nits that ruff or Biome already
+  enforce. Lead with correctness, boundaries and test gaps.
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  in_progress_fortune: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  path_filters:
+    - "!uv.lock"
+    - "!**/package-lock.json"
+    - "!src/stemtrace/server/ui/frontend/src/routeTree.gen.ts"
+    - "!src/stemtrace/server/ui/frontend/dist/**"
+  # Most specific paths first, the general Python entry last. The server and
+  # general globs match only *.py, so frontend files get just the frontend entry.
+  path_instructions:
+    - path: "src/stemtrace/core/**"
+      instructions: |
+        Domain layer: pure Python plus Pydantic only. Flag any I/O (network, files,
+        environment, clocks used for side effects) and any import of
+        stemtrace.library, stemtrace.server, Celery, Redis, kombu or FastAPI.
+        Events are immutable (frozen=True). Synthetic GROUP/CHORD nodes have
+        empty `events`; new graph code must handle that.
+    - path: "src/stemtrace/library/**"
+      instructions: |
+        Runs inside Celery workers. Imports core only, never stemtrace.server.
+        Publishing is fire-and-forget: it must never raise into or block a task,
+        and a failing broker must stay cheap on repeated events (circuit breaker
+        or backoff, never retry per event). Log volume must stay bounded during
+        an outage. Check shared state under prefork, threads and gevent/eventlet,
+        and fork safety of module-level locks. Per-task state belongs in a
+        ContextVar.
+    - path: "src/stemtrace/server/ui/frontend/**"
+      instructions: |
+        React 19 + TypeScript strict + TanStack Router/Query + @xyflow/react.
+        No `any`, explicit return types on exported functions, props interfaces
+        for components. routeTree.gen.ts is generated and must not be edited by
+        hand. Graph or UI behavior changes need Playwright coverage in tests/.
+    - path: "src/stemtrace/server/**/*.py"
+      instructions: |
+        Web server and consumer. Imports core only, never stemtrace.library. The
+        server is read-only toward the broker and the user's Celery app. Check
+        that API response schema changes are reflected in the frontend types and
+        tests, that auth dependencies apply to new routes, and that background
+        loops stop within a bounded time.
+    - path: "pyproject.toml"
+      instructions: |
+        Flag any new per-file-ignores entry for the design rules (C90, PLR09xx,
+        BLE, ERA, RET, PT) and any added import-linter ignore_imports entry:
+        the baseline only shrinks. New dependencies need a stated reason.
+    - path: "tests/**"
+      instructions: |
+        - A new test should fail on the old code with an assertion error that is
+          the bug, not an ImportError.
+        - Assert exact values, sequences and log counts, not `is not None`.
+        - Prefer fakes that model the real library semantics over
+          unittest.mock; a fake that always succeeds proves nothing.
+        - No real sleeps in unit tests: inject the clock and sleep function, and
+          bound loops so a regression fails instead of hanging.
+        - New `# noqa` comments need a reason after the codes; bare ones are
+          the pre-existing baseline and only shrink.
+        - Imports at the top of the file. Names follow
+          test_<action>_<condition>_<result>. Tests needing Redis or RabbitMQ
+          are marked integration; Docker-based ones e2e.
+    - path: "src/stemtrace/**/*.py"
+      instructions: |
+        - Does each new class or function hide a decision or remove work from its
+          callers? Flag pass-through wrappers and options with no current caller.
+        - Constants, timeouts and limits are defined once and imported, not copied.
+        - Every blocking call (connect, read, close, join, wait, lock) needs an
+          explicit timeout smaller than its caller's.
+        - Broad `except Exception` only at fire-and-forget boundaries, with a
+          `# noqa: BLE001  <reason>` comment and logging with context.
+        - Comments explain why or state an invariant. Comments about third-party
+          behavior should name the library version and function.
+        - Behavior claims in docstrings, README and CHANGELOG must be backed by a
+          test. Changes to user-visible behavior should be opt-in.
+        - Bare `# noqa: <codes>` comments are the baseline of code that predates
+          the lint rules; it only shrinks. Flag a newly added bare noqa: a new
+          suppression must give a reason after the codes, and a refactor
+          should delete the noqa it makes unnecessary.
+
+chat:
+  art: false

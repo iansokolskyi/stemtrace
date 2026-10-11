@@ -23,6 +23,35 @@ from stemtrace.server.ui.static import (
 class TestStaticRouter:
     """Tests for static file router."""
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/x%3C%2Fscript%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E/tasks/1",
+            "/%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E/tasks",
+            "/a'b/tasks/1",
+        ],
+    )
+    def test_spa_shell_never_reflects_hostile_mount_prefix(
+        self, tmp_path: Path, path: str
+    ) -> None:
+        """A request-derived prefix that isn't an allow-listed path collapses to ""."""
+        dist_dir = tmp_path / "dist"
+        (dist_dir / "assets").mkdir(parents=True)
+        (dist_dir / "index.html").write_text(
+            '<html><head></head><body><script src="/assets/i.js"></script></body></html>'
+        )
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", dist_dir):
+            router = get_static_router_with_base(None)
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router)
+            response = TestClient(app).get(path)
+
+        assert response.status_code == 200
+        assert 'window.__STEMTRACE_BASE__="";' in response.text
+        assert "alert" not in response.text
+        assert 'src="/assets/i.js"' in response.text
+
     def test_get_static_router_returns_none_when_missing(self, tmp_path: Path) -> None:
         """Returns None if dist/ doesn't exist."""
         with patch(

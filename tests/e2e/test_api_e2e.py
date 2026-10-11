@@ -280,8 +280,7 @@ class TestWebSocketUpdates:
         # Check that we received events for this task
         task_events = [msg for msg in ws_messages if msg.get("task_id") == task_id]
 
-        # Should have received at least one event
-        # (PENDING, RECEIVED, STARTED, SUCCESS)
+        # Should have received at least one of PENDING, RECEIVED, STARTED, SUCCESS
         assert len(task_events) >= 1, (
             f"Expected events for {task_id}, got {len(ws_messages)} messages"
         )

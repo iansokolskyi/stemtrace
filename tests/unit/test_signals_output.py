@@ -33,7 +33,7 @@ from stemtrace.library.signals import (
     connect_signals,
     disconnect_signals,
 )
-from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.transports.memory import MemoryTransport
 
 module_logger = logging.getLogger("tests.unit.output_tasks")
 task_logger = get_task_logger("tests.unit.output_tasks.celery")

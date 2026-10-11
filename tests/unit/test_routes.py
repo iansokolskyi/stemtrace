@@ -6,11 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-import stemtrace.server.api.routes as routes
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import TaskEventResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -865,7 +866,7 @@ class TestTaskRegistryWithWorkers:
             tasks=["myapp.tasks.active_task", "myapp.tasks.never_run_task"],
         )
 
-        # Active: registered + executed
+        # Active task: registered and executed
         store.add_event(make_event.create("task-1", name="myapp.tasks.active_task"))
         # Not registered: executed but not registered
         store.add_event(make_event.create("task-2", name="myapp.tasks.orphan_task"))
@@ -1240,7 +1241,6 @@ class TestInspectRateLimiting:
 
         def _fake_get_inspector(_url: str, **_: object) -> None:
             called["n"] += 1
-            return None
 
         # Outer check passes (2.1s since last=0), inner check fails (<2s).
         values = iter([2.1, 0.1])
@@ -1686,3 +1686,32 @@ class TestResolveNodeAlias:
         node = self._make_node(kwargs={"operator_type": "sync_table"})
         resp = routes._node_to_graph_response(node)
         assert resp.name == "myapp.tasks.process"
+
+
+class TestApiRouteTable:
+    """The router exposes the same routes, in the same order."""
+
+    def test_create_api_router_registers_routes_in_order(self) -> None:
+        # Order matters: /tasks/registry must precede /tasks/{task_id}, or
+        # "registry" would be captured as a task id.
+        router = create_api_router(GraphStore(), worker_registry=WorkerRegistry())
+
+        table = [
+            (route.path, sorted(route.methods))
+            for route in router.routes
+            if isinstance(route, APIRoute)
+        ]
+
+        assert table == [
+            ("/api/health", ["GET"]),
+            ("/api/health/live", ["GET"]),
+            ("/api/tasks", ["GET"]),
+            ("/api/tasks/registry", ["GET"]),
+            ("/api/tasks/{task_id}", ["GET"]),
+            ("/api/tasks/{task_id}/children", ["GET"]),
+            ("/api/graphs", ["GET"]),
+            ("/api/graphs/{root_id}", ["GET"]),
+            ("/api/workers", ["GET"]),
+            ("/api/workers/{hostname}", ["GET"]),
+        ]
+        assert len(table) == len(router.routes)

@@ -37,7 +37,7 @@ make check
 make check
 
 # Individual checks
-make lint       # ruff check + format
+make lint       # ruff check + format + import contracts
 make types      # mypy --strict
 make test       # pytest with coverage
 ```
@@ -53,6 +53,38 @@ uv run ruff check --fix src/ tests/
 # Format code
 uv run ruff format src/ tests/
 ```
+
+### Lint Rules and Import Contracts
+
+Besides style, ruff enforces design limits: McCabe complexity 10 (`C90`), at most
+12 branches, 6 returns, 50 statements and 5 positional arguments per function
+(`PLR09xx`; make extra parameters keyword-only), no blind `except Exception`
+(`BLE`), no commented-out code (`ERA`), plus `RET` and `PT` style rules. A broad
+except is accepted only at a fire-and-forget boundary, with
+`# noqa: BLE001  <reason>` on that line.
+
+[import-linter](https://import-linter.readthedocs.io/) checks the architecture
+boundaries (`uv run lint-imports`, part of `make lint` and CI):
+
+- `stemtrace.core` imports nothing from `stemtrace.library`, `stemtrace.server` or
+  `stemtrace.transports`, and no broker, Celery or web library (`celery`, `kombu`,
+  `amqp`, `redis`, `fastapi`, `starlette`, `uvicorn`, `typer`, `httpx`)
+- `stemtrace.transports` imports nothing from `stemtrace.library` or
+  `stemtrace.server` (both of them use it)
+- `stemtrace.library` does not import `stemtrace.server`
+- `stemtrace.server` does not import `stemtrace.library`
+
+**Baseline policy.** Code that predates these rules carries a per-line
+`# noqa: <codes>` comment with no reason (added with `ruff check --add-noqa`).
+Known import violations, if any, are listed under `ignore_imports` in
+`pyproject.toml` (there are none at the moment). The baseline only shrinks:
+
+- New code follows the rules. If a suppression is really needed, it names the
+  code and gives a reason: `# noqa: BLE001  fire-and-forget: <why>`. Never add a
+  bare `# noqa`.
+- When you fix a baselined line, delete its `# noqa`. Ruff's `RUF100` fails on a
+  `# noqa` that no longer suppresses anything, and import-linter fails on an
+  `ignore_imports` entry that no longer matches, so stale entries can't linger.
 
 ### Type Checking
 
@@ -125,8 +157,9 @@ uv lock --upgrade
 ### Key Principles
 
 - **core/** - Pure Python, no external dependencies
-- **library/** - Celery integration, imports only from core/
-- **server/** - Web server, imports only from core/
+- **transports/** - Broker adapters (Redis, RabbitMQ, memory), imports only from core/
+- **library/** - Celery integration, imports only from core/ and transports/
+- **server/** - Web server, imports only from core/ and transports/
 - Never import sideways (library ↔ server)
 
 ### Code Quality

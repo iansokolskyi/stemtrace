@@ -18,7 +18,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from hashlib import sha256
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from typing import Final
 
 logger = logging.getLogger(__name__)
@@ -187,7 +187,10 @@ def _split_cookie(cookie_value: str | None) -> tuple[bytes, bytes] | None:
     payload_b64, sig_b64 = cookie_value.split(_SESSION_SEPARATOR, 1)
     try:
         return _b64url_decode(payload_b64), _b64url_decode(sig_b64)
-    except Exception:
+    except ValueError:
+        # Non-ASCII input fails .encode("ascii") (UnicodeEncodeError), and bad
+        # padding fails base64 (binascii.Error); both subclass ValueError.
+        # Characters outside the alphabet are discarded, not rejected.
         return None
 
 
@@ -195,7 +198,11 @@ def _parse_unexpired_payload(payload_bytes: bytes) -> dict[str, object] | None:
     """Parse a session payload; None unless it is a dict with a future 'exp'."""
     try:
         payload_obj = json.loads(payload_bytes.decode("utf-8"))
-    except Exception:
+    except (ValueError, RecursionError):
+        # ValueError covers UnicodeDecodeError, JSONDecodeError and integers
+        # longer than sys.get_int_max_str_digits() digits. Deeply nested
+        # arrays/objects raise RecursionError (CPython 3.10-3.14 _json), and
+        # this runs on unsigned cookies, so it must be caught too.
         return None
 
     if not isinstance(payload_obj, dict):
@@ -241,7 +248,9 @@ def parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
     jar: SimpleCookie = SimpleCookie()
     try:
         jar.load(cookie_header)
-    except Exception:
+    except CookieError:
+        # The only exception SimpleCookie.load raises (illegal key, control
+        # characters); unparseable input otherwise just stops the parse.
         return {}
     return {key: morsel.value for key, morsel in jar.items()}
 
@@ -299,15 +308,24 @@ def check_session_cookie(
         if _is_expected_username(payload, config.username):
             return SessionStatus.VALID
         return SessionStatus.INVALID
-    if not config.secret_is_generated:
-        return SessionStatus.INVALID
-
-    iat = payload.get("iat")
-    if isinstance(iat, bool) or not isinstance(iat, int | float):
-        return SessionStatus.INVALID
-    if iat > config.started_at:
+    if _is_from_live_sibling(payload, config):
         return SessionStatus.SECRET_MISMATCH
     return SessionStatus.INVALID
+
+
+def _is_from_live_sibling(payload: dict[str, object], config: FormAuthConfig) -> bool:
+    """Whether a badly signed, unexpired payload must come from a sibling process.
+
+    Only when this process generated its own secret (so siblings necessarily
+    sign with other secrets) and the cookie was issued strictly after this
+    process started. See :func:`check_session_cookie` for why.
+    """
+    if not config.secret_is_generated:
+        return False
+    iat = payload.get("iat")
+    if isinstance(iat, bool) or not isinstance(iat, int | float):
+        return False
+    return iat > config.started_at
 
 
 def is_authenticated_cookie(

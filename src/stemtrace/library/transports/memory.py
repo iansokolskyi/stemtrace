@@ -1,35 +1,5 @@
-"""In-memory transport for testing."""
+"""Deprecated alias of :mod:`stemtrace.transports.memory` (see the package docstring)."""
 
-from collections.abc import Iterator
-from typing import ClassVar
+from stemtrace.transports.memory import MemoryTransport, StreamEvent
 
-from typing_extensions import Self
-
-from stemtrace.core.events import TaskEvent, WorkerEvent
-
-StreamEvent = TaskEvent | WorkerEvent
-
-
-class MemoryTransport:
-    """In-memory event transport. Events stored in class-level list for test inspection."""
-
-    events: ClassVar[list[StreamEvent]] = []
-
-    def publish(self, event: StreamEvent) -> None:
-        """Store event in memory."""
-        MemoryTransport.events.append(event)
-
-    def consume(self) -> Iterator[StreamEvent]:
-        """Yield all stored events."""
-        yield from MemoryTransport.events
-
-    @classmethod
-    def from_url(cls, url: str) -> Self:
-        """Create transport (ignores URL)."""
-        del url
-        return cls()
-
-    @classmethod
-    def clear(cls) -> None:
-        """Clear all stored events."""
-        cls.events.clear()
+__all__ = ["MemoryTransport", "StreamEvent"]

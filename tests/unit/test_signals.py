@@ -7,7 +7,14 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from celery.signals import task_retry
+from celery.signals import (
+    task_failure,
+    task_postrun,
+    task_prerun,
+    task_retry,
+    task_revoked,
+    task_sent,
+)
 
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
@@ -30,7 +37,7 @@ from stemtrace.library.signals import (
     on_worker_ready,
     on_worker_shutdown,
 )
-from stemtrace.library.transports.memory import MemoryTransport
+from stemtrace.transports.memory import MemoryTransport
 
 
 @pytest.fixture(autouse=True)
@@ -1189,3 +1196,84 @@ class TestWorkerLifecycleEdgeCases:
 
         on_worker_shutdown(sender=sender, sig=15)
         assert "Failed to publish worker_shutdown event" in caplog.text
+
+
+def _receiver_errors(responses: list[tuple[Any, Any]]) -> list[Any]:
+    """Exceptions Celery's Signal.send caught from receivers (it logs, not raises)."""
+    return [response for _, response in responses if isinstance(response, Exception)]
+
+
+class TestCelerySignalDispatch:
+    """Receivers called the way Celery 5.6 sends each signal (keywords only)."""
+
+    def test_task_sent_send_publishes_pending(self, transport: MemoryTransport) -> None:
+        # Mirrors celery.app.amqp.AMQP.send_task_message (protocol 2).
+        responses = task_sent.send(
+            sender="tests.sample_task",
+            task_id="task-123",
+            task="tests.sample_task",
+            args=(1,),
+            kwargs={},
+            eta=None,
+            taskset=None,
+        )
+
+        assert _receiver_errors(responses) == []
+        assert [e.state for e in MemoryTransport.events] == [TaskState.PENDING]
+
+    def test_task_lifecycle_send_publishes_started_and_success(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        # Mirrors celery.app.trace.build_tracer.
+        responses = task_prerun.send(
+            sender=mock_task, task_id="task-123", task=mock_task, args=(), kwargs={}
+        )
+        responses += task_postrun.send(
+            sender=mock_task,
+            task_id="task-123",
+            task=mock_task,
+            args=(),
+            kwargs={},
+            retval=7,
+            state="SUCCESS",
+        )
+
+        assert _receiver_errors(responses) == []
+        assert [e.state for e in MemoryTransport.events] == [
+            TaskState.STARTED,
+            TaskState.SUCCESS,
+        ]
+
+    def test_task_failure_send_publishes_failure(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        exc = ValueError("boom")
+        # Mirrors celery.app.trace.TraceInfo.handle_failure.
+        responses = task_failure.send(
+            sender=mock_task,
+            task_id="task-123",
+            exception=exc,
+            args=(),
+            kwargs={},
+            traceback=None,
+            einfo=None,
+        )
+
+        assert _receiver_errors(responses) == []
+        assert [e.state for e in MemoryTransport.events] == [TaskState.FAILURE]
+        assert MemoryTransport.events[0].exception == "ValueError: boom"
+
+    def test_task_revoked_send_publishes_revoked(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        # Mirrors celery.worker.request.Request.task_revoked (via send_revoked).
+        responses = task_revoked.send(
+            mock_task,
+            request=mock_task.request,
+            terminated=False,
+            signum=None,
+            expired=False,
+        )
+
+        assert _receiver_errors(responses) == []
+        assert [e.state for e in MemoryTransport.events] == [TaskState.REVOKED]

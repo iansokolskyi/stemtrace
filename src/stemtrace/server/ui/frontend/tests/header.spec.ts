@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 
@@ -182,5 +182,54 @@ test.describe('Header', () => {
 
     await expect(page.getByRole('heading', { name: 'Workers', level: 1 })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Logout' })).toHaveCount(0)
+  })
+})
+
+interface SocketCloseCounter {
+  __socketCloses: number
+}
+
+test.describe('Live connection', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('stays Live on one socket after the StrictMode remount', async ({ page }) => {
+    const sockets: WebSocketRoute[] = []
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      sockets.push(ws)
+    })
+    // Count socket close events in the page. Registered after routeWebSocket so
+    // it wraps Playwright's WebSocket mock rather than being replaced by it.
+    await page.addInitScript(() => {
+      const counter = window as unknown as SocketCloseCounter
+      counter.__socketCloses = 0
+      const MockedWebSocket = window.WebSocket
+      window.WebSocket = class extends MockedWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols)
+          this.addEventListener('close', () => {
+            counter.__socketCloses += 1
+          })
+        }
+      }
+    })
+    const logs: string[] = []
+    page.on('console', (message) => logs.push(message.text()))
+    await setupMockApi(page)
+    await page.clock.install()
+
+    await page.goto('/')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    // StrictMode (dev) mounts twice: the first mount's socket is dropped. Wait
+    // until its close event has reached the page, where a stale handler would
+    // report "disconnected" and schedule a reconnect.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as SocketCloseCounter).__socketCloses))
+      .toBe(1)
+    // Past the 3 s reconnect delay and the 5 s disconnected poll interval.
+    await page.clock.runFor(6000)
+
+    expect(logs.filter((line) => line.includes('[WebSocket] Disconnected'))).toEqual([])
+    expect(sockets).toHaveLength(2)
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
   })
 })

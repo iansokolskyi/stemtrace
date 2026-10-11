@@ -48,6 +48,53 @@ def _has_dot_segment(path: str) -> bool:
     return True  # Still encoded after several rounds: treat as suspicious.
 
 
+def _is_ambiguous_path(path: str, raw_path: str) -> bool:
+    """Whether a path could slip past prefix and open-path checks.
+
+    True for '.'/'..' segments in the decoded or raw (possibly percent-encoded)
+    path, and for a decoded '?' or '#' (sent as %3F/%23), which would make an
+    exact open-path match like "health/live%3Fx" ambiguous.
+    """
+    return (
+        "?" in path
+        or "#" in path
+        or _has_dot_segment(path)
+        or _has_dot_segment(raw_path)
+    )
+
+
+def _unauthenticated_response(
+    request: Request,
+    path: str,
+    *,
+    login_path: str,
+    api_prefix: str,
+    secret_mismatch: bool,
+) -> Response:
+    """Answer a request without a valid session: JSON 401 for API, else login.
+
+    API paths get a 401 whose body carries the mismatch ``reason`` when the
+    cookie was signed by another process's secret. UI paths redirect (303) to
+    the login page with ``next`` set to the requested path and query, plus the
+    login-page ``reason`` for the same case.
+    """
+    if path.startswith(api_prefix):
+        body = {"detail": "Authentication required"}
+        if secret_mismatch:
+            body["reason"] = SESSION_SECRET_MISMATCH_REASON
+        return JSONResponse(body, status_code=401)
+
+    next_target = path
+    if request.url.query:
+        next_target = f"{path}?{request.url.query}"
+    login_qs = {"next": next_target}
+    if secret_mismatch:
+        login_qs["reason"] = LOGIN_REASON_SESSION_MISMATCH
+    return RedirectResponse(
+        url=f"{login_path}?{urllib.parse.urlencode(login_qs)}", status_code=303
+    )
+
+
 def create_form_auth_middleware(
     config: FormAuthConfig,
     *,
@@ -117,12 +164,7 @@ def create_form_auth_middleware(
         if not in_scope:
             # Routing doesn't normalize paths, so these can't reach our routes.
             return await call_next(request)
-        if (
-            "?" in path
-            or "#" in path
-            or _has_dot_segment(path)
-            or _has_dot_segment(raw_path)
-        ):
+        if _is_ambiguous_path(path, raw_path):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if path in open_paths or path.startswith(assets_dir):
             return await call_next(request)
@@ -134,21 +176,12 @@ def create_form_auth_middleware(
         mismatch = status is SessionStatus.SECRET_MISMATCH
         if mismatch:
             warn_session_secret_mismatch()
-
-        if path.startswith(api_prefix):
-            body = {"detail": "Authentication required"}
-            if mismatch:
-                body["reason"] = SESSION_SECRET_MISMATCH_REASON
-            return JSONResponse(body, status_code=401)
-
-        next_target = path
-        if request.url.query:
-            next_target = f"{path}?{request.url.query}"
-        login_qs = {"next": next_target}
-        if mismatch:
-            login_qs["reason"] = LOGIN_REASON_SESSION_MISMATCH
-        return RedirectResponse(
-            url=f"{login_path}?{urllib.parse.urlencode(login_qs)}", status_code=303
+        return _unauthenticated_response(
+            request,
+            path,
+            login_path=login_path,
+            api_prefix=api_prefix,
+            secret_mismatch=mismatch,
         )
 
     return form_auth_middleware

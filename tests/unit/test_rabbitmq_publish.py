@@ -16,7 +16,7 @@ import socket
 import sys
 import threading
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 
@@ -24,13 +24,13 @@ import pytest
 from kombu import Connection as KombuConnection
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.transports.rabbitmq import (
+from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     PUBLISH_IO_TIMEOUT,
     RabbitMQTransport,
 )
 
-LOGGER_NAME = "stemtrace.library.transports.rabbitmq"
+LOGGER_NAME = "stemtrace.transports.rabbitmq"
 H1 = "amqp://guest:guest@h1:5672//"
 H2 = "amqp://guest:guest@h2:5672//"
 
@@ -70,152 +70,164 @@ class FakeBroker:
         self.published: list[tuple[str, Any, dict[str, Any]]] = []
 
 
+class _FakeAmqpTransport:
+    def __init__(self) -> None:
+        self.sock, self.peer = socket.socketpair()
+
+
+class _FakeAmqpConnection:
+    """py-amqp Connection: close() waits for Close-Ok, collect() doesn't."""
+
+    def __init__(self, broker: FakeBroker) -> None:
+        self.broker = broker
+        self.transport = _FakeAmqpTransport()
+        self.calls: list[str] = []
+        self._open = True
+
+    def close(self) -> None:
+        if not self._open:
+            return  # py-amqp: already closed
+        self.calls.append("close")
+        if self.broker.close_error is not None:
+            # py-amqp collects the connection, then re-raises.
+            self._open = False
+            raise self.broker.close_error
+        self._open = False
+
+    def collect(self) -> None:
+        self.calls.append("collect")
+        self._open = False
+
+
+class _FakeChannel:
+    def __init__(self, connection: "_FakeConnection") -> None:
+        self.connection = connection
+
+
+class _FakeConnection:
+    """kombu Connection; _install_fake_kombu_for_publish binds ``broker``."""
+
+    broker: ClassVar[FakeBroker]
+    retry_limit: ClassVar[int] = 50
+
+    def __init__(self, url: str, **kwargs: Any) -> None:
+        self.url = url
+        self.kwargs = kwargs
+        self.alt = url.split(";") if ";" in url else []
+        self.switches = 0
+        self._index = 0
+        self.ensure_calls: list[dict[str, Any]] = []
+        self.attempted: list[str] = []
+        self.sleeps: list[float] = []
+        self.host: str | None = None
+        self.closed = False
+        self.sock_timeout_at_channel: float | None = None
+        self.connection = _FakeAmqpConnection(self.broker)
+        self.broker.connections.append(self)
+
+    def __enter__(self) -> "_FakeConnection":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        del exc_type, exc, tb
+        self.closed = True
+        # kombu's release() closes the AMQP connection and swallows
+        # socket errors (including a Close-Ok timeout).
+        with contextlib.suppress(OSError):
+            self.connection.close()
+        self.connection.transport.sock.close()
+        self.connection.transport.peer.close()
+
+    def maybe_switch_next(self) -> None:
+        self.switches += 1
+        if self.alt:
+            self._index = (self._index + 1) % len(self.alt)
+
+    def ensure_connection(
+        self,
+        *,
+        errback: Callable[[Exception, float], None] | None = None,
+        max_retries: int | None = None,
+        interval_start: float = 2,
+        interval_step: float = 2,
+        interval_max: float = 30,
+        reraise_as_library_errors: bool = True,
+    ) -> "_FakeConnection":
+        self.ensure_calls.append(
+            {
+                "errback": errback,
+                "max_retries": max_retries,
+                "interval_start": interval_start,
+                "interval_step": interval_step,
+                "interval_max": interval_max,
+                "reraise_as_library_errors": reraise_as_library_errors,
+            }
+        )
+        del interval_step, interval_max
+        hosts = self.alt or [self.url]
+        retries = 0
+        while True:
+            host = hosts[(self._index + retries) % len(hosts)]
+            self.attempted.append(host)
+            if host in self.broker.auth_refused:
+                raise PermissionError(f"ACCESS_REFUSED on {host}")
+            if host not in self.broker.down:
+                self.host = host
+                return self
+            exc = ConnectionRefusedError(f"{host} refused")
+            if max_retries is not None and retries >= max_retries:
+                raise exc
+            if retries >= self.retry_limit:
+                raise RuntimeError("runaway connect loop")
+            completes_round = (retries + 1) % len(hosts) == 0
+            interval = interval_start if completes_round else 0
+            if errback is not None:
+                errback(exc, interval)
+            if interval:
+                self.sleeps.append(interval)
+            retries += 1
+
+    def channel(self) -> _FakeChannel:
+        if self.host is None:
+            raise AssertionError("channel() before ensure_connection()")
+        self.sock_timeout_at_channel = self.connection.transport.sock.gettimeout()
+        return _FakeChannel(self)
+
+
+class _FakeExchange:
+    def __init__(self, name: str, *, type: str, durable: bool) -> None:
+        self.name = name
+        self.type = type
+        self.durable = durable
+
+
+class _FakeProducer:
+    def __init__(self, channel: _FakeChannel) -> None:
+        self.channel = channel
+
+    def publish(self, body: Any, **kwargs: Any) -> None:
+        broker = self.channel.connection.broker
+        if broker.publish_gate is not None:
+            broker.publish_gate.wait(timeout=5.0)
+        broker.clock.advance(broker.publish_delay)
+        host = self.channel.connection.host
+        if broker.publish_error is not None and (
+            broker.publish_error_hosts is None or host in broker.publish_error_hosts
+        ):
+            raise broker.publish_error
+        broker.published.append((host, body, kwargs))
+
+
 def _install_fake_kombu_for_publish(
     monkeypatch: pytest.MonkeyPatch, broker: FakeBroker
 ) -> None:
     """Install a fake kombu publish stack into sys.modules (no broker required)."""
     fake_kombu = types.ModuleType("kombu")
-
-    class FakeAmqpTransport:
-        def __init__(self) -> None:
-            self.sock, self.peer = socket.socketpair()
-
-    class FakeAmqpConnection:
-        """py-amqp Connection: close() waits for Close-Ok, collect() doesn't."""
-
-        def __init__(self) -> None:
-            self.transport = FakeAmqpTransport()
-            self.calls: list[str] = []
-            self._open = True
-
-        def close(self) -> None:
-            if not self._open:
-                return  # py-amqp: already closed
-            self.calls.append("close")
-            if broker.close_error is not None:
-                # py-amqp collects the connection, then re-raises.
-                self._open = False
-                raise broker.close_error
-            self._open = False
-
-        def collect(self) -> None:
-            self.calls.append("collect")
-            self._open = False
-
-    class FakeChannel:
-        def __init__(self, connection: "Connection") -> None:
-            self.connection = connection
-
-    class Connection:
-        retry_limit: ClassVar[int] = 50
-
-        def __init__(self, url: str, **kwargs: Any) -> None:
-            self.url = url
-            self.kwargs = kwargs
-            self.alt = url.split(";") if ";" in url else []
-            self.switches = 0
-            self._index = 0
-            self.ensure_calls: list[dict[str, Any]] = []
-            self.attempted: list[str] = []
-            self.sleeps: list[float] = []
-            self.host: str | None = None
-            self.closed = False
-            self.sock_timeout_at_channel: float | None = None
-            self.connection = FakeAmqpConnection()
-            broker.connections.append(self)
-
-        def __enter__(self) -> "Connection":
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            del exc_type, exc, tb
-            self.closed = True
-            # kombu's release() closes the AMQP connection and swallows
-            # socket errors (including a Close-Ok timeout).
-            with contextlib.suppress(OSError):
-                self.connection.close()
-            self.connection.transport.sock.close()
-            self.connection.transport.peer.close()
-
-        def maybe_switch_next(self) -> None:
-            self.switches += 1
-            if self.alt:
-                self._index = (self._index + 1) % len(self.alt)
-
-        def ensure_connection(
-            self,
-            *,
-            errback: Callable[[Exception, float], None] | None = None,
-            max_retries: int | None = None,
-            interval_start: float = 2,
-            interval_step: float = 2,
-            interval_max: float = 30,
-            reraise_as_library_errors: bool = True,
-        ) -> "Connection":
-            self.ensure_calls.append(
-                {
-                    "errback": errback,
-                    "max_retries": max_retries,
-                    "interval_start": interval_start,
-                    "interval_step": interval_step,
-                    "interval_max": interval_max,
-                    "reraise_as_library_errors": reraise_as_library_errors,
-                }
-            )
-            del interval_step, interval_max
-            hosts = self.alt or [self.url]
-            retries = 0
-            while True:
-                host = hosts[(self._index + retries) % len(hosts)]
-                self.attempted.append(host)
-                if host in broker.auth_refused:
-                    raise PermissionError(f"ACCESS_REFUSED on {host}")
-                if host not in broker.down:
-                    self.host = host
-                    return self
-                exc = ConnectionRefusedError(f"{host} refused")
-                if max_retries is not None and retries >= max_retries:
-                    raise exc
-                if retries >= self.retry_limit:
-                    raise RuntimeError("runaway connect loop")
-                completes_round = (retries + 1) % len(hosts) == 0
-                interval = interval_start if completes_round else 0
-                if errback is not None:
-                    errback(exc, interval)
-                if interval:
-                    self.sleeps.append(interval)
-                retries += 1
-
-        def channel(self) -> FakeChannel:
-            if self.host is None:
-                raise AssertionError("channel() before ensure_connection()")
-            self.sock_timeout_at_channel = self.connection.transport.sock.gettimeout()
-            return FakeChannel(self)
-
-    class Exchange:
-        def __init__(self, name: str, *, type: str, durable: bool) -> None:
-            self.name = name
-            self.type = type
-            self.durable = durable
-
-    class Producer:
-        def __init__(self, channel: FakeChannel) -> None:
-            self.channel = channel
-
-        def publish(self, body: Any, **kwargs: Any) -> None:
-            if broker.publish_gate is not None:
-                broker.publish_gate.wait(timeout=5.0)
-            broker.clock.advance(broker.publish_delay)
-            host = self.channel.connection.host
-            if broker.publish_error is not None and (
-                broker.publish_error_hosts is None or host in broker.publish_error_hosts
-            ):
-                raise broker.publish_error
-            broker.published.append((host, body, kwargs))
-
-    fake_kombu.Connection = Connection
-    fake_kombu.Exchange = Exchange
-    fake_kombu.Producer = Producer
+    # The transport builds Connection(url, **kwargs) itself, so bind the
+    # broker on a per-test subclass rather than passing it in.
+    fake_kombu.Connection = type("Connection", (_FakeConnection,), {"broker": broker})
+    fake_kombu.Exchange = _FakeExchange
+    fake_kombu.Producer = _FakeProducer
     monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
 
 
@@ -225,10 +237,10 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> Iterator[FakeBroker]:
+def broker(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeBroker:
     fake = FakeBroker(clock)
     _install_fake_kombu_for_publish(monkeypatch, fake)
-    yield fake
+    return fake
 
 
 def _event(task_id: str = "t-1") -> TaskEvent:

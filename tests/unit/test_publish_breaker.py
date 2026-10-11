@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import pytest
 
-from stemtrace.library.transports.breaker import PublishBreaker
+from stemtrace.transports.breaker import PublishBreaker
 
 LOGGER_NAME = "tests.publish_breaker"
 SLOW = 2.0  # elapsed seconds of a failed attempt that timed out

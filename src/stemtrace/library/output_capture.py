@@ -370,7 +370,7 @@ class TeeStream:
         try:
             record = _record_being_emitted()
             skip = record is not None and _tee_should_skip(record)
-        except Exception:
+        except Exception:  # noqa: BLE001  fails open: a lookup bug must not break the task's write
             skip = False
         if not skip:
             try:

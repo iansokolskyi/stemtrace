@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import stemtrace.server.api.routes as routes
+from stemtrace.server.api import routes
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 

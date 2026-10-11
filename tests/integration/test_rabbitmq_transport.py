@@ -8,6 +8,7 @@ Run with: pytest tests/integration/test_rabbitmq_transport.py -v
 
 import base64
 import contextlib
+import http.client
 import json
 import logging
 import os
@@ -21,11 +22,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from amqp.exceptions import AMQPError
 from kombu import Connection, Exchange, Producer
+from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from stemtrace.library.transports import get_transport
-from stemtrace.library.transports.rabbitmq import RabbitMQTransport
+from stemtrace.transports import get_transport
+from stemtrace.transports.rabbitmq import RabbitMQTransport
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
@@ -36,12 +39,10 @@ RABBITMQ_MANAGEMENT_URL = os.environ.get(
 def rabbitmq_available() -> bool:
     """Check if RabbitMQ is available."""
     try:
-        from kombu import Connection
-
         with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
             conn.connect()
         return True
-    except Exception:
+    except (OSError, AMQPError, KombuError):
         return False
 
 
@@ -64,7 +65,7 @@ def management_api_available() -> bool:
     try:
         _management_request("GET", "overview")
         return True
-    except Exception:
+    except (OSError, ValueError, http.client.HTTPException):
         return False
 
 
@@ -89,7 +90,7 @@ def _consume_one(
         gen = transport.consume()
         try:
             out.put(next(gen))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  forwarded to the test thread
             errors.put(exc)
         finally:
             gen.close()
@@ -117,14 +118,14 @@ def rabbitmq_transport() -> Iterator[RabbitMQTransport]:
     yield transport
 
     # Cleanup: delete the queue/exchange created by the transport.
-    with contextlib.suppress(Exception):
-        from kombu import Connection
-
-        with Connection(RABBITMQ_URL, connect_timeout=1) as conn:
-            channel = conn.channel()
-            # Best-effort cleanup; ignore failures.
-            channel.queue_delete(transport.queue_name)
-            channel.exchange_delete(transport.exchange_name)
+    with (
+        contextlib.suppress(Exception),
+        Connection(RABBITMQ_URL, connect_timeout=1) as conn,
+    ):
+        channel = conn.channel()
+        # Best-effort cleanup; ignore failures.
+        channel.queue_delete(transport.queue_name)
+        channel.exchange_delete(transport.exchange_name)
 
 
 class TestRabbitMQTransportIntegration:
@@ -207,7 +208,7 @@ class TestRabbitMQTransportReconnect:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Events published after a forced disconnect still arrive."""
-        caplog.set_level(logging.INFO, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.INFO, logger="stemtrace.transports.rabbitmq")
         rabbitmq_transport._declare_exchange_and_queue()
         stop = threading.Event()
         rabbitmq_transport.bind_stop_event(stop)
@@ -311,9 +312,7 @@ class TestRabbitMQTransportResilience:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A text/plain message is dropped once; the next event still arrives."""
-        caplog.set_level(
-            logging.WARNING, logger="stemtrace.library.transports.rabbitmq"
-        )
+        caplog.set_level(logging.WARNING, logger="stemtrace.transports.rabbitmq")
         rabbitmq_transport._declare_exchange_and_queue()
         with Connection(RABBITMQ_URL, connect_timeout=2) as conn:
             Producer(conn.channel()).publish(

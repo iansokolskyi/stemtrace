@@ -122,12 +122,11 @@ def _scrub_value(
     """Recursively scrub a value (handles nested dicts and lists)."""
     if isinstance(value, dict):
         return scrub_dict(value, sensitive_keys, safe_keys=safe_keys)
-    elif isinstance(value, list):
+    if isinstance(value, list):
         return [_scrub_value(item, sensitive_keys, safe_keys) for item in value]
-    elif isinstance(value, tuple):
+    if isinstance(value, tuple):
         return tuple(_scrub_value(item, sensitive_keys, safe_keys) for item in value)
-    else:
-        return value
+    return value
 
 
 def scrub_args(

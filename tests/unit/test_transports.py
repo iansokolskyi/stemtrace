@@ -17,22 +17,22 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.core.exceptions import UnsupportedBrokerError
 from stemtrace.core.ports import ConnectionAwareTransport, StoppableTransport
-from stemtrace.library.transports import get_transport
-from stemtrace.library.transports.memory import MemoryTransport
-from stemtrace.library.transports.rabbitmq import (
+from stemtrace.transports import get_transport
+from stemtrace.transports.memory import MemoryTransport
+from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     DRAIN_TIMEOUT,
     RECONNECT_INITIAL_BACKOFF,
     RECONNECT_MAX_BACKOFF,
     RabbitMQTransport,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RECONNECT_INITIAL_BACKOFF as REDIS_RECONNECT_INITIAL_BACKOFF,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RECONNECT_MAX_BACKOFF as REDIS_RECONNECT_MAX_BACKOFF,
 )
-from stemtrace.library.transports.redis import (
+from stemtrace.transports.redis import (
     RedisTransport,
     _normalize_redis_ssl_params,
 )
@@ -600,8 +600,37 @@ class TestRedisTransport:
         self, transport: RedisTransport
     ) -> None:
         """_parse_event should raise when payload lacks both event_type and task_id."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             transport._parse_event('{"unexpected": "value"}')
+
+    @pytest.mark.parametrize("payload", ["42", '"text"', "[1, 2]", "null"])
+    def test_parse_event_rejects_non_object_payload(
+        self, transport: RedisTransport, payload: str
+    ) -> None:
+        """A JSON value that isn't an object is a parse error, not a crash."""
+        with pytest.raises(ValueError, match="not a JSON object"):
+            transport._parse_event(payload)
+
+    def test_consume_skips_scalar_payload_and_keeps_reading(
+        self,
+        transport: RedisTransport,
+        mock_client: MagicMock,
+        sample_event: TaskEvent,
+    ) -> None:
+        """A scalar JSON entry is skipped; the iterator keeps going."""
+        mock_client.xread.return_value = [
+            (
+                b"test:events",
+                [
+                    (b"1-0", {b"data": b"42"}),
+                    (b"1-1", {b"data": sample_event.model_dump_json().encode()}),
+                ],
+            )
+        ]
+
+        received = next(transport.consume())
+
+        assert received.task_id == sample_event.task_id
 
     def test_consume_skips_empty_reads_and_logs_parse_errors(
         self,
@@ -642,7 +671,7 @@ class TestRedisTransport:
         assert "Failed to parse event from Redis stream" in caplog.text
 
 
-def _install_fake_kombu_for_consume(
+def _install_fake_kombu_for_consume(  # noqa: C901
     monkeypatch: Any, *, drain_handler: Any
 ) -> type[Any]:
     """Install a fake kombu consumer stack into sys.modules (no broker required).
@@ -839,6 +868,63 @@ class _BoundedSleep:
             raise _RunawayLoopError(f"still reconnecting after {self._limit} sleeps")
 
 
+class _RecordingPublishChannel:
+    def __init__(self, published: dict[str, Any]) -> None:
+        self.published = published
+
+
+class _RecordingPublishAmqpConnection:
+    """py-amqp connection that records close() and collect() calls."""
+
+    def __init__(self, published: dict[str, Any]) -> None:
+        self._published = published
+
+    def close(self) -> None:
+        self._published["closed"] = True
+
+    def collect(self) -> None:
+        self._published["collected"] = True
+
+
+class _RecordingPublishConnection:
+    """kombu Connection that always connects; a subclass binds ``published``."""
+
+    published: ClassVar[dict[str, Any]]
+
+    def __init__(self, url: str, **_: Any) -> None:
+        self.url = url
+        self.alt: list[str] = []
+        self.connection = _RecordingPublishAmqpConnection(self.published)
+        self._channel = _RecordingPublishChannel(self.published)
+
+    def __enter__(self) -> "_RecordingPublishConnection":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        del exc_type, exc, tb
+
+    def ensure_connection(self, **_: Any) -> "_RecordingPublishConnection":
+        return self
+
+    def channel(self) -> _RecordingPublishChannel:
+        return self._channel
+
+
+class _RecordingPublishExchange:
+    def __init__(self, name: str, *, type: str, durable: bool) -> None:
+        self.name = name
+        del type, durable
+
+
+class _RecordingPublishProducer:
+    def __init__(self, channel: _RecordingPublishChannel) -> None:
+        self.channel = channel
+
+    def publish(self, body: Any, **kwargs: Any) -> None:
+        self.channel.published["body"] = body
+        self.channel.published.update(kwargs)
+
+
 class TestRabbitMQTransport:
     """Tests for RabbitMQTransport without a broker."""
 
@@ -955,7 +1041,7 @@ class TestRabbitMQTransport:
         assert received.task_id == "consume-1"
         assert seen["msg"].acked is True
 
-    def test_declare_exchange_and_queue_uses_queue_arguments(
+    def test_declare_exchange_and_queue_uses_queue_arguments(  # noqa: C901
         self, monkeypatch: Any
     ) -> None:
         """_declare_exchange_and_queue declares durable exchange + queue with TTL args."""
@@ -1044,7 +1130,7 @@ class TestRabbitMQTransport:
         self, caplog: Any, monkeypatch: Any
     ) -> None:
         """consume() rejects malformed messages and still yields subsequent valid ones."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
 
         seen: dict[str, Any] = {}
 
@@ -1112,8 +1198,15 @@ class TestRabbitMQTransport:
 
     def test_parse_event_raises_for_unknown_payload(self) -> None:
         """_parse_event raises for payloads missing task_id and event_type."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011
             RabbitMQTransport._parse_event({"unexpected": "value"})
+
+    @pytest.mark.parametrize("payload", ['["task_id"]', b'"event_type"', 42])
+    def test_parse_event_with_non_object_payload_raises_value_error(
+        self, payload: Any
+    ) -> None:
+        with pytest.raises(ValueError, match="missing event_type and task_id"):
+            RabbitMQTransport._parse_event(payload)
 
     def test_publish_logs_worker_event_identifier_on_exception(
         self, caplog: Any, monkeypatch: Any
@@ -1143,55 +1236,13 @@ class TestRabbitMQTransport:
         self, monkeypatch: Any
     ) -> None:
         """_publish_payload runs against a fake kombu module (no broker required)."""
-        fake_kombu = types.ModuleType("kombu")
-
         published: dict[str, Any] = {}
-
-        class FakeChannel:
-            pass
-
-        class FakeAmqpConnection:
-            def close(self) -> None:
-                published["closed"] = True
-
-            def collect(self) -> None:
-                published["collected"] = True
-
-        class Connection:
-            def __init__(self, url: str, **_: Any) -> None:
-                self.url = url
-                self.alt: list[str] = []
-                self.connection = FakeAmqpConnection()
-                self._channel = FakeChannel()
-
-            def __enter__(self) -> "Connection":
-                return self
-
-            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                del exc_type, exc, tb
-
-            def ensure_connection(self, **_: Any) -> "Connection":
-                return self
-
-            def channel(self) -> FakeChannel:
-                return self._channel
-
-        class Exchange:
-            def __init__(self, name: str, *, type: str, durable: bool) -> None:
-                self.name = name
-                del type, durable
-
-        class Producer:
-            def __init__(self, channel: FakeChannel) -> None:
-                self.channel = channel
-
-            def publish(self, body: Any, **kwargs: Any) -> None:
-                published["body"] = body
-                published.update(kwargs)
-
-        fake_kombu.Connection = Connection
-        fake_kombu.Exchange = Exchange
-        fake_kombu.Producer = Producer
+        fake_kombu = types.ModuleType("kombu")
+        fake_kombu.Connection = type(
+            "Connection", (_RecordingPublishConnection,), {"published": published}
+        )
+        fake_kombu.Exchange = _RecordingPublishExchange
+        fake_kombu.Producer = _RecordingPublishProducer
 
         monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
 
@@ -1717,7 +1768,7 @@ class TestRabbitMQConsumeBackoff:
         self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A message kombu can't decode is rejected once, not retried as an outage."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
         sleeper = _BoundedSleep()
         bad: dict[str, Any] = {}
         conn_ref: dict[str, Any] = {}
@@ -1760,7 +1811,7 @@ class TestRabbitMQConsumeBackoff:
         self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A failing close never escapes; the consumer reconnects as usual."""
-        caplog.set_level(logging.DEBUG, logger="stemtrace.library.transports.rabbitmq")
+        caplog.set_level(logging.DEBUG, logger="stemtrace.transports.rabbitmq")
         sleeper = _BoundedSleep()
         drains = {"n": 0}
 
