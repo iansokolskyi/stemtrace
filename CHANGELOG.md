@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Minimum dependency versions raised to the lowest ones the test suite passes with: `celery>=5.2.0`, `pydantic>=2.2.0`, `typer>=0.13.0`. A new CI job runs the unit tests against the declared minimums.
+
 ### Fixed
 - Graphs: a group's tasks are listed only inside the group, which sits under the task that started it; they used to also appear directly under that task once they started.
 - Graphs: a task or group whose parent task isn't in the store (not received yet, or evicted) is now listed as a graph of its own instead of being shown in no graph, and moves under its parent once the parent arrives. A task's `parent_id` is empty while it is listed that way.

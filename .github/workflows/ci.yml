@@ -107,6 +107,40 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  test-lowest:
+    name: Test lowest dependency versions
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.10"
+      STEMTRACE_SKIP_UI_BUILD: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+
+      # The declared floors of the runtime dependencies (lowest-direct), with
+      # current test tools; nothing is built from source (--no-build).
+      - name: Install the lowest declared versions
+        run: |
+          uv venv .venv-lowest
+          uv pip install --python .venv-lowest --resolution lowest-direct --no-build -e .
+          uv pip install --python .venv-lowest --no-build pytest pytest-asyncio pytest-cov websockets hatchling
+
+      # Old floors (e.g. typer) emit deprecation warnings under current click;
+      # the suite turns warnings into errors, which isn't what this job checks.
+      - name: Run unit tests
+        run: .venv-lowest/bin/python -m pytest tests/unit -p no:cacheprovider --no-cov -W ignore::DeprecationWarning
+
   audit:
     name: Audit runtime dependencies
     runs-on: ubuntu-latest

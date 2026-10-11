@@ -4,12 +4,12 @@ import bisect
 import hashlib
 from datetime import datetime, timezone
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ModelWrapValidatorHandler,
     PrivateAttr,
     computed_field,
     model_validator,
@@ -17,6 +17,10 @@ from pydantic import (
 from pydantic_core import PydanticSerializationError
 
 from stemtrace.core.events import TaskEvent, TaskState
+
+if TYPE_CHECKING:
+    # Only an annotation: pydantic exports it from 2.11 on, the floor is 2.0.
+    from pydantic import ModelWrapValidatorHandler
 
 _TERMINAL_STATES: frozenset[TaskState] = frozenset(
     {TaskState.SUCCESS, TaskState.FAILURE, TaskState.REVOKED, TaskState.REJECTED}
@@ -358,7 +362,7 @@ class TaskGraph(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _restore_roots(
-        cls, data: object, handler: ModelWrapValidatorHandler["TaskGraph"]
+        cls, data: object, handler: "ModelWrapValidatorHandler[TaskGraph]"
     ) -> "TaskGraph":
         """Take ``root_ids`` from the input (e.g. a ``model_dump``) as the roots."""
         graph = handler(data)
