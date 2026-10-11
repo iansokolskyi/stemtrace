@@ -753,6 +753,27 @@ test.describe('Graph Page - Chord Bodies', () => {
     await expect(page.locator(`.react-flow__node[data-id="${body.task_id}"]`)).toHaveCount(1)
     // Each header -> the body container
     await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+    // The body container sits after the chord, to its right
+    const chordBox = await page
+      .locator(`.react-flow__node[data-id="${chordNode.task_id}"]`)
+      .boundingBox()
+    const bodyBox = await page.locator(`.react-flow__node[data-id="${body.task_id}"]`).boundingBox()
+    expect(chordBox).not.toBeNull()
+    expect(bodyBox).not.toBeNull()
+    if (chordBox && bodyBox) {
+      expect(bodyBox.x).toBeGreaterThan(chordBox.x + chordBox.width)
+    }
+    // The body tasks are drawn inside the body container
+    for (const task of bodyTasks) {
+      const taskBox = await page
+        .locator(`.react-flow__node[data-id="${task.task_id}"]`)
+        .boundingBox()
+      expect(taskBox).not.toBeNull()
+      if (taskBox && bodyBox) {
+        expect(taskBox.x).toBeGreaterThanOrEqual(bodyBox.x)
+        expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(bodyBox.x + bodyBox.width + 1)
+      }
+    }
   })
 
   test('draws a chord whose body is another chord as a container', async ({ page }) => {
