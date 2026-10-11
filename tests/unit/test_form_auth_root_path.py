@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 import stemtrace
 from stemtrace.server import __main__ as cli
+from stemtrace.server.fastapi.login_routes import _safe_next
 from stemtrace.server.ui import static
 
 if TYPE_CHECKING:
@@ -329,3 +330,27 @@ class TestCliBehindRootPath:
         assert 'window.__STEMTRACE_BASE__="/stemtrace"' in shell.text
         assert 'window.__STEMTRACE_LOGOUT_PATH__="/logout"' in shell.text
         assert 'src="/assets/index-abc123.js"' in shell.text
+
+
+class TestSafeNext:
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "//evil.example",
+            "/\\evil.example",
+            "/\\/evil.example",
+            "https://evil.example",
+            "evil.example",
+            "/\tx",
+            "",
+            None,
+        ],
+    )
+    def test_safe_next_rejects_off_site_targets(self, target: str | None) -> None:
+        assert _safe_next(target, default="/stemtrace/") == "/stemtrace/"
+
+    @pytest.mark.parametrize(
+        "target", ["/stemtrace/graphs", "/proxy/stemtrace/tasks/1?x=1"]
+    )
+    def test_safe_next_keeps_local_paths(self, target: str) -> None:
+        assert _safe_next(target, default="/stemtrace/") == target

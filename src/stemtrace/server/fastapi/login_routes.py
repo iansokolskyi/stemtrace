@@ -43,12 +43,17 @@ def _load_login_template() -> str:
 
 
 def _safe_next(next_path: str | None, *, default: str) -> str:
-    """Validate a next redirect path to avoid open redirects."""
-    if not next_path:
-        return default
-    if not next_path.startswith("/"):
+    r"""Validate a next redirect path to avoid open redirects.
+
+    Only same-origin absolute paths pass. Browsers treat a backslash like '/'
+    (so "/\evil.example" means "//evil.example") and drop tabs/newlines from
+    URLs, so any backslash or control character rejects the target too.
+    """
+    if not next_path or not next_path.startswith("/"):
         return default
     if next_path.startswith("//"):
+        return default
+    if "\\" in next_path or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in next_path):
         return default
     return next_path
 

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `init_app()` with the built-in login behind a path-prefixing reverse proxy (ASGI `root_path`, e.g. `uvicorn --root-path /monitoring`): the API and UI under the prefix were served without a session, and the login redirect and session cookie path left out the prefix. The login check now sees paths the way routing does, and redirects, `next` targets and the cookie path include the root path.
+- Login: a `next` target starting with `/\` (which browsers read as `//`, another host) or containing control characters is ignored, so it can't redirect off-site after sign-in.
 - UI: an asset path outside the bundle's own `assets/` directory (e.g. `/stemtrace/assets/<file>` on `stemtrace server`, which serves the bundle at `/assets/`) now returns 404 instead of the HTML app shell.
 
 ## [0.3.10] - 2026-10-11
