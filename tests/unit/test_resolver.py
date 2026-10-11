@@ -825,11 +825,23 @@ class TestCachedErrorsAreRaisedFresh:
 
 class TestUwsgiMasterResolvesOnCallingThread:
     """uWSGI's master forks in C, without Python's at-fork hooks, so it must
-    not have lookup threads that a fork could catch inside glibc."""
+    not have lookup threads that a fork could catch inside glibc. Workers,
+    mules and spoolers don't fork and keep the bounded background lookups."""
 
-    def _uwsgi(self, monkeypatch: pytest.MonkeyPatch, worker_id: int) -> None:
+    def _uwsgi(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        is_master: bool,
+        worker_id: int = 0,
+        mule_id: int = 0,
+    ) -> None:
+        """Install a fake ``uwsgi`` module as uWSGI (pyuwsgi 2.0.30) shows it."""
         fake = types.ModuleType("uwsgi")
+        master_pid = os.getpid() if is_master else os.getpid() - 1
+        fake.masterpid = lambda: master_pid  # type: ignore[attr-defined]
         fake.worker_id = lambda: worker_id  # type: ignore[attr-defined]
+        fake.mule_id = lambda: mule_id  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "uwsgi", fake)
 
     def _lookup_thread(
@@ -841,17 +853,23 @@ class TestUwsgiMasterResolvesOnCallingThread:
     def test_uwsgi_master_resolves_on_calling_thread(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, worker_id=0)
+        self._uwsgi(monkeypatch, is_master=True)
         dns = _ThreadRecordingDns()
 
         thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]
 
         assert thread == threading.current_thread().name
 
-    def test_uwsgi_worker_resolves_in_background(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("worker_id", "mule_id"),
+        [(1, 0), (0, 1), (0, 0)],
+        ids=["worker", "mule", "spooler"],
+    )
+    def test_other_uwsgi_processes_resolve_in_background(
+        self, worker_id: int, mule_id: int, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._uwsgi(monkeypatch, worker_id=1)
+        """A mule (and a spooler) also reports worker_id 0, but isn't the master."""
+        self._uwsgi(monkeypatch, is_master=False, worker_id=worker_id, mule_id=mule_id)
         dns = _ThreadRecordingDns()
 
         thread = self._lookup_thread(_make(dns, FakeClock()), dns)  # type: ignore[arg-type]

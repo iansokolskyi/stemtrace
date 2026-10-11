@@ -632,13 +632,15 @@ def _fresh(error: Exception) -> Exception:
 
 
 def _in_uwsgi_master() -> bool:
-    """Whether this is a uWSGI process other than a request worker.
+    """Whether this process is the uWSGI master.
 
-    uWSGI's master (worker id 0) forks in C, without Python's at-fork hooks.
+    The uWSGI master forks in C, without Python's at-fork hooks. Not
+    ``uwsgi.worker_id() == 0``: mules and spoolers report 0 too (pyuwsgi
+    2.0.30), and they don't fork.
     """
     uwsgi = sys.modules.get("uwsgi")
-    worker_id = getattr(uwsgi, "worker_id", None)
-    return callable(worker_id) and worker_id() == 0
+    masterpid = getattr(uwsgi, "masterpid", None)
+    return callable(masterpid) and masterpid() == os.getpid()
 
 
 def _check_host_name(host: str) -> None:
