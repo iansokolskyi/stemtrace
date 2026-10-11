@@ -383,9 +383,12 @@ again once events are re-consumed.
     longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover). If the retry after
     such failures loses its reply too, the next retry waits the full 30s. An error reply
     (e.g. `LOADING`, `NOAUTH`, `OOM`) means Redis rejected the event: it counts as dropped.
-  - Host name resolution isn't covered by these timeouts: if the DNS resolver is unreachable, a
-    connection attempt can block a task for as long as the resolver takes to give up (glibc's
-    default is 5s per try), on each attempt.
+  - Workers resolve the broker's host name in a helper thread and wait at most the 2s connect
+    timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it would
+    otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached per
+    worker process for 30s and refreshed in the background, keeping the last answer while DNS
+    fails, so tasks don't wait on DNS while the host has a cached address. TLS still checks the
+    certificate against the host name in the URL. The same applies to RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
@@ -400,9 +403,9 @@ again once events are re-consumed.
     failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
     and resets on the next successful publish, so during an outage each worker process makes
     at most three bounded attempts (plus any its other threads already had in flight) and then
-    one per cooldown. As with Redis, resolving host names isn't
-    covered by these timeouts: an unreachable DNS resolver can block a task for the resolver's
-    timeout (glibc's default is 5s per try) on each attempt.
+    one per cooldown. Host names are resolved as for Redis: waiting at most the 2s connect
+    timeout, cached for 30s and refreshed in the background; TLS settings (SNI, certificate
+    checks) apply to the host name as before.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
     from publishers, so a publish is sent but never confirmed. The worker counts such events as
     "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
