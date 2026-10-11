@@ -272,8 +272,8 @@ def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]
             if dropped and not warned:
                 warned = True
                 logger.warning(
-                    "Redis URL option(s) not supported by this redis-py version "
-                    "for %s, ignored for publishing: %s",
+                    "Redis URL option(s) not accepted by redis-py's %s (unknown "
+                    "or unsupported option), ignored for publishing: %s",
                     connection_class.__name__,
                     ", ".join(sorted(dropped)),
                 )

@@ -619,8 +619,8 @@ class TestPublishConnectionDroppedOptions:
         cls(**options)
 
         assert [r.getMessage() for r in _warnings(caplog)] == [
-            "Redis URL option(s) not supported by this redis-py version for "
-            "_Unix41Like, ignored for publishing: sockt_timeout"
+            "Redis URL option(s) not accepted by redis-py's _Unix41Like (unknown "
+            "or unsupported option), ignored for publishing: sockt_timeout"
         ]
 
     def test_supported_options_log_nothing(
