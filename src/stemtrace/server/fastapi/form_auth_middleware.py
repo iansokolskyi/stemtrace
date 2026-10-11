@@ -131,8 +131,9 @@ def create_form_auth_middleware(
       the public open-source UI build and holds no data; leaving it open keeps
       the SPA bootable (and styled) even when a request lands on a worker that
       rejects the session.
-    - Other paths with an ``assets`` segment (e.g. ``/stemtrace/assets/x.js``
-      when the bundle is at ``/assets/``) get a 404, as they do with a session.
+    - Other non-API paths with an ``assets`` segment (e.g.
+      ``/stemtrace/assets/x.js`` when the bundle is at ``/assets/``) get a
+      404, as they do with a session.
     - API paths get a JSON 401. If the cookie was signed by another process's
       generated secret, the body carries ``reason: "session_secret_mismatch"``.
     - Everything else (UI routes) redirects to the login page with ``next``
@@ -183,8 +184,9 @@ def create_form_auth_middleware(
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if path in open_paths or path.startswith(assets_dir):
             return await call_next(request)
-        if is_misplaced_asset_path(path):
-            # Never a page or an API route; 404 like the UI does with a session.
+        if not path.startswith(api_prefix) and is_misplaced_asset_path(path):
+            # Not a page (API paths may have an "assets" segment, e.g. a task
+            # id); 404 like the UI does with a session.
             return JSONResponse({"detail": "Not Found"}, status_code=404)
 
         status = check_session_cookie(request.cookies.get(config.cookie_name), config)

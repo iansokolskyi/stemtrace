@@ -122,12 +122,13 @@ def is_misplaced_asset_path(path: str) -> bool:
     ``/assets/x.js`` for ``stemtrace server``, ``/stemtrace/assets/x.js``
     embedded); callers check that location first. Any other path with an
     ``assets`` segment before its last one (``/stemtrace/assets/x.js`` on the
-    CLI, ``/stemtrace/tasks/assets/x.js``) is never a page or an API route, so
-    it gets a 404 rather than the HTML shell or a login redirect, which a
-    browser would try to run as a script or stylesheet.
+    CLI, ``/stemtrace/tasks/assets/x.js``) is never a UI page, so it gets a
+    404 rather than the HTML shell or a login redirect, which a browser would
+    try to run as a script or stylesheet. Only apply it to UI/static paths:
+    API paths can legitimately contain "assets" (a task id).
 
     Args:
-        path: Request path, absolute or relative to the UI root.
+        path: UI request path, absolute or relative to the UI root.
 
     Returns:
         True if an ``assets`` segment appears anywhere but last.

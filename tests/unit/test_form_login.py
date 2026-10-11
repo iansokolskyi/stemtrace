@@ -857,3 +857,25 @@ class TestLoginPageFavicon:
             favicon = '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
             assert favicon in page.text
             assert "/vite.svg" not in page.text
+
+
+class TestAssetsSegmentInApiPaths:
+    """A task id of "assets" is an API path, not a misplaced asset path."""
+
+    def test_api_path_with_assets_segment_without_session_returns_401(
+        self, fake_dist: Path
+    ) -> None:
+        with TestClient(TestPublicAssetsWithServedUi._ui_app()) as client:
+            resp = client.get("/stemtrace/api/tasks/assets/children")
+
+        assert resp.status_code == 401
+
+    def test_api_path_with_assets_segment_with_session_reaches_api(
+        self, fake_dist: Path
+    ) -> None:
+        with TestClient(TestPublicAssetsWithServedUi._ui_app()) as client:
+            _login_and_get_cookie(client)
+            resp = client.get("/stemtrace/api/tasks/assets/children")
+
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Task assets not found"}

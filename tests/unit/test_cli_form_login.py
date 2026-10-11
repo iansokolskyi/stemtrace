@@ -314,3 +314,11 @@ class TestCliMisplacedAssets:
 
         assert resp.status_code == 404
         assert "location" not in resp.headers
+
+    def test_cli_api_path_with_assets_segment_without_session_returns_401(
+        self, real_ui: Callable[[], FastAPI]
+    ) -> None:
+        with TestClient(real_ui()) as client:
+            resp = client.get("/stemtrace/api/tasks/assets/children")
+
+        assert resp.status_code == 401
