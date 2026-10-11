@@ -182,13 +182,32 @@ def _publish_client_from_url(url: str) -> Redis[Any]:
 def _reply_lost(exc: Exception) -> bool:
     """Whether a publish error leaves it unknown if Redis applied the command.
 
-    A timeout or a broken connection while waiting for the reply does; an
-    error reply (e.g. OOM, WRONGTYPE) means Redis rejected the command.
+    Only transport failures do: a socket timeout, or the connection closing or
+    breaking while the reply was awaited. Any error Redis replied with means
+    it rejected the command, including the replies redis-py 8.1 raises as
+    ConnectionError or its subclasses (``-LOADING`` as BusyLoadingError,
+    ``-NOAUTH``/``-WRONGPASS`` as AuthenticationError, "max number of clients
+    reached" as ConnectionError; see redis/_parsers/base.py EXCEPTION_CLASSES).
+    Those carry the server's message, while redis-py's own transport errors
+    use the fixed messages matched here (redis/connection.py read_response(),
+    redis/_parsers/socket.py SERVER_CLOSED_CONNECTION_ERROR).
     """
     from redis.exceptions import ConnectionError as RedisConnectionError
     from redis.exceptions import TimeoutError as RedisTimeoutError
 
-    return isinstance(exc, RedisConnectionError | RedisTimeoutError)
+    if isinstance(exc, RedisTimeoutError):
+        return True
+    if type(exc) is not RedisConnectionError:
+        return False
+    message = str(exc)
+    return message == _SERVER_CLOSED_CONNECTION or message.startswith(
+        _READ_FAILED_PREFIX
+    )
+
+
+# redis-py 8.1's messages for a reply lost in transit (see _reply_lost()).
+_SERVER_CLOSED_CONNECTION = "Connection closed by server."
+_READ_FAILED_PREFIX = "Error while reading from "
 
 
 def _is_connect_timeout(exc: Exception) -> bool:

@@ -1,5 +1,6 @@
 """Tests for RedisTransport.publish(): bounded client and circuit breaker."""
 
+import inspect
 import logging
 import os
 from datetime import datetime, timezone
@@ -7,8 +8,10 @@ from typing import Any
 
 import pytest
 import redis
+import redis.connection
+from redis._parsers.socket import SERVER_CLOSED_CONNECTION_ERROR
+from redis.exceptions import AuthenticationError, BusyLoadingError, ResponseError
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
@@ -145,7 +148,16 @@ class TestRedisPublishBreaker:
             "before trying again (2 event(s) dropped since the last report)"
         )
 
-    @pytest.mark.parametrize("error", [READ_TIMED_OUT, RedisConnectionError("reset")])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            READ_TIMED_OUT,
+            RedisConnectionError("Connection closed by server."),
+            RedisConnectionError(
+                "Error while reading from 127.0.0.1:6379 : (104, 'Connection reset')"
+            ),
+        ],
+    )
     def test_publish_reply_lost_after_xadd_sent_counts_as_unconfirmed(
         self, error: Exception, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -159,11 +171,21 @@ class TestRedisPublishBreaker:
             "(0 event(s) dropped, 1 sent but unconfirmed since the last report)"
         ]
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ResponseError("OOM command not allowed"),
+            # Error replies redis-py 8.1 maps to ConnectionError (sub)classes.
+            BusyLoadingError("Redis is loading the dataset in memory"),
+            AuthenticationError("NOAUTH Authentication required."),
+            RedisConnectionError("max number of clients reached"),
+        ],
+    )
     def test_publish_error_reply_after_xadd_sent_counts_as_dropped(
-        self, caplog: pytest.LogCaptureFixture
+        self, error: Exception, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An error reply means Redis rejected the XADD: the event is lost."""
-        transport, _, _ = _make([(0.001, ResponseError("OOM"), True)])
+        transport, _, _ = _make([(0.001, error, True)])
 
         transport.publish(_event("t-0"))
 
@@ -378,3 +400,11 @@ class TestRedisPublishConnectionTracksXadd:
             connection,
             type(redis.Redis.from_url(url).connection_pool.make_connection()),
         )
+
+
+def test_lost_reply_messages_match_installed_redis_py() -> None:
+    """The fixed transport-error messages _reply_lost() matches still exist."""
+    connection_source = inspect.getsource(redis.connection.AbstractConnection)
+
+    assert redis_transport._SERVER_CLOSED_CONNECTION == SERVER_CLOSED_CONNECTION_ERROR
+    assert f'f"{redis_transport._READ_FAILED_PREFIX}{{host_error}}' in connection_source

@@ -151,9 +151,10 @@ def test_publish_to_silent_listener_opens_breaker_after_three_bounded_attempts(
 
 
 class _ReplyOnlyToHandshake:
-    """Fake Redis: answers the handshake, then ignores XADD (never replies)."""
+    """Fake Redis: answers the handshake, then ignores XADD or replies ``xadd_reply``."""
 
-    def __init__(self) -> None:
+    def __init__(self, xadd_reply: bytes | None = None) -> None:
+        self._xadd_reply = xadd_reply
         self._server = socket.socket()
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind(("127.0.0.1", 0))
@@ -189,6 +190,8 @@ class _ReplyOnlyToHandshake:
                 command = args[0].upper()
                 if command == b"XADD":
                     self.xadds += 1
+                    if self._xadd_reply is not None:
+                        conn.sendall(self._xadd_reply)
                 elif command == b"HELLO":
                     # redis-py 8 speaks RESP3 and checks the reply's proto.
                     conn.sendall(b"%1\r\n+proto\r\n:3\r\n")
@@ -221,6 +224,35 @@ def test_publish_reply_timeout_after_xadd_counts_as_unconfirmed(
         "(0 event(s) dropped, 1 sent but unconfirmed since the last report)"
         in caplog.text
     )
+
+
+@pytest.mark.integration
+def test_publish_loading_error_reply_counts_as_dropped_not_unconfirmed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Redis still loading its dataset rejects the XADD with -LOADING.
+
+    redis-py raises BusyLoadingError, a ConnectionError subclass, but Redis
+    answered: the event was rejected, not lost in transit, so it counts as
+    dropped and a failed retry doubles the cooldown instead of jumping to the
+    unconfirmed-retry maximum.
+    """
+    server = _ReplyOnlyToHandshake(b"-LOADING Redis is loading the dataset\r\n")
+    try:
+        transport = RedisTransport.from_url(server.url)
+        breaker = transport._publish_breaker
+        for i in range(PUBLISH_FAILURES_TO_OPEN):
+            transport.publish(_event(i))
+        assert breaker.is_open is True
+        # Let the cooldown pass on the breaker's clock, then probe once more.
+        breaker._open_until = 0.0
+        transport.publish(_event(99))
+    finally:
+        server.close()
+
+    assert server.xadds == PUBLISH_FAILURES_TO_OPEN + 1
+    assert breaker.cooldown == 2.0
+    assert "unconfirmed" not in caplog.text
 
 
 @pytest.mark.integration
