@@ -38,7 +38,10 @@ def fake_dist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A built UI with an index shell and one hashed asset."""
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text("<html><head></head><body>app shell</body></html>")
+    (dist / "index.html").write_text(
+        '<html><head></head><body>app shell<script src="/assets/index-abc123.js">'
+        "</script></body></html>"
+    )
     (dist / "assets" / "index-abc123.js").write_text("console.log('ui')")
     monkeypatch.setattr(static, "_FRONTEND_DIR", dist)
     return dist
@@ -129,10 +132,10 @@ def test_embedded_login_flow_behind_root_path(
         cookie = login.cookies.get("stemtrace_session")
         # Sent by hand: the jar scopes it to /proxy/stemtrace (the browser URL),
         # and these requests skip the proxy.
-        authed = client.get(
-            "/stemtrace/api/tasks",
-            headers={"cookie": f"stemtrace_session={cookie}"},
-        )
+        session = {"cookie": f"stemtrace_session={cookie}"}
+        authed = client.get("/stemtrace/api/tasks", headers=session)
+        shell = client.get("/stemtrace/workers", headers=session)
+        asset = client.get("/stemtrace/assets/index-abc123.js")
 
     assert api.status_code == 401
     assert page.status_code == 303
@@ -144,6 +147,13 @@ def test_embedded_login_flow_behind_root_path(
     assert login.headers["location"] == "/proxy/stemtrace/"
     assert "Path=/proxy/stemtrace" in login.headers["set-cookie"]
     assert authed.status_code == 200
+    # The SPA must load its bundle and call the API through the proxy prefix.
+    assert shell.status_code == 200
+    assert 'src="/proxy/stemtrace/assets/index-abc123.js"' in shell.text
+    assert 'window.__STEMTRACE_BASE__="/proxy/stemtrace"' in shell.text
+    assert 'window.__STEMTRACE_LOGOUT_PATH__="/proxy/stemtrace/logout"' in shell.text
+    assert asset.status_code == 200
+    assert asset.text == "console.log('ui')"
 
 
 def test_cli_login_flow_behind_root_path(
@@ -162,7 +172,14 @@ def test_cli_login_flow_behind_root_path(
             "/login",
             data={"username": "admin", "password": "secret"},  # NOSONAR - test only
         )
+        cookie = login.cookies.get("stemtrace_session")
+        shell = client.get(
+            "/workers", headers={"cookie": f"stemtrace_session={cookie}"}
+        )
 
+    assert shell.status_code == 200
+    assert 'src="/proxy/assets/index-abc123.js"' in shell.text
+    assert 'window.__STEMTRACE_BASE__="/proxy/stemtrace"' in shell.text
     assert login_page.status_code == 200
     assert 'action="/proxy/login"' in login_page.text
     assert asset.status_code == 200

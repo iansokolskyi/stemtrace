@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Login: a `next` target containing a backslash or a control character now falls back to the default page after sign-in. This is hardening: Starlette percent-encodes the redirect, so such targets didn't lead off-site.
 
 ### Fixed
-- `init_app()` with the built-in login behind a path-prefixing reverse proxy (ASGI `root_path`, e.g. `uvicorn --root-path /monitoring`): the API and UI under the prefix were served without a session, and the login redirect and session cookie path left out the prefix. The login check now sees paths the way routing does, and redirects, `next` targets and the cookie path include the root path.
+- `init_app()` with the built-in login behind a path-prefixing reverse proxy (ASGI `root_path`, e.g. `uvicorn --root-path /monitoring`): the API and UI under the prefix were served without a session, and the login redirect and session cookie path left out the prefix. The login check now sees paths the way routing does, and redirects, `next` targets, the cookie path and the UI's API and asset URLs include the root path, also on uvicorn versions before 0.26 (which leave it out of the request path).
 - UI: an asset path outside the bundle's own `assets/` directory (e.g. `/stemtrace/assets/<file>` on `stemtrace server`, which serves the bundle at `/assets/`) now returns 404, with or without a session, instead of the HTML app shell or a login redirect.
 
 ## [0.3.10] - 2026-10-11

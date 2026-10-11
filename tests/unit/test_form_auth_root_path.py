@@ -199,6 +199,25 @@ class TestEmbeddedBehindRootPath:
 
         assert status in {401, 404}
 
+    @pytest.mark.parametrize("path", ["/stemtrace/", "/stemtrace/tasks/1"])
+    async def test_shell_prefix_when_server_does_not_prepend_root_path(
+        self, fake_dist: Path, path: str
+    ) -> None:
+        # uvicorn < 0.26 sets root_path but leaves it out of scope["path"].
+        app = _embedded_app()
+        with TestClient(app) as client:
+            cookie = _login(client, "/stemtrace/login").cookies.get(_COOKIE_NAME)
+        status, body = await _send_full(
+            app,
+            path,
+            root_path=_ROOT,
+            headers=[(b"cookie", f"{_COOKIE_NAME}={cookie}".encode())],
+        )
+
+        assert status == 200
+        assert f'window.__STEMTRACE_BASE__="{_ROOT}/stemtrace"' in body
+        assert f'src="{_ROOT}/stemtrace/assets/index-abc123.js"' in body
+
     async def test_dot_segments_under_root_path_rejected(self, fake_dist: Path) -> None:
         status = await _send(
             _embedded_app(),
@@ -211,6 +230,18 @@ class TestEmbeddedBehindRootPath:
 
 async def _send(app: Any, raw_path: str, *, root_path: str) -> int:
     """GET a raw path through an ASGI app with a given root_path."""
+    status, _ = await _send_full(app, raw_path, root_path=root_path)
+    return status
+
+
+async def _send_full(
+    app: Any,
+    raw_path: str,
+    *,
+    root_path: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> tuple[int, str]:
+    """GET a raw path with a given root_path; return status and body."""
     messages: list[MutableMapping[str, Any]] = []
     scope = {
         "type": "http",
@@ -222,7 +253,7 @@ async def _send(app: Any, raw_path: str, *, root_path: str) -> int:
         "raw_path": raw_path.encode("latin-1"),
         "root_path": root_path,
         "query_string": b"",
-        "headers": [(b"host", b"testserver")],
+        "headers": [(b"host", b"testserver"), *(headers or [])],
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
@@ -235,7 +266,10 @@ async def _send(app: Any, raw_path: str, *, root_path: str) -> int:
 
     await app(scope, receive, send)
     start = next(m for m in messages if m["type"] == "http.response.start")
-    return int(start["status"])
+    body = b"".join(
+        m.get("body", b"") for m in messages if m["type"] == "http.response.body"
+    )
+    return int(start["status"]), body.decode()
 
 
 @pytest.fixture

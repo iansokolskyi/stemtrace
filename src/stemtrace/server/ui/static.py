@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from stemtrace.server.fastapi.paths import is_misplaced_asset_path
+from stemtrace.server.fastapi.paths import is_misplaced_asset_path, strip_root_path
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +242,14 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             asset_prefix = root
             effective_logout = root + logout_path if logout_path else None
         else:
-            # Derive from URL: rewrite assets to match mount point
-            prefix = _sanitize_derived_prefix(request.url.path.rstrip("/") or "")
+            # Derive the mount point from the route path (root_path removed as
+            # routing removes it), then put the browser's root_path in front:
+            # uvicorn < 0.26 doesn't prepend root_path to the scope path.
+            root_path = request.scope.get("root_path") or ""
+            route_path = strip_root_path(request.scope["path"], root_path)
+            prefix = _sanitize_derived_prefix(root_path) + _sanitize_derived_prefix(
+                route_path.rstrip("/")
+            )
             asset_prefix = prefix
             effective_logout = logout_path
         _warn_if_unsafe_root_path(request.scope.get("root_path"))
@@ -289,14 +295,19 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             asset_prefix = root
             effective_logout = root + logout_path if logout_path else None
         else:
-            # Extract prefix: /stemtrace/tasks/123 -> /stemtrace
-            url_path = request.url.path
+            # Extract the mount point from the route path (/stemtrace/tasks/123
+            # -> /stemtrace), then put the browser's root_path in front (see
+            # serve_index).
+            root_path = request.scope.get("root_path") or ""
+            route_path = strip_root_path(request.scope["path"], root_path)
             derived = (
-                url_path[: -len(path)].rstrip("/")
-                if path and url_path.endswith(path)
-                else url_path.rstrip("/")
+                route_path[: -len(path)].rstrip("/")
+                if path and route_path.endswith(path)
+                else route_path.rstrip("/")
             )
-            prefix = _sanitize_derived_prefix(derived)
+            prefix = _sanitize_derived_prefix(root_path) + _sanitize_derived_prefix(
+                derived
+            )
             asset_prefix = prefix
             effective_logout = logout_path
         _warn_if_unsafe_root_path(request.scope.get("root_path"))
