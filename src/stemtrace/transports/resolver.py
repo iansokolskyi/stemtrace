@@ -28,9 +28,14 @@ doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
 can't run this Python (a frozen application, an embedded interpreter such as
 uWSGI's, whose sys.executable is the uwsgi binary), lookups stay in-process
 and every fork waits for them as above (one WARNING says so). A helper is
-never started while the process forks (see _run_helper()). The uWSGI master
-forks in C, without Python's at-fork hooks, so in the uWSGI master lookups
-run on the calling thread, without the wait bound.
+never started while the process forks (see _run_helper()). uWSGI forks in C,
+without Python's at-fork hooks (unless started with --py-call-uwsgi-fork-hooks,
+which the resolver doesn't detect), in its master and, without --master
+(uWSGI's default), in its first process, which loads the app and then forks
+the other workers; there lookups run on the calling thread, without the wait
+bound, and invalidate() only marks the answer due (see
+_forks_without_hooks()). uWSGI workers, mules and spoolers don't fork and use
+the background threads as usual.
 Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
 custom resolver shim) is no longer consulted for its lookups.
 """
@@ -240,7 +245,7 @@ class BoundedResolver:
         state = self._state()
         key = (host, port, family, socktype, proto)
         if _forks_without_hooks():
-            return self._resolve_on_this_thread(state, key)
+            return self._resolve_on_this_thread(state, key, timeout)
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
             now = self._monotonic()
@@ -276,17 +281,21 @@ class BoundedResolver:
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
 
     def _resolve_on_this_thread(
-        self, state: _State, key: tuple[Any, ...]
+        self, state: _State, key: tuple[Any, ...], timeout: float
     ) -> list[AddrInfo]:
-        """Resolve on the calling thread, without a wait bound (uWSGI master).
+        """Resolve on the calling thread, without a wait bound (see _forks_without_hooks()).
 
-        The uWSGI master forks its workers in C, without running Python's
-        at-fork hooks, so prepare_fork() can't keep a fork from catching a
-        lookup thread inside glibc. A lookup on the calling thread is never
-        running while that thread forks. Answers and failures are cached as
-        in resolve(), but past the TTL the refresh runs here too, so the
-        caller waits for it (falling back to the cached answer if it fails)
-        instead of getting the cached answer while it runs in the background.
+        uWSGI forks in C, without running Python's at-fork hooks, so
+        prepare_fork() can't keep a fork from catching a lookup thread inside
+        glibc. A lookup on the calling thread is never running while that
+        thread forks. Answers and failures are cached as in resolve(), but
+        past the TTL the refresh runs here too, so the caller waits for it
+        (falling back to the cached answer if it fails) instead of getting the
+        cached answer while it runs in the background.
+
+        A lookup already running for the host (a background one, started
+        before uWSGI's module could be seen) isn't repeated: the cached answer
+        is used, or without one the caller waits for it up to ``timeout``.
         """
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -296,6 +305,16 @@ class BoundedResolver:
                     return entry.addresses
                 if entry.error is not None:
                     raise _fresh(entry.error)
+            running = entry.lookup
+            if running is not None and entry.addresses is not None:
+                return entry.addresses
+        if running is not None:
+            if not running.wait(timeout):
+                raise socket.gaierror(
+                    socket.EAI_AGAIN,
+                    f"Timed out resolving {key[0]!r} after {timeout:g}s",
+                )
+            return self._outcome(state, entry, key[0])
         getaddrinfo = self._getaddrinfo or socket.getaddrinfo
         try:
             addresses = _call_getaddrinfo(getaddrinfo, key)
@@ -324,12 +343,19 @@ class BoundedResolver:
         attempt uses the new address if the host moved (e.g. a DNS failover)
         instead of waiting for the TTL. The cached answer stays in use until
         the refresh succeeds. Does nothing for a host without an answer.
+
+        Where lookups run on the calling thread (see _forks_without_hooks()),
+        no thread is started: the answer is only marked due, and the next
+        resolve() refreshes it on its calling thread.
         """
         state = self._state()
         key = (host, port, family, socktype, proto)
         with state.lock:
             entry = state.entries.get(key)
             if entry is None or entry.addresses is None:
+                return
+            if _forks_without_hooks():
+                entry.refresh_at = self._monotonic()
                 return
             with contextlib.suppress(socket.gaierror):
                 self._start_lookup(state, key, entry)
