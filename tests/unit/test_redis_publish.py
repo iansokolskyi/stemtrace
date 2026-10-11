@@ -599,3 +599,35 @@ class TestUnixSocketUrlsWithQuery:
             redis_transport._without_query_params(url, ("socket_timeout",))
             == "unix:///tmp/redis.sock?db=1"
         )
+
+
+class TestPublishConnectionDroppedOptions:
+    """Options the installed redis-py doesn't take are logged once, not silent."""
+
+    def test_unsupported_option_is_logged_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cls = redis_transport._publish_connection_class(_Unix41Like)
+        options = {
+            "path": "/tmp/redis.sock",
+            "socket_timeout": PUBLISH_SOCKET_TIMEOUT,
+            "socket_connect_timeout": PUBLISH_CONNECT_TIMEOUT,
+            "sockt_timeout": "5",  # a typo in the URL
+        }
+
+        cls(**options)
+        cls(**options)
+
+        assert [r.getMessage() for r in _warnings(caplog)] == [
+            "Redis URL option(s) not supported by this redis-py version for "
+            "_Unix41Like, ignored for publishing: sockt_timeout"
+        ]
+
+    def test_supported_options_log_nothing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cls = redis_transport._publish_connection_class(_Unix41Like)
+
+        cls(path="/tmp/redis.sock", socket_timeout=1.0, socket_connect_timeout=1.0)
+
+        assert _warnings(caplog) == []

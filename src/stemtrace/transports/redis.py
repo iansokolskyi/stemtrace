@@ -208,46 +208,15 @@ def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
     """Subclass the URL's redis-py connection class for publishing.
 
     TCP and TLS connections resolve the host through PUBLISH_RESOLVER (Unix
-    sockets need no lookup), and every connection sets _XADD_SENT once an
-    XADD is written: redis-py 8.1 Redis._send_command_parse_response() calls
+    sockets need no lookup), every connection accepts the pool's keywords on
+    all supported redis-py versions (see _keyword_compatible_init()), and
+    every connection sets _XADD_SENT once an XADD is written: redis-py 8.1
+    Redis._send_command_parse_response() calls
     ``connection.send_command(command_name, *args)`` and only then reads the
     reply; send_command() returns once the whole command was written (the
     handshake commands sent while connecting go through it too, hence the
     name check).
     """
-    from redis.connection import Connection, UnixDomainSocketConnection
-
-    mixin = _resolved_connect_mixin()
-    if issubclass(connection_class, UnixDomainSocketConnection):
-        # A Connection subclass in redis-py 4.x, but there is no host to resolve.
-        bases: tuple[type[Any], ...] = (connection_class,)
-    elif connection_class is Connection:
-        bases = (mixin,)
-    elif issubclass(connection_class, Connection):
-        # E.g. SSLConnection: its _connect() calls super()._connect(), which
-        # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.
-        bases = (connection_class, mixin)
-    else:
-        bases = (connection_class,)
-
-    accepted = _accepted_init_kwargs(connection_class)
-
-    def __init__(self: Any, **kwargs: Any) -> None:
-        """Pass on the keywords the base class takes, then set the timeouts.
-
-        redis-py 4.x UnixDomainSocketConnection has no socket_connect_timeout
-        parameter (the pool passes it anyway since we set it), and 5.0.0-5.0.6
-        drop socket_timeout for Unix sockets; setting both afterwards keeps
-        publishing bounded on every supported version.
-        """
-        if accepted is not None:
-            kwargs_for_base = {k: v for k, v in kwargs.items() if k in accepted}
-        else:
-            kwargs_for_base = kwargs
-        connection_class.__init__(self, **kwargs_for_base)
-        for name in ("socket_timeout", "socket_connect_timeout"):
-            if name in kwargs:
-                setattr(self, name, kwargs[name])
 
     def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
         """Send a command; note an XADD once it was written in full."""
@@ -257,9 +226,67 @@ def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
 
     return type(
         f"Publish{connection_class.__name__}",
-        bases,
-        {"__init__": __init__, "send_command": send_command},
+        _publish_bases(connection_class),
+        {
+            "__init__": _keyword_compatible_init(connection_class),
+            "send_command": send_command,
+        },
     )
+
+
+def _publish_bases(connection_class: type[Any]) -> tuple[type[Any], ...]:
+    """Base classes for the publish subclass: add the resolver hook for TCP/TLS."""
+    from redis.connection import Connection, UnixDomainSocketConnection
+
+    if issubclass(connection_class, UnixDomainSocketConnection):
+        # A Connection subclass in redis-py 4.x, but there is no host to resolve.
+        return (connection_class,)
+    if connection_class is Connection:
+        return (_resolved_connect_mixin(),)
+    if issubclass(connection_class, Connection):
+        # E.g. SSLConnection: its _connect() calls super()._connect(), which
+        # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.
+        return (connection_class, _resolved_connect_mixin())
+    return (connection_class,)
+
+
+def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]:
+    """An __init__ that passes on only the keywords the base class takes.
+
+    redis-py 4.x UnixDomainSocketConnection has no socket_connect_timeout
+    parameter (the pool passes it anyway since we set it), and 5.0.0-5.0.6
+    drop socket_timeout for Unix sockets; setting both afterwards keeps
+    publishing bounded on every supported version. Other options the class
+    doesn't take (e.g. a typo in the URL) are logged once, not silently lost.
+    """
+    accepted = _accepted_init_kwargs(connection_class)
+    warned = False
+
+    def __init__(self: Any, **kwargs: Any) -> None:
+        """Initialize the base connection, then set the publish timeouts."""
+        nonlocal warned
+        kwargs_for_base = kwargs
+        if accepted is not None:
+            kwargs_for_base = {k: v for k, v in kwargs.items() if k in accepted}
+            dropped = set(kwargs) - accepted - set(_TIMEOUTS)
+            if dropped and not warned:
+                warned = True
+                logger.warning(
+                    "Redis URL option(s) not supported by this redis-py version "
+                    "for %s, ignored for publishing: %s",
+                    connection_class.__name__,
+                    ", ".join(sorted(dropped)),
+                )
+        connection_class.__init__(self, **kwargs_for_base)
+        for name in _TIMEOUTS:
+            if name in kwargs:
+                setattr(self, name, kwargs[name])
+
+    return __init__
+
+
+# Set on publish connections after __init__ whether or not the class takes them.
+_TIMEOUTS = ("socket_timeout", "socket_connect_timeout")
 
 
 def _accepted_init_kwargs(connection_class: type[Any]) -> frozenset[str] | None:
