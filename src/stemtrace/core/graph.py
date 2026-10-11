@@ -324,6 +324,9 @@ class TaskGraph(BaseModel):
 
     # Track which tasks belong to each group_id (private, not serialized)
     _group_members: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    # Chord callback task ID -> its CHORD node's ID, so linking a callback
+    # doesn't scan every node on each event.
+    _chord_by_callback: dict[str, str] = PrivateAttr(default_factory=dict)
 
     def add_event(self, event: TaskEvent) -> TaskEvent | None:
         """Add event, creating node if needed. Links child to parent if parent exists.
@@ -548,7 +551,11 @@ class TaskGraph(BaseModel):
         if chord_node is None:
             chord_node = self._create_chord_node(group_id, callback_id)
         else:
+            previous = chord_node.chord_callback_id
+            if previous is not None and previous != callback_id:
+                self._chord_by_callback.pop(previous, None)
             chord_node._become_chord(callback_id)
+        self._chord_by_callback[callback_id] = chord_node.task_id
 
         callback_node = self.nodes.get(callback_id)
         if callback_node is None:
@@ -585,16 +592,16 @@ class TaskGraph(BaseModel):
     def _link_chord_callback_if_needed(self, task_id: str) -> None:
         """Link a task to a CHORD node if it's the callback for that chord.
 
-        Called when a new task arrives. Checks if any existing CHORD node
-        is waiting for this task as its callback.
+        Called on every event, so it looks the chord up by callback ID.
         """
-        callback_node = self.nodes.get(task_id)
-        if callback_node is None:
+        chord_node_id = self._chord_by_callback.get(task_id)
+        if chord_node_id is None:
             return
-        for node in self.nodes.values():
-            if node.node_type == NodeType.CHORD and node.chord_callback_id == task_id:
-                self._attach_chord_callback(node, callback_node)
-                return  # Only one CHORD can have this callback
+        chord_node = self.nodes.get(chord_node_id)
+        callback_node = self.nodes.get(task_id)
+        if chord_node is None or callback_node is None:
+            return
+        self._attach_chord_callback(chord_node, callback_node)
 
     def _attach_chord_callback(
         self, chord_node: TaskNode, callback_node: TaskNode

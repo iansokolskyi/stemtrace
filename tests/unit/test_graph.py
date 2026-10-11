@@ -1,5 +1,6 @@
 """Tests for task graph models."""
 
+from collections.abc import ItemsView, Iterator, ValuesView
 from datetime import datetime, timedelta, timezone
 from itertools import permutations
 
@@ -1434,6 +1435,24 @@ def op_counter(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     return counts
 
 
+class _ScanCountingDict(dict[str, TaskNode]):
+    """Node map that counts full scans (iteration over all nodes)."""
+
+    scans = 0
+
+    def values(self) -> ValuesView[TaskNode]:  # type: ignore[override]  # narrower view type
+        self.scans += 1
+        return super().values()
+
+    def items(self) -> ItemsView[str, TaskNode]:  # type: ignore[override]  # narrower view type
+        self.scans += 1
+        return super().items()
+
+    def __iter__(self) -> Iterator[str]:
+        self.scans += 1
+        return super().__iter__()
+
+
 def _ordered_event(
     state: TaskState,
     offset_s: float,
@@ -1803,6 +1822,33 @@ class TestOutOfOrderEvents:
         assert op_counter["digest"] == 5100
         assert op_counter["precedence"] <= 2 * 5000
         assert op_counter["eq"] == 100
+
+    def test_add_event_with_chords_never_scans_all_nodes(self) -> None:
+        graph = TaskGraph()
+        for i in range(200):
+            graph.add_event(_ordered_event(TaskState.SUCCESS, i, task_id=f"t{i}"))
+        scans = _ScanCountingDict(graph.nodes)
+        graph.__dict__["nodes"] = scans  # bypass validation, which would copy it
+
+        for c in range(3):
+            for h in range(2):
+                graph.add_event(
+                    TaskEvent(
+                        task_id=f"c{c}-h{h}",
+                        name="myapp.tasks.header",
+                        state=TaskState.SUCCESS,
+                        timestamp=_BASE_TIME,
+                        group_id=f"cg{c}",
+                        chord_callback_id=f"c{c}-cb",
+                    )
+                )
+            graph.add_event(_ordered_event(TaskState.SUCCESS, 300, task_id=f"c{c}-cb"))
+        for i in range(200):
+            graph.add_event(_ordered_event(TaskState.STARTED, 400, task_id=f"new{i}"))
+
+        assert scans.scans == 0
+        assert graph.nodes["group:cg1"].children == ["c1-h0", "c1-h1", "c1-cb"]
+        assert graph.nodes["c1-cb"].parent_id == "group:cg1"
 
     def test_add_event_same_timestamp_flood_does_constant_work_per_event(
         self, op_counter: dict[str, int]
