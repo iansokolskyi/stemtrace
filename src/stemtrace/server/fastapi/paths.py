@@ -85,3 +85,23 @@ def cookie_path_for(scope: Mapping[str, Any], cookie_path: str) -> str:
     """
     joined = (root_path_of(scope) + cookie_path).rstrip("/")
     return joined or "/"
+
+
+def is_misplaced_asset_path(path: str) -> bool:
+    """Whether a path reaches into an ``assets`` segment that isn't the bundle's.
+
+    The UI bundle is only served from the UI root's ``assets/`` (e.g.
+    ``/assets/x.js`` for ``stemtrace server``, ``/stemtrace/assets/x.js``
+    embedded); callers check that location first. Any other path with an
+    ``assets`` segment before its last one (``/stemtrace/assets/x.js`` on the
+    CLI, ``/stemtrace/tasks/assets/x.js``) is never a page or an API route, so
+    it gets a 404 rather than the HTML shell or a login redirect, which a
+    browser would try to run as a script or stylesheet.
+
+    Args:
+        path: Request path, absolute or relative to the UI root.
+
+    Returns:
+        True if an ``assets`` segment appears anywhere but last.
+    """
+    return "assets" in path.split("/")[:-1]

@@ -13,6 +13,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from stemtrace.server.fastapi.paths import is_misplaced_asset_path
+
 logger = logging.getLogger(__name__)
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
@@ -136,18 +138,6 @@ def _is_under_assets(candidate: str) -> bool:
     return candidate == assets_dir or candidate.startswith(assets_dir + os.sep)
 
 
-def _is_misplaced_asset_path(path: str) -> bool:
-    """Return True if a request path reaches into an ``assets/`` segment.
-
-    The bundle lives only at the UI root's ``assets/`` (and is served by the
-    StaticFiles mount, or by the regular-file check for the root). A path like
-    ``stemtrace/assets/x.js`` (the CLI's API mount) or ``tasks/assets/x.js``
-    is never a client-side route, so it must 404 instead of returning the HTML
-    shell, which a browser would try to run as a script or stylesheet.
-    """
-    return "assets" in path.split("/")[:-1]
-
-
 def _is_regular_file(path: str) -> bool:
     """Return True if path is an existing regular file (symlinks followed).
 
@@ -248,7 +238,7 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
         if _is_regular_file(file_path):
             return FileResponse(file_path)
-        if _is_under_assets(file_path) or _is_misplaced_asset_path(path):
+        if _is_under_assets(file_path) or is_misplaced_asset_path(path):
             return HTMLResponse("<h1>Not found</h1>", status_code=404)
 
         index_path = _FRONTEND_DIR / "index.html"

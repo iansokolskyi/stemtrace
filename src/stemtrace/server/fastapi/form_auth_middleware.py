@@ -21,7 +21,11 @@ from stemtrace.server.fastapi.form_auth import (
     check_session_cookie,
     warn_session_secret_mismatch,
 )
-from stemtrace.server.fastapi.paths import browser_path, strip_root_path
+from stemtrace.server.fastapi.paths import (
+    browser_path,
+    is_misplaced_asset_path,
+    strip_root_path,
+)
 
 FormAuthMiddleware = Callable[
     [Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]
@@ -127,6 +131,8 @@ def create_form_auth_middleware(
       the public open-source UI build and holds no data; leaving it open keeps
       the SPA bootable (and styled) even when a request lands on a worker that
       rejects the session.
+    - Other paths with an ``assets`` segment (e.g. ``/stemtrace/assets/x.js``
+      when the bundle is at ``/assets/``) get a 404, as they do with a session.
     - API paths get a JSON 401. If the cookie was signed by another process's
       generated secret, the body carries ``reason: "session_secret_mismatch"``.
     - Everything else (UI routes) redirects to the login page with ``next``
@@ -177,6 +183,9 @@ def create_form_auth_middleware(
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if path in open_paths or path.startswith(assets_dir):
             return await call_next(request)
+        if is_misplaced_asset_path(path):
+            # Never a page or an API route; 404 like the UI does with a session.
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
 
         status = check_session_cookie(request.cookies.get(config.cookie_name), config)
         if status is SessionStatus.VALID:

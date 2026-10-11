@@ -305,13 +305,12 @@ class TestCliMisplacedAssets:
         assert shell.status_code == 200
         assert "app shell" in shell.text
 
-    def test_cli_misplaced_asset_path_without_session_redirects_to_login(
-        self, real_ui: Callable[[], FastAPI]
+    @pytest.mark.parametrize("path", _CLI_MISPLACED_ASSET_PATHS)
+    def test_cli_misplaced_asset_path_without_session_returns_404(
+        self, real_ui: Callable[[], FastAPI], path: str
     ) -> None:
         with TestClient(real_ui()) as client:
-            resp = client.get(
-                "/stemtrace/assets/index-abc123.js", follow_redirects=False
-            )
+            resp = client.get(path, follow_redirects=False)
 
-        assert resp.status_code == 303
-        assert resp.headers["location"].startswith("/login?next=")
+        assert resp.status_code == 404
+        assert "location" not in resp.headers
