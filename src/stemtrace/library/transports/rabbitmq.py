@@ -32,5 +32,11 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Forward deprecated constants (e.g. PUBLISH_SLOW_ATTEMPT), which warn."""
-    return getattr(_rabbitmq, name)
+    """Serve deprecated constants (e.g. PUBLISH_SLOW_ATTEMPT) with a warning.
+
+    The warning is issued here, not by forwarding to the new module, so that
+    it points at the code that used the constant.
+    """
+    if name in _rabbitmq._DEPRECATED_CONSTANTS:
+        return _rabbitmq._deprecated_constant(name, stacklevel=3)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

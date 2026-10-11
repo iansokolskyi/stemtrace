@@ -819,11 +819,20 @@ class RabbitMQTransport:
 def __getattr__(name: str) -> Any:
     """Serve deprecated module constants, warning that they go away in 1.0."""
     if name in _DEPRECATED_CONSTANTS:
-        warnings.warn(
-            f"{name} is deprecated and unused (a single slow publish failure no "
-            "longer opens the circuit breaker); it will be removed in 1.0",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return _DEPRECATED_CONSTANTS[name]
+        return _deprecated_constant(name, stacklevel=3)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _deprecated_constant(name: str, *, stacklevel: int) -> Any:
+    """Warn about a deprecated constant and return it.
+
+    ``stacklevel`` counts from this function, so a module ``__getattr__``
+    calling it passes 3 to point at the code that used the constant.
+    """
+    warnings.warn(
+        f"{name} is deprecated and unused (a single slow publish failure no "
+        "longer opens the circuit breaker); it will be removed in 1.0",
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
+    return _DEPRECATED_CONSTANTS[name]

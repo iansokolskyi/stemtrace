@@ -91,7 +91,9 @@ class TestLibraryTransportsAlias:
 
         with pytest.warns(
             DeprecationWarning, match="PUBLISH_SLOW_ATTEMPT is deprecated"
-        ):
+        ) as record:
             value = mod.PUBLISH_SLOW_ATTEMPT
 
         assert value == 0.5
+        # The warning points at the code that used the constant.
+        assert record[0].filename == __file__
