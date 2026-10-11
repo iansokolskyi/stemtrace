@@ -190,3 +190,56 @@ class TestBoundedResolver:
 
         assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
         assert dns.calls == ["redis.local", "redis.local"]
+
+
+class TestBoundedResolverRobustness:
+    """A failed lookup never leaves a host stuck; bad names fail fast."""
+
+    def test_thread_start_failure_raises_and_next_attempt_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        resolver = _make(dns, clock)
+
+        def cannot_start(self: threading.Thread) -> None:
+            raise RuntimeError("can't start new thread")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", cannot_start)
+            with pytest.raises(socket.gaierror, match="can't start new thread"):
+                resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+
+    def test_unexpected_lookup_error_is_raised_and_next_attempt_retries(
+        self,
+    ) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [UnicodeError("label too long"), ADDRESS]
+        resolver = _make(dns, clock)
+
+        with pytest.raises(socket.gaierror, match="label too long"):
+            resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local", "redis.local"]
+
+    def test_invalid_host_name_fails_fast_without_lookup(self) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        host = "a" * 64 + ".example.com"  # DNS labels are at most 63 octets
+
+        with pytest.raises(socket.gaierror, match="Invalid host name"):
+            _make(dns, clock).resolve(host, 6379, timeout=1.0)
+
+        assert dns.calls == []
+
+    def test_resolve_uses_socket_getaddrinfo_patched_after_import(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gevent patches socket.getaddrinfo after stemtrace may be imported."""
+        resolver = BoundedResolver(monotonic=FakeClock())
+        dns = FakeDns()
+        monkeypatch.setattr(socket, "getaddrinfo", dns)
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local"]

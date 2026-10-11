@@ -11,6 +11,7 @@ background, so a task only ever waits on DNS for a host it has no answer for.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import os
 import socket
@@ -54,14 +55,17 @@ class BoundedResolver:
         self,
         *,
         ttl: float = DNS_CACHE_TTL,
-        getaddrinfo: Callable[..., list[AddrInfo]] = socket.getaddrinfo,
+        getaddrinfo: Callable[..., list[AddrInfo]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Initialize an empty resolver.
 
         Args:
             ttl: Seconds before a cached answer is refreshed.
-            getaddrinfo: Lookup function (injectable for tests).
+            getaddrinfo: Lookup function (injectable for tests). By default
+                ``socket.getaddrinfo`` as it is at lookup time, so gevent's
+                monkey-patched version is used even if stemtrace was imported
+                before patching.
             monotonic: Clock for the cache (injectable for tests).
         """
         self._ttl = ttl
@@ -101,6 +105,7 @@ class BoundedResolver:
             return socket.getaddrinfo(
                 host, port, family, socktype, proto, socket.AI_NUMERICHOST
             )
+        _check_host_name(host)
         if os.getpid() != self._pid:
             self._start_over()
         key = (host, port, family, socktype, proto)
@@ -108,7 +113,9 @@ class BoundedResolver:
             entry = self._entries.setdefault(key, _Entry())
             if entry.addresses is not None:
                 if self._monotonic() >= entry.refresh_at:
-                    self._start_lookup(key, entry)
+                    # Best effort: the cached answer serves this caller.
+                    with contextlib.suppress(socket.gaierror):
+                        self._start_lookup(key, entry)
                 return entry.addresses
             done = self._start_lookup(key, entry)
         if not done.wait(timeout):
@@ -129,17 +136,28 @@ class BoundedResolver:
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
 
     def _start_lookup(self, key: tuple[Any, ...], entry: _Entry) -> threading.Event:
-        """Start a lookup for ``key`` unless one is running (lock held)."""
+        """Start a lookup for ``key`` unless one is running (lock held).
+
+        Raises:
+            socket.gaierror: The lookup thread couldn't be started (EAI_AGAIN);
+                the entry is left as it was, so a later call tries again.
+        """
         if entry.lookup is not None:
             return entry.lookup
         done = threading.Event()
         entry.lookup = done
-        threading.Thread(
-            target=self._lookup,
-            args=(key, entry, done),
-            name=f"stemtrace-dns-{key[0]}",
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._lookup,
+                args=(key, entry, done),
+                name=f"stemtrace-dns-{key[0]}",
+                daemon=True,
+            ).start()
+        except RuntimeError as exc:  # e.g. "can't start new thread"
+            entry.lookup = None
+            raise socket.gaierror(
+                socket.EAI_AGAIN, f"Could not look up {key[0]!r}: {exc}"
+            ) from exc
         return done
 
     def _lookup(
@@ -150,17 +168,41 @@ class BoundedResolver:
         addresses: list[AddrInfo] | None = None
         error: OSError | None = None
         try:
-            addresses = self._getaddrinfo(host, port, family, type_, proto)
+            getaddrinfo = self._getaddrinfo or socket.getaddrinfo
+            addresses = getaddrinfo(host, port, family, type_, proto)
         except OSError as exc:  # gaierror and friends: kept for the waiters
             error = exc
-        with self._lock:
-            if addresses is not None:
-                entry.addresses = addresses
-            entry.error = error
-            # After a failure too: a stale answer is retried once per TTL.
-            entry.refresh_at = self._monotonic() + self._ttl
-            entry.lookup = None
-        done.set()
+        except Exception as exc:  # noqa: BLE001  e.g. idna's UnicodeError: reported to the waiters, never kills the entry
+            error = socket.gaierror(
+                socket.EAI_FAIL, f"Could not resolve {host!r}: {exc}"
+            )
+            error.__cause__ = exc
+        finally:
+            # Always release the entry, or every later caller would wait on
+            # a lookup that never ends.
+            with self._lock:
+                if addresses is not None:
+                    entry.addresses = addresses
+                entry.error = error
+                # After a failure too: a stale answer is retried once per TTL.
+                entry.refresh_at = self._monotonic() + self._ttl
+                entry.lookup = None
+            done.set()
+
+
+def _check_host_name(host: str) -> None:
+    """Fail fast on a host name no DNS server would accept.
+
+    Raises:
+        socket.gaierror: The name can't be IDNA-encoded (e.g. a label longer
+            than 63 characters), as getaddrinfo() would report on lookup.
+    """
+    try:
+        host.encode("idna")
+    except UnicodeError as exc:
+        raise socket.gaierror(
+            socket.EAI_NONAME, f"Invalid host name {host!r}: {exc}"
+        ) from exc
 
 
 def _is_ip_address(host: str) -> bool:
