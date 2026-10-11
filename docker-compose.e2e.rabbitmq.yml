@@ -16,7 +16,11 @@ services:
       - "5672:5672"
       - "15672:15672"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      # Run the check as the rabbitmq user. As root (docker exec's default) the
+      # Erlang CLI can create a root-owned /var/lib/rabbitmq/.erlang.cookie before
+      # the broker has, and the broker (rabbitmq user) then dies with eacces.
+      # (gosu ships in the rabbitmq image; checked on 3.13.7)
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 2s
       timeout: 5s
       retries: 20
