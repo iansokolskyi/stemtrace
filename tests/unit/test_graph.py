@@ -1305,8 +1305,8 @@ class TestGraphCoverageEdgeCases:
 
         assert graph.nodes[f"group:{group_id}"].state == TaskState.REVOKED
 
-    def test_group_state_falls_back_for_rejected(self) -> None:
-        """REJECTED isn't in the priority list, so it should fall back to the first state."""
+    def test_group_state_any_rejected(self) -> None:
+        """A rejected member outranks a successful one: the group didn't finish cleanly."""
         graph = TaskGraph()
         group_id = "group-rejected"
 
@@ -2226,16 +2226,14 @@ class TestGraphLinkingCharacterization:
         }
         assert graph.root_ids == ["P", "group:g"]
 
-    def test_group_state_success_then_rejected_uses_first_member_state(
-        self,
-    ) -> None:
+    def test_group_state_success_then_rejected_is_rejected(self) -> None:
         ev = self._event
         graph = self._graph(
             ev("a", TaskState.SUCCESS, group_id="g"),
             ev("b", TaskState.REJECTED, group_id="g"),
         )
 
-        assert graph.nodes["group:g"].state == TaskState.SUCCESS
+        assert graph.nodes["group:g"].state == TaskState.REJECTED
 
     def test_add_event_after_member_evicted_skips_it(self) -> None:
         ev = self._event
@@ -2365,7 +2363,8 @@ class TestGroupStatePriority:
     @pytest.mark.parametrize(
         ("higher", "lower"),
         [
-            (TaskState.FAILURE, TaskState.STARTED),
+            (TaskState.FAILURE, TaskState.REJECTED),
+            (TaskState.REJECTED, TaskState.STARTED),
             (TaskState.STARTED, TaskState.PENDING),
             (TaskState.PENDING, TaskState.RETRY),
             (TaskState.RETRY, TaskState.REVOKED),

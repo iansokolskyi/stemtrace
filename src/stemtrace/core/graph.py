@@ -45,10 +45,12 @@ _EventKey = tuple[int, int, datetime, int, bytes]
 # Synthetic GROUP/CHORD nodes are keyed "group:<celery group_id>".
 _GROUP_NODE_PREFIX = "group:"
 
-# A group's state is the result of the first rule matching any member state.
-# SUCCESS and REJECTED aren't ranked (see ``TaskGraph._compute_group_state``).
+# A group's state is the result of the first rule matching any member state;
+# a group whose members all succeeded is SUCCESS. REJECTED ranks right below
+# FAILURE: a rejected member means the group didn't complete cleanly.
 _GROUP_STATE_RULES: tuple[tuple[frozenset[TaskState], TaskState], ...] = (
     (frozenset({TaskState.FAILURE}), TaskState.FAILURE),
+    (frozenset({TaskState.REJECTED}), TaskState.REJECTED),
     (frozenset({TaskState.STARTED, TaskState.RECEIVED}), TaskState.STARTED),
     (frozenset({TaskState.PENDING}), TaskState.PENDING),
     (frozenset({TaskState.RETRY}), TaskState.RETRY),
@@ -524,20 +526,17 @@ class TaskGraph(BaseModel):
     def _compute_group_state(self, member_ids: list[str]) -> TaskState:
         """Compute aggregate state for a group based on member states.
 
-        Priority: FAILURE > STARTED/RECEIVED > PENDING > RETRY > REVOKED > SUCCESS
-        (see ``_GROUP_STATE_RULES``). REJECTED is not ranked.
+        Priority: FAILURE > REJECTED > STARTED/RECEIVED > PENDING > RETRY >
+        REVOKED > SUCCESS (see ``_GROUP_STATE_RULES``). The result doesn't
+        depend on member order.
         """
-        states = [self.nodes[mid].state for mid in member_ids if mid in self.nodes]
-        if not states:
+        present = {self.nodes[mid].state for mid in member_ids if mid in self.nodes}
+        if not present:
             return TaskState.PENDING
-
-        present = set(states)
         for triggers, group_state in _GROUP_STATE_RULES:
             if present & triggers:
                 return group_state
-        # Only SUCCESS and REJECTED are left. All SUCCESS yields SUCCESS; REJECTED
-        # isn't ranked, so a mix takes the first member's state.
-        return states[0]
+        return TaskState.SUCCESS
 
     def _upgrade_to_chord(self, group_id: str, callback_id: str) -> None:
         """Upgrade a GROUP node to CHORD and register the callback.
