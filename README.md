@@ -375,11 +375,14 @@ again once events are re-consumed.
     publishing). Any reply slower than 2s counts as a failure. A single failure loses only its
     own event; three failures in a row (timeouts included) make the worker skip publishing for a
     cooldown that grows from 1s to 30s and resets on the next successful publish. So when Redis
-    hangs or becomes unreachable, a task waits for at most three bounded attempts (about 2s each
-    per address) and then one per cooldown, instead of 5s (redis-py's default) for every event.
+    hangs or becomes unreachable, each worker process makes at most three bounded attempts
+    (about 2s each per address, plus any attempts its other threads already had in flight) and
+    then one per cooldown, instead of waiting 5s (redis-py's default) for every event.
   - An event whose reply timed out (or whose connection dropped) after it was sent counts as
     "sent but unconfirmed", not dropped: Redis may still have written it, e.g. after a stall
-    longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover).
+    longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover). If the retry after
+    such failures loses its reply too, the next retry waits the full 30s. An error reply
+    (e.g. `LOADING`, `NOAUTH`, `OOM`) means Redis rejected the event: it counts as dropped.
   - Host name resolution isn't covered by these timeouts: if the DNS resolver is unreachable, a
     connection attempt can block a task for as long as the resolver takes to give up (glibc's
     default is 5s per try), on each attempt.
@@ -395,8 +398,9 @@ again once events are re-consumed.
     publish tries every host of the broker URL once (2s connect timeout per address, 2s per read
     or write after that). A single failure, quick or timed out, loses only its own event; three
     failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
-    and resets on the next successful publish, so during an outage a task waits for at most
-    three bounded attempts and then one per cooldown. As with Redis, resolving host names isn't
+    and resets on the next successful publish, so during an outage each worker process makes
+    at most three bounded attempts (plus any its other threads already had in flight) and then
+    one per cooldown. As with Redis, resolving host names isn't
     covered by these timeouts: an unreachable DNS resolver can block a task for the resolver's
     timeout (glibc's default is 5s per try) on each attempt.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading

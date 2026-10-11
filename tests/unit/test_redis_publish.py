@@ -21,6 +21,7 @@ from stemtrace.transports.redis import (
     PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_SOCKET_TIMEOUT,
     RECONNECT_INITIAL_BACKOFF,
+    RECONNECT_MAX_BACKOFF,
     RedisTransport,
 )
 
@@ -170,6 +171,23 @@ class TestRedisPublishBreaker:
             "Failed to publish event t-0 to Redis; publishing continues "
             "(0 event(s) dropped, 1 sent but unconfirmed since the last report)"
         ]
+
+    def test_publish_lost_reply_retry_after_lost_replies_waits_max_cooldown(
+        self,
+    ) -> None:
+        """The breaker's unconfirmed rule applies to Redis too: a retry whose
+        reply is lost right after lost replies opened the breaker waits 30s."""
+        transport, publisher, clock = _make(
+            [(PUBLISH_SOCKET_TIMEOUT, READ_TIMED_OUT, True)] * 4
+        )
+        for i in range(PUBLISH_FAILURES_TO_OPEN):
+            transport.publish(_event(f"t-{i}"))
+        clock.now += RECONNECT_INITIAL_BACKOFF
+
+        transport.publish(_event("t-probe"))
+
+        assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN + 1
+        assert transport._publish_breaker.cooldown == RECONNECT_MAX_BACKOFF
 
     @pytest.mark.parametrize(
         "error",

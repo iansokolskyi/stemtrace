@@ -318,8 +318,8 @@ class RedisTransport:
                 once per process (see ``publish_client``). Without it, XADD
                 uses ``client``; from_url() passes one with short timeouts.
             sleep: Sleep function for reconnect backoff (injectable for tests).
-            monotonic: Clock used to rate-limit warnings and time publish
-                attempts for the circuit breaker (injectable for tests).
+            monotonic: Clock used to rate-limit warnings and to time the
+                publish circuit breaker's cooldowns (injectable for tests).
         """
         self._client = client
         self._publish_client_factory = publish_client_factory
@@ -408,10 +408,12 @@ class RedisTransport:
         other failures count it as dropped. PUBLISH_FAILURES_TO_OPEN failures
         in a row open a circuit breaker; until then a failure loses only its
         own event. While open, events are dropped without contacting Redis
-        for a cooldown (1s, doubling per failed retry up to 30s, reset by a
-        successful publish), so an outage costs tasks
-        PUBLISH_FAILURES_TO_OPEN bounded attempts, then about one per
-        cooldown, instead of one per event. Per PUBLISH_FAILURE_LOG_INTERVAL,
+        for a cooldown (1s, doubling per failed retry up to 30s; straight to
+        30s when a retry's reply is lost right after lost replies opened the
+        breaker or failed the previous retry; reset by a successful publish),
+        so an outage costs each process PUBLISH_FAILURES_TO_OPEN bounded
+        attempts (plus any already in flight in its other threads), then
+        about one per cooldown, instead of one per event. Per PUBLISH_FAILURE_LOG_INTERVAL,
         at most four WARNING lines are written, each with the number of
         events lost since the previous line; each event dropped while the
         breaker is open also gets a DEBUG line.
