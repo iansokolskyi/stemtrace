@@ -406,15 +406,20 @@ again once events are re-consumed.
     every fork waits up to 1s while a lookup that started less than 5s ago (glibc's per-try
     timeout), or that no fork waited for yet, is in flight; stemtrace logs a warning once. A
     helper is never started while the process forks, so a child can't inherit its pipes.
-  - uWSGI's master forks its workers without running Python's fork hooks, so it can't wait
-    for lookups. In a uWSGI process other than a request worker (the master, e.g. when the
-    app publishes at import time), stemtrace resolves on the calling thread instead, without
-    the 2s bound: with a dead DNS resolver such a publish waits for the resolver's own
-    timeouts (20s measured). uWSGI workers resolve in the background as usual. On Windows (no
-    fork) lookups always run in-process.
+  - The uWSGI master forks its workers without running Python's fork hooks, so it can't wait
+    for lookups. In the uWSGI master (e.g. when the app publishes at import time), stemtrace
+    resolves on the calling thread instead, without the 2s bound: with a dead DNS resolver
+    such a publish waits for the resolver's own timeouts (20s measured). uWSGI workers, mules
+    and spoolers resolve in the background as usual. With `--enable-threads`, a background
+    thread of the app that publishes in the uWSGI master resolves on that thread, so a fork
+    can still catch it inside glibc: the same exposure as that thread's own broker lookups.
+    On Windows (no fork) lookups always run in-process.
   - Once a forking process uses the helper, it resolves with the system's resolver in a new
     Python process, so a monkeypatched `socket.getaddrinfo` (a custom resolver shim, or
-    gevent's c-ares resolver) isn't used for its lookups. The same applies to RabbitMQ.
+    gevent's c-ares resolver) isn't used for its lookups. Under gevent, `subprocess` starts
+    programs with a Python-level fork, so any `subprocess` call in a gevent worker counts as a
+    fork and switches that worker to the helper (not so under eventlet, whose monkey-patching
+    leaves `subprocess` alone). The same applies to RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the

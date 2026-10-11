@@ -28,9 +28,9 @@ doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
 can't run this Python (a frozen application, an embedded interpreter such as
 uWSGI's, whose sys.executable is the uwsgi binary), lookups stay in-process
 and every fork waits for them as above (one WARNING says so). A helper is
-never started while the process forks (see _run_helper()). uWSGI's master
-forks in C, without Python's at-fork hooks, so in a uWSGI process other than
-a request worker lookups run on the calling thread, without the wait bound.
+never started while the process forks (see _run_helper()). The uWSGI master
+forks in C, without Python's at-fork hooks, so in the uWSGI master lookups
+run on the calling thread, without the wait bound.
 Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
 custom resolver shim) is no longer consulted for its lookups.
 """
