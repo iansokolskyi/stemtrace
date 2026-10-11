@@ -1416,15 +1416,36 @@ class TestWorkerRegistry:
             pid=11111,
             tasks=["old.task"],
         )
+        # Backdate last_seen: relying on the clock advancing between register and
+        # check made the stale branch depend on timer resolution.
+        with registry._lock:
+            worker = registry._workers["old-worker.example.com:11111"]
+            worker.last_seen = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-        # Mark as stale (timeout = 0 for immediate effect)
-        registry.remove_stale_workers(stale_timeout_minutes=0)
+        registry.remove_stale_workers(stale_timeout_minutes=3)
 
         workers = registry.get_all_workers()
         # Worker should still exist but marked offline
         assert len(workers) == 1
         assert workers[0].hostname == "old-worker.example.com"
         assert workers[0].status == WorkerStatus.OFFLINE
+
+    def test_remove_stale_workers_keeps_recent_worker_online(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A worker seen within the stale timeout stays online and registered."""
+        registry.register_worker(
+            hostname="fresh-worker.example.com",
+            pid=22222,
+            tasks=["fresh.task"],
+        )
+
+        registry.remove_stale_workers(stale_timeout_minutes=3)
+
+        workers = registry.get_all_workers()
+        assert len(workers) == 1
+        assert workers[0].hostname == "fresh-worker.example.com"
+        assert workers[0].status == WorkerStatus.ONLINE
 
     def test_cleanup_old_offline_workers(self, registry: WorkerRegistry) -> None:
         """Very old offline workers should be removed entirely."""
