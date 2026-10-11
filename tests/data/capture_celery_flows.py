@@ -132,6 +132,15 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             add.s(1, 1),
             group(chain(add.s(1), add.s(1)), chain(add.s(2), add.s(2))),
         ),
+        "chain_single_header_chord": lambda: chain(
+            add.s(1, 1), chord([add.s(1)], tsum.s())
+        ),
+        "chain_chord": lambda: chain(
+            add.s(1, 1), chord([add.s(1), add.s(2)], tsum.s())
+        ),
+        "group_chain_and_task": lambda: group(
+            chain(add.s(1, 1), add.s(1)), add.s(2, 2)
+        ),
         "group_of_chains_link_spawns": lambda: group(
             chain(add_with_subtask.s(1, 1), add.s(1)), chain(add.s(2, 2), add.s(2))
         ),

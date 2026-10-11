@@ -2052,6 +2052,35 @@ class TestOutOfOrderEvents:
         # Re-walking the body on every arrival would take ~n^2/2 lookups.
         assert lookups_after_body < 60 * n
 
+    def test_add_event_chain_arriving_bottom_up_into_group_is_linear(self) -> None:
+        n = 1500
+        graph = TaskGraph()
+        lookups = _GetCountingDict(graph.nodes)
+        graph.__dict__["nodes"] = lookups  # bypass validation, which would copy it
+
+        def event(task_id: str, parent_id: str | None, group_id: str | None) -> None:
+            graph.add_event(
+                TaskEvent(
+                    task_id=task_id,
+                    name="myapp.tasks.step",
+                    state=TaskState.SUCCESS,
+                    timestamp=_BASE_TIME,
+                    parent_id=parent_id,
+                    group_id=group_id,
+                )
+            )
+
+        # group(chain(L1499, ..., L0, m), b): the chain arrives last link first.
+        event("b", None, "g")
+        event("m", "L0", "g")
+        for i in range(n):
+            event(f"L{i}", f"L{i + 1}" if i < n - 1 else None, None)
+
+        assert graph.nodes["group:g"].children == ["b", f"L{n - 1}"]
+        assert graph.nodes["m"].parent_id == "L0"
+        assert graph.nodes["L0"].parent_id == "L1"
+        assert lookups.gets < 100 * n
+
     def test_add_event_self_rescheduling_chain_never_walks_ancestors(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2468,12 +2497,13 @@ class TestGraphLinkingCharacterization:
             ev("h1", parent_id="P", group_id="g", chord_callback_id="cb"),
         )
 
-        # cb's parent isn't a header: nothing shows it is the chord's body.
+        # cb reports the chord's own parent, as a chord in a chain's callback
+        # does in Celery: it is the chord's body.
         assert _shape(graph) == {
-            "P": (NodeType.TASK, None, ["cb", "group:g"]),
-            "cb": (NodeType.TASK, "P", []),
+            "P": (NodeType.TASK, None, ["group:g"]),
+            "cb": (NodeType.TASK, "group:g", []),
             "h1": (NodeType.TASK, "group:g", []),
-            "group:g": (NodeType.CHORD, "P", ["h1"]),
+            "group:g": (NodeType.CHORD, "P", ["h1", "cb"]),
         }
         assert graph.root_ids == ["P"]
         assert graph.get_group_members("g") == ["h1"]
@@ -2778,9 +2808,10 @@ class TestRemoveNode:
 
         graph.remove_node("m1")
 
+        # A GROUP needs two members: rebuilt from m2's events there'd be none.
         assert_graph_invariants(graph)
-        assert graph.nodes["group:g"].children == ["m2"]
-        assert graph.nodes["group:g"].state == TaskState.SUCCESS
+        assert "group:g" not in graph.nodes
+        assert graph.root_ids == ["m2"]
         assert graph.get_group_members("g") == ["m2"]
 
     def test_remove_node_last_member_forgets_group(self) -> None:

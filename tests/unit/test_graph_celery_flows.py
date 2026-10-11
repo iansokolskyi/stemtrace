@@ -230,6 +230,39 @@ _EXPECTED: dict[str, tuple[_Shape, dict[str, str]]] = {
         },
         {"group:T3": "T5"},
     ),
+    # chain(a, chord([b], tsum)): the callback reports a, the chain's
+    # previous task, as its parent; it carries the chord's group ID and is
+    # the callback the header names.
+    "chain_single_header_chord": (
+        {
+            "T0": (_T, None, ["group:T2"]),
+            "group:T2": (_C, "T0", ["T1", "T3"]),
+            "T1": (_T, "group:T2", []),
+            "T3": (_T, "group:T2", []),
+        },
+        {"group:T2": "T3"},
+    ),
+    "chain_chord": (
+        {
+            "T0": (_T, None, ["group:T3"]),
+            "group:T3": (_C, "T0", ["T1", "T2", "T4"]),
+            "T1": (_T, "group:T3", []),
+            "T2": (_T, "group:T3", []),
+            "T4": (_T, "group:T3", []),
+        },
+        {"group:T3": "T4"},
+    ),
+    # group(chain(a, b), c): c has no parent (a top-level member) and b's
+    # parent a has one child, so a is a chain link inside the group.
+    "group_chain_and_task": (
+        {
+            "group:T3": (_G, None, ["T0", "T1"]),
+            "T0": (_T, "group:T3", ["T2"]),
+            "T1": (_T, "group:T3", []),
+            "T2": (_T, "T0", []),
+        },
+        {},
+    ),
     "chord_with_chain_body": (
         _chord_shape(["T0", "T1"], "T4", ["T3"], "T2"),
         {"group:T2": "T4"},
@@ -343,3 +376,34 @@ def test_replay_chain_body_with_middle_task_last_finds_callback() -> None:
         _labelled_shape(graph, labels)
         == _EXPECTED["chain_chord_header_subtask_add_add"][0]
     )
+
+
+def _final_ancestors(graph: TaskGraph, node_id: str) -> set[str]:
+    ancestors: set[str] = set()
+    parent = graph.nodes[node_id].parent_id
+    while parent is not None and parent not in ancestors:
+        ancestors.add(parent)
+        parent = graph.nodes[parent].parent_id
+    return ancestors
+
+
+@pytest.mark.parametrize("flow", sorted(_EXPECTED))
+def test_replay_celery_flow_never_shows_a_node_off_its_final_path(flow: str) -> None:
+    """After every event (in arrival order), each node is a root, sits under
+    the parent its events reported, or under a node it ends up below: no
+    transient detours, such as a chain's first task drawn inside the group
+    it started for a while."""
+    events = _CAPTURES[flow]
+    final = _replay(events)
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(TaskEvent.model_validate(event))
+        for node_id, node in graph.nodes.items():
+            if node.parent_id is None or node_id not in final.nodes:
+                continue
+            allowed = _final_ancestors(final, node_id) | {node.reported_parent_id}
+            assert node.parent_id in allowed, (
+                node_id,
+                node.parent_id,
+                final.nodes[node_id].parent_id,
+            )

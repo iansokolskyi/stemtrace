@@ -345,10 +345,13 @@ class _GroupTally:
     """
 
     __slots__ = (
+        "direct_parents",
         "headers",
         "members",
         "parent_votes",
+        "rootish",
         "state_counts",
+        "status",
         "tails",
         "unparented",
         "vote_of",
@@ -361,7 +364,12 @@ class _GroupTally:
         self.parent_votes: Counter[str] = Counter()
         self.state_counts: Counter[TaskState] = Counter()
         self.vote_of: dict[str, str] = {}
-        # Counted members that haven't reported a parent (yet).
+        # Each counted member's own reported parent ("" if a worker event
+        # showed it has none); members with no worker event yet are
+        # ``unparented``. Counts of both decide whether chains can form.
+        self.status: dict[str, str] = {}
+        self.direct_parents: Counter[str] = Counter()
+        self.rootish = 0
         self.unparented: set[str] = set()
         # Members that aren't headers: for a chord, its callback or a chain
         # body's last task, stamped with the group ID.
@@ -370,6 +378,39 @@ class _GroupTally:
     def counted(self) -> dict[str, None]:
         """The members that make up the group (headers, for a chord)."""
         return self.headers if self.headers else self.members
+
+    def chains_allowed(self) -> bool:
+        """Whether a member's one-child parent can be a chain link.
+
+        Only on positive evidence that it isn't the group's own parent: every
+        member's parent is known, and they report different parents or one
+        reports none (a top-level member). A parent all members report is
+        the group's parent.
+        """
+        return not self.unparented and (
+            len(self.direct_parents) >= 2 or self.rootish > 0
+        )
+
+    def set_status(self, member_id: str, status: str | None) -> None:
+        """Record a counted member's own parent ("" none, None not known yet)."""
+        self.clear_status(member_id)
+        if status is None:
+            self.unparented.add(member_id)
+        else:
+            self.status[member_id] = status
+            if status:
+                _bump(self.direct_parents, status, 1)
+            else:
+                self.rootish += 1
+
+    def clear_status(self, member_id: str) -> None:
+        """Forget a member's parent status (it no longer counts)."""
+        self.unparented.discard(member_id)
+        previous = self.status.pop(member_id, None)
+        if previous:
+            _bump(self.direct_parents, previous, -1)
+        elif previous == "":
+            self.rootish -= 1
 
     def set_vote(self, member_id: str, parent_id: str | None) -> None:
         """Record which parent a counted member votes for (None: no vote)."""
@@ -478,6 +519,8 @@ class TaskGraph(BaseModel):
     # reverse: link -> member.
     _chain_of: dict[str, list[str]] = PrivateAttr(default_factory=dict)
     _link_owner: dict[str, str] = PrivateAttr(default_factory=dict)
+    # Link -> its index in its member's chain.
+    _link_pos: dict[str, int] = PrivateAttr(default_factory=dict)
     # Chord callback ID the headers name -> the chord's group ID.
     _chord_by_callback: dict[str, str] = PrivateAttr(default_factory=dict)
     # Node drawn as a chord's callback -> that chord's group ID; and the
@@ -492,10 +535,22 @@ class TaskGraph(BaseModel):
     # Chord group ID -> walk start -> how far its walk up the body has got,
     # so a resolution resumes where the last one stopped.
     _body_walks: dict[str, dict[str, "_BodyWalk"]] = PrivateAttr(default_factory=dict)
+    _walk_parent: dict[str, str | None] = PrivateAttr(default_factory=dict)
     # Missing parent ID -> nodes (in arrival order) to move under it once its
     # node is created, and the reverse map to keep both in sync.
     _awaiting_parent: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     _awaited_by: dict[str, str] = PrivateAttr(default_factory=dict)
+    # Nodes being removed: no longer placed or used as chain links.
+    _removing: set[str] = PrivateAttr(default_factory=set)
+    # How many times a link was refused because it would close a cycle (only
+    # possible with inconsistent data; where it breaks depends on order).
+    _cycles_refused: int = PrivateAttr(default=0)
+    # Chords whose callback is being resolved: a nested request for the same
+    # chord (its own placement changing mid-resolution) is skipped.
+    _resolving: set[str] = PrivateAttr(default_factory=set)
+    # Nodes kept off their parent (or groups made roots) to break a cycle;
+    # placed again after each change.
+    _cycle_broken: dict[str, None] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -570,8 +625,18 @@ class TaskGraph(BaseModel):
             _bump(tally.state_counts, node.state, 1)
         if new_parent:
             self._note_reported_child(node)
-            if tally is not None and node.task_id in tally.unparented:
-                self._mark_parented(tally, node)
+        if (
+            tally is not None
+            and node.task_id in tally.counted()
+            and (
+                new_parent
+                or (
+                    node.task_id in tally.unparented
+                    and event.state != TaskState.PENDING
+                )
+            )
+        ):
+            self._update_status(tally, node)
         if event.group_id is not None and event.group_id == node.group_id:
             self._join_group(node, event.group_id, event.chord_callback_id)
         if is_new:
@@ -580,6 +645,8 @@ class TaskGraph(BaseModel):
         self._refresh_group_of(node)
         if is_new or new_parent:
             self._retrigger(node.task_id)
+        if self._cycle_broken:
+            self._retry_cycle_broken()
         return event
 
     def remove_node(self, task_id: str) -> None:
@@ -595,8 +662,19 @@ class TaskGraph(BaseModel):
             task_id: ID of the node to remove.
         """
         node = self.nodes.get(task_id)
-        if node is None:
+        if node is None or task_id in self._removing:
             return
+        self._removing.add(task_id)
+        try:
+            self._remove(node)
+        finally:
+            self._removing.discard(task_id)
+        if self._cycle_broken and not self._removing:
+            self._retry_cycle_broken()
+
+    def _remove(self, node: TaskNode) -> None:
+        """Do the work of ``remove_node`` (``node`` is marked as removing)."""
+        task_id = node.task_id
         self._unlink(node)
         self._set_awaited(task_id, None)
         chords = self._drop_chord_roles(task_id)
@@ -605,7 +683,10 @@ class TaskGraph(BaseModel):
         else:
             self._forget_group_node(node)
         del self.nodes[task_id]
+        if node.group_id is not None:
+            self._dissolve_if_too_small(node.group_id)
         owner = self._link_owner.pop(task_id, None)
+        self._link_pos.pop(task_id, None)
         if owner is not None and owner in self.nodes:
             self._rechain(self.nodes[owner])  # the chain now ends below it
         for child_id in node.children:
@@ -615,6 +696,21 @@ class TaskGraph(BaseModel):
         self._retrigger(task_id, changed=True)
         for group_id in chords:
             self._resolve_callback(group_id)
+
+    def _dissolve_if_too_small(self, group_id: str) -> None:
+        """Remove a GROUP node left with fewer than 2 members.
+
+        That is the graph its remaining events would build (a GROUP needs 2
+        members); a later member event recreates it.
+        """
+        group_node = self.nodes.get(_group_node_id(group_id))
+        tally = self._groups.get(group_id)
+        if (
+            group_node is not None
+            and group_node.node_type == NodeType.GROUP
+            and (tally is None or len(tally.counted()) < 2)
+        ):
+            self.remove_node(group_node.task_id)
 
     def _drop_chord_roles(self, task_id: str) -> set[str]:
         """Stop a removed node being a chord's callback or chord_unlock task.
@@ -659,7 +755,8 @@ class TaskGraph(BaseModel):
     def _adopt_waiting_children(self, parent_id: str) -> None:
         """Move the nodes that were waiting for this parent under it."""
         for child_id in self._awaiting_parent.pop(parent_id, {}):
-            del self._awaited_by[child_id]
+            if self._awaited_by.get(child_id) == parent_id:
+                del self._awaited_by[child_id]
             child = self.nodes.get(child_id)
             if child is not None:
                 self._place(child)
@@ -709,7 +806,7 @@ class TaskGraph(BaseModel):
         if group_node_id is None:
             return None
         chain = self._chain_of[member_id]
-        position = chain.index(node.task_id)
+        position = self._link_pos[node.task_id]
         return chain[position + 1] if position + 1 < len(chain) else group_node_id
 
     def _safe_parent(self, node: TaskNode, parent_id: str | None) -> str | None:
@@ -743,20 +840,81 @@ class TaskGraph(BaseModel):
     def _place(self, node: TaskNode) -> None:
         """Move a node to the parent the linking rules give it, if that changed.
 
-        If a member can't join its group because the group sits below it, the
-        group's link is the one broken: the group becomes a root.
+        If a member or chain link can't take its place inside its group
+        because the group sits below it, the group's link is the one broken:
+        the group becomes a root.
         """
+        if node.task_id in self._removing:
+            return
         desired = self._desired_parent(node)
         if desired == node.parent_id:
             return
         parent_id = self._safe_parent(node, desired)
         if parent_id is None and desired is not None:
-            group_node_id = self._member_group_node_id(node)
-            if desired == group_node_id:
-                self._move(self.nodes[desired], None)
-                parent_id = self._safe_parent(node, desired)
+            parent_id = self._break_cycle(node, desired)
         if parent_id != node.parent_id:
             self._move(node, parent_id)
+            if node.node_type != NodeType.TASK:
+                # A chord whose body is this group resolves against its place,
+                # and so does a chord's own callback (the ancestor check).
+                self._retrigger(node.task_id)
+                if node.node_type == NodeType.CHORD and node.group_id is not None:
+                    self._resolve_callback(node.group_id)
+
+    def _break_cycle(self, node: TaskNode, desired: str) -> str | None:
+        """Make room for a link that would close a cycle; returns the parent.
+
+        First a chord callback edge on the way gives way; then, for a member
+        or chain link, its group's link (the group becomes a root). Otherwise
+        the node becomes a root and is retried after the next change.
+        """
+        self._cycles_refused += 1
+        if self._drop_callback_on_path(desired):
+            parent_id = self._safe_parent(node, desired)
+            if parent_id is not None:
+                return parent_id
+        group_node_id = self._inside_group_of(node)
+        if group_node_id is not None:
+            self._move(self.nodes[group_node_id], None)
+            self._cycle_broken[group_node_id] = None
+            parent_id = self._safe_parent(node, desired)
+            if parent_id is not None:
+                return parent_id
+        self._cycle_broken[node.task_id] = None  # retry once it's gone
+        return None
+
+    def _retry_cycle_broken(self) -> None:
+        """Re-place nodes kept off their parent by a cycle that may be gone now."""
+        for node_id in list(self._cycle_broken):
+            self._cycle_broken.pop(node_id, None)
+            self._place_if_present(node_id)
+
+    def _drop_callback_on_path(self, node_id: str) -> bool:
+        """Release a chord callback edge on the path from ``node_id`` upwards.
+
+        A placement loses to nothing but a cycle, and a callback edge always
+        gives way: the chord re-resolves (and rejects a looping callback).
+
+        Returns:
+            True if a callback was released.
+        """
+        seen: set[str] = set()
+        current = self.nodes.get(node_id)
+        while current is not None and current.task_id not in seen:
+            seen.add(current.task_id)
+            group_id = self._callback_of.get(current.task_id)
+            chord_node = self.nodes.get(_group_node_id(group_id)) if group_id else None
+            if chord_node is not None and current.parent_id == chord_node.task_id:
+                chord_node.chord_id = None
+                self._release_callback(chord_node, group_id or "", current.task_id)
+                return True
+            current = self.nodes.get(current.parent_id or "")
+        return False
+
+    def _inside_group_of(self, node: TaskNode) -> str | None:
+        """The group node a member or chain link is drawn inside, if any."""
+        member = self.nodes.get(self._link_owner.get(node.task_id, node.task_id))
+        return self._member_group_node_id(member) if member is not None else None
 
     def _move(self, node: TaskNode, parent_id: str | None) -> None:
         """Re-link a node under ``parent_id`` (None: as a root)."""
@@ -876,32 +1034,39 @@ class TaskGraph(BaseModel):
         return changed
 
     def _count_member(self, tally: _GroupTally, node: TaskNode) -> None:
-        """Add a newly counted member's state and parent vote."""
+        """Add a newly counted member's state, parent vote and parent status."""
         _bump(tally.state_counts, node.state, 1)
         tally.set_vote(node.task_id, self._member_vote(node))
-        if node.reported_parent_id is None and not tally.unparented:
-            tally.unparented.add(node.task_id)
-            self._drop_group_chains(tally)
-        elif node.reported_parent_id is None:
-            tally.unparented.add(node.task_id)
+        self._update_status(tally, node)
 
-    def _mark_parented(self, tally: _GroupTally, node: TaskNode) -> None:
-        """A counted member reported its parent; maybe its group's chains can form."""
-        tally.unparented.discard(node.task_id)
-        tally.set_vote(node.task_id, self._member_vote(node))
-        if not tally.unparented:
-            for member_id in list(tally.counted()):
-                member = self.nodes.get(member_id)
-                if member is not None:
-                    self._rechain(member)
+    def _update_status(self, tally: _GroupTally, node: TaskNode) -> None:
+        """Refresh a counted member's parent status; rechain if that flips.
 
-    def _drop_group_chains(self, tally: _GroupTally) -> None:
-        """Release every chain of a group (a member's parent isn't known)."""
+        Celery puts the group ID only on worker events, which carry the
+        parent when there is one: after any non-PENDING event, a member
+        without a reported parent has none.
+        """
+        if node.reported_parent_id is not None:
+            status: str | None = node.reported_parent_id
+        elif any(event.state != TaskState.PENDING for event in node.events):
+            status = ""
+        else:
+            status = None
+        if tally.status.get(node.task_id) == status and (
+            status is not None or node.task_id in tally.unparented
+        ):
+            return
+        was_allowed = tally.chains_allowed()
+        tally.set_status(node.task_id, status)
+        if tally.chains_allowed() != was_allowed:
+            self._rechain_group(tally)
+
+    def _rechain_group(self, tally: _GroupTally) -> None:
+        """Recompute every counted member's chain (the evidence changed)."""
         for member_id in list(tally.counted()):
-            if member_id in self._chain_of:
-                member = self.nodes.get(member_id)
-                if member is not None:
-                    self._rechain(member)
+            member = self.nodes.get(member_id)
+            if member is not None:
+                self._rechain(member)
 
     def _member_vote(self, node: TaskNode) -> str | None:
         """The parent a member votes for: its chain's first task's parent."""
@@ -914,6 +1079,9 @@ class TaskGraph(BaseModel):
         tally.state_counts.clear()
         tally.parent_votes.clear()
         tally.vote_of.clear()
+        tally.status.clear()
+        tally.direct_parents.clear()
+        tally.rootish = 0
         tally.unparented.clear()
         for member_id in tally.counted():
             member = self.nodes.get(member_id)
@@ -930,10 +1098,12 @@ class TaskGraph(BaseModel):
         if group_node is not None:
             group_node.node_type = NodeType.CHORD
             group_node.name = "chord"
-        for member_id in tally.members:
+        for member_id in list(tally.members):
             member = self.nodes.get(member_id)
             if member is not None and member_id not in tally.headers:
                 self._place(member)
+                # It no longer counts as a member: chords reading it see a task.
+                self._retrigger(member_id, changed=True)
 
     def _create_group_node(self, group_id: str, tally: _GroupTally) -> None:
         """Create the synthetic GROUP/CHORD node and move its members into it."""
@@ -978,8 +1148,8 @@ class TaskGraph(BaseModel):
             return
         _add_to(self._reported_children, parent_id, node.task_id)
         self._on_children_changed(parent_id)
-        # Its own chain can now extend upwards.
-        self._rechain_owner_of(node.task_id)
+        # A chain whose first task this is can now extend upwards.
+        self._extend_chain_through(node.task_id)
 
     def _single_child(self, parent_id: str) -> str | None:
         """The only task that reported ``parent_id`` as parent, if just one did."""
@@ -991,13 +1161,26 @@ class TaskGraph(BaseModel):
     def _on_children_changed(self, parent_id: str) -> None:
         """Re-check chains near a task whose reported children (or node) changed.
 
-        Only going to or from exactly one child changes whether it is a link.
+        Only going to or from exactly one child changes whether it is a link:
+        with one child, that child's chain may extend through it; with two,
+        a chain it was a link of ends below it.
         """
         children = self._reported_children.get(parent_id)
         if not children or len(children) > 2:
             return
-        for child_id in children:
-            self._rechain_owner_of(child_id)
+        if len(children) == 1:
+            self._extend_chain_through(next(iter(children)))
+        elif parent_id in self._link_owner:
+            self._rechain_owner_of(parent_id)
+
+    def _extend_chain_through(self, task_id: str) -> None:
+        """Extend the chain whose first task (or chainless member) this is."""
+        member_id = self._link_owner.get(task_id, task_id)
+        chain = self._chain_of.get(member_id)
+        top = chain[-1] if chain else member_id
+        member = self.nodes.get(member_id)
+        if top == task_id and member is not None:
+            self._rechain(member, extend=True)
 
     def _rechain_owner_of(self, task_id: str) -> None:
         """Recompute the chain of the member a task is (or is a link of)."""
@@ -1008,7 +1191,7 @@ class TaskGraph(BaseModel):
     def _can_link(self, task_id: str, child_id: str) -> bool:
         """Whether a task is a chain link above ``child_id`` (see class docstring)."""
         node = self.nodes.get(task_id)
-        if node is None or node.node_type != NodeType.TASK:
+        if node is None or node.node_type != NodeType.TASK or task_id in self._removing:
             return False
         if self._single_child(task_id) != child_id:
             return False
@@ -1019,60 +1202,90 @@ class TaskGraph(BaseModel):
             return False
         return node.name != _CHORD_UNLOCK_TASK
 
-    def _rechain(self, member: TaskNode) -> None:
-        """Recompute a group member's chain links and re-place what moved."""
+    def _rechain(self, member: TaskNode, *, extend: bool = False) -> None:
+        """Recompute a group member's chain links and re-place what moved.
+
+        With ``extend``, only links above the chain's first task are looked
+        for (nothing below it changed): O(new links).
+        """
         group_node_id = self._member_group_node_id(member)
         tally = self._groups.get(member.group_id or "")
-        chain = self._chain_links(member, tally) if group_node_id else []
         previous = self._chain_of.get(member.task_id, [])
-        if chain != previous:
-            self._set_chain(member.task_id, chain, previous)
-        elif not self._refresh_vote(member, tally):
+        if group_node_id is None or tally is None or not tally.chains_allowed():
+            moved = self._set_chain(member.task_id, [], previous)
+        elif extend:
+            top = previous[-1] if previous else member.task_id
+            moved = self._extend_chain(member.task_id, top)
+        else:
+            chain = self._links_above(member.task_id, member.task_id, extending=False)
+            moved = self._set_chain(member.task_id, chain, previous)
+        if not moved and not self._refresh_vote(member, tally):
             return  # nothing moved
+        self._refresh_vote(member, tally)
         # The group before and after the links: its new parent may be a link
         # that is only now leaving the group, or one that is joining it.
         if group_node_id is not None:
             self._place(self.nodes[group_node_id])
-        if chain != previous:
-            for node_id in [*reversed(chain), *previous, member.task_id]:
-                self._place_if_present(node_id)
-            if group_node_id is not None:
-                self._place(self.nodes[group_node_id])
+        for node_id in moved:
+            self._place_if_present(node_id)
+        if moved and group_node_id is not None:
+            self._place(self.nodes[group_node_id])
 
-    def _chain_links(self, member: TaskNode, tally: _GroupTally | None) -> list[str]:
-        """A member's chain links, bottom-up (see the class docstring).
+    def _links_above(
+        self, start_id: str, member_id: str, *, extending: bool
+    ) -> list[str]:
+        """Chain links above a task, bottom-up (see the class docstring).
 
-        Until every member has reported its parent, a parent with one child
-        so far may just be the group's own parent: no links yet.
+        Stops at a task already in the walk, or (``extending`` an existing
+        chain) already in the member's chain: a parent cycle.
         """
-        if tally is None or tally.unparented:
-            return []
-        chain: list[str] = []
-        seen = {member.task_id}
-        current = member
+        links: list[str] = []
+        seen = {start_id, member_id}
+        current = self.nodes[start_id]
         while (
-            current.reported_parent_id is not None
-            and current.reported_parent_id not in seen
-            and self._can_link(current.reported_parent_id, current.task_id)
+            (parent_id := current.reported_parent_id) is not None
+            and parent_id not in seen
+            and not (extending and self._link_owner.get(parent_id) == member_id)
+            and self._can_link(parent_id, current.task_id)
         ):
-            current = self.nodes[current.reported_parent_id]
-            seen.add(current.task_id)
-            chain.append(current.task_id)
-        return chain
+            current = self.nodes[parent_id]
+            seen.add(parent_id)
+            links.append(parent_id)
+        return links
 
-    def _set_chain(self, member_id: str, chain: list[str], previous: list[str]) -> None:
-        """Record a member's new chain links and its vote for the group parent."""
+    def _extend_chain(self, member_id: str, top: str) -> list[str]:
+        """Append the links above a chain's first task; returns what moved."""
+        chain = self._chain_of.get(member_id, [])
+        new_links = self._links_above(top, member_id, extending=True)
+        if not new_links:
+            return []
+        if not chain:
+            chain = self._chain_of[member_id] = []
+        for link_id in new_links:
+            self._link_owner[link_id] = member_id
+            self._link_pos[link_id] = len(chain)
+            chain.append(link_id)
+        # The old first task now sits under the first new link.
+        return [top, *new_links]
+
+    def _set_chain(
+        self, member_id: str, chain: list[str], previous: list[str]
+    ) -> list[str]:
+        """Replace a member's chain links; returns the nodes whose place moved."""
+        if chain == previous:
+            return []
         for link_id in previous:
             if self._link_owner.get(link_id) == member_id:
                 del self._link_owner[link_id]
-        for link_id in chain:
+                del self._link_pos[link_id]
+        for position, link_id in enumerate(chain):
             self._link_owner[link_id] = member_id
+            self._link_pos[link_id] = position
         if chain:
             self._chain_of[member_id] = chain
         else:
             self._chain_of.pop(member_id, None)
-        member = self.nodes[member_id]
-        self._refresh_vote(member, self._groups.get(member.group_id or ""))
+        return [*reversed(chain), *previous, member_id]
 
     def _refresh_vote(self, member: TaskNode, tally: _GroupTally | None) -> bool:
         """Update a counted member's vote (its chain's first task's parent).
@@ -1093,6 +1306,7 @@ class TaskGraph(BaseModel):
         for link_id in self._chain_of.pop(member_id, []):
             if self._link_owner.get(link_id) == member_id:
                 del self._link_owner[link_id]
+                del self._link_pos[link_id]
                 link = self.nodes.get(link_id)
                 if link is not None:
                     self._place(link)
@@ -1132,31 +1346,45 @@ class TaskGraph(BaseModel):
         if node.task_id in tally.counted():
             _bump(tally.state_counts, node.state, -1)
             tally.set_vote(node.task_id, None)
-            if node.task_id in tally.unparented:
-                self._mark_parented(tally, node)
+        was_allowed = tally.chains_allowed()
+        tally.clear_status(node.task_id)
         del tally.members[node.task_id]
         tally.tails.pop(node.task_id, None)
         was_header = node.task_id in tally.headers
         tally.headers.pop(node.task_id, None)
+        if tally.chains_allowed() != was_allowed:
+            self._rechain_group(tally)
         group_node = self.nodes.get(_group_node_id(group_id))
         if was_header and not tally.headers:
-            # The last header is gone: the others count as plain members again.
-            self._recount(tally)
-            if group_node is not None:
-                self._set_callback(group_node, group_id, None)
-                group_node.node_type = NodeType.GROUP
-                group_node.name = "group"
-            for member_id in tally.members:
-                member = self.nodes.get(member_id)
-                if member is not None:
-                    self._rechain(member)
-                    self._place(member)
+            self._stop_being_chord(group_id, tally, group_node)
         if group_node is not None:
             group_node.state = _aggregate_group_state(tally.state_counts.keys())
             self._place(group_node)
         elif not tally.members:
             del self._groups[group_id]
         return True
+
+    def _stop_being_chord(
+        self, group_id: str, tally: _GroupTally, group_node: TaskNode | None
+    ) -> None:
+        """The last header is gone: the others count as plain members again."""
+        self._recount(tally)
+        if group_node is not None:
+            self._set_callback(group_node, group_id, None)
+            named = group_node.chord_callback_id
+            if named is not None and self._chord_by_callback.get(named) == group_id:
+                del self._chord_by_callback[named]
+            group_node.chord_callback_id = None
+            group_node.node_type = NodeType.GROUP
+            group_node.name = "group"
+        self._reset_body_walks(group_id)
+        for member_id in list(tally.members):
+            member = self.nodes.get(member_id)
+            if member is not None:
+                self._rechain(member)
+                self._place(member)
+                # It now counts as a member: chords reading it see a group.
+                self._retrigger(member_id, changed=True)
 
     def _forget_group_node(self, node: TaskNode) -> None:
         """Drop a removed GROUP/CHORD's links (its membership stays)."""
@@ -1222,6 +1450,7 @@ class TaskGraph(BaseModel):
     def _reset_body_walks(self, group_id: str) -> None:
         """Forget a chord's walks and the nodes they read (they restart)."""
         self._body_walks.pop(group_id, None)
+        self._walk_parent.pop(group_id, None)
         for node_id in self._deps_of_chord.pop(group_id, set()):
             _drop_from(self._chord_deps, node_id, group_id)
 
@@ -1230,39 +1459,87 @@ class TaskGraph(BaseModel):
 
         Walks up from the callback the headers name, then from the tasks
         stamped with the chord's group ID that aren't headers (a chain body's
-        last task), until a task whose parent is a header or Celery's
-        ``chord_unlock`` task: that task (or the group it is a member of)
-        starts the body. A named group whose members hang from a header is the
-        body too. Nodes the walks read are recorded, so a missing one arriving
+        last task), until a task whose parent is a header, Celery's
+        ``chord_unlock`` task or the chord's own parent: that task (or the
+        group it is a member of) starts the body. A named group whose members
+        hang from a header is the body too, and so is the named callback
+        itself once it carries the chord's group ID. Nodes the walks read are recorded, so a missing one arriving
         or reporting its parent resolves again; each walk resumes where it
         stopped, so a body costs O(its length) however its events arrive.
         """
+        if group_id in self._resolving:
+            return
+        self._resolving.add(group_id)
+        try:
+            self._resolve_callback_now(group_id)
+        finally:
+            self._resolving.discard(group_id)
+
+    def _resolve_callback_now(self, group_id: str) -> None:
+        """Do the work of ``_resolve_callback``."""
         chord_node = self.nodes.get(_group_node_id(group_id))
         tally = self._groups.get(group_id)
         if chord_node is None or tally is None or not tally.headers:
             return
         named = chord_node.chord_callback_id
+        chord_parent = tally.parent()
+        if self._walk_parent.get(group_id) != chord_parent:
+            # Walks stop at the chord's own parent: restart if it changed.
+            self._reset_body_walks(group_id)
+            self._walk_parent[group_id] = chord_parent
         callback: tuple[str, str | None] | None = None
         if named is not None:
-            callback = self._walk_to_body(group_id, named, tally)
+            callback = self._walk_to_body(group_id, named, tally, chord_parent)
             if callback is None:
                 callback = self._named_group_body(named, group_id)
         for tail_id in tally.tails:
             if callback is not None:
                 break
-            callback = self._walk_to_body(group_id, tail_id, tally)
-        if callback is not None and self._is_ancestor(callback[0], chord_node.task_id):
-            callback = None  # the chord already hangs below it
+            callback = self._walk_to_body(group_id, tail_id, tally, chord_parent)
+        if callback is None and named in tally.tails and named in self.nodes:
+            # The named callback carrying the chord's group ID is the body.
+            callback = (named, None)
+        if callback is not None and self._loops_back(
+            callback[0], chord_node, chord_parent
+        ):
+            self._cycles_refused += 1
+            callback = None
+        owner = self._callback_of.get(callback[0]) if callback is not None else None
+        if callback is not None and owner is not None and owner < group_id:
+            # Two chords leading to one body: the smaller group ID keeps it,
+            # whatever the order (they would otherwise take it in turns).
+            self._add_chord_dep(group_id, callback[0])
+            callback = None
         self._set_callback(chord_node, group_id, callback)
 
+    def _loops_back(
+        self, callback_id: str, chord_node: TaskNode, chord_parent: str | None
+    ) -> bool:
+        """Whether drawing a callback after the chord would close a cycle.
+
+        That is when the chord hangs below it, or the chord's own parent is it
+        or hangs below it: the chord's place wins over the callback edge.
+        """
+        if self._is_ancestor(callback_id, chord_node.task_id):
+            return True
+        return chord_parent is not None and (
+            chord_parent == callback_id or self._is_ancestor(callback_id, chord_parent)
+        )
+
     def _walk_to_body(
-        self, group_id: str, start_id: str, tally: _GroupTally
+        self,
+        group_id: str,
+        start_id: str,
+        tally: _GroupTally,
+        chord_parent: str | None,
     ) -> tuple[str, str | None] | None:
         """Walk up from a body task to the node that starts the chord's body.
 
         Resumes from where this start's last walk stopped: reported parents
         never change, so the path below is still valid (a node removed or
-        turned header resets the walks, see ``_retrigger``).
+        turned header, or a new chord parent, resets the walks). Ends at a
+        task whose parent is a header, a ``chord_unlock`` task or the chord's
+        own parent.
 
         Returns:
             (body start node ID, chord_unlock task ID or None), or None if the
@@ -1283,7 +1560,13 @@ class TaskGraph(BaseModel):
             self._add_chord_dep(group_id, parent_id)
             parent = self.nodes.get(parent_id)
             fired_by_unlock = parent is not None and parent.name == _CHORD_UNLOCK_TASK
-            if parent_id in tally.headers or fired_by_unlock:
+            # A chain's chord body reports the chain's previous task, which is
+            # the chord's own parent, rather than a header.
+            if (
+                parent_id in tally.headers
+                or fired_by_unlock
+                or (parent is not None and parent_id == chord_parent)
+            ):
                 start = self._body_node(node, group_id)
                 if start is None:
                     return None
@@ -1345,7 +1628,11 @@ class TaskGraph(BaseModel):
         if callback_id is None:
             return
         self._place(self.nodes[callback_id])
-        if callback_id not in chord_node.children:
+        # Placing it can re-resolve this chord (and drop the callback).
+        if (
+            chord_node.chord_id == callback_id
+            and callback_id not in chord_node.children
+        ):
             chord_node.children.append(callback_id)
 
     def _set_unlock(self, group_id: str, unlock_id: str | None) -> None:
@@ -1385,13 +1672,17 @@ class TaskGraph(BaseModel):
         self, chord_node: TaskNode, group_id: str, callback_id: str
     ) -> None:
         """Unlink a node that is no longer the chord's callback."""
-        if self._callback_of.get(callback_id) == group_id:
+        released = self._callback_of.get(callback_id) == group_id
+        if released:
             del self._callback_of[callback_id]
         callback_node = self.nodes.get(callback_id)
         if callback_node is not None and callback_node.parent_id == chord_node.task_id:
             self._place(callback_node)
         elif callback_id in chord_node.children:
             chord_node.children.remove(callback_id)
+        if released:
+            # No longer a callback: it may be a chain link now.
+            self._on_children_changed(callback_id)
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""

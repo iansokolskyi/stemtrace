@@ -1849,7 +1849,8 @@ class TestGraphStoreEvictionGroupLinks:
         store = GraphStore(max_nodes=20)
         store.add_event(self._event("m1", 1, group_id="g"))
         store.add_event(self._event("m2", 100, group_id="g"))
-        for i in range(18):
+        store.add_event(self._event("m3", 101, group_id="g"))
+        for i in range(17):
             store.add_event(self._event(f"x{i}", 10 + i))
 
         # 21 nodes -> down to 18: the three oldest tasks go, the group stays.
@@ -1858,7 +1859,7 @@ class TestGraphStoreEvictionGroupLinks:
         assert store.get_node("x1") is None
         group = store.get_node("group:g")
         assert group is not None
-        assert group.children == ["m2"]
+        assert group.children == ["m2", "m3"]
         assert store._graph.nodes["m2"].parent_id == "group:g"
         assert_graph_invariants(store._graph)
 
