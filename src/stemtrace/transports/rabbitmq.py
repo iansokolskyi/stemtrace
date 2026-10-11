@@ -171,6 +171,10 @@ def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     addresses from PUBLISH_RESOLVER, which waits at most the connect timeout.
     Everything else is py-amqp's own: TLS gets SNI and the hostname check
     from the ``ssl`` options as before, independent of the address used.
+    Addresses are tried in getaddrinfo(AF_UNSPEC) order, as py-amqp 5.1+
+    does; py-amqp 5.0.x (allowed by older kombu) resolved IPv4 first and
+    tried IPv6 only without an IPv4 answer, so with it a dual-stack broker
+    may now be reached over IPv6 first.
     """
     from amqp.transport import SSLTransport, TCPTransport
     from amqp.utils import set_cloexec

@@ -383,22 +383,28 @@ again once events are re-consumed.
     longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover). If the retry after
     such failures loses its reply too, the next retry waits the full 30s. An error reply
     (e.g. `LOADING`, `NOAUTH`, `OOM`) means Redis rejected the event: it counts as dropped.
-  - Workers resolve the broker's host name in a short-lived helper process (the same Python,
-    so the same `/etc/hosts`, `resolv.conf` and name services) and wait at most the 2s connect
-    timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it would
-    otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached per
-    worker process for 30s and refreshed in the background, keeping the last answer while DNS
-    fails, so tasks don't wait on DNS while the host has a cached address. When connecting to
-    every cached address fails, the answer is refreshed right away, so after a DNS failover the
-    next attempt (at the latest the first retry after the breaker's cooldown) uses the new
-    address; a host that moved while its old address still accepts connections is picked up
-    within the 30s cache time. TLS behavior is unchanged. Each lookup starts one process
-    (about 60-80ms), at most once per host per 30s plus after failed connects; a helper that
-    hangs is killed after 30s. Lookups don't run in the worker process itself because glibc's
-    DNS code holds locks that `fork()` doesn't reset: a prefork child forked while a lookup
-    thread was inside it could deadlock. On Windows, or where there is no Python executable to
-    start (embedded interpreters), lookups run in-process instead. The same applies to
-    RabbitMQ.
+  - Workers resolve the broker's host name in a background thread and wait at most the 2s
+    connect timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it
+    would otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached
+    per process for 30s and refreshed in the background, keeping the last answer while DNS
+    fails; a failed lookup with no earlier answer is retried after 5s. So a process looks a
+    host up when it first publishes, then about once per 30s while it keeps publishing, after
+    a failed connect, and at most every 5s while lookups fail. When connecting to every cached
+    address fails, the answer is refreshed right away, so after a DNS failover the next attempt
+    (at the latest the first retry after the breaker's cooldown) uses the new address; a host
+    that moved while its old address still accepts connections is picked up within the 30s
+    cache time. TLS behavior is unchanged.
+  - A process that forks while a lookup thread is inside glibc's DNS code can hand the child
+    a lock that deadlocks it. So the forking process (the Celery prefork master, not the pool
+    children or web workers) waits up to 1s for its lookups before each fork, and after its
+    first fork it resolves in a short-lived helper process instead (the same Python, so the
+    same `/etc/hosts`, `resolv.conf` and name services), which never holds such a lock. Each
+    such lookup starts a Python process: about 60-80ms in a `python:3.13-slim` container on an
+    unloaded host, more on a small CPU share. Where the helper can't run (a frozen app, or an
+    embedded interpreter such as uWSGI's), the forking process keeps resolving in-process and
+    every fork waits up to 1s while a lookup that started less than 5s ago (glibc's per-try
+    timeout), or that no fork waited for yet, is in flight; stemtrace logs a warning once. On
+    Windows (no fork) lookups always run in-process. The same applies to RabbitMQ.
   - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
