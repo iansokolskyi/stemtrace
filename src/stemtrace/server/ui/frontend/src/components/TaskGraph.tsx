@@ -50,6 +50,14 @@ const CONTAINER_HEADER = 40
 const CHILD_SPACING = 12
 const LEVEL_SPACING = 320
 
+/**
+ * A node's children without links back to itself. The server never sends
+ * those, but a malformed payload must not make a container its own member.
+ */
+function childIdsOf(node: GraphNode, id: string): string[] {
+  return node.children.filter((childId) => childId !== id)
+}
+
 function buildGraphElements(
   nodes: Record<string, GraphNode>,
   rootId: string,
@@ -65,16 +73,16 @@ function buildGraphElements(
   const containerChildren = new Set<string>()
   const chordCallbacks = new Set<string>()
 
-  for (const node of Object.values(nodes)) {
+  for (const [nodeId, node] of Object.entries(nodes)) {
     const nodeType = node.node_type ?? 'TASK'
     if (nodeType === 'GROUP') {
-      for (const childId of node.children) {
+      for (const childId of childIdsOf(node, nodeId)) {
         containerChildren.add(childId)
       }
     } else if (nodeType === 'CHORD') {
       // For CHORD, header tasks go inside, callback stays outside
       // The CHORD node's chord_id field contains the callback task_id
-      for (const childId of node.children) {
+      for (const childId of childIdsOf(node, nodeId)) {
         if (childId === node.chord_id) {
           // This is the callback - render outside with edge
           chordCallbacks.add(childId)
@@ -85,6 +93,8 @@ function buildGraphElements(
       }
     }
   }
+  // The root is drawn even if a malformed payload lists it inside a container
+  containerChildren.delete(rootId)
 
   // BFS to assign levels (skip container children - they're positioned inside)
   const queue: Array<{ id: string; level: number }> = [{ id: rootId, level: 0 }]
@@ -102,7 +112,7 @@ function buildGraphElements(
     const nodeType = node.node_type ?? 'TASK'
     const isContainer = nodeType === 'GROUP' || nodeType === 'CHORD'
 
-    for (const childId of node.children) {
+    for (const childId of childIdsOf(node, id)) {
       if (!visited.has(childId)) {
         // Container children don't advance the level (they're inside)
         if (isContainer && containerChildren.has(childId)) {
@@ -137,7 +147,7 @@ function buildGraphElements(
 
     if (isContainer) {
       // For CHORD, only header tasks go inside (not callbacks)
-      const headerChildren = node.children.filter((cid) => !chordCallbacks.has(cid))
+      const headerChildren = childIdsOf(node, id).filter((cid) => !chordCallbacks.has(cid))
       const childCount = headerChildren.length
 
       // Vertical layout: children stacked in a column
@@ -267,7 +277,7 @@ function buildGraphElements(
 
       // Create callback nodes to the RIGHT of the container (for CHORD)
       if (nodeType === 'CHORD') {
-        for (const childId of node.children) {
+        for (const childId of childIdsOf(node, id)) {
           if (chordCallbacks.has(childId)) {
             const callbackNode = nodes[childId]
             if (!callbackNode) continue
@@ -391,7 +401,7 @@ function buildGraphElements(
       })
 
       // Edges to children (not inside a container)
-      for (const childId of node.children) {
+      for (const childId of childIdsOf(node, id)) {
         // Skip edges to nodes that are inside containers
         if (containerChildren.has(childId)) continue
 
@@ -407,7 +417,7 @@ function buildGraphElements(
     }
 
     // Queue non-container children
-    for (const childId of node.children) {
+    for (const childId of childIdsOf(node, id)) {
       if (!visited.has(childId) && !containerChildren.has(childId)) {
         queue2.push(childId)
       }

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
-import { createGroup, createWorkflowWithGroup } from './fixtures/mock-data'
+import { createGroup, createSuccessTask, createWorkflowWithGroup } from './fixtures/mock-data'
 
 /**
  * Tests for the Graphs page.
@@ -589,5 +589,41 @@ test.describe('Graph Page - Mock Scenarios', () => {
     // CHORD label should be visible
     const chordText = page.getByText('CHORD')
     await expect(chordText.first()).toBeVisible()
+  })
+})
+
+test.describe('Graph Page - Malformed Links', () => {
+  // The server never sends these shapes; the page must still render them
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('renders a group listed among its own children', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const [groupNode, ...members] = createGroup(2, { withCallback: false })
+    groupNode.parent_id = groupNode.task_id
+    groupNode.children = [groupNode.task_id, ...groupNode.children]
+    mockApi.addTasks([groupNode, ...members])
+
+    await page.goto(`/graph/${encodeURIComponent(groupNode.task_id)}`)
+    await page.waitForLoadState('networkidle')
+
+    // 1 GROUP container + 1 header label + 2 members
+    await expect(page.locator('.react-flow__node')).toHaveCount(4)
+  })
+
+  test('renders tasks whose children form a cycle', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const first = createSuccessTask('tasks.first')
+    const second = createSuccessTask('tasks.second')
+    second.root_id = first.task_id
+    first.children = [second.task_id]
+    second.children = [first.task_id]
+    second.parent_id = first.task_id
+    first.parent_id = second.task_id
+    mockApi.addTasks([first, second])
+
+    await page.goto(`/graph/${first.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    await expect(page.locator('.react-flow__node')).toHaveCount(2)
   })
 })
