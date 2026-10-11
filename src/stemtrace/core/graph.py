@@ -604,7 +604,11 @@ class TaskGraph(BaseModel):
 
     Linking rules: a node's ``parent_id`` is None (it is a root) or names a
     node in the graph that lists it among its ``children``, so every node is
-    reachable from a root. The final shape doesn't depend on event order.
+    reachable from a root. For the events Celery workflows emit (the
+    captured workflows in the tests, replayed in shuffled orders and with
+    skewed worker clocks), the final shape doesn't depend on event order.
+    Arbitrary events (e.g. cycles of reported parents no Celery workflow
+    makes) can still end in a shape that depends on the order they came in.
 
     * A task sits under the parent its events reported (``reported_parent_id``,
       the first one wins). While that parent isn't in the graph (not seen yet,
