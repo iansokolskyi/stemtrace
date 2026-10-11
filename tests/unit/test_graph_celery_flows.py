@@ -7,7 +7,7 @@ replayed as captured and in seeded shuffles: the graph must keep its
 invariants after every event and end in the same expected shape.
 
 Task and group IDs are UUIDs, so expected graphs are written by structure:
-names and topology (see ``_structure``), not IDs or arrival order. A
+names, topology and roles (see ``_structure``), not IDs or arrival order. A
 capture regenerated with the script must build the same structure; tests
 that need a particular task pick it by its role in the events or the
 final graph.
@@ -35,123 +35,190 @@ _G, _C, _T = NodeType.GROUP, NodeType.CHORD, NodeType.TASK
 
 
 def _structure(graph: TaskGraph) -> str:
-    """The graph's names and topology, independent of IDs and arrival order.
+    """The graph's names, topology and roles, independent of IDs and order.
 
     A task is its name without the ``flows.`` prefix, followed by its
     children in parentheses; a GROUP or CHORD node is ``group{...}`` or
-    ``chord{...}`` around its children. A chord's callback is marked ``*``
-    (``*?`` if it isn't one of the chord's children). Siblings are sorted,
-    graphs are joined with `` | ``.
+    ``chord{...}`` around its children. Siblings are sorted, graphs are
+    joined with `` | ``. Roles taken from the task's own events pin where
+    same-named tasks sit:
+
+    * ``^``: a replaced task (its ID announced twice, see ``_is_replaced``);
+    * ``+``: a member of the container it sits in (it carries that group's
+      ID; a chain link pulled into the group doesn't);
+    * ``*``: the chord's callback, when it is the task its headers name, or
+      one carrying the chord's group ID without naming a callback (Celery
+      stamps it on a chain body's last task); ``*>`` when such a task is
+      further down the callback's chain (a chain body, drawn from its first
+      task); ``*!`` for any other; ``*?`` when the callback isn't among the
+      chord's children.
     """
 
     def tree(node_id: str) -> str:
         node = graph.nodes[node_id]
         if node.node_type == _T:
             parts = sorted(tree(c) for c in node.children)
-            head = node.name.removeprefix("flows.")
+            head = ("^" if _is_replaced(node) else "") + node.name.removeprefix(
+                "flows."
+            )
             return f"{head}({', '.join(parts)})" if parts else head
         callback = node.chord_id if node.node_type == _C else None
-        parts = sorted(("*" if c == callback else "") + tree(c) for c in node.children)
+        named = _named_callbacks(graph, node)
+        parts = []
+        for child_id in node.children:
+            if child_id == callback:
+                mark = _callback_mark(graph, child_id, named)
+            elif graph.nodes[child_id].group_id == node.group_id:
+                mark = "+"
+            else:
+                mark = ""
+            parts.append(mark + tree(child_id))
         if callback is not None and callback not in node.children:
             parts.append("*?")
-        return f"{node.node_type.value.lower()}{{{', '.join(parts)}}}"
+        return f"{node.node_type.value.lower()}{{{', '.join(sorted(parts))}}}"
 
     return " | ".join(sorted(tree(root) for root in graph.root_ids))
 
 
+def _is_replaced(node: TaskNode) -> bool:
+    """Whether the ID carries a replaced task and its replacement's last one.
+
+    A worker in its own process announces the reused ID again (a second
+    attempt-0 PENDING), and a replacement under another name shows a second
+    name.
+    """
+    pending = [e for e in node.events if e.state == "PENDING" and e.retries == 0]
+    return len(pending) > 1 or len({e.name for e in node.events}) > 1
+
+
+def _named_callbacks(graph: TaskGraph, container: TaskNode) -> set[str]:
+    """Tasks the events point out as the container's callback (see above)."""
+    group_id = container.group_id
+    named = {
+        e.chord_callback_id
+        for child_id in container.children
+        for e in graph.nodes[child_id].events
+        if e.chord_callback_id is not None and e.group_id == group_id
+    }
+    for node_id, node in graph.nodes.items():
+        events = node.events
+        if any(e.group_id == group_id for e in events) and not any(
+            e.chord_callback_id for e in events
+        ):
+            named.add(node_id)
+    return named
+
+
+def _callback_mark(graph: TaskGraph, node_id: str, named: set[str]) -> str:
+    """How a drawn callback relates to the ones its headers name."""
+
+    def is_named(candidate: str) -> bool:
+        return any(candidate in (n, f"group:{n}", f"group:{n}:body") for n in named)
+
+    if is_named(node_id):
+        return "*"
+    below = list(graph.nodes[node_id].children)
+    while below:
+        current = below.pop()
+        if is_named(current):
+            return "*>"
+        below.extend(graph.nodes[current].children)
+    return "*!"
+
+
 _EXPECTED: dict[str, str] = {
     "chain": "add(add(add))",
-    "group": "group{add, add, add}",
-    "chord": "chord{*tsum, add, add, add}",
-    "chain_a_group_tsum_add": "add(chord{*tsum(add), add, add})",
-    "chain_a_group_tsum_add_add": "add(chord{*tsum(add(add)), add, add})",
-    "chain_group_nested": "add(group{add, add})",
-    "group_spawned_in_task": "spawn_group(group{add, add, add})",
-    "chain_group_tsum_add": "chord{*tsum(add), add, add}",
-    "chord_retried_header": "chord{*tsum, add, flaky_add}",
-    "chord_in_chord_body": "chord{*chord{*tsum, tsum, tsum}, add, add}",
+    "group": "group{+add, +add, +add}",
+    "chord": "chord{*tsum, +add, +add, +add}",
+    "chain_a_group_tsum_add": "add(chord{*>tsum(add), +add, +add})",
+    "chain_a_group_tsum_add_add": "add(chord{*>tsum(add(add)), +add, +add})",
+    "chain_group_nested": "add(group{+add, +add})",
+    "group_spawned_in_task": "spawn_group(group{+add, +add, +add})",
+    "chain_group_tsum_add": "chord{*>tsum(add), +add, +add}",
+    "chord_retried_header": "chord{*tsum, +add, +flaky_add}",
+    "chord_in_chord_body": "chord{*chord{*tsum, +tsum, +tsum}, +add, +add}",
     # group(chain(a1, b1), chain(a2, b2)): Celery stamps the group only on
     # b1 and b2; a1 and a2 are chain links drawn inside the group.
     "group_of_chains": "group{add(add), add(add)}",
     # A header's own subtask and the callback both hang from a header; only the callback the headers name is drawn after the chord.
-    "chord_header_subtask": "chord{*tsum, add, add_with_subtask(add)}",
-    "chord_header_fanout_group": "chord{*tsum, add, spawn_group(group{add, add})}",
+    "chord_header_subtask": "chord{*tsum, +add, +add_with_subtask(add)}",
+    "chord_header_fanout_group": "chord{*tsum, +add, +spawn_group(group{+add, +add})}",
     # The body never runs: nothing shows a callback, so none is drawn.
-    "chord_failed_header": "chord{add, fail}",
+    "chord_failed_header": "chord{+add, +fail}",
     # A header's subtask is no evidence: with the body never run, no callback.
-    "chord_failed_header_subtask": "chord{add_with_subtask(add), fail}",
+    "chord_failed_header_subtask": "chord{+add_with_subtask(add), +fail}",
     # The header's subtask must not become the callback, whichever of
     # the chain body's tasks arrives last.
-    "chain_chord_header_subtask_add_add": "add(chord{*tsum(add(add)), add, add_with_subtask(add)})",
+    "chain_chord_header_subtask_add_add": "add(chord{*>tsum(add(add)), +add, +add_with_subtask(add)})",
     # chain(a, group(chain(b1, c1), chain(b2, c2))): b1 and b2 are links.
     "chain_group_of_chains": "add(group{add(add), add(add)})",
     # add_with_subtask also spawned a task, so it isn't pulled into the
     # group as a chain link; the other chain's first task is.
-    "group_of_chains_link_spawns": "add_with_subtask(add, group{add, add(add)})",
+    "group_of_chains_link_spawns": "add_with_subtask(add, group{+add, add(add)})",
     # Result backends without chord support: Celery's chord_unlock task
     # fires the body, which reports it as its parent.
-    "chord@chord_unlock": "chord{*tsum, add, add, add, celery.chord_unlock}",
-    "chain_a_group_tsum_add@chord_unlock": "add(chord{*tsum(add), add, add, celery.chord_unlock})",
-    "chord_with_chain_body@chord_unlock": "chord{*tsum(add), add, add, celery.chord_unlock}",
+    "chord@chord_unlock": "chord{*tsum, +add, +add, +add, celery.chord_unlock}",
+    "chain_a_group_tsum_add@chord_unlock": "add(chord{*>tsum(add), +add, +add, celery.chord_unlock})",
+    "chord_with_chain_body@chord_unlock": "chord{*>tsum(add), +add, +add, celery.chord_unlock}",
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
     # the callback the header names.
-    "chain_single_header_chord": "add(chord{*tsum, add})",
-    "chain_chord": "add(chord{*tsum, add, add})",
+    "chain_single_header_chord": "add(chord{*tsum, +add})",
+    "chain_chord": "add(chord{*tsum, +add, +add})",
     # group(chain(a, b), c): c has no parent (a top-level member) and b's
     # parent a has one child, so a is a chain link inside the group.
-    "group_chain_and_task": "group{add, add(add)}",
+    "group_chain_and_task": "group{+add, add(add)}",
     # chord([a, b], group(c, d)): the headers name the chord's own group ID
     # and both body tasks carry it; the body is drawn as a GROUP after the
     # chord. chain(group(a, b), group(c, d)) is the same canvas to Celery.
-    "chord_group_body": "chord{*group{tsum, tsum}, add, add}",
-    "chain_group_group": "chord{*group{tsum, tsum}, add, add}",
+    "chord_group_body": "chord{*group{+tsum, +tsum}, +add, +add}",
+    "chain_group_group": "chord{*group{+tsum, +tsum}, +add, +add}",
     # task.replace(): Celery gives the replacement's last task the replaced
     # task's ID, whose events then report a parent from the replacement.
     # Only the task's own events report its parent, so it stays the root.
-    "replace_chain": "replace_with_chain(add)",
+    "replace_chain": "^replace_with_chain(add)",
     # Replacing with a group makes a chord whose callback (accumulate)
     # reuses the replaced task's ID: it can't also be drawn after the chord.
-    "replace_group": "replace_with_group(chord{add, add})",
-    "chain_replace_group_tsum": "replace_with_group(chord{*tsum, add, add})",
-    "group_of_chains_link_spawns@publish_headers": "add_with_subtask(add, group{add, add(add)})",
+    "replace_group": "^replace_with_group(chord{+add, +add})",
+    "chain_replace_group_tsum": "^replace_with_group(chord{*tsum, +add, +add})",
+    "group_of_chains_link_spawns@publish_headers": "add_with_subtask(add, group{+add, add(add)})",
     # The same with the worker in its own process: it announces the
     # replacement's last task, under the replaced task's ID, with a second
     # attempt-0 PENDING (another name, a parent from the replacement).
-    "replace_chain@worker_process": "replace_with_chain(add)",
-    "replace_group@worker_process": "replace_with_group(chord{add, add})",
-    "chain_replace_group_tsum@worker_process": "replace_with_group(chord{*tsum, add, add})",
+    "replace_chain@worker_process": "^replace_with_chain(add)",
+    "replace_group@worker_process": "^replace_with_group(chord{+add, +add})",
+    "chain_replace_group_tsum@worker_process": "^replace_with_group(chord{*tsum, +add, +add})",
     # Captured with Celery 5.2 (the lowest supported version). A group body
     # gets its own group ID there, which the headers name.
-    "chord_group_body@celery5.2": "chord{*group{tsum, tsum}, add, add}",
-    "chain_group_group@celery5.2": "chord{*group{tsum, tsum}, add, add}",
-    "chain_chord@celery5.2": "add(chord{*tsum, add, add})",
+    "chord_group_body@celery5.2": "chord{*group{+tsum, +tsum}, +add, +add}",
+    "chain_group_group@celery5.2": "chord{*group{+tsum, +tsum}, +add, +add}",
+    "chain_chord@celery5.2": "add(chord{*tsum, +add, +add})",
     # On Celery 5.2 the headers of a chord with a chain body, or of
     # chain(group, task), carry no chord callback ID: nothing shows they are
     # a chord, so they stay a GROUP with the chain hanging from its last
     # member (as on main).
-    "chain_group_tsum_add@celery5.2": "group{add, add(tsum(add))}",
-    "chord_with_chain_body@celery5.2": "group{add, add(tsum(add))}",
-    "chain_a_group_tsum_add@celery5.2": "add(group{add, add(tsum(add))})",
+    "chain_group_tsum_add@celery5.2": "group{+add, +add(tsum(add))}",
+    "chord_with_chain_body@celery5.2": "group{+add, +add(tsum(add))}",
+    "chain_a_group_tsum_add@celery5.2": "add(group{+add, +add(tsum(add))})",
     # self.replace(add.s()): the single replacement task takes over the ID
     # and reports it as its own parent.
-    "replace_task@worker_process": "replace_with_task",
+    "replace_task@worker_process": "^replace_with_task",
     # paginate(0) replaces itself with chain(paginate(1), paginate(2)): the
     # same task name, so only the structure shows the replacement.
-    "replace_same_name@worker_process": "paginate(paginate)",
+    "replace_same_name@worker_process": "^paginate(paginate)",
     # chain(add, paginate(0)): the replaced task has a parent of its own,
     # and its replacement's events report another (paginate(1)).
-    "chain_replace_same_name@worker_process": "add(paginate(paginate))",
+    "chain_replace_same_name@worker_process": "add(^paginate(paginate))",
     # paginate_to(0) replaces itself with a chain of 3 or 4 pages: the
     # replacement's last task reports a grandchild (or deeper) as parent.
-    "chain_replace3@worker_process": "add(paginate_to(paginate_to(paginate_to)))",
+    "chain_replace3@worker_process": "add(^paginate_to(paginate_to(paginate_to)))",
     "chain_replace4@worker_process": (
-        "add(paginate_to(paginate_to(paginate_to(paginate_to))))"
+        "add(^paginate_to(paginate_to(paginate_to(paginate_to))))"
     ),
     # Replaced by a group inside a chain: celery.accumulate, the chord's
     # callback, reuses the ID and reports the last header as parent.
-    "chain_replace_group@worker_process": "add(replace_with_group(chord{add, add}))",
-    "chord_header_replace_same_name@worker_process": "chord{*tsum, add, paginate(paginate)}",
+    "chain_replace_group@worker_process": "add(^replace_with_group(chord{+add, +add}))",
+    "chord_header_replace_same_name@worker_process": "chord{*tsum, +^paginate(paginate), +add}",
     # add.apply_async(parent_id=<an earlier add>) from a client: Celery
     # defaults root_id to the task's own ID there, so the task claims to be
     # a root with a parent.
@@ -159,7 +226,7 @@ _EXPECTED: dict[str, str] = {
     # The same from inside a task (send_with_parent): the root is the
     # sender's.
     "worker_explicit_parent": "add(add) | send_with_parent",
-    "chord_with_chain_body": "chord{*tsum(add), add, add}",
+    "chord_with_chain_body": "chord{*>tsum(add), +add, +add}",
 }
 
 
