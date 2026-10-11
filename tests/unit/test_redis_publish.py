@@ -1,6 +1,7 @@
 """Tests for RedisTransport.publish(): bounded client and circuit breaker."""
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -81,7 +82,7 @@ def _make(
         client=UnusedRedis(),  # type: ignore[arg-type]  # structural fake for redis.Redis
         prefix="test",
         ttl=60,
-        publish_client=publisher,  # type: ignore[arg-type]  # structural fake
+        publish_client_factory=lambda: publisher,  # type: ignore[arg-type,return-value]  # structural fake
         monotonic=clock,
     )
     return transport, publisher, clock
@@ -227,3 +228,62 @@ class TestRedisPublishClient:
 
         assert transport.publish_client is client
         assert client.calls == ["test:events"]
+
+
+class TestRedisPublishClientPerProcess:
+    """Each process builds its own publish client, so a forked child never
+    touches a connection pool (or its lock) inherited from the parent."""
+
+    def _make_counting(
+        self,
+    ) -> tuple[RedisTransport, list[FakePublishRedis]]:
+        clock = FakeClock()
+        built: list[FakePublishRedis] = []
+
+        def factory() -> FakePublishRedis:
+            built.append(FakePublishRedis(clock, []))
+            return built[-1]
+
+        transport = RedisTransport(
+            client=UnusedRedis(),  # type: ignore[arg-type]  # structural fake
+            prefix="test",
+            ttl=60,
+            publish_client_factory=factory,  # type: ignore[arg-type]  # structural fake
+            monotonic=clock,
+        )
+        return transport, built
+
+    def test_publish_client_is_built_lazily_once_per_process(self) -> None:
+        transport, built = self._make_counting()
+        assert built == []
+
+        transport.publish(_event("a"))
+        transport.publish(_event("b"))
+
+        assert len(built) == 1
+        assert built[0].calls == ["test:events", "test:events"]
+
+    def test_publish_in_forked_child_builds_new_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport, built = self._make_counting()
+        transport.publish(_event("in-parent"))
+        parent_pid = os.getpid()
+
+        monkeypatch.setattr(os, "getpid", lambda: parent_pid + 1)
+        transport.publish(_event("in-child"))
+        transport.publish(_event("in-child-again"))
+
+        assert len(built) == 2
+        assert built[0].calls == ["test:events"]
+        assert built[1].calls == ["test:events", "test:events"]
+        assert transport.publish_client is built[1]
+
+    def test_from_url_publish_client_does_not_close_its_pool_when_dropped(
+        self,
+    ) -> None:
+        """A child drops the parent's client; closing it would take the
+        inherited pool's lock (redis-py 8.1 ConnectionPool.reset)."""
+        transport = RedisTransport.from_url("redis://localhost:6379/0")
+
+        assert transport.publish_client.auto_close_connection_pool is False

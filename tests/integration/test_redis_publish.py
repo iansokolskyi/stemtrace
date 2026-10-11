@@ -9,10 +9,12 @@ Run with: pytest tests/integration/test_redis_publish.py -v
 
 import contextlib
 import os
+import signal
 import socket
 import threading
 import time
 import urllib.parse
+import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
@@ -179,3 +181,47 @@ def test_publish_through_slow_proxy_stops_waiting_after_slow_successes(
     assert durations[: len(slow)] == slow, durations
     assert sum(durations[len(slow) :]) < 0.1, durations
     assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == len(slow)
+
+
+@pytest.mark.integration
+@requires_redis
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+def test_publish_in_forked_child_while_parent_thread_holds_pool_lock(
+    stream_prefix: str,
+) -> None:
+    """A prefork child publishes even if the parent's pool lock was held at fork.
+
+    redis-py 8.1 resets an inherited pool on first use in the child and takes
+    the pool's lock to do it, without a timeout; a lock held by another parent
+    thread at fork time would hang the child forever.
+    """
+    transport = RedisTransport.from_url(REDIS_URL, prefix=stream_prefix)
+    transport.publish(_event(0))  # the parent's pool now has a connection
+    pool_lock = transport.publish_client.connection_pool._lock
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock() -> None:
+        with pool_lock:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    try:
+        with warnings.catch_warnings():
+            # Python warns that forking a multi-threaded process may deadlock:
+            # that is the situation under test.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the child process
+            signal.alarm(5)  # a hang ends the child with SIGALRM, not the run
+            transport.publish(_event(1))
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+    finally:
+        release.set()
+        holder.join(5)
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert redis.from_url(REDIS_URL).xlen(f"{stream_prefix}:events") == 2

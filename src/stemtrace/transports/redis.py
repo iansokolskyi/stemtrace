@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -118,21 +120,26 @@ def _publish_client_from_url(url: str) -> Redis[Any]:
     builds ``Retry(NoBackoff(), 1)`` for it), and timeouts in the URL are
     dropped because they would win over the keyword arguments.
 
-    Fork safety: redis-py's ConnectionPool notices a new PID and starts over
-    with no connections (redis-py 8.1 ConnectionPool._checkpid), so prefork
-    children never share the parent's sockets.
+    RedisTransport builds one of these per process (see ``publish_client``).
+    The client doesn't own its pool (``auto_close_connection_pool`` is
+    False), so when a forked child drops the parent's client, garbage
+    collection never closes the inherited pool: closing it would run
+    ConnectionPool.reset(), which takes the pool's lock without a timeout
+    (redis-py 8.1) and hangs if a parent thread held it at fork.
     """
+    from redis import ConnectionPool
     from redis import Redis as RedisClient
     from redis.backoff import NoBackoff
     from redis.retry import Retry
 
-    return RedisClient.from_url(
+    pool = ConnectionPool.from_url(
         _without_query_params(url, _PUBLISH_TIMEOUT_QUERY_PARAMS),
         decode_responses=False,
         socket_connect_timeout=PUBLISH_CONNECT_TIMEOUT,
         socket_timeout=PUBLISH_SOCKET_TIMEOUT,
         retry=Retry(NoBackoff(), 0),
     )
+    return RedisClient(connection_pool=pool)
 
 
 def _is_connect_timeout(exc: Exception) -> bool:
@@ -228,7 +235,7 @@ class RedisTransport:
         prefix: str,
         ttl: int,
         *,
-        publish_client: Redis[Any] | None = None,
+        publish_client_factory: Callable[[], Redis[Any]] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -236,17 +243,20 @@ class RedisTransport:
 
         Args:
             client: Redis client used for XREAD (and XADD unless
-                ``publish_client`` is given).
+                ``publish_client_factory`` is given).
             prefix: Key prefix; the stream key is ``<prefix>:events``.
             ttl: Event retention hint, also used to size the stream.
-            publish_client: Redis client used for XADD. Defaults to
-                ``client``; from_url() passes one with short timeouts.
+            publish_client_factory: Builds the Redis client used for XADD,
+                once per process (see ``publish_client``). Without it, XADD
+                uses ``client``; from_url() passes one with short timeouts.
             sleep: Sleep function for reconnect backoff (injectable for tests).
             monotonic: Clock used to rate-limit warnings and time publish
                 attempts for the circuit breaker (injectable for tests).
         """
         self._client = client
-        self._publish_client = client if publish_client is None else publish_client
+        self._publish_client_factory = publish_client_factory
+        # (pid, client) of the publish client built in the current process.
+        self._process_publish_client: tuple[int, Redis[Any]] | None = None
         self._publish_breaker = PublishBreaker(
             "Redis",
             logger=logger,
@@ -289,8 +299,22 @@ class RedisTransport:
 
     @property
     def publish_client(self) -> Redis[Any]:
-        """The Redis client publish() writes with."""
-        return self._publish_client
+        """The Redis client publish() writes with in this process.
+
+        With a ``publish_client_factory``, the client is built on first use
+        and again after a fork (a new PID), like the publish breaker, so a
+        prefork child never uses a connection pool or lock inherited from
+        its parent. Two threads publishing for the first time at once may
+        both build one; the extra client is dropped, which is harmless.
+        """
+        if self._publish_client_factory is None:
+            return self._client
+        current = self._process_publish_client
+        pid = os.getpid()
+        if current is None or current[0] != pid:
+            current = (pid, self._publish_client_factory())
+            self._process_publish_client = current
+        return current[1]
 
     @property
     def stream_key(self) -> str:
@@ -334,7 +358,7 @@ class RedisTransport:
             return
         started = self._monotonic()
         try:
-            self._publish_client.xadd(
+            self.publish_client.xadd(
                 self._stream_key,
                 {"data": event.model_dump_json()},
                 maxlen=self._maxlen,
@@ -551,5 +575,5 @@ class RedisTransport:
             client=RedisClient.from_url(url, decode_responses=False),
             prefix=prefix,
             ttl=ttl,
-            publish_client=_publish_client_from_url(url),
+            publish_client_factory=functools.partial(_publish_client_from_url, url),
         )
