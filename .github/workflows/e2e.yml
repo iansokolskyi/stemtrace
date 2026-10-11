@@ -70,8 +70,11 @@ jobs:
       - name: Wait for the event consumer to connect
         run: |
           # /health answers 200 as soon as the API is up, even while the server's
-          # broker consumer is still connecting. Events published before it binds
-          # are lost, so only seed or test once it reports connected.
+          # broker consumer is still connecting. On RabbitMQ, events published
+          # before it binds are lost (the fanout exchange drops unbound messages);
+          # on Redis the stream is read from the start, so this only covers
+          # consumer_connected being null before the first read. Seed or test
+          # only once it reports connected.
           uv run --locked --no-build python scripts/wait_for_http.py \
             http://localhost:8000/stemtrace/api/health \
             --timeout 90 --interval 2 \
@@ -151,8 +154,11 @@ jobs:
       - name: Wait for the event consumer to connect
         run: |
           # /health answers 200 as soon as the API is up, even while the server's
-          # broker consumer is still connecting. Events published before it binds
-          # are lost, so only seed or test once it reports connected.
+          # broker consumer is still connecting. On RabbitMQ, events published
+          # before it binds are lost (the fanout exchange drops unbound messages);
+          # on Redis the stream is read from the start, so this only covers
+          # consumer_connected being null before the first read. Seed or test
+          # only once it reports connected.
           uv run --locked --no-build python scripts/wait_for_http.py \
             http://localhost:8000/stemtrace/api/health \
             --timeout 90 --interval 2 \

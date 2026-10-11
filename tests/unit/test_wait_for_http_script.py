@@ -220,8 +220,10 @@ def test_main_matches_task_name_exactly_not_by_substring(
 
     result = _run_expecting(monkeypatch, "e2e.add=SUCCESS", timeout="10")
 
-    assert result is not None
-    assert "e2e.add=SUCCESS (0/1)" in result
+    assert result == (
+        "Service not healthy within 10.0s: waiting for tasks: "
+        "e2e.add=SUCCESS (0/1); seen: e2e.add_many=SUCCESS x1"
+    )
 
 
 def test_main_when_tasks_never_arrive_reports_what_it_found(
@@ -247,6 +249,30 @@ def test_main_when_tasks_never_arrive_reports_what_it_found(
         "e2e.always_fails=FAILURE (0/1), "
         "e2e.aggregate=SUCCESS (0/1); "
         "seen: e2e.add=SUCCESS x1, e2e.always_fails=STARTED x1"
+    )
+
+
+def test_main_when_a_task_name_is_null_still_reports_what_it_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _serve(
+        monkeypatch,
+        [
+            {
+                "tasks": [
+                    {"task_id": "a", "name": None, "state": "SUCCESS"},
+                    {"task_id": "b", "name": "e2e.add", "state": "STARTED"},
+                ]
+            }
+        ],
+    )
+    _expire_after_first_poll(monkeypatch)
+
+    result = _run_expecting(monkeypatch, "e2e.add=SUCCESS", timeout="10")
+
+    assert result == (
+        "Service not healthy within 10.0s: waiting for tasks: "
+        "e2e.add=SUCCESS (0/1); seen: None=SUCCESS x1, e2e.add=STARTED x1"
     )
 
 
@@ -431,9 +457,20 @@ def _serve_raw(
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
-        (b"<html>502 Bad Gateway</html>", "response is not valid JSON ("),
-        (b'{"tasks": [{"name": "e2e.add"', "response is not valid JSON ("),
-        (b"\xff\xfe", "response is not valid JSON ("),
+        (
+            b"<html>502 Bad Gateway</html>",
+            "response is not valid JSON (Expecting value: line 1 column 1 (char 0))",
+        ),
+        (
+            b'{"tasks": [{"name": "e2e.add"',
+            "response is not valid JSON "
+            "(Expecting ',' delimiter: line 1 column 30 (char 29))",
+        ),
+        (
+            b"\x80\x81",
+            "response is not valid JSON ('utf-8' codec can't decode byte 0x80 "
+            "in position 0: invalid start byte)",
+        ),
         (b"[1, 2]", "response is not a JSON object (got list)"),
     ],
 )
@@ -445,8 +482,7 @@ def test_main_when_body_is_not_a_json_object_reports_it_on_timeout(
 
     result = _run_expecting(monkeypatch, timeout="10", json_fields=("status=ok",))
 
-    assert result is not None
-    assert result.startswith(f"Service not healthy within 10.0s: {expected}")
+    assert result == f"Service not healthy within 10.0s: {expected}"
 
 
 def test_main_when_body_is_truncated_mid_read_retries_until_complete(

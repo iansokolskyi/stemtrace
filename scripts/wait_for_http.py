@@ -5,8 +5,11 @@ stack. Only loopback hosts and the E2E Compose server service are accepted, so
 the script cannot be pointed at arbitrary internal or external network targets.
 
 A bare 2xx is not always "ready": the stemtrace health endpoint answers 200 while
-its broker consumer is still connecting, and events published before the consumer
-binds are lost. Two optional checks run against the JSON response body:
+its broker consumer is still connecting. On RabbitMQ events published before the
+consumer binds its queue are lost (the fanout exchange drops unbound messages); the
+Redis consumer reads the stream from the start, so there the check only covers the
+``consumer_connected: null`` window before its first read. Two optional checks run
+against the JSON response body:
 
 * ``--expect-json KEY=VALUE`` (repeatable) requires a top-level field, e.g.
   ``--expect-json consumer_connected=true`` on ``/stemtrace/api/health``. VALUE is
@@ -178,9 +181,9 @@ def _unmet_task_expectations(
     ]
     if not unmet:
         return None
-    found = ", ".join(
-        f"{name}={state} x{n}" for (name, state), n in sorted(seen.items())
-    )
+    # str() keys: a null name or state must not break the sort of a failure message.
+    by_name_state = sorted(seen.items(), key=lambda item: tuple(map(str, item[0])))
+    found = ", ".join(f"{name}={state} x{n}" for (name, state), n in by_name_state)
     return f"waiting for tasks: {', '.join(unmet)}; seen: {found or 'none'}"
 
 
