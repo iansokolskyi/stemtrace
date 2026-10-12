@@ -19,6 +19,7 @@ from stemtrace.transports.rabbitmq import (
     PUBLISH_IO_TIMEOUT,
     RabbitMQTransport,
 )
+from stemtrace.transports.rabbitmq_publisher import connection_name
 from tests import fake_kombu
 from tests.fake_kombu import FakeBroker, FakeClock
 
@@ -73,7 +74,10 @@ class TestRabbitMQPublishFailFast:
         # The heartbeat is forced off: nothing sends heartbeats between publishes.
         assert conn.kwargs == {
             "connect_timeout": CONNECT_TIMEOUT,
-            "transport_options": {"heartbeat": 0},
+            "transport_options": {
+                "heartbeat": 0,
+                "client_properties": {"connection_name": connection_name()},
+            },
         }
         assert len(conn.ensure_calls) == 1
         call = conn.ensure_calls[0]
@@ -334,7 +338,7 @@ class TestRabbitMQPublishFailoverResolution:
                 )
             )
             assert conn.connect_timeout == CONNECT_TIMEOUT
-            assert conn.transport_options == {"heartbeat": 0}
+            assert conn.transport_options["heartbeat"] == 0
 
         assert resolved == expected
 

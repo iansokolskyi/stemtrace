@@ -88,6 +88,11 @@ CLOSE_TIMEOUT = 0.5
 DISCARD_TIMEOUT = 0.2
 
 
+def connection_name() -> str:
+    """The name RabbitMQ lists the publisher connection of this process under."""
+    return f"stemtrace publisher {socket.gethostname()} pid {os.getpid()}"
+
+
 class PublishError(Exception):
     """An event was not published (the transport counts it as a failure)."""
 
@@ -464,7 +469,11 @@ class PublisherConnection:
             # Wins over ``?heartbeat=`` in the URL, which a kwarg doesn't
             # (kombu 5.6.1 Transport.establish_connection merges
             # transport_options last): see the module docstring.
-            transport_options={"heartbeat": 0},
+            transport_options={
+                "heartbeat": 0,
+                # Shown as the connection's name in RabbitMQ's management UI.
+                "client_properties": {"connection_name": connection_name()},
+            },
         )
         for _ in range(first):
             conn.maybe_switch_next()
