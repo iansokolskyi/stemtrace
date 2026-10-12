@@ -284,9 +284,13 @@ class TaskNode(BaseModel):
         index.new_identity = event.name not in index.names or (
             parent is not None and parent not in index.parents
         )
+        was_reused = len(index.names) > 1 or len(index.parents) > 1
         index.names.add(event.name)
         if parent is not None:
             index.parents.add(parent)
+        index.became_reused = not was_reused and (
+            len(index.names) > 1 or len(index.parents) > 1
+        )
 
         current = index.state_event
         if current is None or _precedence(event) > _precedence(current):
@@ -330,8 +334,11 @@ class TaskNode(BaseModel):
         index = self._ensure_index()
         previous = self.reported_parent_id
         event = self.events[index.last_position]
-        if index.new_identity:
-            # A new name or parent: the task may have been replaced.
+        if index.became_reused:
+            # A second name or parent: the task was replaced, and its events
+            # are told apart by another rule. Once the ID carries two tasks,
+            # whether an event is its replacement's depends on that event
+            # (its parent and root) only, so later ones don't recompute.
             return self._recompute_identity(is_replacement)
         if is_replacement(event):
             if index.last_position <= index.first_own:
@@ -398,6 +405,7 @@ class _EventIndex:
     """Sort keys, duplicate lookup and state-deciding event for one node."""
 
     __slots__ = (
+        "became_reused",
         "by_key",
         "first_own",
         "keys",
@@ -418,8 +426,9 @@ class _EventIndex:
         self.last_key: _EventKey | None = None
         self.parent_key: _EventKey | None = None
         # Position of the earliest event that isn't a replacement's, the task
-        # names the events carry (a replaced task's carry two), and whether
-        # the last recorded event brought a new one.
+        # names the events carry (a replaced task's carry two), whether the
+        # last recorded event brought a new name or parent, and whether that
+        # made the ID carry two tasks (see ``TaskNode._is_reused``).
         self.first_own = 0
         self.names: set[str] = {event.name for event in events}
         self.parents: set[str] = {
@@ -428,6 +437,7 @@ class _EventIndex:
             if e.parent_id is not None and e.parent_id != e.task_id
         }
         self.new_identity = False
+        self.became_reused = False
         pairs = sorted(((_event_key(e), e) for e in events), key=lambda p: p[0])
         events[:] = [event for _, event in pairs]
         self.keys: list[_EventKey] = [key for key, _ in pairs]
@@ -945,12 +955,14 @@ class TaskGraph(BaseModel):
         task_id = node.task_id
         children = self._raw_children.get(task_id)
         descendants = self._descendants.get(task_id)
+        # Called after the node's latest event was recorded, before the next.
+        reused = node._is_reused()
         walk = _OwnParentWalk(self, task_id)
 
         def check(event: TaskEvent) -> bool:
             """Whether the event comes from a replacement (see above)."""
             parent = event.parent_id
-            if parent is None or (parent == task_id and not node._is_reused()):
+            if parent is None or (parent == task_id and not reused):
                 return False
             if (
                 event.root_id == task_id
@@ -958,7 +970,7 @@ class TaskGraph(BaseModel):
                 and parent in descendants
             ):
                 return True
-            if node._is_reused():
+            if reused:
                 return parent == task_id or walk.reaches(parent)
             if children is None or parent not in children or task_id < parent:
                 return False
@@ -1020,7 +1032,7 @@ class TaskGraph(BaseModel):
         their parent may (no longer) come from a replacement.
         """
         parent = self.nodes.get(parent_id)
-        if parent is not None and any(e.parent_id == child_id for e in parent.events):
+        if parent is not None and child_id in parent._ensure_index().parents:
             self._recheck(parent_id)
 
     def _recheck(self, task_id: str) -> None:

@@ -741,6 +741,62 @@ def test_replay_long_replacement_chain_keeps_replaced_task_in_place(
         assert depth == 299
 
 
+def _recursive_pages(pages: int) -> list[dict[str, Any]]:
+    """``recursive_replace@worker_process`` with ``pages`` pages.
+
+    prec(n) replaces itself with chain(fetch(n), prec(n + 1)): every page's
+    fetch reports the replaced task, and the next prec's events, under the
+    replaced task's ID, report that fetch, as in the capture.
+    """
+    captured = _CAPTURES["recursive_replace@worker_process"]
+    replaced, first = _replaced_task(captured)
+    fetch = next(e for e in captured if e["name"] == "flows.fetch")
+    prec = next(e for e in captured if e["task_id"] == replaced)
+    start = datetime.fromisoformat(captured[0]["timestamp"].replace("Z", "+00:00"))
+    events = [e for e in captured if e["task_id"] == first]
+    events += [e for e in captured if e["task_id"] == replaced][:2]
+    for number in range(pages):
+        task_id = f"fetch-{number:05d}"
+        for state in ("PENDING", "STARTED", "SUCCESS"):
+            events.append({**fetch, "task_id": task_id, "state": state})
+        for state in ("PENDING", "STARTED"):
+            events.append({**prec, "state": state, "parent_id": task_id})
+    events.append({**prec, "state": "SUCCESS", "parent_id": task_id})
+    return [
+        {**e, "timestamp": (start + timedelta(milliseconds=i)).isoformat()}
+        for i, e in enumerate(events)
+    ]
+
+
+def test_recursive_replacement_checks_grow_linearly_with_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive pagination with 500 pages: a new page runs a bounded number
+    of replacement checks (no recheck of every earlier page), so the work
+    under the store's lock grows linearly."""
+    checks = 0
+    replacement_check = TaskGraph._replacement_check
+
+    def counted(graph: TaskGraph, node: TaskNode) -> Any:
+        check = replacement_check(graph, node)
+
+        def count(event: TaskEvent) -> bool:
+            nonlocal checks
+            checks += 1
+            return check(event)
+
+        return count
+
+    monkeypatch.setattr(TaskGraph, "_replacement_check", counted)
+    graph = TaskGraph()
+    for event in _recursive_pages(500):
+        graph.add_event(TaskEvent.model_validate(event))
+
+    replaced, _ = _replaced_task(_CAPTURES["recursive_replace@worker_process"])
+    assert len(graph.nodes[replaced].children) == 500
+    assert checks <= 20 * 500
+
+
 def _nested_replacements(depth: int, *, skew_s: float = 0) -> list[dict[str, Any]]:
     """``nested_replace_root@worker_process`` nested ``depth`` levels deep.
 
