@@ -986,7 +986,9 @@ class TaskGraph(BaseModel):
         from it may have changed: its reported parent (one task under its
         ID), or the parents and names its events report.
         """
-        for task_id in list(self._walk_deps.get(node_id, {})):
+        # A copy: rechecking a task walks again, and ``_OwnParentWalk._note_dep``
+        # adds the task to ``_walk_deps`` meanwhile.
+        for task_id in list(self._walk_deps.get(node_id, {})):  # NOSONAR
             self._recheck(task_id)
 
     def _join_from_event(self, node: TaskNode, event: TaskEvent) -> None:
@@ -1330,7 +1332,9 @@ class TaskGraph(BaseModel):
 
     def _retry_cycle_broken(self) -> None:
         """Re-place nodes kept off their parent by a cycle that may be gone now."""
-        for node_id in list(self._cycle_broken):
+        # A copy: ``_place_if_present`` can break a cycle again, which adds to
+        # ``_cycle_broken`` (and the pop above removes from it).
+        for node_id in list(self._cycle_broken):  # NOSONAR
             self._cycle_broken.pop(node_id, None)
             self._place_if_present(node_id)
 
@@ -1525,7 +1529,7 @@ class TaskGraph(BaseModel):
 
     def _rechain_group(self, tally: _GroupTally) -> None:
         """Recompute every counted member's chain (the evidence changed)."""
-        for member_id in list(tally.counted()):
+        for member_id in tally.counted():
             self._rechain(self.nodes[member_id])
 
     def _member_vote(self, node: TaskNode) -> str | None:
@@ -1556,7 +1560,7 @@ class TaskGraph(BaseModel):
         if group_node is not None:
             group_node.node_type = NodeType.CHORD
             group_node.name = "chord"
-        for member_id in list(tally.members):
+        for member_id in tally.members:
             member = self.nodes.get(member_id)
             if member is not None and member_id not in tally.headers:
                 self._place(member)
@@ -1578,7 +1582,7 @@ class TaskGraph(BaseModel):
             group_node, self._desired_parent(group_node)
         )
         self._link(group_node)
-        for member_id in list(tally.counted()):
+        for member_id in tally.counted():
             member = self.nodes[member_id]
             self._rechain(member)
             self._place(member)
@@ -1835,7 +1839,7 @@ class TaskGraph(BaseModel):
             group_node.node_type = NodeType.GROUP
             group_node.name = "group"
         self._reset_body_walks(group_id)
-        for member_id in list(tally.members):
+        for member_id in tally.members:
             member = self.nodes[member_id]
             self._rechain(member)
             self._place(member)
@@ -1890,7 +1894,9 @@ class TaskGraph(BaseModel):
         With ``changed`` (the node was removed or became a header), walks
         that went through it may be wrong: those chords start over.
         """
-        for group_id in list(self._chord_deps.get(node_id, ())):
+        # A copy: resolving a chord changes ``_chord_deps`` (``_add_chord_dep``
+        # adds its reads, ``_reset_body_walks`` drops them) while we iterate.
+        for group_id in list(self._chord_deps.get(node_id, ())):  # NOSONAR
             if changed:
                 self._reset_body_walks(group_id)
             self._resolve_callback(group_id)
