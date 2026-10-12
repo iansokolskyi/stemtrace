@@ -64,7 +64,7 @@ class PublishBreaker:
             unconfirmed right after an unconfirmed failure (the one that
             opened the breaker or the previous probe) sets the cooldown
             straight to the cap and keeps it there: two in a row usually
-            mean the broker is blocking publishers, which can last minutes,
+            mean the broker is stalled, which can last minutes,
             while a single one may just be a brief stall.
 
     Attempts that were already in flight when the breaker opened (other
@@ -236,6 +236,40 @@ class PublishBreaker:
             self._dropped += 1
             return None
 
+    def should_attempt(self, ticket: int) -> bool:
+        """Whether an attempt that started earlier is still worth making.
+
+        For a caller that had to wait after ``allow()`` returned ``ticket``
+        (e.g. for a shared connection). False only while the breaker is open
+        and ``ticket`` isn't the probe's: the attempt was already in flight
+        when the breaker opened, and the broker is known to be down. Once the
+        breaker has closed again the broker answered, so the attempt goes
+        ahead, whatever the ticket's age.
+
+        Args:
+            ticket: The ticket ``allow()`` returned for the attempt.
+        """
+        self._check_fork()
+        return not self.is_open or ticket == self._epoch
+
+    def record_dropped(self, ticket: int) -> None:
+        """Count an event dropped without an attempt (it says nothing about the broker).
+
+        For an event that was skipped, or that couldn't get a shared resource
+        in time: it is reported with the next log line like any dropped
+        event, but doesn't count as a failure and never changes the state. If
+        ``ticket`` is the outstanding probe's, the probe never reached the
+        broker, so its slot is freed for the next caller.
+
+        Args:
+            ticket: The ticket ``allow()`` returned for the dropped attempt.
+        """
+        self._check_fork()
+        with self._lock:
+            self._dropped += 1
+            if self._probe_ticket is not None and ticket == self._probe_ticket:
+                self._probe_ticket = None
+
     def record_success(self, ticket: int) -> None:
         """Report a successful publish attempt.
 
@@ -348,9 +382,8 @@ class PublishBreaker:
             event_id: Identifier of the event that failed, for the log.
             exc: The exception the publish attempt raised.
             unconfirmed: The event was sent but the broker never acknowledged
-                it (e.g. a RabbitMQ that blocks publishers during a memory or
-                disk alarm stops reading, so the connection close times out;
-                or a Redis reply that timed out after the command was sent).
+                it (e.g. a Redis reply that timed out after the command was
+                sent).
                 It counts as unconfirmed rather than dropped; an unconfirmed
                 probe right after an unconfirmed failure sets the cooldown to
                 the maximum.
