@@ -2131,7 +2131,12 @@ class TaskGraph(BaseModel):
             self._add_chord_dep(group_id, start_id)
         while True:
             node = self.nodes.get(walk.current)
-            if node is None or walk.current in tally.headers:
+            # A task being removed (still in ``nodes``) is as good as gone.
+            if (
+                node is None
+                or walk.current in self._removing
+                or walk.current in tally.headers
+            ):
                 return None
             parent_id = node.reported_parent_id
             if parent_id is None:

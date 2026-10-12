@@ -3088,6 +3088,47 @@ class TestRemoveNode:
         assert "group:g2" not in graph.nodes
         assert graph.root_ids == ["group:g0", "t2"]
 
+    def test_remove_node_callback_being_removed_is_not_found_again_by_its_chord(
+        self,
+    ) -> None:
+        # Removing t9 re-resolves g2, whose headers name t9: the walk used to
+        # find t9 (still in nodes, being removed) and list it under the chord
+        # again, though it was gone a moment later.
+        graph = _build(
+            _ev(
+                "t7",
+                TaskState.REJECTED,
+                name="celery.chord_unlock",
+                parent_id="t5",
+                root_id="t9",
+                group_id="g2",
+            ),
+            _ev("t2", TaskState.RECEIVED, parent_id="t9"),
+            _ev(
+                "t6",
+                TaskState.FAILURE,
+                name="celery.chord_unlock",
+                parent_id="t2",
+                root_id="t0",
+                group_id="g2",
+                chord_callback_id="t9",
+            ),
+            _ev(
+                "t9",
+                TaskState.SUCCESS,
+                parent_id="t7",
+                root_id="t4",
+                group_id="g2",
+                chord_callback_id="t9",
+            ),
+        )
+
+        graph.remove_node("t9")
+
+        assert_graph_invariants(graph)
+        assert "t9" not in graph.nodes
+        assert "t9" not in graph.nodes["group:g2"].children
+
     def test_remove_node_unknown_id_is_ignored(self) -> None:
         graph = _build(_ev("t"))
 
