@@ -97,3 +97,16 @@ class TestLibraryTransportsAlias:
         assert value == 0.5
         # The warning points at the code that used the constant.
         assert record[0].filename == __file__
+
+    @pytest.mark.parametrize(
+        "module", ["stemtrace.transports.rabbitmq", f"{OLD_PACKAGE}.rabbitmq"]
+    )
+    def test_unknown_attribute_raises_attribute_error(self, module: str) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            mod = importlib.import_module(module)
+
+        with pytest.raises(
+            AttributeError, match=f"module '{module}' has no attribute 'NOT_A_NAME'"
+        ):
+            _ = mod.NOT_A_NAME

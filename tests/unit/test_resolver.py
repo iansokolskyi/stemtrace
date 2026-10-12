@@ -3,6 +3,7 @@
 import contextlib
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -45,7 +46,7 @@ class FakeDns:
     """getaddrinfo stand-in: answers from ``answers`` or blocks until released."""
 
     def __init__(self) -> None:
-        self.answers: list[list[AddrInfo] | Exception] = [ADDRESS]
+        self.answers: list[list[AddrInfo] | BaseException] = [ADDRESS]
         self.calls: list[str] = []
         self.release = threading.Event()
         self.release.set()
@@ -56,7 +57,7 @@ class FakeDns:
         try:
             self.release.wait(JOIN_S)
             answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-            if isinstance(answer, Exception):
+            if isinstance(answer, BaseException):
                 raise answer
             return answer
         finally:
@@ -65,6 +66,14 @@ class FakeDns:
 
 def _make(dns: FakeDns, clock: FakeClock, *, ttl: float = 30.0) -> BoundedResolver:
     return BoundedResolver(ttl=ttl, getaddrinfo=dns, monotonic=clock)
+
+
+@pytest.fixture
+def thread_exits(monkeypatch: pytest.MonkeyPatch) -> list[threading.ExceptHookArgs]:
+    """Collect what ends threads with an exception (pytest would fail the test)."""
+    caught: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", caught.append)
+    return caught
 
 
 def _wait_lookup(dns: FakeDns) -> None:
@@ -174,9 +183,31 @@ class TestBoundedResolver:
     def test_failed_first_lookup_raises_its_error(self) -> None:
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [socket.gaierror(socket.EAI_NONAME, "unknown host")]
+        resolver = _make(dns, clock)
 
         with pytest.raises(socket.gaierror, match="unknown host"):
-            _make(dns, clock).resolve("nope.local", 6379, timeout=1.0)
+            resolver.resolve("nope.local", 6379, timeout=1.0)
+
+    def test_lookup_thread_ending_without_an_answer_fails_waiters_and_is_retried(
+        self, thread_exits: list[threading.ExceptHookArgs]
+    ) -> None:
+        """A lookup thread can end with neither answer nor error (here SystemExit):
+        its waiters must not hang, and the next call looks up again at once
+        rather than waiting out a negative TTL."""
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [SystemExit("lookup thread exits"), ADDRESS]
+        resolver = _make(dns, clock)
+
+        with pytest.raises(
+            socket.gaierror, match=r"Could not resolve 'redis\.local'"
+        ) as info:
+            resolver.resolve("redis.local", 6379, timeout=1.0)
+
+        _wait_lookup(dns)
+        assert [exit.exc_type for exit in thread_exits] == [SystemExit]
+        assert info.value.errno == socket.EAI_AGAIN
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local", "redis.local"]
 
     def test_failed_first_lookup_is_retried_after_negative_ttl(self) -> None:
         dns, clock = FakeDns(), FakeClock()
@@ -384,6 +415,24 @@ class TestHelperUsable:
 
     def test_no_fork_is_unusable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delattr(os, "fork", raising=False)
+
+        assert resolver_module._helper_usable() is False
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            OSError("exec failed"),
+            subprocess.TimeoutExpired(["python"], resolver_module.HELPER_CHECK_TIMEOUT),
+        ],
+        ids=["cannot-start", "times-out"],
+    )
+    def test_helper_that_cannot_run_or_answer_is_unusable(
+        self, failure: Exception, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def run_helper(command: list[str], timeout: float) -> tuple[int, bytes]:
+            raise failure
+
+        monkeypatch.setattr(resolver_module, "_run_helper", run_helper)
 
         assert resolver_module._helper_usable() is False
 
@@ -998,11 +1047,65 @@ class TestUwsgiResolvesOnCallingThread:
         self._uwsgi(monkeypatch)
         dns, clock = FakeDns(), FakeClock()
         dns.answers = [UnicodeError("label too long")]
+        resolver = _make(dns, clock)
 
         with pytest.raises(socket.gaierror, match="label too long") as info:
-            _make(dns, clock).resolve("redis.local", 6379, timeout=1.0)
+            resolver.resolve("redis.local", 6379, timeout=1.0)
 
         assert isinstance(info.value.__cause__, UnicodeError)
+
+    def test_uwsgi_resolves_at_once_after_a_lookup_thread_left_no_answer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_exits: list[threading.ExceptHookArgs],
+    ) -> None:
+        dns, clock = FakeDns(), FakeClock()
+        dns.answers = [SystemExit("lookup thread exits"), ADDRESS]
+        resolver = _make(dns, clock)
+        with pytest.raises(socket.gaierror, match="Could not resolve"):
+            resolver.resolve("redis.local", 6379, timeout=1.0)
+        _wait_lookup(dns)
+        assert [exit.exc_type for exit in thread_exits] == [SystemExit]
+        self._uwsgi(monkeypatch)  # the process turns out to run under uWSGI
+
+        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
+        assert dns.calls == ["redis.local", "redis.local"]
+
+
+class TestBoundedResolverForkHooks:
+    """The hooks fork() runs, and what runs them."""
+
+    def test_after_fork_in_parent_without_prepare_releases_nothing(self) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        spawn_lock = resolver_module._spawn_lock()
+
+        resolver.parent_after_fork()  # would raise if it released a lock not held
+
+        assert resolver._state().lock.acquire(blocking=False) is True
+        resolver._state().lock.release()
+        assert spawn_lock.acquire(blocking=False) is True
+        spawn_lock.release()
+
+    def test_register_fork_hooks_wires_the_resolvers_hooks(self) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        registered: list[dict[str, Any]] = []
+
+        resolver_module._register_fork_hooks(
+            resolver, lambda **hooks: registered.append(hooks)
+        )
+
+        assert registered == [
+            {
+                "before": resolver.prepare_fork,
+                "after_in_parent": resolver.parent_after_fork,
+                "after_in_child": resolver.child_after_fork,
+            }
+        ]
+
+    def test_register_fork_hooks_without_register_at_fork_does_nothing(self) -> None:
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+
+        assert resolver_module._register_fork_hooks(resolver, None) is None
 
 
 class _ThreadRecordingDns(FakeDns):

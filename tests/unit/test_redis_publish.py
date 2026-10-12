@@ -449,6 +449,7 @@ class FakeResolver:
     def __init__(self, answer: list[tuple[Any, ...]] | Exception) -> None:
         self.answer = answer
         self.calls: list[tuple[str, int, float]] = []
+        self.invalidated: list[tuple[str, int]] = []
 
     def resolve(
         self, host: str, port: int, *args: Any, timeout: float
@@ -457,6 +458,9 @@ class FakeResolver:
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
+
+    def invalidate(self, host: str, port: int, *args: Any) -> None:
+        self.invalidated.append((host, port))
 
 
 class TestRedisPublishConnectionResolvesWithBound:
@@ -488,6 +492,93 @@ class TestRedisPublishConnectionResolvesWithBound:
         connection_class = transport.publish_client.connection_pool.connection_class
 
         assert not hasattr(connection_class, "_resolved_addresses")
+
+
+def _tcp_entry(address: tuple[str, int]) -> tuple[Any, ...]:
+    """A getaddrinfo() entry for an IPv4 TCP address."""
+    return (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", address)
+
+
+class TestRedisPublishConnectionTriesResolvedAddresses:
+    """The publish connection connects to the first resolved address that accepts."""
+
+    @staticmethod
+    def _connection(monkeypatch: pytest.MonkeyPatch, resolver: FakeResolver) -> Any:
+        monkeypatch.setattr(redis_transport, "PUBLISH_RESOLVER", resolver)
+        transport = RedisTransport.from_url("redis://redis.test:6379/0")
+        return transport.publish_client.connection_pool.make_connection()
+
+    def test_connect_falls_back_to_next_address_after_refusal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        listener: socket.socket,
+        refused_address: tuple[str, int],
+    ) -> None:
+        resolver = FakeResolver(
+            [_tcp_entry(refused_address), _tcp_entry(listener.getsockname())]
+        )
+        connection = self._connection(monkeypatch, resolver)
+
+        sock = connection._connect()
+
+        try:
+            assert sock.getpeername() == listener.getsockname()
+            assert sock.gettimeout() == PUBLISH_SOCKET_TIMEOUT
+        finally:
+            sock.close()
+        assert resolver.invalidated == []
+
+    def test_connect_without_keepalive_sets_no_keepalive_option(
+        self, monkeypatch: pytest.MonkeyPatch, listener: socket.socket
+    ) -> None:
+        resolver = FakeResolver([_tcp_entry(listener.getsockname())])
+        connection = self._connection(monkeypatch, resolver)
+        connection.socket_keepalive = False
+
+        sock = connection._connect()
+
+        try:
+            assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 0
+        finally:
+            sock.close()
+
+    def test_connect_when_every_address_refuses_raises_and_refreshes(
+        self, monkeypatch: pytest.MonkeyPatch, refused_address: tuple[str, int]
+    ) -> None:
+        resolver = FakeResolver([_tcp_entry(refused_address)])
+        connection = self._connection(monkeypatch, resolver)
+
+        with pytest.raises(ConnectionRefusedError):
+            connection._connect()
+
+        assert resolver.invalidated == [("redis.test", 6379)]
+
+    def test_connect_when_socket_cannot_be_created_raises_and_refreshes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolver = FakeResolver([_tcp_entry(("127.0.0.1", 6379))])
+        connection = self._connection(monkeypatch, resolver)
+
+        def no_descriptors(*args: Any) -> Any:
+            raise OSError(24, "Too many open files")
+
+        monkeypatch.setattr(socket, "socket", no_descriptors)
+
+        with pytest.raises(OSError, match="Too many open files"):
+            connection._connect()
+
+        assert resolver.invalidated == [("redis.test", 6379)]
+
+    def test_connect_with_no_addresses_raises_and_refreshes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolver = FakeResolver([])
+        connection = self._connection(monkeypatch, resolver)
+
+        with pytest.raises(OSError, match="No address to connect to"):
+            connection._connect()
+
+        assert resolver.invalidated == [("redis.test", 6379)]
 
 
 class _Abstract45Like:
@@ -528,6 +619,17 @@ class _Unix50Like(_Abstract45Like):
         del socket_timeout
         super().__init__(**kwargs)
         self.path = path
+
+
+class _KwargsOnly:
+    """A connection class whose __init__ takes only ``**kwargs`` (up to object)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.received = kwargs
+
+
+class _InheritsInit(_Unix41Like):
+    """A subclass with no __init__ of its own: the base's keywords apply."""
 
 
 class TestPublishConnectionKeywordCompatibility:
@@ -631,3 +733,38 @@ class TestPublishConnectionDroppedOptions:
         cls(path="/tmp/redis.sock", socket_timeout=1.0, socket_connect_timeout=1.0)
 
         assert _warnings(caplog) == []
+
+    def test_class_without_own_init_takes_the_keywords_of_its_base(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cls = redis_transport._publish_connection_class(_InheritsInit)
+
+        connection = cls(path="/tmp/redis.sock", db=2, sockt_timeout="5")
+
+        assert (connection.path, connection.db) == ("/tmp/redis.sock", 2)
+        assert [r.getMessage() for r in _warnings(caplog)] == [
+            "Redis URL option(s) not accepted by redis-py's _InheritsInit (unknown "
+            "or unsupported option), ignored for publishing: sockt_timeout"
+        ]
+
+    def test_kwargs_only_init_passes_every_option_through_unwarned(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cls = redis_transport._publish_connection_class(_KwargsOnly)
+
+        connection = cls(socket_timeout=PUBLISH_SOCKET_TIMEOUT, anything="goes")
+
+        assert connection.received == {
+            "socket_timeout": PUBLISH_SOCKET_TIMEOUT,
+            "anything": "goes",
+        }
+        assert connection.socket_timeout == PUBLISH_SOCKET_TIMEOUT
+        assert _warnings(caplog) == []
+
+    def test_timeouts_not_given_are_left_to_the_base_class(self) -> None:
+        cls = redis_transport._publish_connection_class(_Unix41Like)
+
+        connection = cls(path="/tmp/redis.sock")
+
+        assert connection.socket_timeout is None
+        assert not hasattr(connection, "socket_connect_timeout")
