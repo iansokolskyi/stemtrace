@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
+from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.rabbitmq_publisher import (
     PublishDroppedError,
@@ -407,7 +408,9 @@ class RabbitMQTransport:
         """Publish an event to RabbitMQ.
 
         Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. Events go out on one connection per process that
+        dropped, not queued. The one exception is Celery's control flow, e.g.
+        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
+        propagates and is not counted as a broker failure. Events go out on one connection per process that
         is kept between publishes. An attempt that has to connect tries each
         host of the URL once, with CONNECT_TIMEOUT to connect and
         PUBLISH_IO_TIMEOUT per socket operation after that; a connection the
@@ -447,7 +450,14 @@ class RabbitMQTransport:
         except PublishDroppedError:
             # Skipped or starved of the connection: not evidence about the broker.
             breaker.record_dropped(ticket)
-        except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
+        # Fire-and-forget: any kombu error feeds the breaker, never the task.
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                # A soft time limit landed mid-publish: the task's, not a
+                # broker fault. The publisher has already discarded the
+                # connection (_publish_locked); free the breaker slot.
+                breaker.record_interrupted(ticket)
+                raise
             breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:
             breaker.record_success(ticket)

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TextIO, cast
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import LoggingProxy, get_task_logger
 
 from stemtrace.library import output_capture
@@ -337,6 +338,37 @@ class TestTaskOutputHandler:
         handler.emit(record)
         assert stop_capture("t1") is None
 
+    def test_soft_time_limit_while_formatting_a_record_propagates(self) -> None:
+        """Celery's control flow raised into the task is not a capture failure."""
+
+        class InterruptedFormatter(logging.Formatter):
+            def format(self, record: logging.LogRecord) -> str:
+                raise SoftTimeLimitExceeded
+
+        handler = TaskOutputHandler()
+        handler.setFormatter(InterruptedFormatter())
+        record = logging.LogRecord("myapp", logging.INFO, __file__, 1, "x", (), None)
+        start_capture("t1", max_bytes=100)
+        try:
+            with pytest.raises(SoftTimeLimitExceeded):
+                handler.emit(record)
+        finally:
+            stop_capture("t1")
+
+    def test_soft_time_limit_while_forwarding_to_last_resort_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def interrupted(record: logging.LogRecord) -> None:
+            raise SoftTimeLimitExceeded
+
+        monkeypatch.setattr(
+            TaskOutputHandler, "_forward_to_last_resort", staticmethod(interrupted)
+        )
+        record = logging.LogRecord("myapp", logging.INFO, __file__, 1, "x", (), None)
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            TaskOutputHandler().emit(record)
+
 
 class TestInstall:
     """Tests for installing the handler and tee."""
@@ -416,6 +448,38 @@ class TestTee:
         print("hello")
         assert stop_capture("t1") == "hello"
         assert original.getvalue() == "hello\n"
+
+    def test_soft_time_limit_during_tee_lookup_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Celery's control flow is not swallowed by the tee's fail-open lookup."""
+
+        def interrupted() -> logging.LogRecord:
+            raise SoftTimeLimitExceeded
+
+        monkeypatch.setattr(output_capture, "_record_being_emitted", interrupted)
+        tee = TeeStream(io.StringIO())
+        start_capture("t1", max_bytes=100)
+        try:
+            with pytest.raises(SoftTimeLimitExceeded):
+                tee.write("hello")
+        finally:
+            stop_capture("t1")
+
+    def test_soft_time_limit_while_appending_to_the_buffer_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def interrupted(self: OutputBuffer, text: str) -> None:
+            raise SoftTimeLimitExceeded
+
+        monkeypatch.setattr(OutputBuffer, "append", interrupted)
+        tee = TeeStream(io.StringIO())
+        start_capture("t1", max_bytes=100)
+        try:
+            with pytest.raises(SoftTimeLimitExceeded):
+                tee.write("hello")
+        finally:
+            stop_capture("t1")
 
     def test_stderr_is_teed_into_same_buffer(
         self, monkeypatch: pytest.MonkeyPatch

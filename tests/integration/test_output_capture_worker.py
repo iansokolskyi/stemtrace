@@ -165,6 +165,33 @@ def unconfigured_logging_worker(
     )
 
 
+@pytest.fixture(scope="module")
+def prefork_worker(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[WorkerRun]:
+    """A prefork worker, the pool whose children receive soft time limits."""
+    yield from _start_worker(
+        "prefork",
+        {"OUTPUT_TEST_REDIRECT": "0"},
+        tmp_path_factory.mktemp("worker-soft-limit"),
+    )
+
+
+def test_soft_time_limit_inside_the_capture_reaches_the_task(
+    prefork_worker: WorkerRun,
+) -> None:
+    """SoftTimeLimitExceeded raised while print() is captured fails the task."""
+    task_id = prefork_worker.send("output_test.soft_limited")
+
+    events = prefork_worker.wait_for(task_id, TaskState.FAILURE)
+
+    failure = next(e for e in events if e.state == TaskState.FAILURE)
+    assert failure.exception is not None
+    assert "SoftTimeLimitExceeded" in failure.exception
+    assert TaskState.SUCCESS not in {e.state for e in events}
+    assert "the soft time limit was swallowed" not in (failure.output or "")
+
+
 def test_print_and_loggers_are_captured_on_success(worker: WorkerRun) -> None:
     """print() (stdout and stderr), get_task_logger and a module logger all land."""
     task_id = worker.send("output_test.noisy")

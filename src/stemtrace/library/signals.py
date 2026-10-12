@@ -20,6 +20,7 @@ from celery.signals import (
 )
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
+from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.core.ports import ClosableTransport, EventTransport
 from stemtrace.library.config import get_config
 from stemtrace.library.output_capture import (
@@ -85,14 +86,25 @@ def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
 
 
 def _publish_event(event: TaskEvent) -> None:
-    """Publish event via transport. Fire-and-forget: logs errors, never raises."""
+    """Publish event via transport. Fire-and-forget: logs errors, never raises.
+
+    The exception is Celery's own control flow (see ``is_task_interrupt``),
+    which propagates.
+    """
     if _transport is None:
         logger.warning("stemtrace not initialized, event dropped: %s", event.task_id)
         return
 
     try:
         _transport.publish(event)
-    except Exception:
+    except Exception as exc:
+        if is_task_interrupt(exc):
+            # Celery's control flow (a soft time limit raised into the task
+            # while it published) is not a publish failure. Celery's own signal
+            # dispatcher, which calls this handler, logs and swallows what a
+            # receiver raises, so this keeps stemtrace from swallowing it, not
+            # Celery.
+            raise
         logger.warning(
             "Failed to publish event for task %s", event.task_id, exc_info=True
         )

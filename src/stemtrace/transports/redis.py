@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
+from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
@@ -566,7 +567,10 @@ class RedisTransport:
         """Publish an event to the Redis stream.
 
         Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. With a transport from from_url(), an attempt
+        dropped, not queued. The one exception is Celery's control flow, e.g.
+        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
+        propagates and is not counted as a broker failure. With a transport
+        from from_url(), an attempt
         takes at most PUBLISH_CONNECT_TIMEOUT to resolve the host when it has
         no cached address, PUBLISH_CONNECT_TIMEOUT per address to connect,
         and PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
@@ -607,7 +611,14 @@ class RedisTransport:
                 approximate=True,
             )
         # Fire-and-forget: any redis-py error feeds the breaker, never the task.
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                # A soft time limit landed mid-publish: the task's, not a
+                # broker fault. redis-py drops the connection on it (it
+                # disconnects on BaseException), so the next publish starts
+                # clean; the breaker slot is freed without a failure.
+                breaker.record_interrupted(ticket)
+                raise
             breaker.record_failure(
                 ticket,
                 self._event_identifier(event),
