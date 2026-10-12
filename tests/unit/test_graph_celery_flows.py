@@ -365,30 +365,45 @@ def _causal_orders(
     sender emitted before that - but possibly before its own PENDING
     (after_task_publish fires once the broker accepted the message, and a
     fast worker can report first). Otherwise processes interleave freely.
+
+    An ID ``task.replace()`` reuses carries one task per announcement (a
+    new attempt-0 PENDING after the previous task's worker events): each
+    runs in its own process, once its own sender published it.
     """
     task_ids = {e["task_id"] for e in events}
-
-    def producer(event: dict[str, Any]) -> str:
-        if event["state"] != "PENDING":
-            return event["task_id"]
-        parent = event["parent_id"]
-        return parent if parent in task_ids else "client"
-
+    runs: Counter[str] = Counter()
+    started: set[str] = set()
+    producers: list[str] = []
     # A task's worker stream waits until its sender emitted this many events.
     gate: dict[str, tuple[str, int]] = {}
     position: dict[str, int] = {}
     for event in events:
-        name = producer(event)
-        if event["state"] == "PENDING" and event["task_id"] not in gate:
-            gate[event["task_id"]] = (name, position.get(name, 0))
+        task_id = event["task_id"]
+        pending = event["state"] == "PENDING"
+        if pending and event["retries"] == 0 and task_id in started:
+            runs[task_id] += 1  # the next task under a reused ID
+            started.discard(task_id)
+        elif not pending:
+            started.add(task_id)
+        parent = event["parent_id"]
+        if not pending:
+            name = f"{task_id}#{runs[task_id]}"
+        elif parent in task_ids:
+            name = f"{parent}#{runs[parent]}"
+        else:
+            name = "client"
+        own = f"{task_id}#{runs[task_id]}"
+        if pending and own not in gate:
+            gate[own] = (name, position.get(name, 0))
         position[name] = position.get(name, 0) + 1
+        producers.append(name)
 
     orders = []
     for seed in range(count):
         rng = random.Random(seed)
         streams: dict[str, list[dict[str, Any]]] = {}
-        for event in events:
-            streams.setdefault(producer(event), []).append(event)
+        for event, name in zip(events, producers, strict=True):
+            streams.setdefault(name, []).append(event)
         emitted = dict.fromkeys(streams, 0)
         order: list[dict[str, Any]] = []
         while any(streams.values()):
