@@ -23,7 +23,8 @@ __all__ = [
     "PUBLISH_FAILURE_LOG_INTERVAL",
     "PUBLISH_IO_TIMEOUT",
     "PUBLISH_PROBE_TIMEOUT",
-    "PUBLISH_SLOW_ATTEMPT",  # noqa: F822  deprecated, served by __getattr__ (warns)
+    # Deprecated: served by __getattr__ (which warns), so not a module global.
+    "PUBLISH_SLOW_ATTEMPT",  # noqa: F822
     "RECONNECT_INITIAL_BACKOFF",
     "RECONNECT_MAX_BACKOFF",
     "RabbitMQTransport",

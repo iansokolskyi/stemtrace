@@ -116,7 +116,7 @@ class _Entry:
     """Cached answer for one lookup key, and the lookup in flight for it."""
 
     addresses: list[AddrInfo] | None = None
-    error: Exception | None = None
+    error: OSError | None = None
     # When the answer (or the last failed refresh) is due for a refresh.
     refresh_at: float = 0.0
     # Set when the lookup in flight ends; None when none is running.
@@ -675,7 +675,7 @@ def _call_getaddrinfo(
         ) from exc
 
 
-def _fresh(error: Exception) -> Exception:
+def _fresh(error: OSError) -> OSError:
     """A new exception like ``error``, so re-raising never grows one traceback."""
     new = copy.copy(error)
     new.__cause__ = error.__cause__

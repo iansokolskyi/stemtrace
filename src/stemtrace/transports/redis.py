@@ -238,16 +238,19 @@ def _publish_bases(connection_class: type[Any]) -> tuple[type[Any], ...]:
     """Base classes for the publish subclass: add the resolver hook for TCP/TLS."""
     from redis.connection import Connection, UnixDomainSocketConnection
 
-    if issubclass(connection_class, UnixDomainSocketConnection):
-        # A Connection subclass in redis-py 4.x, but there is no host to resolve.
-        return (connection_class,)
-    if connection_class is Connection:
-        return (_resolved_connect_mixin(),)
-    if issubclass(connection_class, Connection):
+    # A Unix socket class (a Connection subclass in redis-py 4.x) has no host
+    # to resolve, and a class that isn't a Connection has no _connect() to hook.
+    resolves_host = issubclass(connection_class, Connection) and not issubclass(
+        connection_class, UnixDomainSocketConnection
+    )
+    bases: list[type[Any]] = []
+    if connection_class is not Connection:
+        bases.append(connection_class)
+    if resolves_host:
         # E.g. SSLConnection: its _connect() calls super()._connect(), which
         # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.
-        return (connection_class, _resolved_connect_mixin())
-    return (connection_class,)
+        bases.append(_resolved_connect_mixin())
+    return tuple(bases)
 
 
 def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]:
@@ -603,7 +606,8 @@ class RedisTransport:
                 maxlen=self._maxlen,
                 approximate=True,
             )
-        except Exception as exc:  # noqa: BLE001  fire-and-forget: any redis-py error feeds the breaker, never the task
+        # Fire-and-forget: any redis-py error feeds the breaker, never the task.
+        except Exception as exc:  # noqa: BLE001
             breaker.record_failure(
                 ticket,
                 self._event_identifier(event),

@@ -804,7 +804,7 @@ class TestPublishBreakerConsecutiveFailureCounter:
     """The failure run is counted under the lock from every thread."""
 
     def test_concurrent_successes_and_failures_write_counter_under_lock(
-        self,
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         clock = FakeClock()
         breaker = _LockCheckingBreaker(
@@ -820,7 +820,7 @@ class TestPublishBreakerConsecutiveFailureCounter:
             monotonic=clock,
         )
         breaker._lock = _OwnedLock()  # type: ignore[assignment]  # instrumented stand-in
-        _LockCheckingBreaker.unlocked_writes = 0
+        monkeypatch.setattr(_LockCheckingBreaker, "unlocked_writes", 0)
         previous_interval = sys.getswitchinterval()
         sys.setswitchinterval(1e-6)  # switch threads as often as possible
         start = threading.Barrier(16)
@@ -901,19 +901,21 @@ class TestPublishBreakerDeprecatedArguments:
     """Arguments of the removed slow-failure rule are accepted and ignored."""
 
     def test_slow_attempt_argument_warns_and_is_ignored(self) -> None:
+        logger, clock = logging.getLogger(LOGGER_NAME), FakeClock()
+
         with pytest.warns(
             DeprecationWarning, match=r"slow_attempt=\.\.\.\) is deprecated"
         ):
             breaker = PublishBreaker(
                 "TestBroker",
-                logger=logging.getLogger(LOGGER_NAME),
+                logger=logger,
                 initial_cooldown=1.0,
                 max_cooldown=30.0,
                 log_interval=60.0,
                 probe_timeout=60.0,
                 slow_attempt=0.5,
                 failures_to_open=3,
-                monotonic=FakeClock(),
+                monotonic=clock,
             )
 
         breaker.record_failure(_take(breaker), "evt", _error())
@@ -921,8 +923,9 @@ class TestPublishBreakerDeprecatedArguments:
 
     def test_elapsed_argument_warns_and_is_ignored(self) -> None:
         breaker = _make_breaker(FakeClock(), failures_to_open=3)
+        ticket, error = _take(breaker), _error()
 
         with pytest.warns(DeprecationWarning, match=r"elapsed=\.\.\.\) is deprecated"):
-            breaker.record_failure(_take(breaker), "evt", _error(), elapsed=5.0)
+            breaker.record_failure(ticket, "evt", error, elapsed=5.0)
 
         assert breaker.is_open is False
