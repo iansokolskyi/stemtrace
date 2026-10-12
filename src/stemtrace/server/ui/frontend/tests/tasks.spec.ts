@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import { createFailedTask, createSuccessTask } from './fixtures/mock-data'
@@ -150,5 +150,59 @@ test.describe('Tasks Page - Mock Scenarios', () => {
     // The badge has class 'task-state-badge' and contains FAILURE text
     const failureBadge = page.locator('.task-state-badge:has-text("FAILURE")')
     await expect(failureBadge).toBeVisible()
+  })
+})
+
+test.describe('Tasks Page - exact task filter', () => {
+  // Opened by the registry's "View runs", here straight from the URL
+  test.skip(isRealMode, 'Mock-only test')
+
+  async function openWithExactName(page: Page) {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    mockApi.addTasks([
+      createSuccessTask('app.add'),
+      createSuccessTask('app.add_numbers'),
+      createFailedTask('app.add', 'ValueError: boom', 'Traceback...'),
+    ])
+    await page.goto('/?state=SUCCESS&name=app&name_exact=app.add')
+  }
+
+  const rows = (page: Page) => page.locator('a[href^="/tasks/"]')
+  const chip = (page: Page) =>
+    page.locator('span', { has: page.getByRole('button', { name: 'Remove task filter' }) })
+
+  test('shows the task name as a chip and lists only that task', async ({ page }) => {
+    await openWithExactName(page)
+
+    await expect(chip(page)).toHaveText(/^Task:\s*app\.add\s*×$/)
+    // The SUCCESS run of app.add: not app.add_numbers, not the failed run
+    await expect(rows(page)).toHaveCount(1)
+    await expect(rows(page).first()).toContainText('app.add')
+    await expect(rows(page).first()).not.toContainText('app.add_numbers')
+  })
+
+  test('removing the chip keeps the state and name filters', async ({ page }) => {
+    await openWithExactName(page)
+
+    await page.getByRole('button', { name: 'Remove task filter' }).click()
+
+    await expect(chip(page)).toHaveCount(0)
+    await expect(rows(page)).toHaveCount(2)
+    const search = new URL(page.url()).searchParams
+    expect(search.get('state')).toBe('SUCCESS')
+    expect(search.get('name')).toBe('app')
+    expect(search.has('name_exact')).toBe(false)
+  })
+
+  test('Clear removes the chip with the other filters', async ({ page }) => {
+    await openWithExactName(page)
+
+    await page.getByRole('button', { name: 'Clear' }).click()
+
+    await expect(chip(page)).toHaveCount(0)
+    const search = new URL(page.url()).searchParams
+    expect(search.has('name_exact')).toBe(false)
+    expect(search.has('state')).toBe(false)
+    expect(search.has('name')).toBe(false)
   })
 })
