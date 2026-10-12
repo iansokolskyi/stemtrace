@@ -2084,6 +2084,7 @@ class TaskGraph(BaseModel):
         body = self.nodes.get(_body_node_id(group_id))
         if body is not None:
             self._unlink(body)
+            self._set_awaited(body.task_id, None)
             if self._callback_of.get(body.task_id) == group_id:
                 del self._callback_of[body.task_id]
             del self.nodes[body.task_id]

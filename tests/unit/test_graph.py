@@ -2976,6 +2976,40 @@ class TestRemoveNode:
         assert graph._callback_of == {}
         assert graph.nodes["cb"].parent_id is None
 
+    def test_remove_node_member_of_group_body_forgets_the_dropped_body_node(
+        self,
+    ) -> None:
+        # t2 is a header that names its own group as callback, so the two
+        # tasks stamped with the group ID are a group body, drawn in
+        # "group:g:body" under the chord. The chord's parent t0 is missing:
+        # the chord waits for it.
+        graph = _build(
+            _ev("t7", TaskState.SUCCESS, parent_id="t2", group_id="g"),
+            _ev("t3", TaskState.STARTED, parent_id="t2", group_id="g"),
+            _ev(
+                "t2",
+                TaskState.RETRY,
+                parent_id="t0",
+                group_id="g",
+                chord_callback_id="g",
+            ),
+        )
+        assert "group:g:body" in graph.nodes
+
+        graph.remove_node("t3")
+
+        # One task is no group body: the body node is gone, and no longer waits.
+        assert_graph_invariants(graph)
+        assert "group:g:body" not in graph.nodes
+        assert set(graph._awaiting_parent["t0"]) == {"group:g"}
+        assert set(graph._awaited_by) == {"group:g"}
+
+        graph.add_event(_ev("t0", TaskState.RECEIVED))
+
+        assert_graph_invariants(graph)
+        assert graph._awaiting_parent == {}
+        assert graph.nodes["t0"].children == ["group:g"]
+
     def test_remove_node_unknown_id_is_ignored(self) -> None:
         graph = _build(_ev("t"))
 

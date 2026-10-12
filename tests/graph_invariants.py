@@ -1,6 +1,12 @@
 """Structural invariants of a TaskGraph, shared by graph and store tests."""
 
-from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
+from stemtrace.core.graph import (
+    NodeType,
+    TaskGraph,
+    TaskNode,
+    _body_node_id,
+    _group_node_id,
+)
 
 
 def _is_callback_edge(parent: TaskNode, child_id: str) -> bool:
@@ -61,6 +67,67 @@ def _check_reachable(graph: TaskGraph, starts: set[str]) -> None:
     assert reached == set(graph.nodes), f"unreachable: {set(graph.nodes) - reached}"
 
 
+def _check_group_indexes(graph: TaskGraph) -> None:
+    """Group tallies, group nodes and chains agree with the nodes."""
+    nodes = graph.nodes
+    for group_id, tally in graph._groups.items():
+        assert set(tally.members) <= set(nodes), (group_id, "member not in nodes")
+        assert set(tally.headers) <= set(tally.members), (group_id, "stray header")
+    for node_id, node in nodes.items():
+        if node.group_id is None:
+            continue
+        tally = graph._groups.get(node.group_id)
+        assert tally is not None, f"{node_id} is in a group without a tally"
+        if node.node_type == NodeType.TASK:
+            assert node_id in tally.members, f"{node_id} is not its group's member"
+    for member_id, links in graph._chain_of.items():
+        assert member_id in nodes, f"chain of missing member {member_id}"
+        for position, link_id in enumerate(links):
+            assert link_id in nodes, f"missing chain link {link_id}"
+            assert graph._link_owner.get(link_id) == member_id, link_id
+            assert graph._link_pos.get(link_id) == position, link_id
+    for link_id, member_id in graph._link_owner.items():
+        assert link_id in graph._chain_of.get(member_id, []), link_id
+        member = nodes[member_id]
+        assert member.group_id is not None, member_id
+        assert member_id in graph._groups[member.group_id].counted(), member_id
+        assert _group_node_id(member.group_id) in nodes, member_id
+
+
+def _check_chord_indexes(graph: TaskGraph) -> None:
+    """Chord callbacks, unlock tasks and group bodies agree with the nodes."""
+    nodes = graph.nodes
+    for node_id, node in nodes.items():
+        if node.node_type == NodeType.CHORD and node.chord_id is not None:
+            assert node.chord_id in node.children, f"{node_id} hides its callback"
+    for callback_id, group_id in graph._callback_of.items():
+        chord = nodes.get(_group_node_id(group_id))
+        assert chord is not None, (callback_id, group_id, "callback of no chord")
+        assert chord.chord_id == callback_id, (callback_id, group_id)
+    assert {u: g for g, u in graph._unlock_by_chord.items()} == graph._unlock_of
+    for group_id, members in graph._body_members.items():
+        assert _body_node_id(group_id) in nodes, f"{group_id} lost its body node"
+        for member_id in members:
+            assert graph._body_of.get(member_id) == group_id, member_id
+    for member_id, group_id in graph._body_of.items():
+        assert member_id in graph._body_members[group_id], member_id
+
+
+def _check_missing_parent_indexes(graph: TaskGraph) -> None:
+    """Nodes waiting for a missing parent are listed both ways and exist."""
+    assert set(graph._awaited_by) <= set(graph.nodes), "waiting node is gone"
+    for parent_id, waiting in graph._awaiting_parent.items():
+        for child_id in waiting:
+            assert graph._awaited_by.get(child_id) == parent_id, child_id
+    for child_id, parent_id in graph._awaited_by.items():
+        assert child_id in graph._awaiting_parent[parent_id], child_id
+    for walked, walkers in graph._walk_deps.items():
+        for walker in walkers:
+            node = graph.nodes.get(walker)
+            assert node is not None, (walked, walker, "walker is gone")
+            assert node.node_type == NodeType.TASK, (walked, walker)
+
+
 def assert_graph_invariants(graph: TaskGraph) -> None:
     """Fail if the graph's links are inconsistent.
 
@@ -68,7 +135,10 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
     is a root; ``children`` lists have no duplicates, no dangling IDs and no
     self-links, and agree with ``parent_id`` (except a CHORD's callback
     edge); no node is its own ancestor; each node is a root or listed in
-    exactly its parent's children; every node is reachable from a root.
+    exactly its parent's children; every node is reachable from a root. The
+    internal indexes (group tallies, chains, chord callbacks and unlock tasks,
+    group bodies, missing-parent waits, replacement walks) name live nodes and
+    agree with each other.
     """
     roots = _check_roots(graph)
     listed_in = _check_children(graph)
@@ -82,3 +152,6 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
             assert listed_in[node_id] == [node.parent_id], (node_id, listed_in)
         _check_no_cycle(graph, node_id)
     _check_reachable(graph, roots)
+    _check_group_indexes(graph)
+    _check_chord_indexes(graph)
+    _check_missing_parent_indexes(graph)
