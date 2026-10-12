@@ -1048,6 +1048,44 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
   })
 
+  test('shows a new task in view once its size is known, however late that is', async ({
+    page,
+  }) => {
+    // React Flow learns a node's size from a ResizeObserver: report it late
+    await page.addInitScript(() => {
+      const Native = window.ResizeObserver
+      window.ResizeObserver = class extends Native {
+        constructor(callback: ResizeObserverCallback) {
+          super((entries, observer) => {
+            setTimeout(() => callback(entries, observer), 600)
+          })
+        }
+      }
+    })
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const { push } = await openLiveGraph(page, first.task_id)
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+    // A second update lands before the first new node's size is known
+    const [, , , fourth] = createChain('app.flow', 4)
+    fourth.task_id = `${first.task_id.slice(0, -4)}eeee`
+    fourth.root_id = first.task_id
+    fourth.parent_id = third.task_id
+    third.children.push(fourth.task_id)
+    mockApi.addTask(fourth)
+    await push(fourth)
+
+    // A node is hidden until it is measured, and only then does a re-fit count: before
+    // that the view is the unfitted one, which shows a node this near the origin
+    await expect(graphNode(page, fourth.task_id)).toBeVisible({ timeout: 10_000 })
+    await settledViewport(page)
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 0.95 })
+    await expect(graphNode(page, fourth.task_id)).toBeInViewport({ ratio: 0.95 })
+  })
+
   test('leaves a node under the cursor while an update arrives mid-drag', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()

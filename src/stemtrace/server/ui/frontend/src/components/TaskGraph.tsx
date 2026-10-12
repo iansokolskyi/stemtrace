@@ -626,11 +626,15 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
     }
   }, [layout, setNodes, setEdges])
 
-  // Fit once React Flow holds the new nodes: asked any earlier (in the effect
-  // above, where setNodes has only been queued) fitView fits the old ones.
+  // Fit once React Flow holds the new nodes, measured: asked any earlier (in
+  // the effect above, where setNodes has only been queued) fitView fits the old ones.
   useEffect(() => {
     if (fitWhenHolding.current === null || dragging) return
     if (nodes.map((node) => node.id).join() !== fitWhenHolding.current) return
+    // A fit made before every node has a size misses the unmeasured ones
+    // (observed with sizes that arrive late); each measurement changes `nodes`
+    // and brings this effect back
+    if (nodes.some((node) => !node.measured?.width || !node.measured?.height)) return
     fitWhenHolding.current = null
     void flow.current?.fitView(FIT_VIEW_OPTIONS)
   }, [nodes, dragging])
