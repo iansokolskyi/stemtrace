@@ -283,8 +283,10 @@ export function createGroup(
         }),
       ],
     }
-    // As the server sends it: the CHORD names its callback (chord_id) and
-    // lists it among its children, which draws the header -> callback edges
+    // As the server sends it: the CHORD names its callback (chord_id) and lists it
+    // among its children, and the header tasks do not list the callback themselves.
+    // The graph view only draws the header-task-to-callback edges (and the callback
+    // node) when it finds the callback through the CHORD.
     groupNode.chord_id = callback_id
     groupNode.children.push(callback_id)
     allTasks.push(callback)

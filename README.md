@@ -377,32 +377,101 @@ again once events are re-consumed.
 
 - **Redis (Streams)**: On restart, the server can rebuild state by replaying events that are
   still retained in the stream (bounded by `ttl` / stream trimming).
+  - Events that can't be published to Redis are dropped, not buffered on the worker. Workers
+    publish through their own connection with a 2s connect timeout (per address the host name
+    resolves to), 2s per read or write and no redis-py retries (`socket_timeout` and
+    `socket_connect_timeout` in the broker URL apply to the server's consumer, not to
+    publishing). Any reply slower than 2s counts as a failure. A single failure loses only its
+    own event; three failures in a row (timeouts included) make the worker skip publishing for a
+    cooldown that grows from 1s to 30s and resets on the next successful publish. So when Redis
+    hangs or becomes unreachable, each worker process makes at most three bounded attempts
+    (about 2s each per address, plus any attempts its other threads already had in flight) and
+    then one per cooldown, instead of waiting 5s (redis-py's default) for every event.
+  - An event whose reply timed out (or whose connection dropped) after it was sent counts as
+    "sent but unconfirmed", not dropped: Redis may still have written it, e.g. after a stall
+    longer than 2s (a slow Lua script, a fork for `BGSAVE`, a failover). If the retry after
+    such failures loses its reply too, the next retry waits the full 30s. An error reply
+    (e.g. `LOADING`, `NOAUTH`, `OOM`) means Redis rejected the event: it counts as dropped.
+  - Workers resolve the broker's host name in a background thread and wait at most the 2s
+    connect timeout for it, so an unreachable DNS resolver costs an attempt about 2s too (it
+    would otherwise block for the resolver's own timeouts, measured at 20s). Answers are cached
+    per process for 30s and refreshed in the background, keeping the last answer while DNS
+    fails; a failed lookup with no earlier answer is retried after 5s. So a process looks a
+    host up when it first publishes, then about once per 30s while it keeps publishing, after
+    a failed connect, and at most every 5s while lookups fail. When connecting to every cached
+    address fails, the answer is refreshed right away, so after a DNS failover the next attempt
+    (at the latest the first retry after the breaker's cooldown) uses the new address; a host
+    that moved while its old address still accepts connections is picked up within the 30s
+    cache time. TLS behavior is unchanged.
+  - A process that forks while a lookup thread is inside glibc's DNS code can hand the child
+    a lock that deadlocks it. So the forking process (the Celery prefork master, not the pool
+    children or web workers) waits up to 1s for its lookups before each fork, and after its
+    first fork it resolves in a short-lived helper process instead (the same Python, so the
+    same `/etc/hosts`, `resolv.conf` and name services), which never holds such a lock. Each
+    such lookup starts a Python process: about 60-80ms in a `python:3.13-slim` container on an
+    unloaded host, more on a small CPU share. Where the helper can't run (a frozen app), the
+    forking process keeps resolving in-process and
+    every fork waits up to 1s while a lookup that started less than 5s ago (glibc's per-try
+    timeout), or that no fork waited for yet, is in flight; stemtrace logs a warning once. A
+    helper is never started while the process forks, so a child can't inherit its pipes.
+  - Under uWSGI (or pyuwsgi), stemtrace resolves on the calling thread, without the 2s bound,
+    in every uWSGI process (master or not, workers, mules, spoolers, lazy apps), as before
+    0.3.11: with a dead DNS resolver a publish waits for the resolver's own timeouts (20s
+    measured). uWSGI forks in C without running Python's fork hooks (unless started with
+    `--py-call-uwsgi-fork-hooks`, which stemtrace doesn't act on), and any of its processes
+    may fork (the master, the first process when there is no `--master`, or app code calling
+    `os.fork()`), so a fork can't wait for lookup threads. These processes therefore start no
+    lookup thread or helper process at all, and concurrent threads resolving the same host each
+    run their own lookup. After a failed connect, the next publish
+    re-resolves on its own thread rather than in the background. A background thread of the
+    app that publishes can still be inside glibc's DNS code during a fork: the same exposure
+    as that thread's own broker lookups (pyuwsgi 2.0.30 runs threads without
+    `--enable-threads`). On Windows (no fork) lookups always run in-process.
+  - Once a forking process uses the helper, it resolves with the system's resolver in a new
+    Python process, so a monkeypatched `socket.getaddrinfo` (a custom resolver shim, or
+    gevent's c-ares resolver) isn't used for its lookups. Under gevent, `subprocess` starts
+    programs with a Python-level fork, so any `subprocess` call in a gevent worker counts as a
+    fork and switches that worker to the helper. Under eventlet, the green `subprocess` forks
+    in C without Python's fork hooks, so the worker isn't switched to the helper and nothing
+    waits for its lookups before such a fork. The same applies to RabbitMQ.
+  - A fork waits for any helper that is being started to finish its exec first, with no time
+    limit (the helper's pipes would otherwise end up in a child that never execs). If that
+    exec stalls (e.g. a hung file system), forks stall with it.
+  - A Redis that still answers within 2s doesn't open the breaker, however slow: each publish
+    waits for its reply.
+  - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
+    number of events dropped since the previous one.
 - **RabbitMQ (fanout + per-consumer queue)**:
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
-  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker, and a
-    broker outage doesn't slow tasks down. Each publish tries every host of the broker URL once
-    (2s connect timeout, 2s per read or write after that). A single quick failure, such as a
-    refused connection, drops only that event; a failure that took 0.5s or more (a timeout) or
-    three quick failures in a row make the worker skip publishing for a cooldown that grows from
-    1s to 30s and resets on the next successful publish.
+  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Each
+    publish tries every host of the broker URL once (2s connect timeout per address, 2s per read
+    or write after that). A single failure, quick or timed out, loses only its own event; three
+    failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
+    and resets on the next successful publish, so during an outage each worker process makes
+    at most three bounded attempts (plus any its other threads already had in flight) and then
+    one per cooldown. Host names are resolved as for Redis: waiting at most the 2s connect
+    timeout, cached for 30s, refreshed in the background and right after a failed connect.
+    TLS behavior is unchanged: as with py-amqp alone, `amqps://` checks the certificate's host
+    name only when the `ssl` options set `server_hostname`.
   - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
     from publishers, so a publish is sent but never confirmed. The worker counts such events as
-    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); after two
-    unconfirmed attempts in a row it retries only every 30s. Each attempt leaves one blocked
-    connection on the broker until the alarm clears, so expect 2 to 3 connections per worker
-    process in the first minute of an alarm and about 2 per minute after that, all released
-    when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
+    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
+    row open the breaker, and once an unconfirmed retry follows it retries only every 30s. Each
+    attempt leaves one blocked connection on the broker until the alarm clears, so expect up to
+    about 5 connections per worker process in the first minute of an alarm and about 2 per
+    minute after that, all released when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
     from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
     notice arriving while the connection closes.
   - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
     about 1.5 minutes even when the broker flaps.
-  - Limitation: a broker that answers but slowly (say, close to the 2s timeout for each step)
-    still costs every event several seconds, because publishes that eventually succeed don't
-    open the breaker.
+  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open
+    the breaker. Each publish opens its own connection, so it waits for several round trips
+    (connect, handshake, channel, publish, close): a broker that takes about 1s per reply costs
+    each event several seconds.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)
