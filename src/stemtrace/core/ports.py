@@ -46,6 +46,15 @@ class StoppableTransport(Protocol):
         ...
 
 
+@runtime_checkable
+class ClosableTransport(Protocol):
+    """Optional transport capability: release the publisher connection."""
+
+    def close(self) -> None:
+        """Close the publisher connection, if any. Never raises or blocks for long."""
+        ...
+
+
 class TaskRepository(Protocol):
     """Read-only task data access for API endpoints."""
 

@@ -15,12 +15,13 @@ from celery.signals import (
     task_prerun,
     task_retry,
     task_revoked,
+    worker_process_shutdown,
     worker_ready,
     worker_shutdown,
 )
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
-from stemtrace.core.ports import EventTransport
+from stemtrace.core.ports import ClosableTransport, EventTransport
 from stemtrace.library.config import get_config
 from stemtrace.library.output_capture import (
     install_capture,
@@ -567,6 +568,7 @@ def connect_signals(transport: EventTransport) -> None:
     # Worker lifecycle signals
     worker_ready.connect(on_worker_ready)
     worker_shutdown.connect(on_worker_shutdown)
+    worker_process_shutdown.connect(on_worker_process_shutdown)
 
     logger.info("stemtrace signal handlers connected")
 
@@ -586,6 +588,7 @@ def disconnect_signals() -> None:
     # Worker lifecycle signals
     worker_ready.disconnect(on_worker_ready)
     worker_shutdown.disconnect(on_worker_shutdown)
+    worker_process_shutdown.disconnect(on_worker_process_shutdown)
 
     # Clear tracking state
     _pending_emitted.clear()
@@ -796,3 +799,18 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 
     except Exception as e:
         logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)
+
+
+def on_worker_process_shutdown(**_: Any) -> None:
+    """Handle worker_process_shutdown: close this pool process's publisher connection.
+
+    Celery sends it in a prefork child just before it exits; the child skips
+    Python's exit hooks, so without this its broker connection would be
+    dropped abruptly instead of closed.
+    """
+    transport: object = _transport  # EventTransport has no close(); it is optional
+    if isinstance(transport, ClosableTransport):
+        try:
+            transport.close()
+        except Exception:
+            logger.debug("Failed to close the transport on shutdown", exc_info=True)

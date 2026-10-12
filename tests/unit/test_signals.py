@@ -16,6 +16,7 @@ from celery.signals import (
     task_retry,
     task_revoked,
     task_sent,
+    worker_process_shutdown,
 )
 
 import stemtrace.library.signals as signals_module
@@ -37,6 +38,7 @@ from stemtrace.library.signals import (
     _on_task_revoked,
     connect_signals,
     disconnect_signals,
+    on_worker_process_shutdown,
     on_worker_ready,
     on_worker_shutdown,
 )
@@ -1416,3 +1418,53 @@ class TestCelerySignalDispatch:
 
         assert _receiver_errors(responses) == []
         assert [e.state for e in MemoryTransport.events] == [TaskState.REVOKED]
+
+
+class _ClosableTransport(MemoryTransport):
+    """Memory transport with the optional close() capability."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.closed = 0
+        self._error = error
+
+    def close(self) -> None:
+        self.closed += 1
+        if self._error is not None:
+            raise self._error
+
+
+class TestWorkerProcessShutdown:
+    """A pool child closes its publisher connection before it exits."""
+
+    def test_worker_process_shutdown_closes_transport(self) -> None:
+        transport = _ClosableTransport()
+        connect_signals(transport)
+
+        worker_process_shutdown.send(sender=None, pid=1, exitcode=0)
+
+        assert transport.closed == 1
+
+    def test_worker_process_shutdown_swallows_close_errors(self) -> None:
+        transport = _ClosableTransport(error=OSError("boom"))
+        connect_signals(transport)
+
+        on_worker_process_shutdown()
+
+        assert transport.closed == 1
+
+    def test_worker_process_shutdown_without_close_capability_does_nothing(
+        self,
+    ) -> None:
+        connect_signals(MemoryTransport())
+
+        on_worker_process_shutdown()
+
+    def test_worker_process_shutdown_after_disconnect_is_not_delivered(self) -> None:
+        transport = _ClosableTransport()
+        connect_signals(transport)
+        disconnect_signals()
+
+        worker_process_shutdown.send(sender=None, pid=1, exitcode=0)
+
+        assert transport.closed == 0
