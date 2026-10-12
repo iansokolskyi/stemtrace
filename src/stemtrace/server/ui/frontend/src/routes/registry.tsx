@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { TaskStatus } from '@/api/client'
 import { useTaskRegistry } from '@/api/queries'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
@@ -39,7 +39,10 @@ function RegistryPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(undefined)
   const { data, isLoading, error } = useTaskRegistry(searchQuery || undefined, statusFilter)
-  const shortNames = shortestUniqueSuffixes(data?.tasks.map((task) => task.name) ?? [])
+  const shortNames = useMemo(
+    () => shortestUniqueSuffixes(data?.tasks.map((task) => task.name) ?? []),
+    [data],
+  )
 
   return (
     <div className="space-y-6">

@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
+import { useMemo } from 'react'
 import type { TaskNode } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
@@ -24,6 +25,15 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
     to_date: filters.to_date,
   })
 
+  // The names of the rows drawn below (those with timing data)
+  const shortNames = useMemo(
+    () =>
+      shortestUniqueSuffixes(
+        (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated).map((t) => t.name),
+      ),
+    [data],
+  )
+
   if (isLoading) {
     return <TimelineSkeleton />
   }
@@ -45,8 +55,6 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
   if (tasks.length === 0) {
     return <div className="text-center py-12 text-slate-400">No timing data available</div>
   }
-
-  const shortNames = shortestUniqueSuffixes(tasks.map((t) => t.name))
 
   const times = tasks.flatMap((t) => [
     new Date(t.first_seen!).getTime(),

@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
+import { useMemo } from 'react'
 import { useWorkers } from '@/api/queries'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
@@ -10,8 +11,9 @@ export const Route = createFileRoute('/workers')({
 function WorkersPage() {
   const { data, isLoading, error } = useWorkers()
   // Across every worker listed, so one label means one task on the whole page
-  const shortNames = shortestUniqueSuffixes(
-    data?.workers.flatMap((worker) => worker.registered_tasks) ?? [],
+  const shortNames = useMemo(
+    () => shortestUniqueSuffixes(data?.workers.flatMap((worker) => worker.registered_tasks) ?? []),
+    [data],
   )
 
   return (

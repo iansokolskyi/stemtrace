@@ -8,12 +8,6 @@
  * else ends in `add`. A name's full name is always unique, so the search ends.
  */
 
-/** The last `depth` dotted segments of `name` (all of it if it has fewer). */
-function suffixOf(name: string, depth: number): string {
-  const parts = name.split('.')
-  return parts.slice(Math.max(0, parts.length - depth)).join('.')
-}
-
 /**
  * Maps each distinct name in `names` to its shortest suffix that is unique
  * among them. Pass every name the page shows together, so two tasks on the
@@ -21,20 +15,21 @@ function suffixOf(name: string, depth: number): string {
  */
 export function shortestUniqueSuffixes(names: Iterable<string>): Map<string, string> {
   const distinct = [...new Set(names)]
+  const segments = distinct.map((name) => name.split('.'))
   const labels = new Map<string, string>()
-  let pending = distinct
+  let pending = distinct.map((_, index) => index)
   for (let depth = 1; pending.length > 0; depth++) {
-    // Count over all names, not just the pending ones: a settled name's
-    // suffix is as good a clash as any
+    const suffixes = pending.map((index) => segments[index].slice(-depth).join('.'))
+    // Only the names still pending need counting. A name settled at a lower
+    // depth has a suffix no other name shares at that depth, and so none at a
+    // greater one either (a name with fewer segments than `depth` is its own
+    // suffix, which a longer name never equals).
     const counts = new Map<string, number>()
-    for (const name of distinct) {
-      const suffix = suffixOf(name, depth)
-      counts.set(suffix, (counts.get(suffix) ?? 0) + 1)
-    }
-    pending = pending.filter((name) => {
-      const suffix = suffixOf(name, depth)
+    for (const suffix of suffixes) counts.set(suffix, (counts.get(suffix) ?? 0) + 1)
+    pending = pending.filter((index, position) => {
+      const suffix = suffixes[position]
       if (counts.get(suffix) !== 1) return true
-      labels.set(name, suffix)
+      labels.set(distinct[index], suffix)
       return false
     })
   }

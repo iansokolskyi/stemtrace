@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-
+import { shortestUniqueSuffixes } from '../src/utils/taskNames'
 import { setupMockApi } from './fixtures/mock-api'
 import { createRegistryEntry, createSuccessTask, type MockTask } from './fixtures/mock-data'
 
@@ -142,5 +142,56 @@ test.describe('Task names - colliding short names', () => {
     // One chip per worker's task, across all workers on the page
     await expectSendLabelsTold(page)
     await expect(page.getByText('add', { exact: true })).toBeVisible()
+  })
+})
+
+test.describe('shortestUniqueSuffixes', () => {
+  // A pure function: no page needed
+  const SEGMENTS = ['a', 'b', 'c', 'send', 'add', 'app', 'x']
+
+  /** A reproducible generator of lists of dotted names with many shared segments. */
+  function randomNameLists(count: number): string[][] {
+    let seed = 12345
+    const below = (limit: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % limit
+    }
+    return Array.from({ length: count }, () =>
+      Array.from({ length: 1 + below(12) }, () =>
+        Array.from({ length: 1 + below(5) }, () => SEGMENTS[below(SEGMENTS.length)]).join('.'),
+      ),
+    )
+  }
+
+  test('labels are unique suffixes, and no shorter suffix would have been unique', () => {
+    // Plain checks collecting the first broken case: `expect` per name is too slow for 20,000 lists
+    const problems: string[] = []
+    const isSuffix = (name: string, suffix: string) =>
+      name === suffix || name.endsWith(`.${suffix}`)
+    for (const names of randomNameLists(20_000)) {
+      const labels = shortestUniqueSuffixes(names)
+      const distinct = [...new Set(names)]
+      if (new Set(labels.values()).size !== distinct.length) problems.push(`not unique: ${names}`)
+      for (const name of distinct) {
+        const label = labels.get(name)
+        if (label === undefined || !isSuffix(name, label)) {
+          problems.push(`${label} is not a suffix of ${name}`)
+          continue
+        }
+        const depth = label.split('.').length
+        if (depth > 1) {
+          // One segment fewer is shared by another name, so this was the shortest
+          const shorter = name
+            .split('.')
+            .slice(-(depth - 1))
+            .join('.')
+          if (distinct.filter((other) => isSuffix(other, shorter)).length < 2) {
+            problems.push(`${shorter} of ${name} would have been unique in ${names}`)
+          }
+        }
+      }
+      if (problems.length > 0) break
+    }
+    expect(problems).toEqual([])
   })
 })
