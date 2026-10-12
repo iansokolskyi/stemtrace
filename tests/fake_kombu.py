@@ -14,19 +14,27 @@
   ``ensure_connection``. ``transport_options`` override the URL
   (``Transport.establish_connection`` merges them last), so the negotiated
   heartbeat is the option's, whatever ``?heartbeat=`` says.
-- py-amqp ``Connection``: ``drain_events(timeout=0)`` reads the socket without
-  waiting: EOF raises ``OSError('Server unexpectedly closed connection')``
-  (``_read``), a pending Connection.Close collects the connection and raises
-  ``ConnectionForced`` (``_on_close``), Blocked/Unblocked frames call
-  ``on_blocked(reason)``/``on_unblocked()`` (``_on_blocked``) and nothing
-  else, a channel error frame raises (``Channel._on_close``), and nothing
-  pending raises ``socket.timeout``. ``collect()`` shuts the socket down
+- py-amqp ``Connection.blocking_read(timeout)`` reads real bytes from a
+  socketpair, so readiness (``poll``), EOF and partial frames behave as on a
+  TCP socket. ``Transport.read_frame()``/``_read()`` (same in 5.0.6 and 5.3.1):
+  with ``timeout=0`` the *first* read of a frame raises ``socket.timeout`` on
+  EAGAIN, but every later read of the same frame treats EAGAIN as ``continue``
+  and spins until the frame completes or the peer closes (the fake fails the
+  test instead of spinning); with a positive timeout a partial frame raises
+  ``socket.timeout`` and its bytes are kept for the next read. EOF raises
+  ``OSError('Server unexpectedly closed connection')``. A pending
+  Connection.Close collects the connection and raises ``ConnectionForced``
+  (``_on_close``), Blocked/Unblocked frames call ``on_blocked(reason)``/
+  ``on_unblocked()`` (``_on_blocked``) and nothing else, a channel error frame
+  raises (``Channel._on_close``). ``collect()`` shuts the socket down
   (``_AbstractTransport.close()`` calls ``shutdown(SHUT_RDWR)``, which in a
   forked child ends the parent's connection) and is safe on an already
-  collected connection; ``.transport`` on a collected connection would make
-  py-amqp reconnect, so the fake fails the test instead. ``close()`` waits for
-  Close-Ok: a broker that stopped reading never sends it, so the wait times
-  out (collecting the connection first).
+  collected connection; where ``shutdown_error`` is set it raises before the
+  socket is closed, as py-amqp 5.0.6 does after an RST (no try around it);
+  ``.transport`` on a collected connection would make py-amqp reconnect, so
+  the fake fails the test instead. ``close()`` waits for Close-Ok: a broker
+  that stopped reading never sends it, so the wait times out (collecting the
+  connection first).
 - RabbitMQ: a memory/disk alarm blocks a connection only once a publish
   arrives after the alarm (Connection.Blocked is sent then), after which the
   broker stops reading it: later messages stay unread until Unblocked.
@@ -43,7 +51,9 @@ from __future__ import annotations
 
 import contextlib
 import socket
+import struct
 import sys
+import time
 import types
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -51,6 +61,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from amqp.exceptions import ConnectionForced, NotFound, RecoverableConnectionError
 
 from stemtrace.core.events import TaskEvent, TaskState
+
+# Reads of one frame that hit EAGAIN before the fake declares py-amqp spinning.
+SPIN_LIMIT = 100_000
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -66,6 +79,10 @@ def sample_event(task_id: str = "t-1") -> TaskEvent:
         state=TaskState.STARTED,
         timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
+
+
+class PyAmqpSpinning(BaseException):
+    """py-amqp would busy-spin here (BaseException, so no ``except Exception`` hides it)."""
 
 
 class FakeClock:
@@ -100,8 +117,12 @@ class FakeBroker:
         # Called at the start of every Producer.publish (e.g. to yield to
         # another greenlet or thread while the publisher holds its lock).
         self.on_publish: Callable[[], None] | None = None
+        # Seconds a connect takes (a slow but healthy broker); real time.
+        self.connect_delay = 0.0
         # Raised by Connection.channel() (e.g. the broker refuses the channel).
         self.channel_error: Exception | None = None
+        # Raised by collect() before the socket is closed (py-amqp 5.0.6 after an RST).
+        self.shutdown_error: OSError | None = None
         self.alarm = False
         self.exchange_exists = True
         self.connections: list[FakeConnection] = []
@@ -126,7 +147,7 @@ class FakeBroker:
 
     def force_close(self, conn: FakeConnection) -> None:
         """The broker sends Connection.Close (e.g. closed via management)."""
-        conn.amqp.inbox.append(("close", None))
+        conn.amqp.deliver("close")
 
     def raise_alarm(self) -> None:
         """A memory/disk alarm starts (connections block on their next publish)."""
@@ -138,7 +159,7 @@ class FakeBroker:
         for conn in self.live():
             if conn.amqp.broker_blocked:
                 conn.amqp.broker_blocked = False
-                conn.amqp.inbox.append(("unblocked", None))
+                conn.amqp.deliver("unblocked")
         self.published.extend(self.unread)
         self.unread.clear()
 
@@ -174,14 +195,36 @@ class FakeAmqpConnection:
         self.open = True
         self.on_blocked: Callable[[str], None] | None = None
         self.on_unblocked: Callable[[], None] | None = None
-        # Frames the broker sent that nobody has read yet.
-        self.inbox: list[tuple[str, Any]] = []
+        # What each complete frame on the wire means, in order.
+        self.kinds: list[tuple[str, Any]] = []
+        # Bytes of a frame the broker has not finished sending.
+        self._tail = b""
+        # Received bytes not yet consumed as a frame (py-amqp's _read_buffer).
+        self._rbuf = b""
         self.broker_blocked = False
-        self.drains = 0
+        self.reads = 0
+        # Set when collect() raised before closing the socket (shutdown_error).
+        self.collect_failed = False
+        self.leaked_sock: socket.socket | None = None
         # Socket timeout when collect() ran: a TLS unwrap waits that long.
         self.timeout_at_collect: float | None = None
         # Socket timeout when close() ran: the wait for Close-Ok.
         self.timeout_at_close: float | None = None
+
+    def deliver(
+        self, kind: str, arg: Any = None, *, send_bytes: int | None = None
+    ) -> None:
+        """The broker sends a frame; ``send_bytes`` sends only its first bytes."""
+        frame = struct.pack(">BHI", 1, 0, 1) + b"\x00" + b"\xce"
+        self.kinds.append((kind, arg))
+        head = frame if send_bytes is None else frame[:send_bytes]
+        self._tail = b"" if send_bytes is None else frame[send_bytes:]
+        self.transport.peer.sendall(head)
+
+    def finish_frame(self) -> None:
+        """The broker sends the rest of a frame it only started."""
+        tail, self._tail = self._tail, b""
+        self.transport.peer.sendall(tail)
 
     @property
     def transport(self) -> _FakeAmqpTransport:
@@ -196,41 +239,63 @@ class FakeAmqpConnection:
     def connected(self) -> bool:
         return self.open
 
-    def drain_events(  # noqa: C901  one branch per frame kind the broker can send
-        self, timeout: float | None = None
-    ) -> None:
-        if timeout != 0:
-            raise AssertionError("the publisher must never wait for frames")
-        self.drains += 1
+    def _fill(self, n: int, *, initial: bool) -> None:
+        """py-amqp Transport._read(): wait for ``n`` buffered bytes."""
+        sock = self.transport.sock
+        spins = 0
+        while len(self._rbuf) < n:
+            try:
+                data = sock.recv(n - len(self._rbuf))
+            except BlockingIOError:  # the socket timeout is 0: EAGAIN
+                if initial:
+                    raise TimeoutError from None
+                spins += 1
+                if spins > SPIN_LIMIT:
+                    raise PyAmqpSpinning(
+                        "py-amqp Transport._read() spins on EAGAIN after the "
+                        "first read of a frame (transport.py `continue`)"
+                    ) from None
+                continue
+            if not data:
+                raise OSError("Server unexpectedly closed connection")
+            self._rbuf += data
+
+    def blocking_read(self, timeout: float | None = None) -> None:
+        """Read one frame and run its handler, like py-amqp's."""
+        if timeout is None:
+            raise AssertionError("the publisher must never wait without a bound")
+        self.reads += 1
         if not self.open:
             raise RecoverableConnectionError("Connection already closed")
-        while self.inbox:
-            kind, arg = self.inbox.pop(0)
-            if kind == "blocked":
-                if self.on_blocked is not None:
-                    self.on_blocked("connection blocked, see broker logs")
-            elif kind == "unblocked":
-                if self.on_unblocked is not None:
-                    self.on_unblocked()
-            elif kind == "close":
-                self.collect()
-                raise ConnectionForced(
-                    "(0, 0): (320) CONNECTION_FORCED - Closed via management plugin"
-                )
-            elif kind == "channel_error":
-                raise arg
-        # py-amqp 5.3 Transport.having_timeout(0): a non-blocking read.
         sock = self.transport.sock
         previous = sock.gettimeout()
-        sock.settimeout(0)
+        sock.settimeout(timeout)
         try:
-            data = sock.recv(1, socket.MSG_PEEK)
-        except BlockingIOError:
-            raise TimeoutError from None
+            self._fill(7, initial=True)
+            size = struct.unpack(">BHI", self._rbuf[:7])[2]
+            self._fill(7 + size + 1, initial=False)
         finally:
             sock.settimeout(previous)
-        if not data:
-            raise OSError("Server unexpectedly closed connection")
+        self._rbuf = self._rbuf[7 + size + 1 :]
+        kind, arg = self.kinds.pop(0)
+        if kind == "blocked":
+            if self.on_blocked is not None:
+                self.on_blocked("connection blocked, see broker logs")
+        elif kind == "unblocked":
+            if self.on_unblocked is not None:
+                self.on_unblocked()
+        elif kind == "close":
+            self.collect()
+            raise ConnectionForced(
+                "(0, 0): (320) CONNECTION_FORCED - Closed via management plugin"
+            )
+        elif kind == "channel_error":
+            raise arg
+
+    def drain_events(self, timeout: float | None = None) -> None:
+        """py-amqp: read frames until one handler returns something (none do here)."""
+        while True:
+            self.blocking_read(timeout)
 
     def close(self) -> None:
         if self._transport is None:
@@ -251,6 +316,11 @@ class FakeAmqpConnection:
         if transport is not None:
             self.timeout_at_collect = transport.sock.gettimeout()
             # What _AbstractTransport.close() does.
+            if self.broker.shutdown_error is not None:
+                self.collect_failed = True
+                self.leaked_sock = transport.sock
+                transport.peer.close()
+                raise self.broker.shutdown_error
             with contextlib.suppress(OSError):
                 transport.sock.shutdown(socket.SHUT_RDWR)
             transport.sock.close()
@@ -324,6 +394,8 @@ class FakeConnection:
             if host in self.broker.auth_refused:
                 raise PermissionError(f"ACCESS_REFUSED on {host}")
             if host not in self.broker.down:
+                if self.broker.connect_delay:
+                    time.sleep(self.broker.connect_delay)
                 self.host = host
                 options = self.kwargs.get("transport_options") or {}
                 self.amqp = FakeAmqpConnection(self.broker, options.get("heartbeat"))
@@ -371,6 +443,10 @@ class FakeProducer:
             broker.on_publish()
         if not amqp.open:
             raise RecoverableConnectionError("connection already closed")
+        # py-amqp 5.3.1 Channel._basic_publish: with the connection.blocked
+        # capability (RabbitMQ), every publish first reads what is pending.
+        with contextlib.suppress(socket.timeout):
+            amqp.drain_events(timeout=0)
         broker.clock.advance(broker.publish_delay)
         host = connection.host
         if broker.publish_error is not None and (
@@ -387,18 +463,16 @@ class FakeProducer:
             return
         if broker.alarm:
             amqp.broker_blocked = True
-            amqp.inbox.append(("blocked", None))
+            amqp.deliver("blocked")
             broker.unread.append(message)
             return
         if not broker.exchange_exists:
-            amqp.inbox.append(
-                (
-                    "channel_error",
-                    NotFound(
-                        f"Basic.publish: (404) NOT_FOUND - no exchange "
-                        f"{kwargs['exchange'].name!r} in vhost '/'"
-                    ),
-                )
+            amqp.deliver(
+                "channel_error",
+                NotFound(
+                    f"Basic.publish: (404) NOT_FOUND - no exchange "
+                    f"{kwargs['exchange'].name!r} in vhost '/'"
+                ),
             )
             return
         # A peer that already closed still accepts the write locally.

@@ -262,7 +262,12 @@ def _run_while_alive(
     process = subprocess.Popen(
         [sys.executable, "-c", textwrap.dedent(script), *args],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPO_ROOT), os.environ.get("PYTHONPATH", "")]
+            ),
+        },
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

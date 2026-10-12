@@ -7,18 +7,21 @@ keeps every guarantee the per-event connection gave:
 
 **Bounded.** Connecting tries each host of the URL once (``connect_timeout``,
 no kombu retry sleeps), and every later socket read or write times out after
-``io_timeout``. A publish waits at most ``lock_timeout`` for the connection
-(see below), so a task never waits for the broker much longer than one
-connect pass.
+``io_timeout``. The longest the connection can legitimately be held is
+derived from the steps of one attempt (:meth:`PublisherConnection.
+_attempt_bound`), and every wait for it is bounded by that.
 
 **Never raises into a task.** :meth:`PublisherConnection.publish` raises; the
 transport turns every exception into a breaker failure.
 
 **One thread at a time.** kombu and py-amqp connections are not thread-safe
 (a channel's frames must not interleave), so one lock serializes publishes.
-It is held for one non-blocking read of pending frames and one socket write
-(microseconds), or for one bounded connect pass; waiting for it is bounded by
-``lock_timeout``. Per-thread connections were rejected: under gevent and
+It is held for one readability check and one socket write (microseconds),
+or for one bounded connect pass. A signal handler can raise between
+``acquire()`` returning and the ``try`` that releases (Python can't close
+that window), and a holder can outlive its bound; a waiter that has waited a
+whole bound and finds the holder gone or past it starts over with a new
+connection state, leaving the old socket to its owner. Per-thread connections were rejected: under gevent and
 eventlet ``threading.local`` is greenlet-local and Celery runs every task in
 a new greenlet, so every task would open a connection, and a threads pool
 would hold one connection per thread. Publisher confirms were rejected too:
@@ -65,11 +68,14 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import contextvars
 import functools
 import logging
 import os
+import select
 import socket
 import threading
+import time
 import weakref
 from typing import TYPE_CHECKING, Any
 
@@ -81,6 +87,23 @@ logger = logging.getLogger(__name__)
 # Longest the exit hook waits for the broker's Close-Ok (and for the lock) so
 # interpreter shutdown never hangs on a broker that stopped reading.
 CLOSE_TIMEOUT = 0.5
+
+# Longest a read of one inbound frame may wait for the rest of it (it only
+# starts once the socket is readable), and the most frames one check reads.
+POLL_TIMEOUT = 0.05
+MAX_FRAMES_PER_CHECK = 8
+
+# Waits of one connect pass over one host, in units of connect_timeout: the
+# resolver, the TCP connect, the TLS handshake, and the Start, Tune and
+# Open-Ok replies (py-amqp Connection.connect() waits connect_timeout for
+# each frame). The steps after connecting (channel open, exchange declare and
+# the write) wait io_timeout each.
+CONNECT_WAITS_PER_HOST = 6
+IO_WAITS_AFTER_CONNECT = 3
+
+# How long a waiter lets a holder that took the lock but not yet recorded it
+# catch up before it counts as gone.
+HOLDER_GRACE = 0.05
 
 # Socket timeout while a connection is torn down without the AMQP handshake:
 # over TLS py-amqp 5.3 SSLTransport._shutdown_transport() unwraps the socket,
@@ -97,11 +120,15 @@ class PublishError(Exception):
     """An event was not published (the transport counts it as a failure)."""
 
 
-class PublisherBusyError(PublishError):
-    """The connection stayed in use by other publishes for the whole wait."""
+class PublishDroppedError(PublishError):
+    """The event was dropped without an attempt: says nothing about the broker."""
 
 
-class PublishSkippedError(PublishError):
+class PublisherBusyError(PublishDroppedError):
+    """The connection stayed in use by other publishes for two whole bounds."""
+
+
+class PublishSkippedError(PublishDroppedError):
     """The circuit breaker opened while this event waited for the connection."""
 
 
@@ -124,6 +151,9 @@ class _Process:
         self.sock: Any = None  # the socket of ``amqp``
         self.producer: Any = None
         self.blocked = False
+        # When the holder of ``lock`` took it (None while free); lets a waiter
+        # tell a stuck holder from a new one.
+        self.held_since: float | None = None
         # Index of the failover host to try first (the one that worked last).
         self.first_host = 0
 
@@ -136,6 +166,24 @@ class _Process:
                 _discard(self)
             else:
                 _abandon(self)
+
+
+# The sockets the connect in progress has opened (per thread or greenlet).
+_connecting: contextvars.ContextVar[list[socket.socket] | None] = (
+    contextvars.ContextVar("stemtrace_connecting_sockets", default=None)
+)
+
+
+def track_connecting_socket(sock: socket.socket) -> None:
+    """Remember a socket opened by the connect in progress, if there is one.
+
+    py-amqp owns the socket from then on, but if the connect is abandoned
+    midway (a greenlet killed by a time limit) nothing is left that can close
+    it: the half-open connection stays referenced by the dead stack.
+    """
+    sockets = _connecting.get()
+    if sockets is not None:
+        sockets.append(sock)
 
 
 def _abandon(proc: _Process) -> None:
@@ -175,6 +223,60 @@ def _discard(proc: _Process) -> None:
         # reconnect there).
         with contextlib.suppress(Exception):
             amqp.collect()
+    if sock is not None:
+        # py-amqp 5.0.6 _AbstractTransport.close() calls sock.shutdown()
+        # without a try: after an RST it raises ENOTCONN and never reaches
+        # sock.close(), and collect() above swallowed that.
+        with contextlib.suppress(Exception):
+            sock.close()
+
+
+def _readable(sock: Any) -> bool:
+    """Whether a read of ``sock`` would find bytes (or EOF) without waiting."""
+    pending = getattr(sock, "pending", None)  # SSLSocket: decrypted, buffered
+    if pending is not None and pending():
+        return True
+    # poll(), not select(): select() fails for descriptors above 1023.
+    if hasattr(select, "poll"):
+        poller = select.poll()
+        poller.register(sock, select.POLLIN)
+        return bool(poller.poll(0))
+    readable, _, _ = select.select([sock], [], [], 0)  # Windows
+    return bool(readable)
+
+
+def _install_guarded_drain(amqp: Any) -> None:
+    """Make ``amqp.drain_events(timeout=0)`` safe against a partly received frame.
+
+    py-amqp's own ``Channel._basic_publish`` calls ``drain_events(timeout=0)``
+    before every publish (when the broker has the connection.blocked
+    capability, i.e. RabbitMQ), and our pre-publish check does too. Its
+    ``Transport._read()`` treats EAGAIN as ``continue`` after the first read
+    of a frame (5.0.6 and 5.3.1), so a zero-timeout read of a frame that is
+    only partly there (a frozen broker, ``docker pause``) spins until the
+    frame completes or the peer closes: unbounded under the connection lock,
+    and it starves a gevent hub. The instance's ``drain_events`` is replaced
+    for the zero-timeout case: read only while the socket is readable, and
+    each frame with a positive timeout, so a partial frame raises
+    ``socket.timeout`` and keeps its bytes for the next read.
+    """
+    base = type(amqp).drain_events
+    # Weakly: the callable lives on the instance, and a cycle would delay
+    # closing the connection when its state is dropped.
+    owner = weakref.ref(amqp)
+
+    def drain_events(timeout: float | None = None) -> None:
+        """py-amqp ``drain_events``; ``timeout=0`` never spins or waits long."""
+        connection = owner()
+        if timeout != 0 or connection is None:
+            return base(connection, timeout)  # type: ignore[no-any-return]
+        for _ in range(MAX_FRAMES_PER_CHECK):
+            if not _readable(connection.transport.sock):
+                break
+            connection.blocking_read(POLL_TIMEOUT)
+        raise TimeoutError  # nothing (more) to read, as py-amqp reports it
+
+    amqp.drain_events = drain_events
 
 
 def _set_blocked(
@@ -243,45 +345,113 @@ class PublisherConnection:
         self._connect_timeout = connect_timeout
         self._io_timeout = io_timeout
         self._hosts = max(len(url.split(";")), 1)
-        # One whole connect pass, then one socket operation: the longest the
-        # holder of the lock can take, short of a bug.
-        self._lock_timeout = self._hosts * connect_timeout + io_timeout
+        # How long a waiter waits for the lock: the longest a holder can take.
+        self._lock_timeout = self._attempt_bound()
         self._proc: _Process | None = None
         _publishers.add(self)
 
-    def publish(self, payload: dict[str, Any], *, current: Callable[[], bool]) -> None:
+    def _attempt_bound(self) -> float:
+        """The longest one holder can keep the connection, from the steps it takes.
+
+        The one place this is defined: the lock wait, and the breaker's probe
+        timeout (via :attr:`worst_case_s`), derive from it.
+        """
+        connect_pass = CONNECT_WAITS_PER_HOST * self._connect_timeout * self._hosts
+        after_connect = IO_WAITS_AFTER_CONNECT * self._io_timeout
+        return connect_pass + after_connect + MAX_FRAMES_PER_CHECK * POLL_TIMEOUT
+
+    @property
+    def worst_case_s(self) -> float:
+        """The longest :meth:`publish` can take: two waits for the lock, then an attempt."""
+        return 3 * self._lock_timeout
+
+    def publish(
+        self, payload: dict[str, Any], *, should_attempt: Callable[[], bool]
+    ) -> None:
         """Publish ``payload`` on this process's connection, connecting if needed.
 
         Args:
             payload: JSON-serializable event.
-            current: Whether the circuit breaker still wants this attempt; a
-                publish that waited for the connection while the breaker
-                opened is skipped instead of connecting to a broker that is
-                known to be down.
+            should_attempt: Whether the circuit breaker still wants this
+                attempt; a publish that waited for the connection while the
+                breaker opened is skipped instead of connecting to a broker
+                that is known to be down.
 
         Raises:
-            PublisherBusyError: The connection stayed in use for the whole
-                wait (``lock_timeout``).
-            PublishSkippedError: ``current()`` was false once the connection
-                was free.
+            PublisherBusyError: The connection stayed in use for two whole
+                bounds, each holder young.
+            PublishSkippedError: ``should_attempt()`` was false once the
+                connection was free.
             PublishBlockedError: RabbitMQ reports the connection blocked.
             Exception: Whatever kombu or py-amqp raise on a failed connect or
                 publish; the connection is discarded and the next publish
                 connects again, starting with the next failover host.
         """
-        proc = self._process()
-        if not proc.lock.acquire(timeout=self._lock_timeout):
-            raise PublisherBusyError(
-                f"RabbitMQ publisher connection busy for {self._lock_timeout:g}s"
-            )
+        proc = self._acquire(self._process())
         try:
-            if not current():
+            if not should_attempt():
                 raise PublishSkippedError(
                     "publishing paused while this event waited for the connection"
                 )
             self._publish_locked(proc, payload)
         finally:
+            proc.held_since = None
             proc.lock.release()
+
+    def _acquire(self, proc: _Process) -> _Process:
+        """Take the connection lock, starting over if its holder can't release it.
+
+        Returns:
+            The state whose lock the caller now holds (a new one if the old
+            lock was stuck).
+
+        Raises:
+            PublisherBusyError: Other publishes kept the lock for two bounds.
+        """
+        waits = 0
+        while True:
+            if proc.lock.acquire(timeout=self._lock_timeout):
+                proc.held_since = time.monotonic()
+                return proc
+            if not proc.lock.locked():
+                continue  # released since the wait ended
+            if self._holder_is_gone(proc):
+                proc = self._replace(proc)
+                continue
+            waits += 1
+            if waits == 2:
+                raise PublisherBusyError(
+                    f"RabbitMQ publisher connection in use for {waits * self._lock_timeout:g}s"
+                )
+
+    def _holder_is_gone(self, proc: _Process) -> bool:
+        """Whether the lock's holder can no longer release it in time.
+
+        True if nobody recorded taking it (a signal handler raised between
+        ``acquire()`` and the ``try`` that releases it) or the holder is past
+        the longest an attempt can take.
+        """
+        since = proc.held_since
+        if since is None:
+            # A holder that took the lock a moment ago hasn't recorded it yet.
+            time.sleep(HOLDER_GRACE)
+            since = proc.held_since
+        return since is None or time.monotonic() - since > self._lock_timeout
+
+    def _replace(self, stuck: _Process) -> _Process:
+        """Start over with a new state; the old one keeps its lock and socket.
+
+        The old connection is left to whoever holds the lock (it is closed
+        when the last reference to the state goes), never closed from here.
+        """
+        if self._proc is stuck:
+            logger.warning(
+                "RabbitMQ publisher connection was not released by its last user "
+                "(waited %gs); starting over with a new connection",
+                self._lock_timeout,
+            )
+            self._proc = _Process()
+        return self._process()
 
     def close(self) -> None:
         """Close this process's connection if it is idle; never waits long.
@@ -372,14 +542,14 @@ class PublisherConnection:
                 Connection.Unblocked since.
         """
         try:
-            # py-amqp 5.3 Connection.drain_events(timeout=0): each frame
-            # runs its handler (Blocked and Unblocked call on_blocked and
-            # on_unblocked; Close and Channel.Close raise after collecting),
-            # and no pending frame raises socket.timeout.
-            while True:
-                proc.amqp.drain_events(timeout=0)
+            # Each frame runs its handler (Blocked and Unblocked call
+            # on_blocked and on_unblocked; Close and Channel.Close raise after
+            # collecting; EOF raises OSError). drain_events is the guarded
+            # one installed by _install_guarded_drain().
+            proc.amqp.drain_events(timeout=0)
         except TimeoutError:
-            # socket.timeout is TimeoutError since Python 3.10 (the floor).
+            # socket.timeout is TimeoutError since Python 3.10 (the floor). A
+            # partly received frame: its bytes are kept for the next read.
             pass
         except Exception as exc:  # noqa: BLE001  any error here means the connection is unusable; py-amqp raises AMQPError, OSError, even AttributeError for a lost one
             logger.debug(
@@ -420,6 +590,8 @@ class PublisherConnection:
         # once retries reach max_retries (before switching hosts), so
         # max_retries=0 would never try the alternates of a failover URL.
         # The zero intervals keep kombu from sleeping after a full round.
+        opened: list[socket.socket] = []
+        token = _connecting.set(opened)
         try:
             conn.ensure_connection(
                 errback=on_host_error,
@@ -434,7 +606,12 @@ class PublisherConnection:
             # on another host (e.g. a refused login): start from the URL's
             # own order next time instead of sticking to this host.
             proc.first_host = 0
+            for sock in opened:
+                with contextlib.suppress(Exception):
+                    sock.close()
             raise
+        finally:
+            _connecting.reset(token)
         proc.conn = conn
         proc.first_host = (first + failed_hosts) % self._hosts
         proc.blocked = False
@@ -444,6 +621,7 @@ class PublisherConnection:
             proc_ref = weakref.ref(proc)
             amqp.on_blocked = functools.partial(_set_blocked, proc_ref, True)
             amqp.on_unblocked = functools.partial(_set_blocked, proc_ref, False)
+            _install_guarded_drain(amqp)
             proc.sock = self._bound_io(amqp)
             proc.producer = Producer(conn.channel())
         except BaseException:

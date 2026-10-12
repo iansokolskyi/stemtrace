@@ -729,15 +729,15 @@ class TestPublishBreakerInFlightAttempts:
         assert sum(ticket is not None for ticket in results) == 1
 
 
-class TestPublishBreakerIsCurrent:
-    """is_current() tells a caller that waited whether its attempt is still wanted."""
+class TestPublishBreakerShouldAttempt:
+    """should_attempt() tells a caller that waited whether its attempt is still wanted."""
 
-    def test_is_current_while_closed_is_true(self) -> None:
+    def test_should_attempt_while_closed_is_true(self) -> None:
         breaker = _make_breaker(FakeClock(), failures_to_open=3)
 
-        assert breaker.is_current(_take(breaker)) is True
+        assert breaker.should_attempt(_take(breaker)) is True
 
-    def test_is_current_after_breaker_opened_is_false_for_in_flight_attempt(
+    def test_should_attempt_after_breaker_opened_is_false_for_in_flight_attempt(
         self,
     ) -> None:
         breaker = _make_breaker(FakeClock(), failures_to_open=1)
@@ -746,9 +746,9 @@ class TestPublishBreakerIsCurrent:
         _attempt_fails(breaker)
 
         assert breaker.is_open is True
-        assert breaker.is_current(in_flight) is False
+        assert breaker.should_attempt(in_flight) is False
 
-    def test_is_current_for_probe_is_true_until_outcome_is_recorded(self) -> None:
+    def test_should_attempt_for_probe_is_true_until_outcome_is_recorded(self) -> None:
         clock = FakeClock()
         breaker = _make_breaker(clock)
         in_flight = _take(breaker)
@@ -756,10 +756,12 @@ class TestPublishBreakerIsCurrent:
         clock.advance(1.0)
         probe = _take(breaker)
 
-        assert breaker.is_current(probe) is True
-        assert breaker.is_current(in_flight) is False
+        assert breaker.should_attempt(probe) is True
+        assert breaker.should_attempt(in_flight) is False
 
-    def test_is_current_after_closing_again_is_false_for_old_attempt(self) -> None:
+    def test_should_attempt_after_closing_again_is_true_for_old_attempt(self) -> None:
+        # The broker answered the probe: an event that waited meanwhile is
+        # no longer pointless to send.
         clock = FakeClock()
         breaker = _make_breaker(clock)
         in_flight = _take(breaker)
@@ -768,7 +770,33 @@ class TestPublishBreakerIsCurrent:
         _attempt_succeeds(breaker)  # the probe: the breaker closes
 
         assert breaker.is_open is False
-        assert breaker.is_current(in_flight) is False
+        assert breaker.should_attempt(in_flight) is True
+
+
+class TestPublishBreakerRecordDropped:
+    def test_record_dropped_counts_event_without_changing_state(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        for _ in range(10):
+            breaker.record_dropped()
+
+        assert breaker.dropped == 10
+        assert breaker.is_open is False
+        # Ten drops are not ten failures: three real ones are still needed.
+        _attempt_fails(breaker)
+        _attempt_fails(breaker)
+        assert breaker.is_open is False
+
+    def test_record_dropped_is_reported_with_the_next_log_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=1)
+        breaker.record_dropped()
+        breaker.record_dropped()
+
+        _attempt_fails(breaker)
+
+        assert "3 event(s) dropped" in caplog.text
 
 
 class TestPublishBreakerFork:

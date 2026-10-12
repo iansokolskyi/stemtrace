@@ -29,7 +29,11 @@ from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
-from stemtrace.transports.rabbitmq_publisher import PublisherConnection
+from stemtrace.transports.rabbitmq_publisher import (
+    PublishDroppedError,
+    PublisherConnection,
+    track_connecting_socket,
+)
 from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 logger = logging.getLogger(__name__)
@@ -180,6 +184,7 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
     for family, socktype, proto, _, address in entries:
         try:
             self.sock = socket.socket(family, socktype, proto)
+            track_connecting_socket(self.sock)
             with contextlib.suppress(NotImplementedError):
                 set_cloexec(self.sock, True)
             self.sock.settimeout(timeout)
@@ -199,6 +204,45 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
     raise error
 
 
+def _closing_socket(base_close: Callable[[Any], None]) -> Callable[[Any], None]:
+    """A py-amqp transport ``close()`` that always closes the socket.
+
+    py-amqp 5.0.6 _AbstractTransport.close() calls ``sock.shutdown()`` without
+    a try: after an RST it raises ENOTCONN and skips ``sock.close()``, and
+    py-amqp then leaves the socket to the garbage collector (on every failed
+    handshake and every discarded connection). Later versions guard it.
+    """
+
+    def close(self: Any) -> None:
+        """Close the transport; the socket is closed even if shutdown fails."""
+        sock = self.sock
+        with contextlib.suppress(OSError):
+            base_close(self)
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
+        self.sock = None
+        self.connected = False
+
+    return close
+
+
+def _bounded_tls_setup(base_setup: Callable[[Any], None]) -> Callable[[Any], None]:
+    """A py-amqp ``SSLTransport._setup_transport()`` whose handshake can time out.
+
+    py-amqp 5.0.6 runs the TLS handshake on a socket without a timeout
+    (``_init_socket`` has just removed it), so a peer that accepts and never
+    answers hangs the publisher for good; 5.3.1 sets ``connect_timeout`` here.
+    """
+
+    def setup(self: Any) -> None:
+        """Set the connect timeout, then wrap the socket and handshake."""
+        self.sock.settimeout(self.connect_timeout)
+        base_setup(self)
+
+    return setup
+
+
 @functools.cache
 def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     """py-amqp Connection whose transports connect to resolved addresses.
@@ -216,10 +260,18 @@ def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     from amqp.transport import SSLTransport, TCPTransport
 
     tcp = type(
-        "ResolvingTCPTransport", (TCPTransport,), {"_connect": _connect_resolved}
+        "ResolvingTCPTransport",
+        (TCPTransport,),
+        {"_connect": _connect_resolved, "close": _closing_socket(TCPTransport.close)},
     )
     tls = type(
-        "ResolvingSSLTransport", (SSLTransport,), {"_connect": _connect_resolved}
+        "ResolvingSSLTransport",
+        (SSLTransport,),
+        {
+            "_connect": _connect_resolved,
+            "close": _closing_socket(SSLTransport.close),
+            "_setup_transport": _bounded_tls_setup(SSLTransport._setup_transport),
+        },
     )
 
     def transport(  # noqa: PLR0917  py-amqp 5.3 Connection.connect() passes these positionally
@@ -282,19 +334,6 @@ class RabbitMQTransport:
         self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
 
-        # Publish path: the breaker that skips publishing in outages and the
-        # per-process connection it publishes on.
-        self._publish_breaker = PublishBreaker(
-            "RabbitMQ",
-            logger=logger,
-            initial_cooldown=RECONNECT_INITIAL_BACKOFF,
-            max_cooldown=RECONNECT_MAX_BACKOFF,
-            log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
-            probe_timeout=PUBLISH_PROBE_TIMEOUT,
-            failures_to_open=PUBLISH_FAILURES_TO_OPEN,
-            monotonic=monotonic,
-        )
-
         # Fanout exchange to broadcast events.
         self._exchange_name = f"{self._prefix}.events"
         self._publisher = PublisherConnection(
@@ -303,6 +342,20 @@ class RabbitMQTransport:
             wrap_connection_class=_resolving_connection_class,
             connect_timeout=CONNECT_TIMEOUT,
             io_timeout=PUBLISH_IO_TIMEOUT,
+        )
+
+        # Publish path: the breaker that skips publishing in outages. A probe
+        # may wait for the connection and then connect, so it is presumed lost
+        # only after the longest a publish can take.
+        self._publish_breaker = PublishBreaker(
+            "RabbitMQ",
+            logger=logger,
+            initial_cooldown=RECONNECT_INITIAL_BACKOFF,
+            max_cooldown=RECONNECT_MAX_BACKOFF,
+            log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
+            probe_timeout=max(PUBLISH_PROBE_TIMEOUT, self._publisher.worst_case_s),
+            failures_to_open=PUBLISH_FAILURES_TO_OPEN,
+            monotonic=monotonic,
         )
 
         # Per-consumer queue name. We intentionally avoid new env vars/flags and
@@ -392,8 +445,11 @@ class RabbitMQTransport:
         try:
             self._publisher.publish(
                 event.model_dump(mode="json"),
-                current=functools.partial(breaker.is_current, ticket),
+                should_attempt=functools.partial(breaker.should_attempt, ticket),
             )
+        except PublishDroppedError:
+            # Skipped or starved of the connection: not evidence about the broker.
+            breaker.record_dropped()
         except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
             breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:

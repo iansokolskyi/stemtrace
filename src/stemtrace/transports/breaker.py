@@ -236,20 +236,32 @@ class PublishBreaker:
             self._dropped += 1
             return None
 
-    def is_current(self, ticket: int) -> bool:
-        """Whether ``ticket``'s attempt started in the breaker's current state.
+    def should_attempt(self, ticket: int) -> bool:
+        """Whether an attempt that started earlier is still worth making.
 
-        False once the breaker has opened (or opened and closed again) since
-        ``allow()`` issued the ticket: the attempt was already in flight and
-        says nothing about the broker now, so a caller that had to wait
-        before starting it may skip it. The probe's ticket stays current
-        until its outcome is recorded.
+        For a caller that had to wait after ``allow()`` returned ``ticket``
+        (e.g. for a shared connection). False only while the breaker is open
+        and ``ticket`` isn't the probe's: the attempt was already in flight
+        when the breaker opened, and the broker is known to be down. Once the
+        breaker has closed again the broker answered, so the attempt goes
+        ahead, whatever the ticket's age.
 
         Args:
             ticket: The ticket ``allow()`` returned for the attempt.
         """
         self._check_fork()
-        return ticket == self._epoch
+        return not self.is_open or ticket == self._epoch
+
+    def record_dropped(self) -> None:
+        """Count an event dropped without an attempt (it says nothing about the broker).
+
+        For an event that was skipped, or that couldn't get a shared resource
+        in time: it is reported with the next log line like any dropped
+        event, but doesn't count as a failure and never changes the state.
+        """
+        self._check_fork()
+        with self._lock:
+            self._dropped += 1
 
     def record_success(self, ticket: int) -> None:
         """Report a successful publish attempt.

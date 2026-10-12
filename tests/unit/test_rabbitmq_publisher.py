@@ -5,14 +5,19 @@ real behavior it models and where that was read). Scripts that fork, exit or
 monkey-patch run in their own interpreter.
 """
 
+import errno
+import gc
 import json
 import logging
 import os
+import socket
+import struct
 import subprocess
 import sys
 import textwrap
 import threading
 import time
+import warnings
 import weakref
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -21,9 +26,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from amqp.connection import Connection as AmqpConnection
+from amqp.transport import TCPTransport
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.transports import rabbitmq_publisher
+from stemtrace.transports import rabbitmq, rabbitmq_publisher
 from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     PUBLISH_FAILURES_TO_OPEN,
@@ -33,7 +40,6 @@ from stemtrace.transports.rabbitmq import (
 from stemtrace.transports.rabbitmq_publisher import (
     CLOSE_TIMEOUT,
     DISCARD_TIMEOUT,
-    PublisherBusyError,
     PublishSkippedError,
 )
 from tests import fake_kombu
@@ -378,32 +384,22 @@ class TestPublisherThreads:
         assert len(broker.published) == threads_n * per_thread
         assert len(broker.connections) == 1
 
-    def test_publish_waits_no_longer_than_lock_timeout_for_busy_connection(
+    def test_publish_waits_for_connection_in_use_then_publishes_without_failure(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:
         transport = _transport(H1, clock)
         transport.publish(_event("t-1"))
-        publisher = transport._publisher
-        publisher._lock_timeout = 0.05
-        proc = publisher._process()
+        proc = transport._publisher._process()
+        proc.lock.acquire()
+        proc.held_since = time.monotonic()  # another publish is in progress
+        threading.Timer(0.2, proc.lock.release).start()
 
-        with proc.lock:  # another thread is stuck in a publish
-            started = time.monotonic()
-            transport.publish(_event("t-busy"))
-            waited = time.monotonic() - started
+        started = time.monotonic()
+        transport.publish(_event("t-2"))
 
-        assert 0.05 <= waited < 2.0
-        assert _ids(broker) == ["t-1"]
-        warnings = _warnings(caplog)
-        assert warnings[0].exc_info is not None
-        assert isinstance(warnings[0].exc_info[1], PublisherBusyError)
-
-    def test_lock_timeout_covers_a_connect_pass_over_every_host(
-        self, clock: FakeClock
-    ) -> None:
-        publisher = _transport(f"{H1};{H2};amqp://h3", clock)._publisher
-
-        assert publisher._lock_timeout == 3 * CONNECT_TIMEOUT + PUBLISH_IO_TIMEOUT
+        assert 0.15 <= time.monotonic() - started < 5.0
+        assert _ids(broker) == ["t-1", "t-2"]
+        assert _warnings(caplog) == []
 
     def test_publish_skips_attempt_when_breaker_moved_on_while_waiting(
         self, broker: FakeBroker, clock: FakeClock
@@ -411,7 +407,7 @@ class TestPublisherThreads:
         publisher = _transport(H1, clock)._publisher
 
         with pytest.raises(PublishSkippedError):
-            publisher.publish({"task_id": "t"}, current=lambda: False)
+            publisher.publish({"task_id": "t"}, should_attempt=lambda: False)
 
         assert broker.connections == []
 
@@ -640,6 +636,396 @@ class TestPublisherExit:
         assert out == ["close", "collect"]
 
 
+class TestPyAmqpReadSemantics:
+    """What the publisher's read relies on, checked on the installed py-amqp.
+
+    These use py-amqp's real transport on a socketpair; they ground the fake
+    (``tests/fake_kombu.py``), whose frame handling copies this behavior.
+    """
+
+    HEADER = struct.pack(">BHI", 1, 0, 1)  # type, channel, payload size
+
+    @staticmethod
+    def _transport(sock: socket.socket) -> TCPTransport:
+        transport = TCPTransport("localhost:5672")
+        transport.sock = sock
+        transport._setup_transport()
+        transport.connected = True
+        return transport
+
+    def test_zero_timeout_read_after_frame_header_spins_until_peer_closes(
+        self,
+    ) -> None:
+        # py-amqp Transport._read(): EAGAIN is "continue" after the first
+        # read of a frame, so a zero-timeout read of a partial frame never
+        # returns (5.0.6 and 5.3.1).
+        ours, theirs = socket.socketpair()
+        transport = self._transport(ours)
+        theirs.sendall(self.HEADER)
+        outcome: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                with transport.having_timeout(0):
+                    transport.read_frame()
+            except BaseException as exc:  # noqa: BLE001  recorded for the assertion
+                outcome.append(exc)
+
+        thread = threading.Thread(target=read, daemon=True)
+        thread.start()
+        thread.join(timeout=0.5)
+        spinning = thread.is_alive()
+        theirs.close()  # the read ends once the peer closes
+        thread.join(timeout=10)
+        ours.close()
+
+        assert spinning is True
+        assert isinstance(outcome[0], OSError)
+
+    def test_positive_timeout_read_keeps_partial_frame_for_the_next_read(self) -> None:
+        ours, theirs = socket.socketpair()
+        transport = self._transport(ours)
+        theirs.sendall(self.HEADER)
+
+        with pytest.raises(socket.timeout), transport.having_timeout(0.05):
+            transport.read_frame()
+        theirs.sendall(b"\x00\xce")
+        with transport.having_timeout(0.05):
+            frame = transport.read_frame()
+        ours.close()
+        theirs.close()
+
+        assert frame == (1, 0, b"\x00")
+
+
+class TestResolvingTransportsAreBounded:
+    """Real py-amqp transports, as the publisher builds them."""
+
+    def test_connect_to_peer_that_resets_leaves_no_unclosed_socket(self) -> None:
+        # py-amqp 5.0.6 _AbstractTransport.close() calls sock.shutdown()
+        # without a try: after an RST it raises ENOTCONN and skips
+        # sock.close(), and connect() calls it when the handshake fails.
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+
+            def reset_first_connection() -> None:
+                conn, _ = server.accept()
+                conn.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
+                conn.close()
+
+            acceptor = threading.Thread(target=reset_first_connection)
+            acceptor.start()
+            connection = rabbitmq._resolving_amqp_connection_class(AmqpConnection)(
+                host=f"127.0.0.1:{port}", connect_timeout=2
+            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    connection.connect()
+                except OSError:
+                    failed = True
+                else:
+                    failed = False
+                del connection
+                gc.collect()
+            acceptor.join(timeout=5)
+
+        assert failed is True
+        assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+
+    def test_publish_to_silent_tls_peer_returns_within_the_connect_timeout(
+        self,
+    ) -> None:
+        # py-amqp 5.0.6 SSLTransport._setup_transport() runs the handshake on a
+        # socket without a timeout (_init_socket just removed it), so a peer
+        # that accepts and never answers hangs the publisher under its lock.
+        script = _script(
+            """
+            import json, socket, time
+            from datetime import datetime, timezone
+            from stemtrace.core.events import TaskEvent, TaskState
+            from stemtrace.transports import rabbitmq
+            from stemtrace.transports.rabbitmq import RabbitMQTransport
+
+            rabbitmq.CONNECT_TIMEOUT = 0.5
+            server = socket.socket()
+            server.bind(("127.0.0.1", 0))
+            server.listen(4)
+            port = server.getsockname()[1]
+            held = []
+            import threading
+            def accept():
+                while True:
+                    held.append(server.accept()[0])
+            threading.Thread(target=accept, daemon=True).start()
+            transport = RabbitMQTransport(
+                f"amqps://guest:guest@127.0.0.1:{port}//", prefix="t", ttl=60
+            )
+            started = time.monotonic()
+            transport.publish(TaskEvent(
+                task_id="t", name="n", state=TaskState.STARTED,
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            ))
+            print(json.dumps({"elapsed": time.monotonic() - started}))
+            """
+        )
+
+        out = _run(script)
+
+        assert out["elapsed"] < 5.0
+
+
+class TestPublisherPartialFrames:
+    """A half-received frame must neither spin nor stall the publisher."""
+
+    def test_publish_with_half_a_frame_pending_keeps_connection_and_does_not_spin(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        # The broker started a Connection.Close and froze (docker pause): only
+        # the 7-byte frame header arrived. py-amqp's _read() spins on EAGAIN
+        # after the first read of a frame, so a zero-timeout read never returns.
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+        amqp = broker.connections[0].connection
+        amqp.deliver("close", send_bytes=7)
+
+        started = time.monotonic()
+        transport.publish(_event("t-2"))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert len(broker.connections) == 1
+        assert _ids(broker) == ["t-1", "t-2"]
+
+    def test_publish_after_half_frame_completes_processes_the_whole_frame(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+        amqp = broker.connections[0].connection
+        amqp.deliver("close", send_bytes=7)
+        transport.publish(_event("t-2"))
+
+        amqp.finish_frame()  # the broker thaws; the buffered header is kept
+        transport.publish(_event("t-3"))
+
+        # The close frame was read intact: the connection was replaced and
+        # the event still went out.
+        assert len(broker.connections) == 2
+        assert _ids(broker) == ["t-1", "t-2", "t-3"]
+
+    def test_publish_with_no_frame_pending_does_not_read_the_connection(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+
+        for i in range(20):
+            transport.publish(_event(f"t-{i + 2}"))
+
+        # Nothing to read: no read attempt (and no socket timeout changes).
+        assert broker.connections[0].connection.reads == 0
+
+
+class TestPublisherLockedStepsAreBounded:
+    """The connection lock is held by steps whose real worst case is known."""
+
+    def test_publish_while_connect_is_slower_than_one_timeout_does_not_open_breaker(
+        self, broker: FakeBroker, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A slow but healthy broker: connecting takes 0.4s, several
+        # connect/IO timeouts' worth, but each step is within its own timeout.
+        monkeypatch.setattr(rabbitmq, "CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(rabbitmq, "PUBLISH_IO_TIMEOUT", 0.05)
+        broker.connect_delay = 0.4
+        transport = _transport(H1, clock)
+        threads = [
+            threading.Thread(target=transport.publish, args=(_event(f"t-{i}"),))
+            for i in range(4)
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert sorted(_ids(broker)) == [f"t-{i}" for i in range(4)]
+        assert transport._publish_breaker.is_open is False
+        assert len(broker.connections) == 1
+
+    def test_lock_wait_covers_every_step_of_a_connect_pass(
+        self, clock: FakeClock
+    ) -> None:
+        publisher = _transport(f"{H1};{H2};amqp://h3", clock)._publisher
+
+        # Per host: resolve, TCP connect, TLS handshake and the Start, Tune and
+        # Open-Ok replies each wait up to the connect timeout; then channel
+        # open, exchange declare and the write each wait up to the IO timeout.
+        per_host = 6 * CONNECT_TIMEOUT
+        assert publisher._lock_timeout >= 3 * per_host + 3 * PUBLISH_IO_TIMEOUT
+
+    def test_breaker_probe_timeout_outlasts_the_longest_publish(
+        self, clock: FakeClock
+    ) -> None:
+        transport = _transport(f"{H1};{H2};amqp://h3;amqp://h4", clock)
+
+        one_pass = 4 * 6 * CONNECT_TIMEOUT + 3 * PUBLISH_IO_TIMEOUT
+        # A probe may wait for the connection, then connect: a probe still
+        # running is not presumed lost.
+        assert transport._publish_breaker._probe_timeout >= 2 * one_pass
+
+    def test_publish_skipped_after_breaker_closed_again_still_publishes(
+        self,
+        broker: FakeBroker,
+        clock: FakeClock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-0"))
+        breaker = transport._publish_breaker
+        issued = threading.Event()
+        real_allow = breaker.allow
+
+        def allow_and_signal() -> int | None:
+            ticket = real_allow()
+            issued.set()
+            return ticket
+
+        breaker.allow = allow_and_signal  # type: ignore[method-assign]
+        proc = transport._publisher._process()
+        waiter = threading.Thread(target=transport.publish, args=(_event("t-wait"),))
+        with proc.lock:  # another publish holds the connection
+            waiter.start()
+            assert issued.wait(5.0)
+            breaker.allow = real_allow  # type: ignore[method-assign]
+            # While it waits, the breaker opens and closes again.
+            tickets = [breaker.allow() for _ in range(PUBLISH_FAILURES_TO_OPEN)]
+            for ticket in tickets:
+                assert ticket is not None
+                breaker.record_failure(ticket, "x", OSError("down"))
+            clock.advance(1.0)
+            probe = breaker.allow()
+            assert probe is not None
+            breaker.record_success(probe)
+            assert breaker.is_open is False
+        waiter.join(timeout=10)
+
+        # The broker is healthy again: the waiting event is published, and
+        # nothing is logged as a failure for it.
+        assert _ids(broker) == ["t-0", "t-wait"]
+        assert not [r for r in _warnings(caplog) if "t-wait" in r.getMessage()]
+
+
+class _Interrupt(BaseException):
+    """What a signal handler raises (SoftTimeLimitExceeded, SystemTerminate)."""
+
+
+class _InterruptedAfterAcquire:
+    """Lock whose first acquire() is interrupted right after it took the lock.
+
+    A signal handler runs between ``acquire()`` returning and the next line of
+    the caller; Python can't close that window, so the exception is raised
+    from inside the caller while the lock is held.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.armed = True
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        taken = self._lock.acquire(blocking, timeout)
+        if taken and self.armed:
+            self.armed = False
+            raise _Interrupt
+        return taken
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+
+class TestPublisherHealsStuckLock:
+    def test_publish_after_lock_leaked_by_interrupt_recovers_with_new_connection(
+        self,
+        broker: FakeBroker,
+        clock: FakeClock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+        publisher = transport._publisher
+        publisher._lock_timeout = 0.05  # a whole worst-case publish, shrunk
+        publisher._process().lock = _InterruptedAfterAcquire()  # type: ignore[assignment]
+        with pytest.raises(_Interrupt):
+            transport.publish(_event("t-interrupted"))
+
+        started = time.monotonic()
+        transport.publish(_event("t-2"))
+        transport.publish(_event("t-3"))
+
+        assert time.monotonic() - started < 5.0
+        assert _ids(broker) == ["t-1", "t-2", "t-3"]
+        assert "not released" in caplog.text
+        # The old connection is dropped with its state, not reused.
+        assert len(broker.connections) == 2
+
+    def test_publish_waiting_behind_ever_younger_holders_drops_without_failure(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+        publisher = transport._publisher
+        publisher._lock_timeout = 0.05
+        proc = publisher._process()
+        stop = threading.Event()
+
+        def busy_holders() -> None:
+            # Back-to-back publishes by other threads: the lock is never free
+            # and each holder is young.
+            with proc.lock:
+                while not stop.is_set():
+                    proc.held_since = time.monotonic()
+                    time.sleep(0.005)
+                proc.held_since = None
+
+        holders = threading.Thread(target=busy_holders)
+        holders.start()
+        time.sleep(0.05)
+        try:
+            transport.publish(_event("t-busy"))
+        finally:
+            stop.set()
+            holders.join(timeout=5)
+
+        # Contention, not a broker failure: nothing logged, breaker untouched.
+        assert _warnings(caplog) == []
+        assert transport._publish_breaker.is_open is False
+
+
+class TestPublisherDiscardClosesSocket:
+    def test_discard_closes_socket_even_when_collect_fails_before_closing_it(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        # py-amqp 5.0.6 _AbstractTransport.close() calls sock.shutdown()
+        # without a try: after an RST it raises ENOTCONN and skips close().
+        broker.shutdown_error = OSError(errno.ENOTCONN, "not connected")
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+
+        transport.publish(_event("t-0"))  # connects, fails, discards
+
+        amqp = broker.connections[0].connection
+        assert amqp.collect_failed is True
+        assert amqp.leaked_sock is not None
+        assert amqp.leaked_sock.fileno() == -1
+
+
 # --- gevent and eventlet -----------------------------------------------------
 
 _GREEN_SCRIPT = """
@@ -758,6 +1144,153 @@ class TestPublisherGreenPools:
         assert out["first_calls"] == ["collect"]
 
 
+_PARTIAL_SCRIPT = """
+import json, time
+{patch}
+from stemtrace.transports.rabbitmq import RabbitMQTransport
+from tests import fake_kombu
+from tests.fake_kombu import sample_event
+
+broker = fake_kombu.FakeBroker(fake_kombu.FakeClock())
+fake_kombu.install(None, broker)
+transport = RabbitMQTransport("amqp://guest:guest@h1:5672//", prefix="t", ttl=60)
+transport.publish(sample_event("t-0"))
+# The broker started a Connection.Close and froze: only the header arrived.
+broker.connections[0].connection.deliver("close", send_bytes=7)
+
+gaps = []
+def ticker():
+    last = time.monotonic()
+    while True:
+        {sleep}(0.01)
+        now = time.monotonic()
+        gaps.append(now - last)
+        last = now
+
+{spawn_ticker}
+{run_publish}
+print(json.dumps({{
+    "published": [b["task_id"] for _, b, _ in broker.published],
+    "max_gap": max(gaps) if gaps else None,
+    "connections": len(broker.connections),
+}}))
+"""
+
+_GEVENT_PARTIAL = (
+    "from gevent import monkey; monkey.patch_all(); import gevent",
+    "gevent.sleep",
+    "gevent.spawn(ticker)",
+    "pub = gevent.spawn(transport.publish, sample_event('t-1')); pub.join(timeout=10)",
+)
+_EVENTLET_PARTIAL = (
+    "import eventlet; eventlet.monkey_patch()",
+    "eventlet.sleep",
+    "eventlet.spawn(ticker)",
+    "pub = eventlet.spawn(transport.publish, sample_event('t-1')); pub.wait()",
+)
+
+
+class TestPublisherPartialFrameUnderGreenPools:
+    @pytest.mark.parametrize(
+        "variant", [_GEVENT_PARTIAL, _EVENTLET_PARTIAL], ids=["gevent", "eventlet"]
+    )
+    def test_publish_with_half_a_frame_pending_never_stalls_the_hub(
+        self, variant: tuple[str, str, str, str]
+    ) -> None:
+        patch, sleep, spawn_ticker, run_publish = variant
+        script = _script(
+            _PARTIAL_SCRIPT.format(
+                patch=patch,
+                sleep=sleep,
+                spawn_ticker=spawn_ticker,
+                run_publish=run_publish,
+            )
+        )
+
+        out = _run(script)
+
+        assert out["published"] == ["t-0", "t-1"]
+        assert out["connections"] == 1
+        # Other greenlets kept running while the partial frame was handled.
+        assert out["max_gap"] < 0.5
+
+
+_KILL_CONNECT_SCRIPT = """
+import json, os, socket
+{patch}
+from datetime import datetime, timezone
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.transports.rabbitmq import RabbitMQTransport
+
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen(4)
+port = server.getsockname()[1]
+held = []
+{spawn}(lambda: held.append(server.accept()[0]))
+
+
+def sockets():
+    count = 0
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            count += "socket" in os.readlink("/proc/self/fd/" + name)
+        except OSError:
+            pass
+    return count
+
+
+transport = RabbitMQTransport(f"amqp://guest:guest@127.0.0.1:{{port}}//", prefix="t", ttl=60)
+before = sockets()
+event = TaskEvent(task_id="a", name="n", state=TaskState.STARTED,
+                  timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc))
+# The broker accepts and never answers: the connect waits in the handshake.
+victim = {spawn}(transport.publish, event)
+{sleep}(0.5)
+mid_connect = sockets() - before
+{kill}
+print(json.dumps({{"mid_connect": mid_connect, "after_kill": sockets() - before,
+                  "accepted": len(held)}}))
+"""
+
+
+class TestPublisherKilledMidConnect:
+    @pytest.mark.parametrize(
+        ("patch", "spawn", "sleep", "kill"),
+        [
+            (
+                "from gevent import monkey; monkey.patch_all(); import gevent",
+                "gevent.spawn",
+                "gevent.sleep",
+                "victim.kill(block=True, timeout=5)",
+            ),
+            (
+                "import eventlet; eventlet.monkey_patch()",
+                "eventlet.spawn",
+                "eventlet.sleep",
+                "victim.kill(); eventlet.sleep(0.1)",
+            ),
+        ],
+        ids=["gevent", "eventlet"],
+    )
+    def test_greenlet_killed_while_connecting_closes_its_half_open_socket(
+        self, patch: str, spawn: str, sleep: str, kill: str
+    ) -> None:
+        script = _script(
+            _KILL_CONNECT_SCRIPT.format(
+                patch=patch, spawn=spawn, sleep=sleep, kill=kill
+            )
+        )
+
+        out = _run(script)
+
+        # Mid-connect: the client's socket and the one the listener accepted.
+        assert out["mid_connect"] == 2
+        # After the kill only the accepted one is left (the dead stack no
+        # longer holds the other, and nothing waits for the garbage collector).
+        assert out["after_kill"] == 1
+
+
 def _script(body: str) -> str:
     return textwrap.dedent(body)
 
@@ -767,7 +1300,12 @@ def _run(script: str, *args: str) -> Any:
     result = subprocess.run(
         [sys.executable, "-W", "error::ResourceWarning", "-c", script, *args],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPO_ROOT), os.environ.get("PYTHONPATH", "")]
+            ),
+        },
         capture_output=True,
         text=True,
         timeout=SCRIPT_TIMEOUT_S,

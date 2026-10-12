@@ -885,9 +885,9 @@ class TestRabbitMQTransport:
             _self: PublisherConnection,
             _payload: dict[str, Any],
             *,
-            current: Callable[[], bool],
+            should_attempt: Callable[[], bool],
         ) -> None:
-            del current
+            del should_attempt
             raise ConnectionError("RabbitMQ unavailable")
 
         # Patch the publisher connection to avoid depending on kombu in this test.
@@ -949,9 +949,9 @@ class TestRabbitMQTransport:
             self: PublisherConnection,
             payload: dict[str, Any],
             *,
-            current: Callable[[], bool],
+            should_attempt: Callable[[], bool],
         ) -> None:
-            del current
+            del should_attempt
             seen.update(payload)
 
         monkeypatch.setattr(PublisherConnection, "publish", _capture)
@@ -1177,9 +1177,9 @@ class TestRabbitMQTransport:
             _self: PublisherConnection,
             _payload: dict[str, Any],
             *,
-            current: Callable[[], bool],
+            should_attempt: Callable[[], bool],
         ) -> None:
-            del current
+            del should_attempt
             raise ConnectionError("RabbitMQ unavailable")
 
         monkeypatch.setattr(PublisherConnection, "publish", _boom)
