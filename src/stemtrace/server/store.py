@@ -80,6 +80,22 @@ def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     return _MIN_DATETIME
 
 
+def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
+    """Sort key for eviction: a task's first event; a group's newest member's.
+
+    Synthetic nodes sort after tasks of the same age.
+    """
+    if node.first_seen is not None:
+        return node.first_seen, 0
+    member_times = [
+        child.first_seen
+        for child_id in node.children
+        if (child := graph.get_node(child_id)) is not None
+        and child.first_seen is not None
+    ]
+    return max(member_times, default=_MIN_DATETIME), 1
+
+
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the first timestamp for a node (including children for synthetic nodes)."""
     if node.first_seen is not None:
@@ -598,23 +614,19 @@ class GraphStore:
             return last_time
 
     def _maybe_evict(self) -> None:
-        """Evict oldest 10% when over capacity. Call with lock held."""
+        """Evict oldest 10% when over capacity. Call with lock held.
+
+        A GROUP/CHORD node is as old as its newest member and goes after it,
+        so a container isn't evicted while its members are still shown.
+        """
         if len(self._graph.nodes) <= self._max_nodes:
             return
 
         nodes_by_age = sorted(
             self._graph.nodes.values(),
-            key=lambda n: n.first_seen or _MIN_DATETIME,
+            key=lambda n: _eviction_age(n, self._graph),
         )
 
         to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)
         for node in nodes_by_age[:to_remove]:
-            if node.parent_id and node.parent_id in self._graph.nodes:
-                parent = self._graph.nodes[node.parent_id]
-                if node.task_id in parent.children:
-                    parent.children.remove(node.task_id)
-
-            if node.task_id in self._graph.root_ids:
-                self._graph.root_ids.remove(node.task_id)
-
-            del self._graph.nodes[node.task_id]
+            self._graph.remove_node(node.task_id)
