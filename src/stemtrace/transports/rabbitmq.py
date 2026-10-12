@@ -400,6 +400,14 @@ class RabbitMQTransport:
         else:
             breaker.record_success(ticket)
 
+    def close(self) -> None:
+        """Close this process's publisher connection if it is idle.
+
+        Waits at most half a second for the broker's reply. The next publish
+        connects again.
+        """
+        self._publisher.close()
+
     def _declare_exchange_and_queue(self) -> None:
         """Declare the fanout exchange and this transport's durable consumer queue.
 

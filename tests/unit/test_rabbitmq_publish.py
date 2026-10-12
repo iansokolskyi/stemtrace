@@ -194,6 +194,21 @@ class TestRabbitMQPublishConnectionReuse:
         ]
 
 
+class TestRabbitMQTransportClose:
+    def test_close_closes_publisher_connection_and_next_publish_reconnects(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+
+        transport.close()
+        transport.publish(_event("t-2"))
+
+        assert broker.connections[0].connection.calls == ["close", "collect"]
+        assert len(broker.connections) == 2
+        assert [body["task_id"] for _, body, _ in broker.published] == ["t-1", "t-2"]
+
+
 class TestRabbitMQPublishFailover:
     """Multi-host (failover) URLs: every host is tried once per attempt."""
 
