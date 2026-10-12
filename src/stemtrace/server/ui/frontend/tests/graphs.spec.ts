@@ -874,10 +874,7 @@ test.describe('Graph Page - Malformed Links', () => {
  * response is in, so a test that still sees the old graph is looking at a page
  * that did not draw the new data. Resolves once the page reports "Live".
  */
-async function openLiveGraph(
-  page: Page,
-  rootId: string,
-): Promise<(task: MockTask) => Promise<void>> {
+async function openLiveGraph(page: Page, rootId: string): Promise<LiveGraph> {
   const sockets: WebSocketRoute[] = []
   await page.routeWebSocket(/\/ws$/, (ws) => {
     sockets.push(ws)
@@ -886,12 +883,7 @@ async function openLiveGraph(
   await expect(page.getByText('Live', { exact: true })).toBeVisible()
   // StrictMode (dev) opens and drops a socket before the one that goes live
   const ws = sockets[sockets.length - 1]
-  return async (task) => {
-    const refetched = page.waitForResponse(
-      (response) =>
-        response.request().resourceType() === 'fetch' &&
-        decodeURIComponent(new URL(response.url()).pathname).endsWith(`/api/graphs/${rootId}`),
-    )
+  const emit = (task: MockTask) =>
     ws.send(
       JSON.stringify({
         task_id: task.task_id,
@@ -905,8 +897,46 @@ async function openLiveGraph(
         retries: 0,
       }),
     )
+  const push = async (task: MockTask) => {
+    const refetched = page.waitForResponse(
+      (response) =>
+        response.request().resourceType() === 'fetch' &&
+        decodeURIComponent(new URL(response.url()).pathname).endsWith(`/api/graphs/${rootId}`),
+    )
+    emit(task)
     await refetched
   }
+  return { emit, push }
+}
+
+/**
+ * The page's live socket, as the server uses it: `emit` sends one event;
+ * `push` sends one and resolves once the page has refetched the graph.
+ */
+interface LiveGraph {
+  emit: (task: MockTask) => void
+  push: (task: MockTask) => Promise<void>
+}
+
+/**
+ * The viewport's transform once it has stopped changing: wheel zooms and fits
+ * take a few frames, so one read can catch them half way.
+ */
+async function settledViewport(page: Page): Promise<string> {
+  const viewport = page.locator('.react-flow__viewport')
+  let last: string | null = null
+  await expect
+    .poll(
+      async () => {
+        const now = await viewport.getAttribute('style')
+        const settled = now === last
+        last = now
+        return settled
+      },
+      { intervals: [150], timeout: 10_000 },
+    )
+    .toBe(true)
+  return last ?? ''
 }
 
 /** The task node a graph draws for `taskId`. */
@@ -941,7 +971,7 @@ test.describe('Graph Page - Live Updates', () => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
-    const push = await openLiveGraph(page, first.task_id)
+    const { push } = await openLiveGraph(page, first.task_id)
     await expect(page.locator('.react-flow__node')).toHaveCount(2)
     await expect(graphNode(page, second.task_id)).toContainText('STARTED')
 
@@ -980,7 +1010,7 @@ test.describe('Graph Page - Live Updates', () => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
-    const push = await openLiveGraph(page, first.task_id)
+    const { push } = await openLiveGraph(page, first.task_id)
     const dragged = graphNode(page, first.task_id)
     const before = (await dragged.boundingBox())!
     // Drag by the card's id line, not the link text (a click would navigate)
@@ -1005,22 +1035,21 @@ test.describe('Graph Page - Live Updates', () => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
-    const push = await openLiveGraph(page, first.task_id)
-    const viewport = page.locator('.react-flow__viewport')
+    const { push } = await openLiveGraph(page, first.task_id)
     const box = (await page.locator('.react-flow').boundingBox())!
-    const fitted = await viewport.getAttribute('style')
+    const fitted = await settledViewport(page)
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     // Zoom out: the fitted view of two nodes is already at the maximum zoom
     await page.mouse.wheel(0, 400)
-    await expect.poll(async () => viewport.getAttribute('style')).not.toBe(fitted)
-    await page.waitForTimeout(300)
-    const zoomed = await viewport.getAttribute('style')
+    const zoomed = await settledViewport(page)
+    expect(zoomed).not.toBe(fitted)
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
-    await expect(graphNode(page, third.task_id)).toBeAttached()
-    await page.waitForTimeout(500)
+    // A node is visible once React Flow has measured it, which is when a
+    // re-fit (the behaviour under test) would have moved the view
+    await expect(graphNode(page, third.task_id)).toBeVisible()
 
-    expect(await viewport.getAttribute('style')).toBe(zoomed)
+    expect(await settledViewport(page)).toBe(zoomed)
   })
 })
