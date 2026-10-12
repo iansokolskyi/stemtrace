@@ -861,7 +861,13 @@ def test_recursive_replacement_checks_grow_linearly_with_pages(
 ) -> None:
     """Recursive pagination with 500 pages: a new page runs a bounded number
     of replacement checks (no recheck of every earlier page), so the work
-    under the store's lock grows linearly."""
+    under the store's lock grows linearly.
+
+    That holds for events arriving in (roughly) the order they happened,
+    which is what this feeds. Fully shuffled events are not linear: 2000
+    shuffled pages took 17.5 s (worst event 238 ms), quadratic, though far
+    cheaper than before.
+    """
     checks = 0
     replacement_check = TaskGraph._replacement_check
 
