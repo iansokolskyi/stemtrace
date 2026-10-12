@@ -1600,12 +1600,14 @@ class TestPublisherWaitIsOneDeadline:
             publisher._acquire(proc)
 
     def test_holder_that_is_just_releasing_is_not_declared_gone(
-        self, clock: FakeClock
+        self, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         publisher = _transport(H1, clock)._publisher
         proc = publisher._process()
         proc.lock.acquire()  # taken, not yet recorded, and about to be released
-        threading.Timer(0.01, proc.lock.release).start()
+        monkeypatch.setattr(
+            rabbitmq_publisher.time, "sleep", lambda seconds: proc.lock.release()
+        )
 
         gone = publisher._holder_is_gone(proc, time.monotonic() + 1.0)
 
@@ -1640,6 +1642,55 @@ class TestPublisherWaitIsOneDeadline:
         assert early == ["t-1"]
         assert _ids(broker) == ["t-1", "t-late"]
         assert "not released" in caplog.text
+
+
+class _ReleasedJustAfterTheWait:
+    """Lock whose first acquire() times out, but which is free right after."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._first = True
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._first:
+            self._first = False
+            return False
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+
+class TestPublisherLockRaces:
+    def test_acquire_after_the_holder_released_just_after_the_wait_takes_the_lock(
+        self, clock: FakeClock
+    ) -> None:
+        publisher = _transport(H1, clock)._publisher
+        proc = publisher._process()
+        proc.lock = _ReleasedJustAfterTheWait()  # type: ignore[assignment]
+
+        assert publisher._acquire(proc) is proc
+        assert proc.holder == threading.get_ident()
+
+    def test_holder_that_records_itself_during_the_grace_is_not_declared_gone(
+        self, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        publisher = _transport(H1, clock)._publisher
+        proc = publisher._process()
+        proc.lock.acquire()  # taken, not yet recorded
+
+        def holder_records_itself_during_the_grace(seconds: float) -> None:
+            proc.holder = 424242
+            proc.held_since = clock()
+
+        monkeypatch.setattr(
+            rabbitmq_publisher.time, "sleep", holder_records_itself_during_the_grace
+        )
+
+        assert publisher._holder_is_gone(proc, time.monotonic() + 1.0) is False
 
 
 class TestPublisherDiscardClosesSocket:

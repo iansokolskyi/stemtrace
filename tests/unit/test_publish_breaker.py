@@ -826,6 +826,32 @@ class TestPublishBreakerRecordDropped:
         assert breaker.allow() is None
 
 
+class TestPublishBreakerAllowRace:
+    def test_allow_when_breaker_closed_between_fast_path_and_lock_returns_current_ticket(
+        self,
+    ) -> None:
+        breaker = _make_breaker(FakeClock())
+        _attempt_fails(breaker)
+        assert breaker.is_open is True
+
+        class ClosesBreakerBeforeTheLock:
+            """Another thread closes the breaker as this one reaches the lock."""
+
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+
+            def __enter__(self) -> None:
+                breaker._open_until = None
+                self._lock.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                self._lock.release()
+
+        breaker._lock = ClosesBreakerBeforeTheLock()  # type: ignore[assignment]
+
+        assert breaker.allow() == breaker._epoch
+
+
 class TestPublishBreakerFork:
     """A forked child starts with a closed breaker and a fresh lock."""
 
