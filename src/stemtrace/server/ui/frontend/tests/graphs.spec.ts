@@ -1048,6 +1048,34 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
   })
 
+  test('leaves a node under the cursor while an update arrives mid-drag', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const { push } = await openLiveGraph(page, first.task_id)
+    const held = graphNode(page, first.task_id)
+    const position = async () => held.evaluate((el) => (el as HTMLElement).style.transform)
+    const fitted = await settledViewport(page)
+    const before = (await held.boundingBox())!
+    await page.mouse.move(before.x + 4, before.y + 4)
+    await page.mouse.down()
+    await page.mouse.move(before.x + 4, before.y + 124, { steps: 8 })
+    await expect.poll(async () => (await held.boundingBox())!.y).toBeGreaterThan(before.y + 50)
+    const dragged = await position()
+
+    // The mouse button is still down
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+    await expect(graphNode(page, third.task_id)).toBeVisible()
+
+    expect(await position()).toBe(dragged)
+    expect(await settledViewport(page)).toBe(fitted)
+    await page.mouse.up()
+    // Released: the node stays where it was dropped, and the view may now re-fit
+    expect(await position()).toBe(dragged)
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+  })
+
   test('keeps the zoom the user chose', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()

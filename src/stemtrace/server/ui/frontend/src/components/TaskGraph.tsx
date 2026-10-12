@@ -19,7 +19,7 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import '@xyflow/react/dist/style.css'
 import { Link } from '@tanstack/react-router'
 import type { GraphNode, NodeType } from '@/api/client'
@@ -594,17 +594,28 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
   const shownNodeIds = useRef(layout.nodes.map((node) => node.id).join())
   // The ids a re-fit is waiting for React Flow to hold (see the second effect)
   const fitWhenHolding = useRef<string | null>(null)
+  // A node is held by the mouse: a re-fit would move the view under it, so it
+  // waits for the drop
+  const [dragging, setDragging] = useState(false)
 
   useEffect(() => {
     setNodes((previous) => {
-      const measured = new Map(previous.map((node) => [node.id, node.measured]))
-      return layout.nodes.map((node) => ({
-        ...node,
-        // Keep the size React Flow measured: without it the node is hidden
-        // until it is measured again
-        measured: measured.get(node.id),
-        position: draggedPositions.current.get(node.id) ?? node.position,
-      }))
+      const shown = new Map(previous.map((node) => [node.id, node]))
+      return layout.nodes.map((node) => {
+        const was = shown.get(node.id)
+        return {
+          ...node,
+          // Keep the size React Flow measured: without it the node is hidden
+          // until it is measured again
+          measured: was?.measured,
+          // A node under the mouse stays where the mouse has it; the dragged
+          // position is only recorded when the drop ends
+          dragging: was?.dragging,
+          position: was?.dragging
+            ? was.position
+            : (draggedPositions.current.get(node.id) ?? node.position),
+        }
+      })
     })
     setEdges(layout.edges)
 
@@ -618,14 +629,15 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
   // Fit once React Flow holds the new nodes: asked any earlier (in the effect
   // above, where setNodes has only been queued) fitView fits the old ones.
   useEffect(() => {
-    if (fitWhenHolding.current === null) return
+    if (fitWhenHolding.current === null || dragging) return
     if (nodes.map((node) => node.id).join() !== fitWhenHolding.current) return
     fitWhenHolding.current = null
     void flow.current?.fitView(FIT_VIEW_OPTIONS)
-  }, [nodes])
+  }, [nodes, dragging])
 
   const rememberDraggedPositions: OnNodeDrag = (_event, _node, draggedNodes) => {
     for (const node of draggedNodes) draggedPositions.current.set(node.id, node.position)
+    setDragging(false)
   }
 
   if (Object.keys(graphNodes).length === 0) {
@@ -645,6 +657,7 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
       onInit={(instance) => {
         flow.current = instance
       }}
+      onNodeDragStart={() => setDragging(true)}
       onNodeDragStop={rememberDraggedPositions}
       // A pan or zoom the user made comes with its mouse or touch event; the fits
       // the page does itself (and the Controls buttons) come without one. A
