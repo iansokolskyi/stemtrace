@@ -368,8 +368,17 @@ class TestPublisherInternals:
         ours.close()
         theirs.close()
 
-    def test_register_fork_hook_without_register_at_fork_does_nothing(self) -> None:
+    def test_register_fork_hook_without_register_at_fork_registers_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        registered: list[Any] = []
+        monkeypatch.setattr(
+            os, "register_at_fork", lambda **hooks: registered.append(hooks)
+        )
+
         rabbitmq_publisher._register_fork_hook(None)
+
+        assert registered == []
 
     def test_register_fork_hook_registers_the_child_hook(self) -> None:
         registered: list[dict[str, Any]] = []
@@ -464,8 +473,17 @@ class TestPublisherInternals:
         ours.close()
         theirs.close()
 
-    def test_tracking_a_transport_outside_a_connect_does_nothing(self) -> None:
-        rabbitmq_publisher.track_connecting_transport(SimpleNamespace(sock=None))
+    def test_tracking_a_transport_outside_a_connect_leaves_no_trace(self) -> None:
+        transport = SimpleNamespace(sock=None)
+
+        rabbitmq_publisher.track_connecting_transport(transport)
+
+        assert rabbitmq_publisher._connecting.get() is None
+        token = rabbitmq_publisher._connecting.set([])
+        try:
+            assert rabbitmq_publisher._connecting.get() == []  # nothing carried over
+        finally:
+            rabbitmq_publisher._connecting.reset(token)
 
     def test_connect_abandoned_before_the_transport_opened_a_socket_cleans_up(
         self, broker: FakeBroker, clock: FakeClock
@@ -522,43 +540,104 @@ class TestResolvingTransportHelpers:
         assert calls == [("settimeout", 1.5), ("handshake", transport.sock)]
 
 
+class _Addresses:
+    """PUBLISH_RESOLVER stand-in answering a fixed list of addresses."""
+
+    def __init__(self, addresses: list[tuple[str, int]]) -> None:
+        self.addresses = addresses
+
+    def resolve(self, host: str, port: int, *args: Any, timeout: float) -> Any:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", address)
+            for address in self.addresses
+        ]
+
+    def invalidate(self, *key: Any) -> None:
+        pass
+
+
+def _closed_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port: int = sock.getsockname()[1]
+    return port
+
+
 class TestConnectAddresses:
-    def test_connect_tries_a_bounded_number_of_addresses_of_one_host(
+    @pytest.fixture(autouse=True)
+    def fresh_address_memory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rabbitmq, "_address_start", {})
+
+    def test_connect_reaches_a_live_address_behind_more_refusing_ones(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Each address gets its own connect timeout, so the longest a connect
-        # takes only follows from the timeout if the addresses are capped.
-        attempts: list[Any] = []
+        # Refused addresses fail in microseconds, so they must never exclude
+        # a live one, however many come first (a count cap would).
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            addresses = [("127.0.0.1", _closed_port()) for _ in range(5)]
+            addresses.append(server.getsockname())
+            monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", _Addresses(addresses))
+            transport = SimpleNamespace(sock=None)
 
-        class Refusing(socket.socket):
-            def connect(self, address: Any) -> None:
-                attempts.append(address)
-                raise ConnectionRefusedError
-
-        class FiveAddresses:
-            def resolve(self, host: str, port: int, *args: Any, timeout: float) -> Any:
-                return [
-                    (
-                        socket.AF_INET,
-                        socket.SOCK_STREAM,
-                        6,
-                        "",
-                        ("127.0.0.1", 20000 + i),
-                    )
-                    for i in range(5)
-                ]
-
-            def invalidate(self, *key: Any) -> None:
-                pass
-
-        monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", FiveAddresses())
-        monkeypatch.setattr(socket, "socket", Refusing)
-        transport = SimpleNamespace(sock=None)
-
-        with pytest.raises(ConnectionRefusedError):
             rabbitmq._connect_resolved(transport, "broker", 5672, 1.0)
 
-        assert len(attempts) == rabbitmq_publisher.MAX_ADDRESSES_PER_HOST
+            assert transport.sock.getpeername() == server.getsockname()
+            transport.sock.close()
+
+    def test_connect_to_black_holed_addresses_stays_within_one_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Each address would wait its whole timeout: the total per host is
+        # what the bound counts, however many addresses a name has.
+        class BlackHole(socket.socket):
+            def connect(self, address: Any) -> None:
+                time.sleep(self.gettimeout() or 0)
+                raise TimeoutError
+
+        monkeypatch.setattr(
+            rabbitmq,
+            "PUBLISH_RESOLVER",
+            _Addresses([("127.0.0.1", 20000 + i) for i in range(6)]),
+        )
+        monkeypatch.setattr(socket, "socket", BlackHole)
+        transport = SimpleNamespace(sock=None)
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            rabbitmq._connect_resolved(transport, "broker", 5672, 0.3)
+
+        assert time.monotonic() - started < 0.3 + 0.2
+
+    def test_connect_after_a_black_holed_first_address_starts_at_the_next_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The first address uses up the whole budget; the next attempt must
+        # not start there again, or a live address behind it is never tried.
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            dead = ("127.0.0.1", 1)
+            live = server.getsockname()
+
+            class FirstIsBlackHole(socket.socket):
+                def connect(self, address: Any) -> None:
+                    if address == dead:
+                        time.sleep(self.gettimeout() or 0)
+                        raise TimeoutError
+                    super().connect(address)
+
+            monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", _Addresses([dead, live]))
+            monkeypatch.setattr(socket, "socket", FirstIsBlackHole)
+            transport = SimpleNamespace(sock=None)
+
+            with pytest.raises(TimeoutError):
+                rabbitmq._connect_resolved(transport, "broker", 5672, 0.3)
+            rabbitmq._connect_resolved(transport, "broker", 5672, 0.3)
+
+            assert transport.sock.getpeername() == live
+            transport.sock.close()
 
 
 class TestPublisherHeartbeat:
@@ -1195,12 +1274,13 @@ class TestPublisherLockedStepsAreBounded:
         # The wait for the lock is short: a task never waits longer than this
         # for the connection, however slow its holder is.
         assert publisher._lock_wait == PUBLISH_IO_TIMEOUT
-        # A holder takes at most: per host the resolver, up to three
-        # addresses, the TLS handshake, three handshake replies and the unwrap
-        # after a failure (9 connect timeouts); then channel, declare, write.
+        # A holder takes at most: per host the resolver, the TCP connect (one
+        # budget for all addresses), the TLS handshake, three handshake
+        # replies and the unwrap after a failure (7 connect timeouts); then
+        # channel, declare, write.
         assert (
             publisher._attempt_bound()
-            >= 3 * 9 * CONNECT_TIMEOUT + 3 * PUBLISH_IO_TIMEOUT
+            >= 3 * 7 * CONNECT_TIMEOUT + 3 * PUBLISH_IO_TIMEOUT
         )
 
     def test_breaker_probe_timeout_outlasts_the_longest_publish(
@@ -1208,12 +1288,10 @@ class TestPublisherLockedStepsAreBounded:
     ) -> None:
         transport = _transport(f"{H1};{H2};amqp://h3;amqp://h4", clock)
 
-        holder = 4 * 9 * CONNECT_TIMEOUT + 3 * PUBLISH_IO_TIMEOUT
-        # A probe may wait for the connection (a few short waits), then
+        holder = 4 * 7 * CONNECT_TIMEOUT + 3 * PUBLISH_IO_TIMEOUT
+        # A probe may wait for the connection (one short wait), then
         # connect: a probe still running is not presumed lost.
-        assert (
-            transport._publish_breaker._probe_timeout >= holder + 3 * PUBLISH_IO_TIMEOUT
-        )
+        assert transport._publish_breaker._probe_timeout >= holder + PUBLISH_IO_TIMEOUT
 
     def test_publish_skipped_after_breaker_closed_again_still_publishes(
         self,
@@ -1414,6 +1492,99 @@ class TestPublisherHealsStuckLock:
         assert len(created) <= 4
         assert _ids(broker) == []
         assert transport._publish_breaker.dropped == 1
+
+
+class TestPublisherWaitIsOneDeadline:
+    @pytest.fixture(autouse=True)
+    def short_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rabbitmq, "CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(rabbitmq, "PUBLISH_IO_TIMEOUT", 0.2)
+
+    def test_waiter_behind_stuck_lock_then_slow_new_connect_waits_once_in_total(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        # A's holder is gone. While C waits on A's lock, B replaces the state
+        # and starts a slow connect (a young holder on the new lock). C's
+        # second round must not wait a second full wait on B's lock.
+        transport = _transport(H1, clock)
+        publisher = transport._publisher
+        stuck = publisher._process()
+        stuck.lock.acquire()
+        stuck.holder = 111
+        stuck.held_since = clock()
+        clock.advance(publisher._attempt_bound() + 1.0)
+        replacement = rabbitmq_publisher._Process()
+        replacement.lock.acquire()
+        replacement.holder = 222
+        replacement.held_since = clock()  # young: B is mid-connect
+
+        def b_replaces() -> None:
+            time.sleep(0.05)
+            publisher._proc = replacement
+
+        replacer = threading.Thread(target=b_replaces)
+        replacer.start()
+        started = time.monotonic()
+        with pytest.raises(PublisherBusyError):
+            publisher._acquire(stuck)
+        waited = time.monotonic() - started
+        replacer.join(timeout=5)
+
+        assert waited <= publisher._lock_wait + 0.1
+
+    def test_busy_error_reports_how_long_the_event_waited(
+        self, clock: FakeClock
+    ) -> None:
+        publisher = _transport(H1, clock)._publisher
+        proc = publisher._process()
+        proc.lock.acquire()
+        proc.holder = 111
+        proc.held_since = clock()
+
+        with pytest.raises(PublisherBusyError, match=r"waited 0\.[12]\d*s"):
+            publisher._acquire(proc)
+
+    def test_holder_that_is_just_releasing_is_not_declared_gone(
+        self, clock: FakeClock
+    ) -> None:
+        publisher = _transport(H1, clock)._publisher
+        proc = publisher._process()
+        proc.lock.acquire()  # taken, not yet recorded, and about to be released
+        threading.Timer(0.01, proc.lock.release).start()
+
+        gone = publisher._holder_is_gone(proc, time.monotonic() + 1.0)
+
+        assert gone is False
+
+    def test_lock_leaked_by_another_thread_drops_events_until_the_bound_passes(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The leaking thread recorded the lock first (a signal handler raised
+        # after that): other threads can't tell it from a busy holder until
+        # the longest an attempt can take has passed.
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+        publisher = transport._publisher
+        proc = publisher._process()
+        proc.lock.acquire()
+        proc.holder = threading.get_ident()
+        proc.held_since = clock()
+
+        def publish_elsewhere(task_id: str) -> None:
+            thread = threading.Thread(target=transport.publish, args=(_event(task_id),))
+            thread.start()
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+        publish_elsewhere("t-early")
+        early = _ids(broker)
+        assert "not released" not in caplog.text
+        clock.advance(publisher._attempt_bound() + 1.0)
+        publish_elsewhere("t-late")
+
+        assert early == ["t-1"]
+        assert _ids(broker) == ["t-1", "t-late"]
+        assert "not released" in caplog.text
 
 
 class TestPublisherDiscardClosesSocket:

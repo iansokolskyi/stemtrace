@@ -114,19 +114,18 @@ MAX_FRAMES_PER_CHECK = 8
 DRAINS_PER_PUBLISH = 2
 
 # Waits of one connect pass over one host, in units of connect_timeout: the
-# resolver; the TCP connect of each address tried (the resolver's answer is
-# capped at MAX_ADDRESSES_PER_HOST); the TLS handshake; the Start, Tune and
-# Open-Ok replies (py-amqp Connection.connect() waits connect_timeout for
+# resolver; the TCP connect (one budget shared by all the addresses of the
+# name, see rabbitmq._connect_resolved); the TLS handshake; the Start, Tune
+# and Open-Ok replies (py-amqp Connection.connect() waits connect_timeout for
 # each frame); and, after a failure over TLS, the unwrap py-amqp 5.3
 # SSLTransport._shutdown_transport() waits for the peer's close_notify.
-MAX_ADDRESSES_PER_HOST = 3
-CONNECT_WAITS_PER_HOST = 1 + MAX_ADDRESSES_PER_HOST + 1 + 3 + 1
+CONNECT_WAITS_PER_HOST = 1 + 1 + 1 + 3 + 1
 # The steps after connecting (channel open, exchange declare, the write) wait
 # io_timeout each.
 IO_WAITS_AFTER_CONNECT = 3
 
-# How many times one publish waits for the connection lock (or replaces a
-# stuck one) before it gives up and drops the event.
+# How many times one publish replaces a stuck connection lock before it gives
+# up and drops the event (all within the one wait for the lock).
 MAX_LOCK_ROUNDS = 3
 
 # How long a waiter lets a holder that took the lock but not yet recorded it
@@ -153,7 +152,7 @@ class PublishDroppedError(PublishError):
 
 
 class PublisherBusyError(PublishDroppedError):
-    """The connection stayed in use by other publishes for two whole bounds."""
+    """The connection stayed in use by a holder that is at work for the whole wait."""
 
 
 class PublishSkippedError(PublishDroppedError):
@@ -446,9 +445,8 @@ class PublisherConnection:
 
     @property
     def worst_case_s(self) -> float:
-        """The longest :meth:`publish` can take: waits for the lock, then an attempt."""
-        waits = MAX_LOCK_ROUNDS * (self._lock_wait + HOLDER_GRACE)
-        return waits + self._attempt_bound()
+        """The longest :meth:`publish` can take: the wait for the lock, then an attempt."""
+        return self._lock_wait + self._attempt_bound()
 
     def publish(
         self, payload: dict[str, Any], *, should_attempt: Callable[[], bool]
@@ -487,50 +485,59 @@ class PublisherConnection:
     def _acquire(self, proc: _Process) -> _Process:
         """Take the connection lock, starting over if its holder can't release it.
 
-        A task waits at most ``_lock_wait`` for a holder that isn't stuck. A
-        lock this very thread still holds (a signal handler raised inside it)
-        is replaced without waiting, since nobody else will release it. Each
-        wait and each replacement counts toward MAX_LOCK_ROUNDS.
+        A task waits at most ``_lock_wait`` in total, whatever happens meanwhile
+        (one deadline across all the rounds, so a lock replaced under it
+        doesn't start a new wait). A lock this very thread still holds (a
+        signal handler raised inside it) is replaced without waiting, since
+        nobody else will release it. A lock whose holder is gone or past the
+        longest an attempt can take is replaced too, at most MAX_LOCK_ROUNDS
+        times.
 
         Returns:
             The state whose lock the caller now holds (a new one if the old
             lock was stuck).
 
         Raises:
-            PublisherBusyError: The lock stayed in use by holders that aren't
-                stuck.
+            PublisherBusyError: The lock stayed in use by a holder that is at
+                work, for the whole wait.
         """
         me = threading.get_ident()
+        started = time.monotonic()
+        deadline = started + self._lock_wait
         for _ in range(MAX_LOCK_ROUNDS):
             if proc.holder == me and proc.lock.locked():
                 proc = self._replace(proc)
                 continue
-            if proc.lock.acquire(timeout=self._lock_wait):
+            if proc.lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
                 proc.holder = me
                 proc.held_since = self._monotonic()
                 return proc
             if not proc.lock.locked():
                 continue  # released since the wait ended: try again
-            if not self._holder_is_gone(proc):
-                break  # a holder that is at work: don't wait for it again
+            if not self._holder_is_gone(proc, deadline):
+                break  # a holder that is at work: the wait is over
             proc = self._replace(proc)
         raise PublisherBusyError(
-            f"RabbitMQ publisher connection in use for {self._lock_wait:g}s"
+            f"RabbitMQ publisher connection in use; waited "
+            f"{time.monotonic() - started:.2f}s"
         )
 
-    def _holder_is_gone(self, proc: _Process) -> bool:
+    def _holder_is_gone(self, proc: _Process, deadline: float) -> bool:
         """Whether the lock's holder can no longer release it in time.
 
         True if nobody recorded taking it (a signal handler raised between
-        ``acquire()`` and the ``try`` that releases it) or the holder is past
-        the longest an attempt can take.
+        ``acquire()`` and the ``try`` that releases it) while the lock is
+        still taken, or the holder is past the longest an attempt can take.
+        The grace for a holder that has taken the lock but not yet recorded
+        it comes out of the wait (``deadline``).
         """
         since = proc.held_since
         if since is None:
-            # A holder that took the lock a moment ago hasn't recorded it yet.
-            time.sleep(HOLDER_GRACE)
+            time.sleep(min(HOLDER_GRACE, max(0.0, deadline - time.monotonic())))
             since = proc.held_since
-        return since is None or self._monotonic() - since > self._attempt_bound()
+            if since is None:
+                return proc.lock.locked()  # a holder that is releasing isn't gone
+        return self._monotonic() - since > self._attempt_bound()
 
     def _replace(self, stuck: _Process) -> _Process:
         """Start over with a new state; the old one keeps its lock and socket.

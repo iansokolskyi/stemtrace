@@ -30,7 +30,6 @@ from typing_extensions import Self
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.rabbitmq_publisher import (
-    MAX_ADDRESSES_PER_HOST,
     PublishDroppedError,
     PublisherConnection,
     track_connecting_transport,
@@ -159,6 +158,10 @@ def _resolving_transport_class(transport_cls: Any) -> Any:
     )
 
 
+# Which address of a (host, port) the next connect starts with.
+_address_start: dict[tuple[str, int], int] = {}
+
+
 def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) -> None:
     """Connect a py-amqp transport to the first resolved address that accepts.
 
@@ -183,15 +186,26 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
     )
     error: OSError = socket.gaierror(socket.EAI_NONAME, f"No address for {host!r}")
     track_connecting_transport(self)
-    # A bounded number of addresses, so that the longest a connect can take
-    # follows from the timeout (a name with many addresses is tried in order,
-    # and the next host or attempt takes over after these).
-    for family, socktype, proto, _, address in entries[:MAX_ADDRESSES_PER_HOST]:
+    # One budget for all the addresses of the host, so the longest a connect
+    # takes follows from the timeout however many a name has: a refused
+    # address costs microseconds and never excludes a live one. A black-holed
+    # address can use the whole budget, so the next attempt starts at the
+    # address after it (and, once one connects, at that one).
+    budget = timeout or CONNECT_TIMEOUT
+    deadline = time.monotonic() + budget
+    key = (host, port)
+    first = _address_start.get(key, 0) % max(len(entries), 1)
+    for index, (family, socktype, proto, _, address) in enumerate(
+        entries[first:] + entries[:first]
+    ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             self.sock = socket.socket(family, socktype, proto)
             with contextlib.suppress(NotImplementedError):
                 set_cloexec(self.sock, True)
-            self.sock.settimeout(timeout)
+            self.sock.settimeout(remaining)
             self.sock.connect(address)
         except OSError as exc:
             error = exc
@@ -199,7 +213,9 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
                 self.sock.close()
             self.sock = None
         else:
+            _address_start[key] = (first + index) % len(entries)
             return
+    _address_start[key] = (first + 1) % max(len(entries), 1)
     # The host may have moved (e.g. a DNS failover): refresh its cached
     # addresses for the next attempt.
     PUBLISH_RESOLVER.invalidate(
