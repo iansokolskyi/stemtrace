@@ -1591,6 +1591,19 @@ class TestStaleInspectReplyLosesToNewerEvents:
 
         assert self._statuses(registry) == expected
 
+    def test_stale_stats_does_not_revive_a_pid_shut_down_mid_inspect(self) -> None:
+        """worker_shutdown alone lands while stats() is pending: no restart yet."""
+        registry = WorkerRegistry()
+        registry.register_worker(self.NODE, 100, ["app.add"])
+
+        stale = _InspectApplyingEvents(
+            stats_result={self.NODE: {"pid": 100}},
+            during=lambda: registry.mark_shutdown(self.NODE, 100),
+        )
+        routes._refresh_worker_registry_from_inspect(registry, stale)  # type: ignore[arg-type]
+
+        assert self._statuses(registry) == {(self.NODE, 100): "offline"}
+
     def test_stale_stats_does_not_mark_a_node_that_just_started_offline(self) -> None:
         """A node whose worker_ready arrived mid-inspect is missing from the reply."""
         registry = WorkerRegistry()
