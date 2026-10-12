@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PublishBreaker(slow_attempt=...)` and `PublishBreaker.record_failure(elapsed=...)` are ignored and emit a `DeprecationWarning`; they will be removed in 1.0.
 
 ### Fixed
+- Graphs: events in which two chords share one `celery.chord_unlock` task or one group-body start (Celery workflows don't produce these) no longer crash event handling; the drawing can still depend on event order (see the README's graph limitations).
 - Graphs: a group's tasks are listed only inside the group, which sits under the task that started it; they used to also appear directly under that task once they started.
 - Graphs: a task or group whose parent task isn't in the store (not received yet, or evicted) is now listed as a graph of its own instead of being shown in no graph, and moves under its parent once the parent arrives. A task's `parent_id` is empty while it is listed that way.
 - Graphs: a group or task no longer stays listed under a parent it moved away from, a chord sits under the task that started it, and a task can no longer end up linked under itself (directly or through a cycle).
