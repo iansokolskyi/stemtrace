@@ -1281,6 +1281,26 @@ class TestInspectRefreshUsesCeleryNodenames:
         workers = [(w.hostname, w.status) for w in worker_registry.get_all_workers()]
         assert workers == [("w1@devbox", "online")]
 
+    def test_ping_fallback_leaves_silent_node_on_same_host_offline(self) -> None:
+        """Without stats, only the node that answered the ping comes back online."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
+        worker_registry.register_worker("w2@devbox", 296482, ["app.add"])
+        worker_registry.mark_shutdown("w1@devbox", 296481)
+        worker_registry.mark_shutdown("w2@devbox", 296482)
+        fake = _FakeInspect(
+            ping_result={"w1@devbox": {"ok": "pong"}},
+            stats_result=None,
+            registered_result=None,
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, fake)  # type: ignore[arg-type]
+
+        status_by_node = {
+            w.hostname: w.status for w in worker_registry.get_all_workers()
+        }
+        assert status_by_node == {"w1@devbox": "online", "w2@devbox": "offline"}
+
 
 class TestInspectRateLimiting:
     """Tests for rate limiting and early-return branches in API refresh."""
