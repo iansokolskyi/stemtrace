@@ -305,7 +305,7 @@ class WorkerRegistry:
         """Snapshot, per nodename, how many worker events were applied so far.
 
         Take it before asking Celery to inspect, and hand it to
-        :meth:`apply_stats_reply` / :meth:`apply_ping_reply` with the reply.
+        :meth:`apply_stats_reply` with the reply.
 
         Returns:
             Nodename -> event count (a missing nodename means 0).
@@ -358,19 +358,21 @@ class WorkerRegistry:
                     )
                 self.mark_node_alive(nodename, pid)
 
-    def apply_ping_reply(
-        self, seen: Mapping[str, int], nodenames: Iterable[str]
-    ) -> None:
-        """Apply an ``inspect.ping()`` reply, with the precedence of stats.
+    def apply_ping_reply(self, nodenames: Iterable[str]) -> None:
+        """Apply an ``inspect.ping()`` reply.
+
+        Unlike a stats reply, a ping can't undo a worker event that arrived
+        while it ran, so it needs no event snapshot: it names no pid, so it
+        only revives the node's newest pid (never one that reported
+        worker_shutdown) and retires the others, the state any such event
+        leaves anyway.
 
         Args:
-            seen: ``event_generations()`` taken before the inspect call.
             nodenames: Nodenames that answered.
         """
         with self._lock:
             for nodename in nodenames:
-                if not self._is_stale(nodename, seen):
-                    self.mark_node_alive(nodename)
+                self.mark_node_alive(nodename)
 
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.

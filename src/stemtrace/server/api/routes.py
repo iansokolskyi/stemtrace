@@ -309,7 +309,7 @@ def _refresh_worker_registry_from_inspect(
             active = inspector.ping()
         if not active:
             return
-        worker_registry.apply_ping_reply(seen, active)
+        worker_registry.apply_ping_reply(active)
         return
 
     # If we got a non-empty stats response, workers that didn't answer go
