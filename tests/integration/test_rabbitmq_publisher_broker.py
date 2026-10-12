@@ -178,6 +178,9 @@ class TestOneConnectionPerProcess:
         self, transport: RabbitMQTransport
     ) -> None:
         threads_n, per_thread = 16, 50
+        # Connected first: an event that arrives while one connects is dropped
+        # after 2s, by design, which a loaded host can turn into a few losses.
+        transport.publish(_event("warm"))
 
         def run(n: int) -> None:
             for i in range(per_thread):
@@ -190,9 +193,9 @@ class TestOneConnectionPerProcess:
             thread.join(timeout=60)
 
         assert [t.is_alive() for t in threads] == [False] * threads_n
-        got = _received(transport.queue_name, threads_n * per_thread)
-        assert len(got) == threads_n * per_thread
-        assert len(set(got)) == threads_n * per_thread
+        got = _received(transport.queue_name, threads_n * per_thread + 1)
+        assert len(got) == threads_n * per_thread + 1
+        assert len(set(got)) == threads_n * per_thread + 1
         _current_name(os.getpid())
 
     def test_connect_with_heartbeat_in_url_negotiates_no_heartbeat(
@@ -371,6 +374,9 @@ class TestForkAndGreenPools:
 
             url, prefix = sys.argv[1:3]
             transport = RabbitMQTransport(url, prefix=prefix, ttl=60)
+            # The connection is open before the greenlets start: an event that
+            # arrives while one connects is dropped after 2s, by design.
+            transport.publish(_event("warm"))
             done = []
 
             def run(n):
@@ -394,4 +400,4 @@ class TestForkAndGreenPools:
             inspect=inspect,
         )
 
-        assert len(_received(transport.queue_name, 500, timeout=20)) == 500
+        assert len(_received(transport.queue_name, 501, timeout=20)) == 501
