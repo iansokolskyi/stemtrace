@@ -62,7 +62,10 @@ async function listRootGraphs(
 ): Promise<{ task_id: string; name: string; node_type: string }[]> {
   if (mockApi) return mockApi.getRootTasks()
 
-  const response = await page.request.get('/stemtrace/api/graphs?limit=100')
+  // maxRetries: this is a raw HTTP call without the page's own query retries, and
+  // one run died on a connection reset ("socket hang up", Playwright 1.57). Playwright
+  // retries ECONNRESET up to maxRetries times (API request docs).
+  const response = await page.request.get('/stemtrace/api/graphs?limit=100', { maxRetries: 3 })
   expect(response.ok()).toBe(true)
   return (await response.json()).graphs
 }
@@ -87,7 +90,13 @@ async function openGraph(
   )
   if (!match) {
     const found = graphs.map((graph) => `${graph.name} (${graph.node_type})`).join(', ')
-    throw new Error(`No graph matching ${JSON.stringify(target)}; found: ${found || 'none'}`)
+    const wanted = [
+      target.nodeType && `node type ${target.nodeType}`,
+      target.name && `name /${target.name.source}/`,
+    ]
+      .filter(Boolean)
+      .join(', ')
+    throw new Error(`No graph with ${wanted}; found: ${found || 'none'}`)
   }
 
   await page.goto('/graphs')
