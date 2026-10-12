@@ -468,6 +468,16 @@ again once events are re-consumed.
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
     number of events dropped since the previous one.
+  - Limitation: any `socket_timeout` under 0.5s in the broker URL (the server's consumer reads
+    with half of it as the XREAD block window) adds up to about 0.25s of latency to a new event:
+    an idle read that returns sooner than that (`MIN_IDLE_READ_SECONDS`) is followed by a wait
+    for the rest, instead of looping at once. With redis-py's default timeouts nothing changes.
+  - Limitation: a Celery soft time limit that lands while a task signal (`task_prerun`,
+    `task_postrun`, ...) is publishing is not delivered to the task. stemtrace lets the
+    exception propagate and doesn't count it as a Redis failure, but Celery's `Signal.send`
+    catches what a receiver raises, so the task keeps running and Celery logs an ERROR,
+    `Signal handler ... raised: SoftTimeLimitExceeded()`. A limit that lands while the task
+    itself prints or logs with `capture_output` on is delivered.
 - **RabbitMQ (fanout + per-consumer queue)**:
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
@@ -483,6 +493,12 @@ again once events are re-consumed.
     the interpreter exits and when a prefork child exits (waiting at most half a second for the
     broker's reply); a process killed or ended with `os._exit()` leaves it to the operating system,
     and RabbitMQ logs a warning about the dropped TCP connection.
+  - The server's consumer connection does use `?heartbeat=N` from the broker URL: its read loop
+    sends the heartbeats and waits at most a quarter of the interval for frames (at most 1s), so
+    an idle consumer is not dropped by the broker, and a broker that stops sending heartbeats is
+    treated like a dropped connection (reconnect with backoff), also when the broker is frozen with
+    its TCP connection up (`docker pause`): a failed consumer connection is dropped without the
+    AMQP close handshake, which would wait forever for a frozen broker.
   - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Events
     publish one at a time on the process's connection, and **an event never waits more than 2s
     in total (one IO timeout) for another to finish: it is dropped instead**, which doesn't
@@ -536,6 +552,12 @@ again once events are re-consumed.
     paused or unreachable without the connection closing (`docker pause`), written events are
     buffered by the operating system and delivered when it answers again; the worker sees a failure
     only once the buffers are full or the connection drops.
+  - Limitation: a Celery soft time limit that lands while a task signal (`task_prerun`,
+    `task_postrun`, ...) is publishing is not delivered to the task. stemtrace lets the
+    exception propagate and doesn't count it as a RabbitMQ failure, but Celery's `Signal.send`
+    catches what a receiver raises, so the task keeps running and Celery logs an ERROR,
+    `Signal handler ... raised: SoftTimeLimitExceeded()`. A limit that lands while the task
+    itself prints or logs with `capture_output` on is delivered.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)

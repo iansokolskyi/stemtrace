@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from celery import Celery, chain, group
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import (
     after_task_publish,
     task_failure,
@@ -889,6 +890,43 @@ class TestRealPublish:
 
 class TestFireAndForget:
     """Tests for fire-and-forget behavior."""
+
+    def test_soft_time_limit_during_publish_propagates_unlogged(
+        self,
+        mock_task: MagicMock,
+        caplog: Any,
+    ) -> None:
+        """Celery's control flow is not a publish failure."""
+        interrupted_transport = MagicMock()
+        interrupted_transport.publish.side_effect = SoftTimeLimitExceeded()
+        connect_signals(interrupted_transport)
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs={})
+
+        assert "Failed to publish event" not in caplog.text
+
+    def test_soft_time_limit_during_publish_is_swallowed_by_celery_dispatch(
+        self, mock_task: MagicMock
+    ) -> None:
+        """Pins the limit of the fix: Signal.send catches what receivers raise.
+
+        celery 5.6 ``utils/dispatch/signal.py`` ``Signal.send`` logs and
+        returns an exception a receiver raised, so a soft limit that lands
+        while a task signal's publish runs is not delivered to the task by
+        stemtrace re-raising it. The CHANGELOG says so.
+        """
+        interrupted_transport = MagicMock()
+        interrupted_transport.publish.side_effect = SoftTimeLimitExceeded()
+        connect_signals(interrupted_transport)
+
+        responses = task_prerun.send(
+            sender=mock_task, task_id="task-123", task=mock_task, args=(), kwargs={}
+        )
+
+        assert [type(error) for error in _receiver_errors(responses)] == [
+            SoftTimeLimitExceeded
+        ]
 
     def test_publish_error_is_logged_not_raised(
         self,

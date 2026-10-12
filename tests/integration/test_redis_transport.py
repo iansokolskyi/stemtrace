@@ -8,6 +8,8 @@ Run with: pytest tests/integration/test_redis_transport.py -v
 
 import contextlib
 import os
+import queue
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -15,7 +17,7 @@ import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports import get_transport
-from stemtrace.transports.redis import RedisTransport
+from stemtrace.transports.redis import MIN_IDLE_READ_SECONDS, RedisTransport
 
 # Skip all tests if Redis is not available
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
@@ -209,3 +211,61 @@ class TestRedisStreamOperations:
 
         length = redis_transport._client.xlen(redis_transport.stream_key)
         assert length == 3
+
+
+class TestIdleConsumeWithTinySocketTimeout:
+    """A tiny ``socket_timeout`` in the broker URL must not busy-loop consume()."""
+
+    IDLE_SECONDS = 2.0
+
+    def test_consume_idle_with_tiny_socket_timeout_reads_at_a_bounded_rate(
+        self,
+    ) -> None:
+        separator = "&" if "?" in REDIS_URL else "?"
+        url = f"{REDIS_URL}{separator}socket_timeout=0.001"
+        prefix = f"test_tiny_{int(time.time() * 1000)}"
+        transport = RedisTransport.from_url(url, prefix=prefix, ttl=60)
+        reads = 0
+        real_xread = transport.client.xread
+
+        def counting_xread(*args: object, **kwargs: object) -> object:
+            nonlocal reads
+            reads += 1
+            return real_xread(*args, **kwargs)
+
+        transport.client.xread = counting_xread  # type: ignore[method-assign]
+        stop = threading.Event()
+        transport.bind_stop_event(stop)
+        received: queue.Queue[object] = queue.Queue()
+
+        def run() -> None:
+            for event in transport.consume():
+                received.put(event)
+
+        thread = threading.Thread(target=run, name="redis-idle", daemon=True)
+        thread.start()
+        try:
+            time.sleep(self.IDLE_SECONDS)
+            idle_reads = reads
+            publisher = RedisTransport.from_url(REDIS_URL, prefix=prefix, ttl=60)
+            publisher.publish(
+                TaskEvent(
+                    task_id="after-idle",
+                    name="tests.idle",
+                    state=TaskState.STARTED,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
+            delivered = received.get(timeout=5)
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+            with contextlib.suppress(Exception):
+                transport.client.delete(transport.stream_key)
+
+        assert not thread.is_alive()
+        # One read per MIN_IDLE_READ_SECONDS at most (+2 for the edges); an
+        # unpaced loop made over 200 in these two seconds.
+        assert idle_reads <= self.IDLE_SECONDS / MIN_IDLE_READ_SECONDS + 2
+        assert isinstance(delivered, TaskEvent)
+        assert delivered.task_id == "after-idle"

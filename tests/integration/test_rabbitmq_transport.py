@@ -259,6 +259,53 @@ class TestRabbitMQTransportReconnect:
         assert time.monotonic() - stopped_at < 3
 
 
+class TestRabbitMQConsumerHeartbeats:
+    """An idle consumer on a ``?heartbeat=N`` URL keeps its connection."""
+
+    HEARTBEAT_S = 1
+    # Several intervals: RabbitMQ closes a connection after two silent ones.
+    IDLE_S = 5.0
+
+    def test_consume_idle_with_heartbeat_url_keeps_the_same_connection(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="stemtrace.transports.rabbitmq")
+        separator = "&" if "?" in RABBITMQ_URL else "?"
+        url = f"{RABBITMQ_URL}{separator}heartbeat={self.HEARTBEAT_S}"
+        transport = RabbitMQTransport.from_url(
+            url, prefix=f"test_hb_{int(time.time() * 1000)}", ttl=60
+        )
+        transport._declare_exchange_and_queue()
+        events, stop, thread = _start_consumer(transport)
+        try:
+            time.sleep(self.IDLE_S)
+            transport.publish(
+                TaskEvent(
+                    task_id="after-idle",
+                    name="tests.rabbitmq_heartbeat",
+                    state=TaskState.STARTED,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
+            delivered = events.get(timeout=10)
+            connected = transport.connected
+        finally:
+            _stop_consumer(stop, thread)
+            with (
+                contextlib.suppress(Exception),
+                Connection(RABBITMQ_URL, connect_timeout=1) as conn,
+            ):
+                channel = conn.channel()
+                channel.queue_delete(transport.queue_name)
+                channel.exchange_delete(transport.exchange_name)
+
+        # The broker did not drop the consumer: no error, no reconnect.
+        assert "consume loop" not in caplog.text
+        assert connected is True
+        assert isinstance(delivered, TaskEvent)
+        assert delivered.task_id == "after-idle"
+
+
 def _start_consumer(
     transport: RabbitMQTransport,
 ) -> tuple[queue.Queue[TaskEvent | WorkerEvent], threading.Event, threading.Thread]:

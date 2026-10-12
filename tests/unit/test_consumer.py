@@ -24,10 +24,19 @@ from stemtrace.transports.redis import RedisTransport
 class FakeTransport:
     """Fake transport for testing."""
 
-    def __init__(self, events: list[TaskEvent | WorkerEvent] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[TaskEvent | WorkerEvent] | None = None,
+        *,
+        delay_per_event: float = 0.0,
+    ) -> None:
         self._events: list[TaskEvent | WorkerEvent] = events or []
+        # Models a consumer thread that is slow to get scheduled (a loaded
+        # host): each event reaches the consumer this many seconds later.
+        self._delay_per_event = delay_per_event
         self._publish_count = 0
         self._consume_started = False
+        self.consumed = 0  # events the consumer has taken and come back for
         self._stop = False
 
     def publish(self, event: TaskEvent | WorkerEvent) -> None:
@@ -39,7 +48,9 @@ class FakeTransport:
         for event in self._events:
             if self._stop:
                 break
+            time.sleep(self._delay_per_event)
             yield event
+            self.consumed += 1
         # Block until stopped
         while not self._stop:
             time.sleep(0.01)
@@ -82,7 +93,7 @@ class TestEventConsumer:
             consumer.start()
 
             assert consumer.is_running
-            time.sleep(0.05)  # Let thread start
+            _wait_until(lambda: fake._consume_started)
 
             # Stop should work
             fake.stop()
@@ -110,14 +121,14 @@ class TestEventConsumer:
     def test_consumes_events_into_store(
         self, store: GraphStore, sample_events: list[TaskEvent]
     ) -> None:
-        fake = FakeTransport(sample_events.copy())
+        fake = FakeTransport(sample_events.copy(), delay_per_event=0.05)
 
         with patch("stemtrace.server.consumer.get_transport", return_value=fake):
             consumer = EventConsumer("memory://", store)
             consumer.start()
 
-            # Wait for events to be consumed
-            time.sleep(0.1)
+            # Stopping first would drop the events still queued in the thread.
+            _wait_until(lambda: store.node_count == 5)
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -135,7 +146,7 @@ class TestEventConsumer:
                 ttl=3600,
             )
             consumer.start()
-            time.sleep(0.05)
+            _wait_until(lambda: mock_get_transport.return_value._consume_started)
 
             mock_get_transport.assert_called_once_with(
                 "redis://localhost:6379",
@@ -198,7 +209,7 @@ class TestWorkerEventHandling:
                 "memory://", store, worker_registry=worker_registry
             )
             consumer.start()
-            time.sleep(0.1)  # Wait for event processing
+            _wait_until(lambda: len(worker_registry.get_all_workers()) == 1)
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -233,7 +244,12 @@ class TestWorkerEventHandling:
                 "memory://", store, worker_registry=worker_registry
             )
             consumer.start()
-            time.sleep(0.1)
+            _wait_until(
+                lambda: (
+                    (w := worker_registry.get_worker("worker-1", 12345)) is not None
+                    and w.status == WorkerStatus.OFFLINE
+                )
+            )
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -279,7 +295,12 @@ class TestWorkerEventHandling:
                 "memory://", store, worker_registry=worker_registry
             )
             consumer.start()
-            time.sleep(0.1)
+            _wait_until(
+                lambda: (
+                    store.node_count == 2
+                    and len(worker_registry.get_all_workers()) == 1
+                )
+            )
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -307,7 +328,9 @@ class TestWorkerEventHandling:
             # No worker_registry passed
             consumer = EventConsumer("memory://", store)
             consumer.start()
-            time.sleep(0.1)
+            # Nothing observable is stored for a skipped event: wait until the
+            # consume loop has finished the transport's one event.
+            _wait_until(lambda: fake.consumed == 1)
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -341,7 +364,7 @@ class TestWorkerEventHandling:
                 "memory://", store, worker_registry=worker_registry
             )
             consumer.start()
-            time.sleep(0.1)
+            _wait_until(lambda: len(worker_registry.get_all_workers()) == 1)
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -386,7 +409,12 @@ class TestWorkerEventHandling:
                 "memory://", store, worker_registry=worker_registry
             )
             consumer.start()
-            time.sleep(0.1)
+            _wait_until(
+                lambda: (
+                    (w := worker_registry.get_worker("dead-worker", 99999)) is not None
+                    and w.status == WorkerStatus.OFFLINE
+                )
+            )
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -430,7 +458,14 @@ class TestWorkerEventHandling:
                 stale_check_interval=0,
             )
             consumer.start()
-            time.sleep(0.1)
+            _wait_until(
+                lambda: (
+                    store.node_count == 1
+                    and (w := worker_registry.get_worker("stale-worker", 11111))
+                    is not None
+                    and w.status == WorkerStatus.OFFLINE
+                )
+            )
 
             fake.stop()
             consumer.stop(timeout=1.0)
@@ -467,7 +502,7 @@ class FlakyTransport(FakeTransport):
         yield from super().consume()
 
 
-def _wait_until(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+def _wait_until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
         if time.monotonic() > deadline:

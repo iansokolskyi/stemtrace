@@ -95,6 +95,8 @@ import time
 import weakref
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from stemtrace.core.exceptions import is_task_interrupt
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -651,7 +653,14 @@ class PublisherConnection:
             # socket.timeout is TimeoutError since Python 3.10 (the floor). A
             # partly received frame: its bytes are kept for the next read.
             pass
-        except Exception as exc:  # noqa: BLE001  any error here means the connection is unusable; py-amqp raises AMQPError, OSError, even AttributeError for a lost one
+        # Any error here means the connection is unusable: py-amqp raises
+        # AMQPError, OSError, even AttributeError for a lost one.
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                # Raised mid-read, so frames may be half consumed: drop the
+                # connection, but the interrupt is the task's to see.
+                _discard(proc)
+                raise
             logger.debug(
                 "RabbitMQ publisher connection is gone (%s: %s); reconnecting",
                 type(exc).__name__,

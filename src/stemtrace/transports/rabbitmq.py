@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
+from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.rabbitmq_publisher import (
     PublishDroppedError,
@@ -58,6 +59,14 @@ CONNECT_TIMEOUT = 2.0
 # between waits, so this bounds how long shutdown waits on an idle connection;
 # it must stay well below the server consumer's 5s stop timeout.
 DRAIN_TIMEOUT = 1.0
+
+# With ``?heartbeat=N`` in the URL, the consume loop also sends heartbeats
+# (see _drain_until_stopped). py-amqp sends one at the first check after a
+# full interval of silence (amqp 5.0.6 ``heartbeat_tick``; 5.3.1 after half of
+# it) and RabbitMQ closes a connection after two silent intervals, so a wait
+# of a quarter interval leaves room in both. Longer intervals keep
+# DRAIN_TIMEOUT.
+HEARTBEAT_CHECKS_PER_INTERVAL = 4
 
 # Publishing runs in the Celery task's thread, so every step is bounded: each
 # host of the URL gets one connection attempt with CONNECT_TIMEOUT (no kombu
@@ -407,7 +416,9 @@ class RabbitMQTransport:
         """Publish an event to RabbitMQ.
 
         Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. Events go out on one connection per process that
+        dropped, not queued. The one exception is Celery's control flow, e.g.
+        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
+        propagates and is not counted as a broker failure. Events go out on one connection per process that
         is kept between publishes. An attempt that has to connect tries each
         host of the URL once, with CONNECT_TIMEOUT to connect and
         PUBLISH_IO_TIMEOUT per socket operation after that; a connection the
@@ -447,7 +458,14 @@ class RabbitMQTransport:
         except PublishDroppedError:
             # Skipped or starved of the connection: not evidence about the broker.
             breaker.record_dropped(ticket)
-        except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
+        # Fire-and-forget: any kombu error feeds the breaker, never the task.
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                # A soft time limit landed mid-publish: the task's, not a
+                # broker fault. The publisher has already discarded the
+                # connection (_publish_locked); free the breaker slot.
+                breaker.record_interrupted(ticket)
+                raise
             breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:
             breaker.record_success(ticket)
@@ -536,14 +554,21 @@ class RabbitMQTransport:
         while not self._stopping():
             try:
                 conn = Connection(self._url, connect_timeout=CONNECT_TIMEOUT)
+                # Only a caller closing the iterator leaves a connection that
+                # nothing is known to be wrong with; any error means it can't
+                # be trusted to answer a close.
+                healthy = False
                 try:
                     self._start_consuming(
                         conn, exchange, queue, pending, consumer_cls=Consumer
                     )
                     yield from self._drain_until_stopped(conn, pending, health)
                     return  # It returns only once a stop was requested.
+                except GeneratorExit:
+                    healthy = True
+                    raise
                 finally:
-                    self._close_consumer_connection(conn)
+                    self._close_consumer_connection(conn, healthy=healthy)
             except Exception as exc:  # noqa: BLE001  consume loop survives any error: back off and reconnect
                 if self._stopping():
                     return
@@ -601,16 +626,35 @@ class RabbitMQTransport:
 
         Returns only once the stop event is set (checked after every drain,
         so within DRAIN_TIMEOUT); connection errors propagate to consume().
+
+        When the connection negotiated heartbeats (``?heartbeat=N`` in the
+        URL), they are serviced here: drain_events() only reads, so without
+        heartbeat_check() nothing ever sends them and the broker closes the
+        idle consumer after two intervals. heartbeat_check() raises
+        ConnectionForced when the broker's own heartbeats stop, which
+        consume() treats like any dropped connection. It does nothing when
+        heartbeats are off (the default).
         """
+        timeout = self._drain_timeout(conn)
         while True:
             # Periodic wakeup to allow outer loops to run.
             with contextlib.suppress(TimeoutError, socket.timeout):
-                conn.drain_events(timeout=DRAIN_TIMEOUT)
+                conn.drain_events(timeout=timeout)
+            conn.heartbeat_check()
             self._on_drained(health)
             if self._stopping():
                 return
             while pending:
                 yield pending.popleft()
+
+    @staticmethod
+    def _drain_timeout(conn: Any) -> float:
+        """Longest wait for frames: short enough to service the heartbeats."""
+        # Negotiated seconds; 0 or None when heartbeats are off.
+        interval: float | None = conn.get_heartbeat_interval()
+        if not interval:
+            return DRAIN_TIMEOUT
+        return min(DRAIN_TIMEOUT, interval / HEARTBEAT_CHECKS_PER_INTERVAL)
 
     def _on_drained(self, health: _ReconnectHealth) -> None:
         """Record a drain that returned or timed out on a live connection.
@@ -674,17 +718,24 @@ class RabbitMQTransport:
         if self._stopping():
             raise _StopRequestedError
 
-    def _close_consumer_connection(self, conn: Any) -> None:
-        """Close a consumer connection without letting shutdown hang.
+    def _close_consumer_connection(self, conn: Any, *, healthy: bool) -> None:
+        """Close a consumer connection without letting a failure or shutdown hang.
 
-        When stopping, the socket is dropped without the AMQP cancel/close
-        handshake: those wait for the broker's reply with no timeout, so a
-        frozen broker would block shutdown. The broker discards the consumer
-        when the socket closes. Otherwise the connection is closed normally.
-        Errors are logged at debug level and never raised.
+        The AMQP cancel/close handshake is skipped, and the socket dropped
+        instead, when stopping or when ``healthy`` is false (the connection
+        failed: a drain or heartbeat check raised). The handshake waits for
+        the broker's reply with no timeout (amqp ``Connection.close`` sends
+        Close and then ``drain_events(timeout=None)`` for Close-Ok), so a
+        broker that froze with its TCP connection still up (``docker pause``,
+        a proxy with a dead backend) would block the consume loop forever,
+        after the heartbeat check had already given up on it, and stop()
+        couldn't end the thread. The broker discards the consumer when the
+        socket closes. Otherwise (the caller closed the iterator) the
+        connection is closed normally. Errors are logged at debug level and
+        never raised.
         """
         try:
-            if self._stopping() and conn.connected:
+            if (self._stopping() or not healthy) and conn.connected:
                 conn.collect()
             else:
                 conn.release()
