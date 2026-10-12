@@ -437,33 +437,52 @@ again once events are re-consumed.
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
-  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Each
-    publish tries every host of the broker URL once (2s connect timeout per address, 2s per read
-    or write after that). A single failure, quick or timed out, loses only its own event; three
-    failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
-    and resets on the next successful publish, so during an outage each worker process makes
-    at most three bounded attempts (plus any its other threads already had in flight) and then
-    one per cooldown. Host names are resolved as for Redis: waiting at most the 2s connect
-    timeout, cached for 30s, refreshed in the background and right after a failed connect.
-    TLS behavior is unchanged: as with py-amqp alone, `amqps://` checks the certificate's host
-    name only when the `ssl` options set `server_hostname`.
-  - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
-    from publishers, so a publish is sent but never confirmed. The worker counts such events as
-    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
-    row open the breaker, and once an unconfirmed retry follows it retries only every 30s. Each
-    attempt leaves one blocked connection on the broker until the alarm clears, so expect up to
-    about 5 connections per worker process in the first minute of an alarm and about 2 per
-    minute after that, all released when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
-    from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
-    notice arriving while the connection closes.
+  - Each worker process publishes on one RabbitMQ connection that it opens with its first event and
+    keeps: an event costs about 0.3 ms instead of about 9 ms for a connection of its own. Prefork
+    children open their own after the fork and never use the master's (Python's fork hooks, plus a
+    process-ID check for forks that skip them, such as uWSGI's). Threads, gevent and eventlet pools
+    share their process's connection and publish one event at a time (gevent and eventlet need
+    `threading` patched, as Celery's pools do). RabbitMQ lists these connections as
+    `stemtrace publisher <host> pid <pid>`. The connection negotiates no AMQP heartbeat, also when
+    the broker URL says `?heartbeat=N`: nothing runs between events to send one. It is closed when
+    the interpreter exits and when a prefork child exits (waiting at most half a second for the
+    broker's reply); a process killed or ended with `os._exit()` leaves it to the operating system,
+    and RabbitMQ logs a warning about the dropped TCP connection.
+  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. An event
+    that needs a new connection tries every host of the broker URL once (2s connect timeout per
+    address, 2s per read or write after that); an event that finds the connection in use waits for
+    it at most one such pass plus 2s, and skips its attempt if the breaker opened meanwhile. A
+    single failure, quick or timed out, loses only its own event and drops the connection; the next
+    event connects again. Three failures in a row make the worker skip publishing for a cooldown
+    that grows from 1s to 30s and resets on the next successful publish, so during an outage each
+    worker process makes at most three bounded attempts and then one per cooldown. Host names are
+    resolved as for Redis: waiting at most the 2s connect timeout, cached for 30s, refreshed in the
+    background and right after a failed connect. TLS behavior is unchanged: as with py-amqp alone,
+    `amqps://` checks the certificate's host name only when the `ssl` options set `server_hostname`.
+  - A connection that RabbitMQ closed while it was idle (a broker restart, `rabbitmqctl
+    close_connection`, the management UI) is noticed before the next event, which goes out on a new
+    connection; that doesn't count as a failure unless connecting fails. Limitations: an event
+    written at the moment the broker closes the connection, or within about a second after the
+    network drops without closing it (py-amqp 5.3 sets `TCP_USER_TIMEOUT` to 1s), can be lost
+    without an error; and after the exchange is deleted, the next event is lost (RabbitMQ closes the
+    channel because of it) and the one after it re-declares the exchange on a new connection.
+  - During a RabbitMQ memory or disk alarm, RabbitMQ blocks a publisher's connection once the first
+    event published during the alarm arrives, and sends Connection.Blocked. The worker reads that
+    before its next event and drops events without sending them until RabbitMQ sends
+    Connection.Unblocked; three drops in a row open the breaker, and its retries only read the
+    connection, so an alarm adds no connections and no "sent but unconfirmed" events (RabbitMQ
+    delivers the event that triggered the block when the alarm ends).
   - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
     about 1.5 minutes even when the broker flaps.
-  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open
-    the breaker. Each publish opens its own connection, so it waits for several round trips
-    (connect, handshake, channel, publish, close): a broker that takes about 1s per reply costs
-    each event several seconds.
+  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open the
+    breaker. An event on an open connection only waits for a write, but each new connection waits
+    for several round trips (connect, handshake, channel, exchange declare): a broker that takes
+    about 1s per reply costs the event that has to connect several seconds. While the broker is
+    paused or unreachable without the connection closing (`docker pause`), written events are
+    buffered by the operating system and delivered when it answers again; the worker sees a failure
+    only once the buffers are full or the connection drops.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)
