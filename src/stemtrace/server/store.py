@@ -25,6 +25,9 @@ class WorkerInfo(BaseModel):
     registered_at: datetime
     last_seen: datetime
     status: WorkerStatus = WorkerStatus.ONLINE
+    # True once a worker_shutdown event closed this process. Only a fresh
+    # registration (worker_ready, or stats naming this pid) clears it.
+    shutdown_reported: bool = False
 
 
 def _ensure_tz_aware(dt: datetime) -> datetime:
@@ -115,7 +118,7 @@ def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable, Mapping
 
     from stemtrace.core.events import TaskEvent, TaskState
 
@@ -130,6 +133,15 @@ class WorkerRegistry:
     def __init__(self) -> None:
         """Initialize empty worker registry."""
         self._workers: dict[str, WorkerInfo] = {}
+        # Nodename -> worker_id registered last. Registration order is observed
+        # by this server, so unlike event timestamps (the worker's clock) and
+        # last_seen (mixes both clocks) it can't be skewed, and unlike pids it
+        # doesn't wrap.
+        self._newest_by_node: dict[str, str] = {}
+        # Nodename -> number of worker events (ready/shutdown) applied. A
+        # Celery inspect reply is a snapshot of the node from when it was
+        # asked; an event applied since is newer than it (see apply_stats_reply).
+        self._event_generation: dict[str, int] = {}
         self._task_definitions_by_name: dict[str, RegisteredTaskDefinition] = {}
         self._lock = threading.RLock()
 
@@ -141,12 +153,14 @@ class WorkerRegistry:
         task_definitions: dict[str, RegisteredTaskDefinition] | None = None,
         event_timestamp: datetime | None = None,
     ) -> None:
-        """Register a worker with its task list.
+        """Record a worker_ready event: the worker is online.
 
-        Updates existing worker if already registered (worker restart scenario).
+        A nodename has at most one live process, so registering a pid retires
+        the node's other pids (a worker killed without worker_shutdown, then
+        restarted). Updates the worker if already registered (pid reuse).
 
         Args:
-            hostname: Worker hostname.
+            hostname: Worker nodename.
             pid: Worker process ID.
             tasks: List of registered task names.
             task_definitions: Optional mapping of task name to task definition
@@ -159,6 +173,22 @@ class WorkerRegistry:
         if pid <= 0:
             return
 
+        with self._lock:
+            self._register(hostname, pid, tasks, task_definitions, event_timestamp)
+            self._event_generation[hostname] = (
+                self._event_generation.get(hostname, 0) + 1
+            )
+            self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
+
+    def _register(
+        self,
+        hostname: str,
+        pid: int,
+        tasks: list[str],
+        task_definitions: dict[str, RegisteredTaskDefinition] | None,
+        event_timestamp: datetime | None,
+    ) -> None:
+        """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
@@ -175,6 +205,7 @@ class WorkerRegistry:
                 self._workers[worker_id].pid = pid
                 self._workers[worker_id].last_seen = timestamp
                 self._workers[worker_id].status = WorkerStatus.ONLINE
+                self._workers[worker_id].shutdown_reported = False
             else:
                 # New worker registration
                 self._workers[worker_id] = WorkerInfo(
@@ -185,6 +216,13 @@ class WorkerRegistry:
                     last_seen=timestamp,
                     status=WorkerStatus.ONLINE,
                 )
+            self._newest_by_node[hostname] = worker_id
+
+    def _retire_other_pids(self, hostname: str, keep: str) -> None:
+        """Mark every pid of the node except ``keep`` (a worker_id) offline."""
+        for worker_id, worker in self._workers.items():
+            if worker.hostname == hostname and worker_id != keep:
+                worker.status = WorkerStatus.OFFLINE
 
     def get_task_definition(self, name: str) -> RegisteredTaskDefinition | None:
         """Get task definition metadata by task name.
@@ -199,35 +237,142 @@ class WorkerRegistry:
             return self._task_definitions_by_name.get(name)
 
     def mark_shutdown(self, hostname: str, pid: int) -> None:
-        """Mark a worker as offline (shutdown).
+        """Record a worker_shutdown event: the process is gone for good.
+
+        Unlike :meth:`mark_offline`, a later ping reply can't bring it back;
+        only registering the worker again (worker_ready, or stats naming this
+        pid) does.
 
         Args:
-            hostname: Worker hostname.
+            hostname: Worker nodename.
             pid: Worker process ID.
         """
         with self._lock:
-            worker_id = f"{hostname}:{pid}"
-            if worker_id in self._workers:
-                self._workers[worker_id].status = WorkerStatus.OFFLINE
+            self._event_generation[hostname] = (
+                self._event_generation.get(hostname, 0) + 1
+            )
+            worker = self._workers.get(f"{hostname}:{pid}")
+            if worker is not None:
+                worker.status = WorkerStatus.OFFLINE
+                worker.shutdown_reported = True
 
-    def mark_online(self, hostname: str, pid: int) -> None:
-        """Mark a worker as online and update its last_seen timestamp.
+    def mark_offline(self, hostname: str, pid: int) -> None:
+        """Mark a worker offline because it stopped answering, not because it said so.
+
+        A later ping reply may bring it back (see :meth:`mark_node_alive`).
+
+        Args:
+            hostname: Worker nodename.
+            pid: Worker process ID.
+        """
+        with self._lock:
+            worker = self._workers.get(f"{hostname}:{pid}")
+            if worker is not None:
+                worker.status = WorkerStatus.OFFLINE
+
+    def mark_node_alive(self, hostname: str, pid: int | None = None) -> None:
+        """Apply "this nodename answered a Celery inspect call" to its processes.
+
+        A nodename has at most one live process, so every other pid registered
+        under it is superseded and goes offline. The live one is ``pid`` when
+        the reply carries it (``stats()``). A ping reply carries no pid, so the
+        live one is the pid registered last, and only if no worker_shutdown
+        event closed it. Updates its ``last_seen`` and brings it online.
 
         This is used by on-demand refresh operations (e.g., Celery inspect) to
         avoid mutating WorkerInfo outside of the registry lock.
 
         Args:
-            hostname: Worker hostname.
-            pid: Worker process ID.
+            hostname: Worker nodename that answered.
+            pid: Live process ID if the reply names it, otherwise None.
         """
         with self._lock:
-            worker_id = f"{hostname}:{pid}"
-            worker = self._workers.get(worker_id)
-            if worker is None:
-                return
+            live_id = (
+                self._newest_by_node.get(hostname)
+                if pid is None
+                else f"{hostname}:{pid}"
+            )
+            live = self._workers.get(live_id) if live_id else None
+            self._retire_other_pids(hostname, keep=live_id or "")
 
-            worker.status = WorkerStatus.ONLINE
-            worker.last_seen = datetime.now(timezone.utc)
+            if live is None or (pid is None and live.shutdown_reported):
+                return
+            live.status = WorkerStatus.ONLINE
+            live.shutdown_reported = False
+            live.last_seen = datetime.now(timezone.utc)
+
+    def event_generations(self) -> dict[str, int]:
+        """Snapshot, per nodename, how many worker events were applied so far.
+
+        Take it before asking Celery to inspect, and hand it to
+        :meth:`apply_stats_reply` with the reply.
+
+        Returns:
+            Nodename -> event count (a missing nodename means 0).
+        """
+        with self._lock:
+            return dict(self._event_generation)
+
+    def _is_stale(self, hostname: str, seen: Mapping[str, int]) -> bool:
+        """Whether a worker event for the node arrived after ``seen`` was taken."""
+        return self._event_generation.get(hostname, 0) != seen.get(hostname, 0)
+
+    def apply_stats_reply(
+        self,
+        seen: Mapping[str, int],
+        replies: Mapping[str, tuple[int | None, list[str] | None]],
+    ) -> None:
+        """Apply a non-empty ``inspect.stats()`` reply, atomically.
+
+        Source precedence, per nodename: a worker event applied after ``seen``
+        was taken beats the reply (the reply was produced before that event,
+        up to 0.5 s earlier, so it would undo it); a reply beats events applied
+        before ``seen`` (it is the fresher observation, e.g. a pid the OS
+        reused after worker_shutdown). Nodes whose events are newer are left
+        alone; the next refresh applies a reply that includes them.
+
+        Known nodes missing from ``replies`` go offline. For each replying node:
+        its pid is registered (event timestamps don't apply: it is observed
+        now) and its other pids retire; a reply without a pid acts like a ping.
+
+        Args:
+            seen: ``event_generations()`` taken before the inspect call.
+            replies: Nodename -> (pid or None, registered task names or None).
+                None tasks keep the worker's current list.
+        """
+        with self._lock:
+            for worker in self._workers.values():
+                if worker.hostname not in replies and not self._is_stale(
+                    worker.hostname, seen
+                ):
+                    worker.status = WorkerStatus.OFFLINE
+
+            now = datetime.now(timezone.utc)
+            for nodename, (pid, tasks) in replies.items():
+                if self._is_stale(nodename, seen):
+                    continue
+                if pid is not None:
+                    current = self.get_registered_tasks(nodename, pid)
+                    self._register(
+                        nodename, pid, current if tasks is None else tasks, None, now
+                    )
+                self.mark_node_alive(nodename, pid)
+
+    def apply_ping_reply(self, nodenames: Iterable[str]) -> None:
+        """Apply an ``inspect.ping()`` reply.
+
+        Unlike a stats reply, a ping can't undo a worker event that arrived
+        while it ran, so it needs no event snapshot: it names no pid, so it
+        only revives the node's newest pid (never one that reported
+        worker_shutdown) and retires the others, the state any such event
+        leaves anyway.
+
+        Args:
+            nodenames: Nodenames that answered.
+        """
+        with self._lock:
+            for nodename in nodenames:
+                self.mark_node_alive(nodename)
 
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.
@@ -318,7 +463,9 @@ class WorkerRegistry:
                     to_remove.append(worker_id)
 
             for worker_id in to_remove:
-                del self._workers[worker_id]
+                worker = self._workers.pop(worker_id)
+                if self._newest_by_node.get(worker.hostname) == worker_id:
+                    del self._newest_by_node[worker.hostname]
 
 
 class GraphStore:

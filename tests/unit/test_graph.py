@@ -1750,6 +1750,50 @@ class TestOutOfOrderEvents:
 
         assert graph.nodes["task-1"].state == TaskState.STARTED
 
+    def test_add_event_acks_late_redelivery_lists_both_received_before_started(
+        self,
+    ) -> None:
+        # acks_late + reject_on_worker_lost: the child dies after STARTED and
+        # the message is delivered again, which publishes a second attempt-0
+        # RECEIVED. Attempt-0 RECEIVED sorts ahead of STARTED whatever its
+        # timestamp (the main process and the child have different clocks), so
+        # the second RECEIVED can't be told from skew and lands before the
+        # first STARTED. Documented behavior; the state stays correct.
+        events = [
+            _ordered_event(TaskState.RECEIVED, 1),
+            _ordered_event(TaskState.STARTED, 2),
+            _ordered_event(TaskState.RECEIVED, 3),
+            _ordered_event(TaskState.STARTED, 4),
+            _ordered_event(TaskState.SUCCESS, 5),
+        ]
+        expected = [
+            (TaskState.RECEIVED, 1),
+            (TaskState.RECEIVED, 3),
+            (TaskState.STARTED, 2),
+            (TaskState.STARTED, 4),
+            (TaskState.SUCCESS, 5),
+        ]
+        for arrival in permutations(events):
+            graph = TaskGraph()
+            for event in arrival:
+                graph.add_event(event)
+            node = graph.nodes["task-1"]
+            assert [(e.state, e.timestamp.second) for e in node.events] == expected
+            assert node.state == TaskState.SUCCESS
+
+    def test_add_event_acks_late_redelivery_waiting_shows_started(self) -> None:
+        # While the redelivered message waits for a pool slot the task has
+        # RECEIVED, STARTED, RECEIVED: the state is the most advanced one.
+        graph = TaskGraph()
+        for state, second in (
+            (TaskState.RECEIVED, 1),
+            (TaskState.STARTED, 2),
+            (TaskState.RECEIVED, 3),
+        ):
+            graph.add_event(_ordered_event(state, second))
+
+        assert graph.nodes["task-1"].state == TaskState.STARTED
+
     @pytest.mark.parametrize("state", list(TaskState))
     def test_add_event_every_state_is_ranked(self, state: TaskState) -> None:
         # Fails with KeyError if a new TaskState is added without a rank.

@@ -108,6 +108,7 @@ def init_worker(
     node_alias_from_arguments: str | None = None,
     capture_output: bool = False,
     max_output_size: int = 16384,
+    publish_received: bool = False,
 ) -> None:
     """Initialize stemtrace for Celery worker instrumentation.
 
@@ -133,6 +134,12 @@ def init_worker(
             it in the UI (default: False). Output is not scrubbed.
         max_output_size: Maximum UTF-8 bytes of output kept per attempt; the
             end is kept (default: 16KB).
+        publish_received: Publish a RECEIVED event when the worker takes each
+            task message, so the UI shows when a task reached a worker before
+            it started (default: False). It costs one synchronous publish per
+            message in the worker's main process (about 0.7 ms on RabbitMQ,
+            about 22% of a no-op task's prefork throughput there), which is
+            why it is opt-in.
 
     Raises:
         ConfigurationError: If no broker URL can be determined, or
@@ -172,6 +179,7 @@ def init_worker(
         node_alias_from_arguments=node_alias_from_arguments,
         capture_output=capture_output,
         max_output_size=max_output_size,
+        publish_received=publish_received,
     )
     set_config(config)
 

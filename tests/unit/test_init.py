@@ -4,9 +4,11 @@ import logging
 import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from celery import Celery
 from fastapi import FastAPI
 
 import stemtrace
@@ -21,6 +23,8 @@ from stemtrace import (
     init_worker,
     is_initialized,
 )
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.bootsteps import ReceivedEventStep, _set_publisher
 from stemtrace.library.signals import disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
 
@@ -32,6 +36,7 @@ def cleanup() -> object:
     """Clean up after each test."""
     yield
     disconnect_signals()
+    _set_publisher(None)
     MemoryTransport.clear()
     _reset()  # Reset module-level transport state
 
@@ -304,6 +309,59 @@ class TestInit:
         config = get_config()
         assert config is not None
         assert config.node_alias_from_arguments is None
+
+    @staticmethod
+    def _deliver(app: Celery, message_id: str) -> None:
+        """Run a task message through the RECEIVED step the app registered."""
+        consumer = SimpleNamespace(strategies={"app.add": lambda *_a, **_k: None})
+        step = next(
+            step_cls(consumer)
+            for step_cls in app.steps["consumer"]
+            if step_cls is ReceivedEventStep
+        )
+        step.start(consumer)
+        message = SimpleNamespace(headers={"id": message_id, "retries": 0})
+        consumer.strategies["app.add"](message, ((), {}, {}), None, None, None)
+
+    @staticmethod
+    def _received() -> list[tuple[str, str, TaskState]]:
+        return [
+            (e.task_id, e.name, e.state)
+            for e in MemoryTransport.events
+            if isinstance(e, TaskEvent)
+        ]
+
+    def test_init_worker_with_publish_received_publishes_one_per_delivery(
+        self,
+    ) -> None:
+        """publish_received=True: each delivery publishes exactly one RECEIVED."""
+        app = Celery("received_test", broker="memory://")
+        init_worker(app, transport_url="memory://", publish_received=True)
+
+        self._deliver(app, "task-1")
+
+        assert self._received() == [("task-1", "app.add", TaskState.RECEIVED)]
+
+    def test_init_worker_default_registers_no_received_step(self) -> None:
+        """Off by default: no step, so no per-message work in the consumer loop."""
+        app = Celery("received_off_test", broker="memory://")
+
+        init_worker(app, transport_url="memory://")
+
+        assert ReceivedEventStep not in app.steps["consumer"]
+        config = get_config()
+        assert config is not None
+        assert config.publish_received is False
+
+    def test_init_worker_publish_received_false_registers_no_received_step(
+        self,
+    ) -> None:
+        """Explicit False behaves like the default."""
+        app = Celery("received_false_test", broker="memory://")
+
+        init_worker(app, transport_url="memory://", publish_received=False)
+
+        assert ReceivedEventStep not in app.steps["consumer"]
 
 
 class TestInitAppNodeAlias:

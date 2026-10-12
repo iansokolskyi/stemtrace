@@ -24,6 +24,9 @@ class StemtraceConfig(BaseModel):
             logs and attach it to the attempt's terminal event.
         max_output_size: Maximum UTF-8 bytes of output kept per attempt (the
             end of the output is kept).
+        publish_received: Whether the worker publishes a RECEIVED event for
+            every task message it takes (one synchronous publish per message
+            in the worker's consumer loop).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -48,6 +51,9 @@ class StemtraceConfig(BaseModel):
     # Output capture options (disabled by default)
     capture_output: bool = False
     max_output_size: int = Field(default=16384, gt=0)  # 16 KB
+
+    # RECEIVED events (disabled by default: a publish per message in the consumer)
+    publish_received: bool = False
 
 
 _config: StemtraceConfig | None = None

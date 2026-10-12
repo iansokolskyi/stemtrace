@@ -5,7 +5,7 @@ and reads the events it publishes to Redis. This is the path unit tests can't
 cover: a prefork child process, Celery's own logging setup (which clears root
 handlers after ``init_worker``), ``print()`` going through Celery's
 ``LoggingProxy`` (or not, with the redirect off), and a worker with no logging
-handlers at all.
+handlers at all. The same workers also check the worker-side RECEIVED event.
 
 Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``).
 Worker modes default to prefork and threads with Celery's redirect, plus prefork
@@ -26,6 +26,7 @@ import redis
 from celery import Celery
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import TaskGraph
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,6 +155,24 @@ def worker(
 
 
 @pytest.fixture(scope="module")
+def prefork_worker(tmp_path_factory: pytest.TempPathFactory) -> Iterator[WorkerRun]:
+    """A prefork worker, for tests that kill a pool child."""
+    yield from _start_worker("prefork", {}, tmp_path_factory.mktemp("worker-prefork"))
+
+
+@pytest.fixture(scope="module")
+def received_off_worker(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[WorkerRun]:
+    """A prefork worker that leaves the opt-in RECEIVED event off."""
+    yield from _start_worker(
+        "prefork",
+        {"OUTPUT_TEST_PUBLISH_RECEIVED": "0"},
+        tmp_path_factory.mktemp("worker-received-off"),
+    )
+
+
+@pytest.fixture(scope="module")
 def unconfigured_logging_worker(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[WorkerRun]:
@@ -224,6 +243,78 @@ def test_each_attempt_has_its_own_output(worker: WorkerRun) -> None:
         (TaskState.RETRY, 0): "attempt 0",
         (TaskState.FAILURE, 1): "attempt 1",
     }
+
+
+def test_received_is_published_per_delivery_of_the_first_attempt(
+    worker: WorkerRun,
+) -> None:
+    """The worker publishes RECEIVED when it takes the message, before STARTED.
+
+    With prefork, RECEIVED comes from the main process (the consumer) and
+    STARTED from a pool child. The retry message (``retries=1``) publishes no
+    RECEIVED of its own: its RETRY event covers it.
+    """
+    task_id = worker.send("output_test.flaky")
+
+    events = worker.wait_for(task_id, TaskState.FAILURE)
+
+    pre_run = [
+        (e.state, e.retries)
+        for e in events
+        if e.state in (TaskState.RECEIVED, TaskState.STARTED)
+    ]
+    assert pre_run == [
+        (TaskState.RECEIVED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.STARTED, 1),
+    ]
+    received = next(e for e in events if e.state == TaskState.RECEIVED)
+    first_start = next(e for e in events if e.state == TaskState.STARTED)
+    assert received.timestamp <= first_start.timestamp
+
+
+def test_received_is_not_published_unless_enabled(
+    received_off_worker: WorkerRun,
+) -> None:
+    """Without publish_received the worker publishes STARTED and SUCCESS only."""
+    task_id = received_off_worker.send("output_test.noisy")
+
+    events = received_off_worker.wait_for(task_id, TaskState.SUCCESS)
+
+    assert [e.state for e in events if e.task_id == task_id] == [
+        TaskState.STARTED,
+        TaskState.SUCCESS,
+    ]
+
+
+def test_redelivered_message_publishes_received_again(
+    prefork_worker: WorkerRun,
+) -> None:
+    """acks_late + reject_on_worker_lost: a killed child's message is delivered twice.
+
+    Each delivery of the first attempt (``retries=0``) publishes RECEIVED, so
+    the task has two. The graph keeps attempt-0 RECEIVED events ahead of the
+    first STARTED (their clocks come from the main process, not the child), so
+    both RECEIVED precede both STARTED even though the second was published
+    after the first run died.
+    """
+    worker = prefork_worker
+    task_id = worker.send("output_test.dies_once")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    node = graph.nodes[task_id]
+    assert [(e.state, e.retries) for e in node.events] == [
+        (TaskState.RECEIVED, 0),
+        (TaskState.RECEIVED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.SUCCESS, 0),
+    ]
+    assert node.state == TaskState.SUCCESS
 
 
 def test_concurrent_tasks_keep_their_own_output(worker: WorkerRun) -> None:
