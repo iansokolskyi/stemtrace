@@ -16,7 +16,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 WAIT_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "wait_for_http.py"
 WAIT_TIMEOUT_S = 90
@@ -50,12 +52,22 @@ def submit_tasks() -> None:
     print("Tasks submitted!", flush=True)
 
 
-def wait_command(server_url: str) -> list[str]:
-    """Build the command that waits until the API lists every expected task."""
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def wait_command(server_url: str, since: datetime) -> list[str]:
+    """Build the command that waits until the API lists every expected task.
+
+    Only tasks updated at or after ``since`` count (the API's ``from_date`` filters
+    on last update): a reused stack keeps finished tasks from earlier seeds, which
+    would otherwise satisfy the counts before this run's tasks finish.
+    """
+    query = urlencode({"limit": 500, "from_date": since.isoformat()})
     command = [
         sys.executable,
         str(WAIT_SCRIPT),
-        f"{server_url.rstrip('/')}/stemtrace/api/tasks?limit=500",
+        f"{server_url.rstrip('/')}/stemtrace/api/tasks?{query}",
         "--timeout",
         str(WAIT_TIMEOUT_S),
         "--interval",
@@ -68,9 +80,10 @@ def wait_command(server_url: str) -> list[str]:
 
 def main() -> int:
     """Submit the seed tasks, then block until the API reports them finished."""
+    since = _utcnow()
     submit_tasks()
     server_url = os.environ.get("CELERY_FLOW_SERVER_URL", "http://localhost:8000")
-    return subprocess.run(wait_command(server_url), check=False).returncode
+    return subprocess.run(wait_command(server_url, since), check=False).returncode
 
 
 if __name__ == "__main__":
