@@ -109,9 +109,13 @@ def listener() -> Iterator[socket.socket]:
 
 
 @pytest.fixture
-def refused_address() -> tuple[str, int]:
-    """A loopback address nothing listens on (its port was just released)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        host, port = probe.getsockname()
-    return host, port
+def refused_address() -> Iterator[tuple[str, int]]:
+    """A loopback address that refuses connections for the whole test.
+
+    The port stays bound without listen(), so connecting gets ECONNREFUSED and no
+    other process can take the port meanwhile (releasing it first would race).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        host, port = holder.getsockname()
+        yield host, port
