@@ -9,6 +9,7 @@ prepends it to ``scope["path"]``; Starlette strips it again before routing.
 from __future__ import annotations
 
 import logging
+import re
 import types
 import urllib.parse
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,8 @@ _SHELL = (
     '<html><head></head><body>app shell<script src="/assets/index-abc123.js">'
     "</script></body></html>"
 )
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @pytest.fixture
@@ -338,7 +341,9 @@ class TestCliBehindRootPath:
         )
 
         assert result.exit_code == 2
-        assert "--root-path" in result.output
+        # Typer colors its errors when CI forces a terminal (GITHUB_ACTIONS),
+        # which splits the option name with ANSI codes.
+        assert "--root-path" in _ANSI.sub("", result.output)
         assert ran == []
 
     def test_root_path_env_var_reaches_uvicorn(

@@ -63,6 +63,7 @@ class TestLibraryTransportsAlias:
         assert old_redis.XREAD_BLOCK_MS == redis.XREAD_BLOCK_MS
         assert old_rabbitmq.RabbitMQTransport is rabbitmq.RabbitMQTransport
         assert old_rabbitmq.CONNECT_TIMEOUT == rabbitmq.CONNECT_TIMEOUT
+        assert "PUBLISH_SLOW_ATTEMPT" in old_rabbitmq.__all__
         assert old_memory.MemoryTransport is memory.MemoryTransport
         assert old_breaker.PublishBreaker is breaker.PublishBreaker
 
@@ -73,5 +74,39 @@ class TestLibraryTransportsAlias:
             old = importlib.import_module(f"{OLD_PACKAGE}.{submodule}")
         new = importlib.import_module(f"stemtrace.transports.{submodule}")
 
-        for name in old.__all__:
-            assert getattr(old, name) is getattr(new, name), name
+        with warnings.catch_warnings():
+            # PUBLISH_SLOW_ATTEMPT warns on access (deprecated, see below).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            for name in old.__all__:
+                assert getattr(old, name) is getattr(new, name), name
+
+    @pytest.mark.parametrize(
+        "module", ["stemtrace.transports.rabbitmq", f"{OLD_PACKAGE}.rabbitmq"]
+    )
+    def test_publish_slow_attempt_access_warns_deprecation(self, module: str) -> None:
+        """Deprecated and unused, but exported since 0.3.8: imports keep working."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            mod = importlib.import_module(module)
+
+        with pytest.warns(
+            DeprecationWarning, match="PUBLISH_SLOW_ATTEMPT is deprecated"
+        ) as record:
+            value = mod.PUBLISH_SLOW_ATTEMPT
+
+        assert value == 0.5
+        # The warning points at the code that used the constant.
+        assert record[0].filename == __file__
+
+    @pytest.mark.parametrize(
+        "module", ["stemtrace.transports.rabbitmq", f"{OLD_PACKAGE}.rabbitmq"]
+    )
+    def test_unknown_attribute_raises_attribute_error(self, module: str) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            mod = importlib.import_module(module)
+
+        with pytest.raises(
+            AttributeError, match=f"module '{module}' has no attribute 'NOT_A_NAME'"
+        ):
+            _ = mod.NOT_A_NAME

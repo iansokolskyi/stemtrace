@@ -19,6 +19,7 @@ import json
 import logging
 import socket
 import time
+import warnings
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
+from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +64,18 @@ PUBLISH_IO_TIMEOUT = 2.0
 # any real attempt.
 PUBLISH_PROBE_TIMEOUT = 60.0
 
-# A failed publish attempt that took this long (a timeout or stall, which is
-# what blocks tasks) opens the publish circuit breaker at once; fast failures
-# (e.g. a refused connection) open it after PUBLISH_FAILURES_TO_OPEN in a row.
-# Until then, a failure drops only its own event.
-PUBLISH_SLOW_ATTEMPT = 0.5
+# PUBLISH_FAILURES_TO_OPEN failed publish attempts in a row (timeouts included)
+# open the publish circuit breaker. Until then, a failure loses only its own
+# event: a single timeout may come from a healthy broker (e.g. the publishing
+# thread waited for the GIL past its socket deadline).
 PUBLISH_FAILURES_TO_OPEN = 3
+
+# Deprecated module constants, served with a DeprecationWarning by
+# __getattr__ so existing imports keep working until 1.0.
+_DEPRECATED_CONSTANTS: dict[str, Any] = {
+    # Unused: a single slow failure no longer opens the publish breaker.
+    "PUBLISH_SLOW_ATTEMPT": 0.5,
+}
 
 # While the breaker is open, events are dropped without connecting for a
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
@@ -116,6 +124,140 @@ def _normalize_prefix(prefix: str) -> str:
     return normalized or "stemtrace"
 
 
+@functools.cache
+def _resolving_connection_class(connection_cls: type[Any]) -> type[Any]:
+    """Subclass kombu's Connection so py-amqp resolves hosts via PUBLISH_RESOLVER.
+
+    py-amqp 5.3 _AbstractTransport._connect() calls socket.getaddrinfo(),
+    which no socket timeout bounds. kombu 5.6 asks get_transport_cls() for
+    the transport class each time it creates a transport (including after
+    switching failover hosts), so overriding it reaches every host. Other
+    transports (e.g. memory://) are returned unchanged.
+    """
+
+    class ResolvingConnection(connection_cls):  # type: ignore[misc]  # kombu is untyped
+        """kombu Connection whose py-amqp transports resolve hosts boundedly."""
+
+        def get_transport_cls(self) -> Any:
+            """The URL's transport, with py-amqp sockets resolved boundedly."""
+            return _resolving_transport_class(super().get_transport_cls())
+
+    return ResolvingConnection
+
+
+@functools.cache
+def _resolving_transport_class(transport_cls: Any) -> Any:
+    """Subclass a kombu py-amqp transport so its connections resolve boundedly."""
+    from kombu.transport import pyamqp
+
+    amqp_connection = getattr(transport_cls, "Connection", None)
+    if not (
+        isinstance(transport_cls, type) and issubclass(transport_cls, pyamqp.Transport)
+    ):
+        return transport_cls
+    return type(
+        f"Resolving{transport_cls.__name__}",
+        (transport_cls,),
+        {"Connection": _resolving_amqp_connection_class(amqp_connection)},
+    )
+
+
+def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) -> None:
+    """Connect a py-amqp transport to the first resolved address that accepts.
+
+    The loop of py-amqp 5.3 _AbstractTransport._connect(), with the addresses
+    taken from PUBLISH_RESOLVER, which waits at most the connect timeout.
+    Unlike py-amqp's, an empty answer fails here too (it would otherwise
+    return with no socket, which py-amqp only notices on its next use).
+
+    Raises:
+        OSError: The last address's failure, or a gaierror for an empty
+            answer.
+    """
+    from amqp.utils import set_cloexec
+
+    entries = PUBLISH_RESOLVER.resolve(
+        host,
+        port,
+        socket.AF_UNSPEC,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        timeout=timeout or CONNECT_TIMEOUT,
+    )
+    error: OSError = socket.gaierror(socket.EAI_NONAME, f"No address for {host!r}")
+    for family, socktype, proto, _, address in entries:
+        try:
+            self.sock = socket.socket(family, socktype, proto)
+            with contextlib.suppress(NotImplementedError):
+                set_cloexec(self.sock, True)
+            self.sock.settimeout(timeout)
+            self.sock.connect(address)
+        except OSError as exc:
+            error = exc
+            if self.sock:
+                self.sock.close()
+            self.sock = None
+        else:
+            return
+    # The host may have moved (e.g. a DNS failover): refresh its cached
+    # addresses for the next attempt.
+    PUBLISH_RESOLVER.invalidate(
+        host, port, socket.AF_UNSPEC, socket.SOCK_STREAM, socket.IPPROTO_TCP
+    )
+    raise error
+
+
+@functools.cache
+def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
+    """py-amqp Connection whose transports connect to resolved addresses.
+
+    Mirrors py-amqp 5.3 Connection.Transport() and transport.Transport()
+    (SSL when ``ssl`` is set, TCP otherwise), with _connect() taking the
+    addresses from PUBLISH_RESOLVER, which waits at most the connect timeout.
+    Everything else is py-amqp's own: TLS gets SNI and the hostname check
+    from the ``ssl`` options as before, independent of the address used.
+    Addresses are tried in getaddrinfo(AF_UNSPEC) order, as py-amqp 5.1+
+    does; py-amqp 5.0.x (allowed by older kombu) resolved IPv4 first and
+    tried IPv6 only without an IPv4 answer, so with it a dual-stack broker
+    may now be reached over IPv6 first.
+    """
+    from amqp.transport import SSLTransport, TCPTransport
+
+    tcp = type(
+        "ResolvingTCPTransport", (TCPTransport,), {"_connect": _connect_resolved}
+    )
+    tls = type(
+        "ResolvingSSLTransport", (SSLTransport,), {"_connect": _connect_resolved}
+    )
+
+    def transport(  # noqa: PLR0917  py-amqp 5.3 Connection.connect() passes these positionally
+        _self: Any,
+        host: str,
+        connect_timeout: float | None,
+        ssl: Any = False,
+        read_timeout: float | None = None,
+        write_timeout: float | None = None,
+        socket_settings: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Create the TLS or TCP transport for ``host``."""
+        return (tls if ssl else tcp)(
+            host,
+            connect_timeout=connect_timeout,
+            ssl=ssl,
+            read_timeout=read_timeout,
+            write_timeout=write_timeout,
+            socket_settings=socket_settings,
+            **kwargs,
+        )
+
+    return type(
+        f"Resolving{connection_cls.__name__}",
+        (connection_cls,),
+        {"Transport": transport},
+    )
+
+
 class RabbitMQTransport:
     """RabbitMQ (AMQP) transport using kombu."""
 
@@ -158,7 +300,6 @@ class RabbitMQTransport:
             max_cooldown=RECONNECT_MAX_BACKOFF,
             log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
             probe_timeout=PUBLISH_PROBE_TIMEOUT,
-            slow_attempt=PUBLISH_SLOW_ATTEMPT,
             failures_to_open=PUBLISH_FAILURES_TO_OPEN,
             monotonic=monotonic,
         )
@@ -225,9 +366,9 @@ class RabbitMQTransport:
         publishers) makes the Close-Ok wait time out, and the event counts as
         sent but unconfirmed.
 
-        A failure that took PUBLISH_SLOW_ATTEMPT or longer, an unconfirmed
-        one, or PUBLISH_FAILURES_TO_OPEN fast failures in a row open a circuit
-        breaker; a single fast failure drops only its own event. While open,
+        PUBLISH_FAILURES_TO_OPEN failures in a row (timeouts and unconfirmed
+        ones included) open a circuit breaker; until then a failure loses
+        only its own event. While open,
         events are dropped without connecting for a cooldown (1s, doubling per
         failed retry up to 30s; 30s after two unconfirmed attempts in a row,
         i.e. while the broker blocks publishers; reset by a successful
@@ -238,7 +379,8 @@ class RabbitMQTransport:
         PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written
         (a failure while closed, an outage starting, an outage ending, and a
         report of losses still unreported), each with the number of events
-        lost since the previous line; each dropped event gets a DEBUG line.
+        lost since the previous line; each event dropped while the breaker
+        is open also gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -251,7 +393,6 @@ class RabbitMQTransport:
                 self._event_identifier(event),
             )
             return
-        started = self._monotonic()
         try:
             self._publish_payload(event.model_dump(mode="json"))
         except _PublishUnconfirmedError as exc:
@@ -259,7 +400,6 @@ class RabbitMQTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
-                elapsed=self._monotonic() - started,
                 unconfirmed=True,
             )
         except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
@@ -267,7 +407,6 @@ class RabbitMQTransport:
                 ticket,
                 self._event_identifier(event),
                 exc,
-                elapsed=self._monotonic() - started,
             )
         else:
             breaker.record_success(ticket)
@@ -307,7 +446,9 @@ class RabbitMQTransport:
         # cost every event a connect timeout.
         hosts = self._publish_host_count()
         first = self._publish_first_host % hosts
-        with self._publish_connection(Connection, first) as conn:
+        with self._publish_connection(
+            _resolving_connection_class(Connection), first
+        ) as conn:
             # One connection attempt per host, without sleeping: kombu raises
             # once retries reach max_retries (before switching hosts), so
             # max_retries=0 would never try the alternates of a failover URL.
@@ -438,7 +579,7 @@ class RabbitMQTransport:
         """Create a stable identifier for logging."""
         if isinstance(event, TaskEvent):
             return event.task_id
-        return f"{event.hostname}:{event.pid}:{event.event_type}"
+        return f"{event.hostname}:{event.pid}:{event.event_type.value}"
 
     def consume(self) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
@@ -690,3 +831,25 @@ class RabbitMQTransport:
     def from_url(cls, url: str, *, prefix: str = "stemtrace", ttl: int = 86400) -> Self:
         """Create transport from AMQP URL."""
         return cls(url, prefix=prefix, ttl=ttl)
+
+
+def __getattr__(name: str) -> Any:
+    """Serve deprecated module constants, warning that they go away in 1.0."""
+    if name in _DEPRECATED_CONSTANTS:
+        return _deprecated_constant(name, stacklevel=3)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _deprecated_constant(name: str, *, stacklevel: int) -> Any:
+    """Warn about a deprecated constant and return it.
+
+    ``stacklevel`` counts from this function, so a module ``__getattr__``
+    calling it passes 3 to point at the code that used the constant.
+    """
+    warnings.warn(
+        f"{name} is deprecated and unused (a single slow publish failure no "
+        "longer opens the circuit breaker); it will be removed in 1.0",
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
+    return _DEPRECATED_CONSTANTS[name]

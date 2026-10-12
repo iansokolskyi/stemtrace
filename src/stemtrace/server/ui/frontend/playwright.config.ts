@@ -18,7 +18,8 @@ import { defineConfig, devices } from '@playwright/test'
  * Run tests:
  *   npm test                    # Mock mode (default)
  *   E2E_PORT=5174 npm test      # Mock mode on another port
- *   E2E_MODE=real npm test      # Real mode (requires Docker)
+ *   E2E_MODE=real npm test      # Real mode (requires Docker and seeded tasks; prefer
+ *                               # `make e2e-playwright-real`, which seeds first)
  *   npx playwright test --ui    # Interactive mode
  */
 
