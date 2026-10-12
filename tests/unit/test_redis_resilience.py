@@ -323,7 +323,7 @@ class TestReadTimeouts:
         timeouts = READ_TIMEOUT_WARN_AFTER + 3
         script: list[Any] = [READ_TIMEOUT] * timeouts
         script.append(_entry("1-0", event))
-        transport, client, _, clock = _make(script)
+        transport, client, sleeper, _ = _make(script)
         states: list[bool | None] = []
         original_xread = client.xread
 
@@ -345,8 +345,9 @@ class TestReadTimeouts:
         # Disconnected once the warning threshold is reached, reconnected after.
         assert states[READ_TIMEOUT_WARN_AFTER] is False
         assert transport.connected is True
-        # All the timeouts fell within one warning interval.
-        assert clock.now < READ_TIMEOUT_WARN_INTERVAL
+        # Idle reads at the default block window are retried at once: no
+        # pacing wait and no backoff.
+        assert sleeper.delays == []
 
     def test_consume_with_read_timeouts_after_interval_warns_again(
         self, caplog: pytest.LogCaptureFixture
@@ -580,16 +581,16 @@ class TestFailureBookkeeping:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         streak: list[Any] = [READ_TIMEOUT] * READ_TIMEOUT_WARN_AFTER
-        transport, _, _, clock = _make(
+        transport, _, sleeper, _ = _make(
             [*streak, [], *streak, _entry("1-0", _event("a"))]
         )
 
         with caplog.at_level(logging.WARNING):
             _take(transport.consume(), 1)
 
-        # Within one warning interval, but the empty read in between ended the
-        # first streak.
-        assert clock.now < READ_TIMEOUT_WARN_INTERVAL
+        # No waiting between the streaks (no backoff, no pacing), but the empty
+        # read in between ended the first streak.
+        assert sleeper.delays == []
         assert [r.getMessage() for r in caplog.records] == [
             "XREAD on test:events timed out 3 times in a row; check the network "
             "and the socket_timeout setting"
