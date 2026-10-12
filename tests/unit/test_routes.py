@@ -296,6 +296,42 @@ class TestTaskListEndpoint:
 
         assert len(data["tasks"]) == 2
 
+    def test_list_tasks_name_exact_excludes_names_that_extend_it(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+        store.add_event(make_event.create("task-3", name="other.app.add"))
+        store.add_event(make_event.create("task-4", name="app.Add"))
+        store.add_event(make_event.create("task-5", name="app.add"))
+
+        response = client.get("/api/tasks?name_exact=app.add")
+        data = response.json()
+
+        assert data["total"] == 2
+        assert sorted(t["task_id"] for t in data["tasks"]) == ["task-1", "task-5"]
+        assert {t["name"] for t in data["tasks"]} == {"app.add"}
+
+    def test_list_tasks_name_substring_still_matches_longer_names(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+
+        response = client.get("/api/tasks?name=app.add")
+
+        assert response.json()["total"] == 2
+
+    def test_list_tasks_name_exact_combines_with_state(
+        self, client: TestClient, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", TaskState.SUCCESS, name="app.add"))
+        store.add_event(make_event.create("task-2", TaskState.FAILURE, name="app.add"))
+
+        response = client.get("/api/tasks?name_exact=app.add&state=FAILURE")
+
+        assert [t["task_id"] for t in response.json()["tasks"]] == ["task-2"]
+
 
 class TestTaskDetailEndpoint:
     def test_get_task(

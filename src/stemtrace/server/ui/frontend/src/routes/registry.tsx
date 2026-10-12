@@ -397,7 +397,7 @@ function TaskCard({ task }: TaskCardProps) {
             {hasExecutions && (
               <Link
                 to="/"
-                search={{ name: shortName }}
+                search={{ name_exact: task.name }}
                 className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
               >
                 View runs →

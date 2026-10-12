@@ -40,6 +40,18 @@ export interface MockEvent {
   retries?: number
 }
 
+export interface MockRegisteredTask {
+  name: string
+  signature: string | null
+  docstring: string | null
+  module: string | null
+  bound: boolean
+  execution_count: number
+  registered_by: string[]
+  last_run: string | null
+  status: 'active' | 'never_run' | 'not_registered'
+}
+
 export interface MockWorker {
   hostname: string
   pid: number
@@ -398,7 +410,7 @@ export const DEFAULT_TASKS: MockTask[] = [
 /**
  * Registry mock data
  */
-export const DEFAULT_REGISTRY = [
+export const DEFAULT_REGISTRY: MockRegisteredTask[] = [
   {
     name: 'tasks.add',
     signature: '(x, y)',
@@ -500,3 +512,18 @@ export const DEFAULT_WORKERS: MockWorker[] = [
     last_seen: new Date(Date.now() - 65 * 60 * 1000).toISOString(),
   },
 ]
+
+/** A registry entry for a task that has run `executionCount` times. */
+export function createRegistryEntry(name: string, executionCount = 1): MockRegisteredTask {
+  return {
+    name,
+    signature: null,
+    docstring: null,
+    module: name.split('.').slice(0, -1).join('.') || null,
+    bound: false,
+    execution_count: executionCount,
+    registered_by: ['worker-1'],
+    last_run: new Date().toISOString(),
+    status: 'active',
+  }
+}

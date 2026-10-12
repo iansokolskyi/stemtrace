@@ -264,6 +264,31 @@ class TestGraphStoreGetNodes:
         nodes, _ = store.get_nodes(name_contains="myapp")
         assert len(nodes) == 1
 
+    def test_get_nodes_name_exact_matches_whole_name_case_sensitively(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+        store.add_event(make_event.create("task-3", name="x.app.add"))
+        store.add_event(make_event.create("task-4", name="app.Add"))
+
+        nodes, total = store.get_nodes(name_exact="app.add")
+
+        assert [n.task_id for n in nodes] == ["task-1"]
+        assert total == 1
+
+    def test_get_nodes_name_exact_with_name_contains_requires_both(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+
+        nodes, _ = store.get_nodes(name_exact="app.add", name_contains="numbers")
+        assert nodes == []
+
+        nodes, _ = store.get_nodes(name_exact="app.add", name_contains="ADD")
+        assert [n.task_id for n in nodes] == ["task-1"]
+
     def test_get_nodes_sorted_by_timestamp_desc(
         self, store: GraphStore, make_event: type
     ) -> None:

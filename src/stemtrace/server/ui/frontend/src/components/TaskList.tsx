@@ -11,6 +11,7 @@ interface TaskListProps {
   filters: {
     state: string | undefined
     name: string
+    name_exact?: string
     from_date?: string
     to_date?: string
   }
@@ -21,6 +22,7 @@ export function TaskList({ filters }: TaskListProps) {
     useTasksInfinite({
       state: filters.state,
       name: filters.name || undefined,
+      name_exact: filters.name_exact,
       from_date: filters.from_date,
       to_date: filters.to_date,
     })
