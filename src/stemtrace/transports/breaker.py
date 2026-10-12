@@ -64,7 +64,7 @@ class PublishBreaker:
             unconfirmed right after an unconfirmed failure (the one that
             opened the breaker or the previous probe) sets the cooldown
             straight to the cap and keeps it there: two in a row usually
-            mean the broker is blocking publishers, which can last minutes,
+            mean the broker is stalled, which can last minutes,
             while a single one may just be a brief stall.
 
     Attempts that were already in flight when the breaker opened (other
@@ -363,9 +363,8 @@ class PublishBreaker:
             event_id: Identifier of the event that failed, for the log.
             exc: The exception the publish attempt raised.
             unconfirmed: The event was sent but the broker never acknowledged
-                it (e.g. a RabbitMQ that blocks publishers during a memory or
-                disk alarm stops reading, so the connection close times out;
-                or a Redis reply that timed out after the command was sent).
+                it (e.g. a Redis reply that timed out after the command was
+                sent).
                 It counts as unconfirmed rather than dropped; an unconfirmed
                 probe right after an unconfirmed failure sets the cooldown to
                 the maximum.

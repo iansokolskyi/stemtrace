@@ -7,7 +7,8 @@ Design goals:
 - Broker-agnostic event schema (same JSON shape as Redis transport).
 - Fire-and-forget publishing: log errors, never raise, and stay cheap while the
   broker is down (Celery tasks must not block). Events that can't be published
-  are dropped, never queued.
+  are dropped, never queued. Events go out on one connection per process (see
+  rabbitmq_publisher).
 - Best-effort replay: messages are retained in the queue for up to `ttl` seconds.
 """
 
@@ -81,10 +82,8 @@ _DEPRECATED_CONSTANTS: dict[str, Any] = {
 
 # While the breaker is open, events are dropped without connecting for a
 # cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
-# RECONNECT_MAX_BACKOFF; straight to the maximum after two unconfirmed
-# attempts in a row, i.e. while the broker blocks publishers) and resets once
-# a publish succeeds. Publish logging is rate-limited per this interval: at
-# most one line each for a failure while closed, an outage starting, an outage
+# RECONNECT_MAX_BACKOFF) and resets once a publish succeeds. Publish logging is
+# rate-limited per this interval: at most one line each for a failure while closed, an outage starting, an outage
 # ending, and a report of losses still unreported (see PublishBreaker).
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
 
