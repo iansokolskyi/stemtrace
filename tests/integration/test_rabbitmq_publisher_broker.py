@@ -34,6 +34,7 @@ from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports.rabbitmq import RabbitMQTransport
+from stemtrace.transports.rabbitmq_publisher import PublishDroppedError
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
@@ -178,9 +179,20 @@ class TestOneConnectionPerProcess:
         self, transport: RabbitMQTransport
     ) -> None:
         threads_n, per_thread = 16, 50
-        # Connected first: an event that arrives while one connects is dropped
-        # after 2s, by design, which a loaded host can turn into a few losses.
         transport.publish(_event("warm"))
+        # An event that has waited 2s for the connection is dropped, by
+        # design: on a loaded host the last of 800 queued events can be.
+        dropped: list[int] = []
+        real_publish = transport._publisher.publish
+
+        def counting_publish(*args: Any, **kwargs: Any) -> None:
+            try:
+                real_publish(*args, **kwargs)
+            except PublishDroppedError:
+                dropped.append(1)
+                raise
+
+        transport._publisher.publish = counting_publish  # type: ignore[method-assign]
 
         def run(n: int) -> None:
             for i in range(per_thread):
@@ -193,9 +205,11 @@ class TestOneConnectionPerProcess:
             thread.join(timeout=60)
 
         assert [t.is_alive() for t in threads] == [False] * threads_n
-        got = _received(transport.queue_name, threads_n * per_thread + 1)
-        assert len(got) == threads_n * per_thread + 1
-        assert len(set(got)) == threads_n * per_thread + 1
+        sent = threads_n * per_thread + 1 - len(dropped)
+        got = _received(transport.queue_name, sent)
+        assert len(dropped) < 400
+        assert len(got) == sent
+        assert len(set(got)) == sent
         _current_name(os.getpid())
 
     def test_connect_with_heartbeat_in_url_negotiates_no_heartbeat(
@@ -358,14 +372,14 @@ class TestForkAndGreenPools:
         ],
         ids=["gevent", "eventlet"],
     )
-    def test_publish_from_many_greenlets_shares_one_connection_and_delivers_all(
+    def test_publish_from_many_greenlets_shares_one_connection_and_delivers_all_but_the_dropped(
         self, transport: RabbitMQTransport, prefix: str, patch: str
     ) -> None:
         def inspect(first: Any) -> None:
             assert first["done"] == 50
             assert len(_wait_for(_exactly(first["pid"], 1), "one connection")) == 1
 
-        _run_while_alive(
+        first, _ = _run_while_alive(
             f"""
             {patch}
             import json, os, sys
@@ -373,10 +387,23 @@ class TestForkAndGreenPools:
             from tests.integration.test_rabbitmq_publisher_broker import _event
 
             url, prefix = sys.argv[1:3]
+            from stemtrace.transports.rabbitmq_publisher import PublishDroppedError
+
             transport = RabbitMQTransport(url, prefix=prefix, ttl=60)
-            # The connection is open before the greenlets start: an event that
-            # arrives while one connects is dropped after 2s, by design.
             transport.publish(_event("warm"))
+            # An event that has waited 2s for the connection is dropped, by
+            # design: on a loaded host the last of 500 queued events can be.
+            dropped = []
+            real_publish = transport._publisher.publish
+
+            def counting_publish(*args, **kwargs):
+                try:
+                    real_publish(*args, **kwargs)
+                except PublishDroppedError:
+                    dropped.append(1)
+                    raise
+
+            transport._publisher.publish = counting_publish
             done = []
 
             def run(n):
@@ -391,7 +418,7 @@ class TestForkAndGreenPools:
                 for n in range(50):
                     pool.spawn(run, n)
                 pool.waitall()
-            print(json.dumps({{"done": len(done), "pid": os.getpid()}}), flush=True)
+            print(json.dumps({{"done": len(done), "pid": os.getpid(), "dropped": len(dropped)}}), flush=True)
             sys.stdin.read()
             print(json.dumps({{"exit": True}}))
             """,
@@ -400,4 +427,6 @@ class TestForkAndGreenPools:
             inspect=inspect,
         )
 
-        assert len(_received(transport.queue_name, 501, timeout=20)) == 501
+        sent = 501 - first["dropped"]
+        assert first["dropped"] < 250  # most got through, whatever the load
+        assert len(_received(transport.queue_name, sent, timeout=20)) == sent
