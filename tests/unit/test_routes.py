@@ -413,7 +413,7 @@ class TestTaskDetailEndpoint:
                 timestamp=base + timedelta(milliseconds=offset_ms),
             )
 
-        # task_sent fires after publish, so PENDING can be stamped last.
+        # after_task_publish fires after publish, so PENDING can be stamped last.
         store.add_event(event(TaskState.STARTED, 10))
         store.add_event(event(TaskState.SUCCESS, 20))
         store.add_event(event(TaskState.PENDING, 25))

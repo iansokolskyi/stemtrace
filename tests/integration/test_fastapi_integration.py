@@ -1,9 +1,11 @@
 """Integration tests for FastAPI components."""
 
+import json
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -511,13 +513,14 @@ class TestGraphEdgeData:
                 chord_callback_id=callback_id,
             )
         )
-        # Callback task
+        # Callback task; Celery reports the last header as its parent
         store.add_event(
             TaskEvent(
                 task_id=callback_id,
                 name="tests.aggregate",
                 state=TaskState.SUCCESS,
                 timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                parent_id="header-2",
             )
         )
 
@@ -842,3 +845,101 @@ class TestRegistryWithWorkers:
         # All returned tasks should have never_run status
         for task in data["tasks"]:
             assert task["status"] == "never_run"
+
+
+_CELERY_FLOWS = json.loads(
+    (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
+)
+
+
+class TestGraphApiShapes:
+    """API responses for graphs built from real Celery event captures."""
+
+    @staticmethod
+    def _client(flow: str) -> tuple[TestClient, dict[str, str]]:
+        """Client over a store fed one captured workflow; maps label -> ID."""
+        store = GraphStore()
+        ids: dict[str, str] = {}
+        for raw in _CELERY_FLOWS[flow]:
+            event = TaskEvent.model_validate(raw)
+            store.add_event(event)
+            if event.task_id not in ids.values():
+                ids[
+                    f"{event.name}#{sum(1 for k in ids if k.startswith(event.name))}"
+                ] = event.task_id
+        app = FastAPI()
+        app.include_router(create_router(store=store))
+        return TestClient(app), ids
+
+    def test_chain_with_chord_is_one_graph_with_callback(self) -> None:
+        """``chain(add, group(add, add), tsum, add)`` is one graph:
+        first task -> CHORD (2 headers) -> tsum (callback) -> add."""
+        client, ids = self._client("chain_a_group_tsum_add")
+        first, tsum, last = ids["flows.add#0"], ids["flows.tsum#0"], ids["flows.add#3"]
+
+        graphs = client.get("/api/graphs").json()["graphs"]
+        assert [g["task_id"] for g in graphs] == [first]
+
+        nodes = client.get(f"/api/graphs/{first}").json()["nodes"]
+        chord_id = nodes[first]["children"][0]
+        chord = nodes[chord_id]
+        assert chord["node_type"] == "CHORD"
+        assert chord["parent_id"] == first
+        assert chord["chord_id"] == tsum
+        headers = [c for c in chord["children"] if c != tsum]
+        assert len(headers) == 2
+        for header in headers:
+            assert nodes[header]["parent_id"] == chord_id
+            assert nodes[header]["reported_parent_id"] == first
+        assert nodes[tsum]["parent_id"] == chord_id
+        assert nodes[tsum]["children"] == [last]
+        assert nodes[last]["parent_id"] == tsum
+        assert nodes[chord_id]["reported_parent_id"] is None
+
+    def test_group_member_detail_reports_its_real_parent(self) -> None:
+        client, ids = self._client("group_spawned_in_task")
+        parent, member = ids["flows.spawn_group#0"], ids["flows.add#0"]
+
+        task = client.get(f"/api/tasks/{member}").json()["task"]
+
+        assert task["parent_id"].startswith("group:")
+        assert task["reported_parent_id"] == parent
+        parent_detail = client.get(f"/api/tasks/{parent}").json()
+        assert [c["task_id"] for c in parent_detail["children"]] == [task["parent_id"]]
+
+    def test_task_before_its_parent_is_listed_as_graph_until_parent_arrives(
+        self,
+    ) -> None:
+        store = GraphStore()
+        app = FastAPI()
+        app.include_router(create_router(store=store))
+        client = TestClient(app)
+        when = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        store.add_event(
+            TaskEvent(
+                task_id="child",
+                name="tests.child",
+                state=TaskState.STARTED,
+                timestamp=when,
+                parent_id="parent",
+            )
+        )
+
+        graphs = client.get("/api/graphs").json()["graphs"]
+        assert [(g["task_id"], g["parent_id"]) for g in graphs] == [("child", None)]
+        task = client.get("/api/tasks/child").json()["task"]
+        assert task["reported_parent_id"] == "parent"
+
+        store.add_event(
+            TaskEvent(
+                task_id="parent",
+                name="tests.parent",
+                state=TaskState.STARTED,
+                timestamp=when,
+            )
+        )
+
+        graphs = client.get("/api/graphs").json()["graphs"]
+        assert [g["task_id"] for g in graphs] == ["parent"]
+        nodes = client.get("/api/graphs/parent").json()["nodes"]
+        assert nodes["parent"]["children"] == ["child"]
