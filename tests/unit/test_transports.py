@@ -1565,7 +1565,8 @@ class TestRabbitMQConsumeBackoff:
 
         assert [first.task_id, second.task_id] == ["backoff-1", "backoff-1"]
         assert len(conn_cls.instances) == 2
-        assert conn_cls.instances[0].released is True
+        assert conn_cls.instances[0].collected is True
+        assert conn_cls.instances[0].released is False
         assert sleeper.delays == [1.0]
         assert "reconnected after 1 failure(s)" in caplog.text
 
@@ -1669,7 +1670,8 @@ class TestRabbitMQConsumeBackoff:
 
         assert received.task_id == "backoff-1"
         assert len(conn_cls.instances) == 2
-        assert conn_cls.instances[0].released is True
+        assert conn_cls.instances[0].collected is True
+        assert conn_cls.instances[0].released is False
         assert sleeper.delays == [1.0]
         assert "consume loop error" in caplog.text
         assert "reconnected after 1 failure(s)" in caplog.text

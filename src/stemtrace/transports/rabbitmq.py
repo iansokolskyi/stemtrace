@@ -554,14 +554,21 @@ class RabbitMQTransport:
         while not self._stopping():
             try:
                 conn = Connection(self._url, connect_timeout=CONNECT_TIMEOUT)
+                # Only a caller closing the iterator leaves a connection that
+                # nothing is known to be wrong with; any error means it can't
+                # be trusted to answer a close.
+                healthy = False
                 try:
                     self._start_consuming(
                         conn, exchange, queue, pending, consumer_cls=Consumer
                     )
                     yield from self._drain_until_stopped(conn, pending, health)
                     return  # It returns only once a stop was requested.
+                except GeneratorExit:
+                    healthy = True
+                    raise
                 finally:
-                    self._close_consumer_connection(conn)
+                    self._close_consumer_connection(conn, healthy=healthy)
             except Exception as exc:  # noqa: BLE001  consume loop survives any error: back off and reconnect
                 if self._stopping():
                     return
@@ -711,17 +718,24 @@ class RabbitMQTransport:
         if self._stopping():
             raise _StopRequestedError
 
-    def _close_consumer_connection(self, conn: Any) -> None:
-        """Close a consumer connection without letting shutdown hang.
+    def _close_consumer_connection(self, conn: Any, *, healthy: bool) -> None:
+        """Close a consumer connection without letting a failure or shutdown hang.
 
-        When stopping, the socket is dropped without the AMQP cancel/close
-        handshake: those wait for the broker's reply with no timeout, so a
-        frozen broker would block shutdown. The broker discards the consumer
-        when the socket closes. Otherwise the connection is closed normally.
-        Errors are logged at debug level and never raised.
+        The AMQP cancel/close handshake is skipped, and the socket dropped
+        instead, when stopping or when ``healthy`` is false (the connection
+        failed: a drain or heartbeat check raised). The handshake waits for
+        the broker's reply with no timeout (amqp ``Connection.close`` sends
+        Close and then ``drain_events(timeout=None)`` for Close-Ok), so a
+        broker that froze with its TCP connection still up (``docker pause``,
+        a proxy with a dead backend) would block the consume loop forever,
+        after the heartbeat check had already given up on it, and stop()
+        couldn't end the thread. The broker discards the consumer when the
+        socket closes. Otherwise (the caller closed the iterator) the
+        connection is closed normally. Errors are logged at debug level and
+        never raised.
         """
         try:
-            if self._stopping() and conn.connected:
+            if (self._stopping() or not healthy) and conn.connected:
                 conn.collect()
             else:
                 conn.release()

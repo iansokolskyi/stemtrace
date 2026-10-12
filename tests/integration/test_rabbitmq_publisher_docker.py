@@ -8,10 +8,13 @@ takes a few minutes:
 
 import base64
 import json
+import logging
 import os
+import queue
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -276,6 +279,98 @@ class TestPausedBroker:
             "publishing to recover",
         )
         assert "after" in _queued(broker, transport)
+
+
+class TestConsumerWithFrozenBroker:
+    """A consumer with ``?heartbeat=1`` while ``docker pause`` freezes the broker.
+
+    The TCP connection stays up and nothing answers: the heartbeat check
+    fails after two silent intervals, and the consumer must then drop the
+    connection without the AMQP close handshake (which would wait forever for
+    the Close-Ok of a frozen broker).
+    """
+
+    FREEZE_S = 6.0
+    # DRAIN_TIMEOUT plus the dropped connection's teardown, with slack.
+    STOP_WITHIN_S = 4.0
+
+    @staticmethod
+    def _start(
+        broker: RabbitMQContainer, transport: RabbitMQTransport
+    ) -> tuple[
+        RabbitMQTransport,
+        queue.Queue[object],
+        threading.Event,
+        threading.Thread,
+    ]:
+        # Its own queue on the publishing transport's exchange (a fanout).
+        consumer = RabbitMQTransport(
+            f"{broker.url}?heartbeat=1", prefix=transport._prefix, ttl=300
+        )
+        stop = threading.Event()
+        consumer.bind_stop_event(stop)
+        events: queue.Queue[object] = queue.Queue()
+
+        def run() -> None:
+            for event in consumer.consume():
+                events.put(event)
+
+        thread = threading.Thread(
+            target=run, name="frozen-broker-consumer", daemon=True
+        )
+        thread.start()
+        _wait_until(lambda: consumer.connected is True, 30, "the consumer to connect")
+        return consumer, events, stop, thread
+
+    def test_consume_when_broker_freezes_warns_then_reconnects_after_unpause(
+        self,
+        broker: RabbitMQContainer,
+        transport: RabbitMQTransport,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="stemtrace.transports.rabbitmq")
+        _, events, stop, thread = self._start(broker, transport)
+        try:
+            transport.publish(_event("before"))
+            assert events.get(timeout=10).task_id == "before"  # type: ignore[attr-defined]
+            broker.docker("pause")
+            try:
+                time.sleep(self.FREEZE_S)
+                _wait_until(
+                    lambda: "consume loop error" in caplog.text,
+                    10,
+                    "the consumer to notice the frozen broker",
+                )
+            finally:
+                broker.docker("unpause")
+            transport.publish(_event("after"))
+            assert events.get(timeout=30).task_id == "after"  # type: ignore[attr-defined]
+            assert "reconnected after" in caplog.text
+        finally:
+            stop.set()
+            thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    def test_stop_while_broker_is_frozen_ends_the_consumer_promptly(
+        self, broker: RabbitMQContainer, transport: RabbitMQTransport
+    ) -> None:
+        consumer, _, stop, thread = self._start(broker, transport)
+        broker.docker("pause")
+        try:
+            time.sleep(self.FREEZE_S)
+            stopped_at = time.monotonic()
+            stop.set()
+            thread.join(timeout=self.STOP_WITHIN_S)
+            stopped_in = time.monotonic() - stopped_at
+            alive = thread.is_alive()
+        finally:
+            broker.docker("unpause")
+            stop.set()
+            thread.join(timeout=30)
+
+        assert not alive, f"consumer still running {stopped_in:.1f}s after stop"
+        assert not thread.is_alive()
+        assert consumer.connected is not True
 
 
 class TestMemoryAlarm:

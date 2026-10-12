@@ -486,7 +486,9 @@ again once events are re-consumed.
   - The server's consumer connection does use `?heartbeat=N` from the broker URL: its read loop
     sends the heartbeats and waits at most a quarter of the interval for frames (at most 1s), so
     an idle consumer is not dropped by the broker, and a broker that stops sending heartbeats is
-    treated like a dropped connection (reconnect with backoff).
+    treated like a dropped connection (reconnect with backoff), also when the broker is frozen with
+    its TCP connection up (`docker pause`): a failed consumer connection is dropped without the
+    AMQP close handshake, which would wait forever for a frozen broker.
   - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Events
     publish one at a time on the process's connection, and **an event never waits more than 2s
     in total (one IO timeout) for another to finish: it is dropped instead**, which doesn't
