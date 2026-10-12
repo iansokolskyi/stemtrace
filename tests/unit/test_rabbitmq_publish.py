@@ -23,9 +23,10 @@ from typing import Any, ClassVar
 import pytest
 from kombu import Connection as KombuConnection
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
+    PUBLISH_FAILURES_TO_OPEN,
     PUBLISH_IO_TIMEOUT,
     RabbitMQTransport,
 )
@@ -347,26 +348,28 @@ class TestRabbitMQPublishClose:
         for i in range(20):
             transport.publish(_event(f"t-{i}"))
 
-        assert len(broker.connections) == 1
+        # Like any failure, it takes three in a row to open the breaker.
+        assert len(broker.connections) == PUBLISH_FAILURES_TO_OPEN
         warnings = _records(caplog, logging.WARNING)
-        assert len(warnings) == 1
-        assert warnings[0].getMessage() == (
-            "Failed to publish event t-blocked to RabbitMQ; dropping events for "
-            "1.0s before trying again (0 event(s) dropped, 1 sent but "
-            "unconfirmed since the last report)"
-        )
+        assert [w.getMessage() for w in warnings] == [
+            "Failed to publish event t-blocked to RabbitMQ; publishing continues "
+            "(0 event(s) dropped, 1 sent but unconfirmed since the last report)",
+            "Failed to publish event t-1 to RabbitMQ; dropping events for 1.0s "
+            "before trying again (0 event(s) dropped, 2 sent but unconfirmed "
+            "since the last report)",
+        ]
         # The probe is unconfirmed too: the broker is blocking publishers, so
         # it's retried only every 30s (each probe leaves a blocked connection
         # on the broker until the alarm clears).
         clock.advance(1.0)
         transport.publish(_event("t-probe-1"))
-        assert len(broker.connections) == 2
+        assert len(broker.connections) == 4
         clock.advance(29.9)
         transport.publish(_event("t-skipped"))
-        assert len(broker.connections) == 2
+        assert len(broker.connections) == 4
         clock.advance(0.1)
         transport.publish(_event("t-probe-2"))
-        assert len(broker.connections) == 3
+        assert len(broker.connections) == 5
 
     def test_publish_failure_after_connect_drops_socket_without_close_wait(
         self, broker: FakeBroker, clock: FakeClock
@@ -568,22 +571,23 @@ class TestRabbitMQPublishBreaker:
 
         assert len(broker.connections) == 3
 
-    def test_publish_slow_failure_opens_breaker_at_once(
+    def test_publish_timeouts_open_breaker_after_three(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # The publish step timed out after PUBLISH_IO_TIMEOUT.
+        # The publish step timed out after PUBLISH_IO_TIMEOUT, every time.
         broker.publish_error = TimeoutError("timed out")
         broker.publish_delay = PUBLISH_IO_TIMEOUT
         transport = _transport(H1, clock)
 
         transport.publish(_event("t-slow"))
+        assert transport._publish_breaker.is_open is False
         for i in range(50):
             transport.publish(_event(f"t-{i}"))
 
-        assert len(broker.connections) == 1
+        assert len(broker.connections) == PUBLISH_FAILURES_TO_OPEN
         warnings = _records(caplog, logging.WARNING)
-        assert len(warnings) == 1
-        assert "dropping events for 1.0s" in warnings[0].getMessage()
+        assert len(warnings) == 2
+        assert "dropping events for 1.0s" in warnings[1].getMessage()
 
     def test_publish_probes_after_cooldown_and_recovers(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
@@ -689,8 +693,10 @@ class TestRabbitMQPublishBreaker:
         broker.publish_delay = 0.0
 
         warnings = _records(caplog, logging.WARNING)
-        assert len(warnings) == 1
-        assert "dropping events for 1.0s" in warnings[0].getMessage()
+        # The first failure's line, then the third opens the breaker; the
+        # other five were in flight and don't change the state.
+        assert len(warnings) == 2
+        assert "dropping events for 1.0s" in warnings[1].getMessage()
         # The cooldown wasn't escalated: one second later a probe goes out
         # and, with the broker healthy again, publishing resumes.
         clock.advance(1.0)
@@ -715,3 +721,14 @@ class TestRabbitMQPublishBreaker:
         # Three fast failures, then one connection per probe: after 1, 2, 4,
         # 8, 16, then every 30s.
         assert len(broker.connections) <= 3 + 5 + 300 // 30
+
+
+def test_event_identifier_for_worker_event_uses_event_type_value() -> None:
+    event = WorkerEvent(
+        event_type=WorkerEventType.WORKER_READY,
+        hostname="w1",
+        pid=42,
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert RabbitMQTransport._event_identifier(event) == "w1:42:worker_ready"

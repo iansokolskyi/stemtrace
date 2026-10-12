@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
+import os
+import socket
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
+from stemtrace.transports.breaker import PublishBreaker
+from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 if TYPE_CHECKING:
     import threading
@@ -25,10 +31,10 @@ logger = logging.getLogger(__name__)
 StreamEvent = TaskEvent | WorkerEvent
 
 # Longest a single XREAD blocks waiting for new entries. The actual window is
-# shortened to half the client's effective socket timeout when that is bounded
-# (redis-py 8 defaults socket_timeout to 5s), so an idle read returns before
-# the socket times out. The client's timeout itself is never changed, because
-# publishers share it and must not block tasks any longer than before.
+# shortened to half the consume client's effective socket timeout when that is
+# bounded (redis-py 8 defaults socket_timeout to 5s), so an idle read returns
+# before the socket times out. Publishing uses a separate client (see below),
+# so the consume client keeps redis-py's own timeouts.
 XREAD_BLOCK_MS = 5000
 
 # Consecutive XREAD read timeouts tolerated silently before warning.
@@ -41,6 +47,37 @@ READ_TIMEOUT_WARN_INTERVAL = 60.0
 RECONNECT_INITIAL_BACKOFF = 1.0
 RECONNECT_MAX_BACKOFF = 30.0
 
+# Publishing runs in the Celery task's thread, so from_url() gives it its own
+# client whose connect (per address the host name resolves to) and socket
+# reads/writes time out after these many seconds (redis-py 8.1 defaults both
+# to 5s), with no redis-py retries: a silent or blackholed Redis costs a few
+# bounded attempts, not 5s per event. Host name resolution waits at most the
+# connect timeout too (see PUBLISH_RESOLVER). Not lower: the deadlines are wall-clock, and
+# a thread that waits for the GIL while another holds it in a long C call
+# (measured: 1.3s) can miss a 1s TLS handshake deadline on a healthy Redis.
+PUBLISH_CONNECT_TIMEOUT = 2.0
+PUBLISH_SOCKET_TIMEOUT = 2.0
+
+# Seconds after which a breaker probe that never reported back is presumed
+# lost. Far longer than any real attempt.
+PUBLISH_PROBE_TIMEOUT = 60.0
+
+# PUBLISH_FAILURES_TO_OPEN failed publishes in a row (timeouts included) open
+# the publish circuit breaker. Until then, a failure loses only its own event:
+# a single timeout may come from a healthy Redis (e.g. the publishing thread
+# waited for the GIL past its socket deadline, or Redis stalled briefly).
+PUBLISH_FAILURES_TO_OPEN = 3
+
+# While the breaker is open, events are dropped without contacting Redis for
+# a cooldown that doubles per failed retry (RECONNECT_INITIAL_BACKOFF up to
+# RECONNECT_MAX_BACKOFF) and resets once a publish succeeds. At
+# most four publish WARNING lines per interval (see PublishBreaker).
+PUBLISH_FAILURE_LOG_INTERVAL = 60.0
+
+# URL options that would override the publish client's timeouts (redis-py
+# lets querystring options win over keyword arguments in from_url()).
+_PUBLISH_TIMEOUT_QUERY_PARAMS = ("socket_timeout", "socket_connect_timeout")
+
 # Mapping from CERT_* constants (used in URLs) to lowercase values expected by redis-py
 _SSL_CERT_REQS_MAP = {
     "CERT_NONE": "none",
@@ -49,25 +86,297 @@ _SSL_CERT_REQS_MAP = {
 }
 
 
+def _query_items(url: str) -> tuple[str, list[str]]:
+    """Split a URL into the part before ``?`` and its raw ``&``-separated items.
+
+    The URL is never re-assembled by urllib: urlunparse() turns
+    ``unix:///path`` into ``unix:/path``, which redis-py 4.5+ rejects.
+    """
+    base, _, query = url.partition("?")
+    return base, [item for item in query.split("&") if item]
+
+
+def _query_key(item: str) -> str:
+    """The (unquoted) option name of a raw query item such as ``db=1``."""
+    from urllib.parse import unquote_plus
+
+    return unquote_plus(item.partition("=")[0])
+
+
+def _with_query_items(base: str, items: list[str]) -> str:
+    """Re-join a URL split by _query_items()."""
+    return f"{base}?{'&'.join(items)}" if items else base
+
+
 def _normalize_redis_ssl_params(url: str) -> str:
     """Normalize ssl_cert_reqs in a Redis URL from CERT_* to lowercase.
 
     redis-py expects lowercase values (none/optional/required) but URLs
     commonly use the Python ssl module constants (CERT_NONE/CERT_REQUIRED).
+    Everything else in the URL is kept as written.
     """
-    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+    from urllib.parse import unquote_plus
 
-    parsed = urlparse(url)
-    if not parsed.query:
+    base, items = _query_items(url)
+    for index, item in enumerate(items):
+        if _query_key(item) == "ssl_cert_reqs":
+            raw = unquote_plus(item.partition("=")[2])
+            items[index] = f"ssl_cert_reqs={_SSL_CERT_REQS_MAP.get(raw, raw)}"
+    return _with_query_items(base, items) if "?" in url else url
+
+
+def _without_query_params(url: str, names: tuple[str, ...]) -> str:
+    """Return ``url`` with the given querystring options removed."""
+    base, items = _query_items(url)
+    if "?" not in url:
         return url
-    params = parse_qs(parsed.query)
-    if "ssl_cert_reqs" not in params:
-        return url
-    raw = params["ssl_cert_reqs"][0]
-    normalized = _SSL_CERT_REQS_MAP.get(raw, raw)
-    params["ssl_cert_reqs"] = [normalized]
-    new_query = urlencode(params, doseq=True)
-    return urlunparse(parsed._replace(query=new_query))
+    return _with_query_items(base, [i for i in items if _query_key(i) not in names])
+
+
+# Whether the current publish attempt has written its XADD to the socket. A
+# timeout or dropped connection after that may still leave the entry in the
+# stream (Redis applies the command, the reply is lost), so the event counts
+# as unconfirmed rather than dropped. A ContextVar, so threads and greenlets
+# publishing at once each see their own attempt.
+_XADD_SENT: ContextVar[bool] = ContextVar("stemtrace_redis_xadd_sent", default=False)
+
+
+@functools.cache
+def _resolved_connect_mixin() -> type[Any]:
+    """A redis-py Connection whose TCP connect resolves via PUBLISH_RESOLVER.
+
+    redis-py 8.1 Connection._connect() calls socket.getaddrinfo() itself, which
+    no socket timeout bounds. This copy of it (same socket options and
+    per-address connect timeout) takes the addresses from PUBLISH_RESOLVER,
+    which waits at most the connect timeout. Only the TCP socket changes:
+    SSLConnection._connect() wraps the returned socket with
+    ``server_hostname=self.host``, so TLS still sends SNI for, and verifies
+    the certificate against, the host name in the URL.
+    """
+    from redis.connection import Connection
+
+    class ResolvedConnect(Connection):
+        """redis-py TCP connection that takes its addresses from PUBLISH_RESOLVER."""
+
+        def _resolved_addresses(self) -> list[tuple[Any, ...]]:
+            """Addresses for this connection's host, from the bounded resolver."""
+            return PUBLISH_RESOLVER.resolve(
+                self.host,
+                self.port,
+                self.socket_type,
+                socket.SOCK_STREAM,
+                timeout=self.socket_connect_timeout or PUBLISH_CONNECT_TIMEOUT,
+            )
+
+        def _connect_failed(self) -> None:
+            """Refresh the host's cached addresses: it may have moved."""
+            PUBLISH_RESOLVER.invalidate(
+                self.host, self.port, self.socket_type, socket.SOCK_STREAM
+            )
+
+        def _connect(self) -> socket.socket:
+            """Connect to the first resolved address that accepts."""
+            err: OSError | None = None
+            for family, socktype, proto, _, address in self._resolved_addresses():
+                sock = None
+                try:
+                    sock = socket.socket(family, socktype, proto)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    if self.socket_keepalive:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                        # Mapping[int, int | bytes] at runtime; redis-py's
+                        # annotations are looser (they include object).
+                        options: Any = self.socket_keepalive_options
+                        for k, v in options.items():
+                            sock.setsockopt(socket.IPPROTO_TCP, k, v)
+                    sock.settimeout(self.socket_connect_timeout)
+                    sock.connect(address)
+                    sock.settimeout(self.socket_timeout)
+                except OSError as exc:
+                    err = exc
+                    if sock is not None:
+                        sock.close()
+                else:
+                    return sock
+            self._connect_failed()
+            raise err if err is not None else OSError("No address to connect to")
+
+    return ResolvedConnect
+
+
+def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
+    """Subclass the URL's redis-py connection class for publishing.
+
+    TCP and TLS connections resolve the host through PUBLISH_RESOLVER (Unix
+    sockets need no lookup), every connection accepts the pool's keywords on
+    all supported redis-py versions (see _keyword_compatible_init()), and
+    every connection sets _XADD_SENT once an XADD is written: redis-py 8.1
+    Redis._send_command_parse_response() calls
+    ``connection.send_command(command_name, *args)`` and only then reads the
+    reply; send_command() returns once the whole command was written (the
+    handshake commands sent while connecting go through it too, hence the
+    name check).
+    """
+
+    def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
+        """Send a command; note an XADD once it was written in full."""
+        connection_class.send_command(self, *args, **kwargs)
+        if args and args[0] == "XADD":
+            _XADD_SENT.set(True)
+
+    return type(
+        f"Publish{connection_class.__name__}",
+        _publish_bases(connection_class),
+        {
+            "__init__": _keyword_compatible_init(connection_class),
+            "send_command": send_command,
+        },
+    )
+
+
+def _publish_bases(connection_class: type[Any]) -> tuple[type[Any], ...]:
+    """Base classes for the publish subclass: add the resolver hook for TCP/TLS."""
+    from redis.connection import Connection, UnixDomainSocketConnection
+
+    # A Unix socket class (a Connection subclass in redis-py 4.x) has no host
+    # to resolve, and a class that isn't a Connection has no _connect() to hook.
+    resolves_host = issubclass(connection_class, Connection) and not issubclass(
+        connection_class, UnixDomainSocketConnection
+    )
+    bases: list[type[Any]] = []
+    if connection_class is not Connection:
+        bases.append(connection_class)
+    if resolves_host:
+        # E.g. SSLConnection: its _connect() calls super()._connect(), which
+        # the MRO (SSLConnection, ResolvedConnect, Connection) sends here.
+        bases.append(_resolved_connect_mixin())
+    return tuple(bases)
+
+
+def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]:
+    """An __init__ that passes on only the keywords the base class takes.
+
+    redis-py 4.x UnixDomainSocketConnection has no socket_connect_timeout
+    parameter (the pool passes it anyway since we set it), and 5.0.0-5.0.6
+    drop socket_timeout for Unix sockets; setting both afterwards keeps
+    publishing bounded on every supported version. Other options the class
+    doesn't take (e.g. a typo in the URL) are logged once, not silently lost.
+    """
+    accepted = _accepted_init_kwargs(connection_class)
+    warned = False
+
+    def __init__(self: Any, **kwargs: Any) -> None:
+        """Initialize the base connection, then set the publish timeouts."""
+        nonlocal warned
+        kwargs_for_base = kwargs
+        if accepted is not None:
+            kwargs_for_base = {k: v for k, v in kwargs.items() if k in accepted}
+            dropped = set(kwargs) - accepted - set(_TIMEOUTS)
+            if dropped and not warned:
+                warned = True
+                logger.warning(
+                    "Redis URL option(s) not accepted by redis-py's %s (unknown "
+                    "or unsupported option), ignored for publishing: %s",
+                    connection_class.__name__,
+                    ", ".join(sorted(dropped)),
+                )
+        connection_class.__init__(self, **kwargs_for_base)
+        for name in _TIMEOUTS:
+            if name in kwargs:
+                setattr(self, name, kwargs[name])
+
+    return __init__
+
+
+# Set on publish connections after __init__ whether or not the class takes them.
+_TIMEOUTS = ("socket_timeout", "socket_connect_timeout")
+
+
+def _accepted_init_kwargs(connection_class: type[Any]) -> frozenset[str] | None:
+    """Keyword arguments a class's __init__ chain accepts; None if any.
+
+    Follows ``**kwargs`` up the MRO (e.g. UnixDomainSocketConnection forwards
+    them to AbstractConnection in redis-py 4.5) until an __init__ without it.
+    """
+    names: set[str] = set()
+    # Without object (always last): reaching it means ``**kwargs`` all the way
+    # up, so any keyword is accepted.
+    for klass in connection_class.__mro__[:-1]:
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        parameters = inspect.signature(init).parameters.values()
+        names.update(
+            p.name
+            for p in parameters
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+        )
+        if not any(p.kind is p.VAR_KEYWORD for p in parameters):
+            return frozenset(names)
+    return None
+
+
+def _publish_client_from_url(url: str) -> Redis[Any]:
+    """Build the client publish() uses: short timeouts, no retries.
+
+    ``retry`` is pinned to zero retries because a ``retry_on_timeout`` URL
+    option would otherwise add one (redis-py 8.1 AbstractConnection.__init__
+    builds ``Retry(NoBackoff(), 1)`` for it), and timeouts in the URL are
+    dropped because they would win over the keyword arguments.
+
+    RedisTransport builds one of these per process (see ``publish_client``).
+    The client doesn't own its pool (``auto_close_connection_pool`` is
+    False), so when a forked child drops the parent's client, garbage
+    collection never closes the inherited pool: closing it would run
+    ConnectionPool.reset(), which takes the pool's lock without a timeout
+    (redis-py 8.1) and hangs if a parent thread held it at fork.
+    """
+    from redis import ConnectionPool
+    from redis import Redis as RedisClient
+    from redis.backoff import NoBackoff
+    from redis.retry import Retry
+
+    pool = ConnectionPool.from_url(
+        _without_query_params(url, _PUBLISH_TIMEOUT_QUERY_PARAMS),
+        decode_responses=False,
+        socket_connect_timeout=PUBLISH_CONNECT_TIMEOUT,
+        socket_timeout=PUBLISH_SOCKET_TIMEOUT,
+        retry=Retry(NoBackoff(), 0),
+    )
+    # from_url() picked the class for the scheme (TCP, TLS or Unix socket).
+    pool.connection_class = _publish_connection_class(pool.connection_class)
+    return RedisClient(connection_pool=pool)
+
+
+def _reply_lost(exc: Exception) -> bool:
+    """Whether a publish error leaves it unknown if Redis applied the command.
+
+    Only transport failures do: a socket timeout, or the connection closing or
+    breaking while the reply was awaited. Any error Redis replied with means
+    it rejected the command, including the replies redis-py 8.1 raises as
+    ConnectionError or its subclasses (``-LOADING`` as BusyLoadingError,
+    ``-NOAUTH``/``-WRONGPASS`` as AuthenticationError, "max number of clients
+    reached" as ConnectionError; see redis/_parsers/base.py EXCEPTION_CLASSES).
+    Those carry the server's message, while redis-py's own transport errors
+    use the fixed messages matched here (redis/connection.py read_response(),
+    redis/_parsers/socket.py SERVER_CLOSED_CONNECTION_ERROR).
+    """
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    if isinstance(exc, RedisTimeoutError):
+        return True
+    if type(exc) is not RedisConnectionError:
+        return False
+    message = str(exc)
+    return message == _SERVER_CLOSED_CONNECTION or message.startswith(
+        _READ_FAILED_PREFIX
+    )
+
+
+# redis-py 8.1's messages for a reply lost in transit (see _reply_lost()).
+_SERVER_CLOSED_CONNECTION = "Connection closed by server."
+_READ_FAILED_PREFIX = "Error while reading from "
 
 
 def _is_connect_timeout(exc: Exception) -> bool:
@@ -163,19 +472,38 @@ class RedisTransport:
         prefix: str,
         ttl: int,
         *,
+        publish_client_factory: Callable[[], Redis[Any]] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Initialize Redis transport with client and stream configuration.
 
         Args:
-            client: Redis client used for XADD/XREAD.
+            client: Redis client used for XREAD (and XADD unless
+                ``publish_client_factory`` is given).
             prefix: Key prefix; the stream key is ``<prefix>:events``.
             ttl: Event retention hint, also used to size the stream.
+            publish_client_factory: Builds the Redis client used for XADD,
+                once per process (see ``publish_client``). Without it, XADD
+                uses ``client``; from_url() passes one with short timeouts.
             sleep: Sleep function for reconnect backoff (injectable for tests).
-            monotonic: Clock used to rate-limit warnings (injectable for tests).
+            monotonic: Clock used to rate-limit warnings and to time the
+                publish circuit breaker's cooldowns (injectable for tests).
         """
         self._client = client
+        self._publish_client_factory = publish_client_factory
+        # (pid, client) of the publish client built in the current process.
+        self._process_publish_client: tuple[int, Redis[Any]] | None = None
+        self._publish_breaker = PublishBreaker(
+            "Redis",
+            logger=logger,
+            initial_cooldown=RECONNECT_INITIAL_BACKOFF,
+            max_cooldown=RECONNECT_MAX_BACKOFF,
+            log_interval=PUBLISH_FAILURE_LOG_INTERVAL,
+            probe_timeout=PUBLISH_PROBE_TIMEOUT,
+            failures_to_open=PUBLISH_FAILURES_TO_OPEN,
+            monotonic=monotonic,
+        )
         self._ttl = ttl
         self._stream_key = f"{prefix}:events"
         self._maxlen = max(ttl, 10000)
@@ -202,8 +530,27 @@ class RedisTransport:
 
     @property
     def client(self) -> Redis[Any]:
-        """The Redis client."""
+        """The Redis client consume() reads with."""
         return self._client
+
+    @property
+    def publish_client(self) -> Redis[Any]:
+        """The Redis client publish() writes with in this process.
+
+        With a ``publish_client_factory``, the client is built on first use
+        and again after a fork (a new PID), like the publish breaker, so a
+        prefork child never uses a connection pool or lock inherited from
+        its parent. Two threads publishing for the first time at once may
+        both build one; the extra client is dropped, which is harmless.
+        """
+        if self._publish_client_factory is None:
+            return self._client
+        current = self._process_publish_client
+        pid = os.getpid()
+        if current is None or current[0] != pid:
+            current = (pid, self._publish_client_factory())
+            self._process_publish_client = current
+        return current[1]
 
     @property
     def stream_key(self) -> str:
@@ -218,30 +565,66 @@ class RedisTransport:
     def publish(self, event: StreamEvent) -> None:
         """Publish an event to the Redis stream.
 
-        Fire-and-forget: logs errors, never raises.
+        Fire-and-forget: never raises, and events that can't be published are
+        dropped, not queued. With a transport from from_url(), an attempt
+        takes at most PUBLISH_CONNECT_TIMEOUT to resolve the host when it has
+        no cached address, PUBLISH_CONNECT_TIMEOUT per address to connect,
+        and PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
+
+        Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure. A failure
+        after the XADD was written (a timeout or lost connection) counts the
+        event as sent but unconfirmed, since Redis may still have applied it;
+        other failures count it as dropped. PUBLISH_FAILURES_TO_OPEN failures
+        in a row open a circuit breaker; until then a failure loses only its
+        own event. While open, events are dropped without contacting Redis
+        for a cooldown (1s, doubling per failed retry up to 30s; straight to
+        30s when a retry's reply is lost right after lost replies opened the
+        breaker or failed the previous retry; reset by a successful publish),
+        so an outage costs each process PUBLISH_FAILURES_TO_OPEN bounded
+        attempts (plus any already in flight in its other threads), then
+        about one per cooldown, instead of one per event. Per PUBLISH_FAILURE_LOG_INTERVAL,
+        at most four WARNING lines are written, each with the number of
+        events lost since the previous line; each event dropped while the
+        breaker is open also gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
         """
+        breaker = self._publish_breaker
+        ticket = breaker.allow()
+        if ticket is None:
+            logger.debug(
+                "Redis publishing paused after failures; dropped event %s",
+                self._event_identifier(event),
+            )
+            return
+        sent = _XADD_SENT.set(False)
         try:
-            self._client.xadd(
+            self.publish_client.xadd(
                 self._stream_key,
                 {"data": event.model_dump_json()},
                 maxlen=self._maxlen,
                 approximate=True,
             )
-        except Exception:
-            event_id = self._event_identifier(event)
-            logger.warning(
-                "Failed to publish event %s to Redis", event_id, exc_info=True
+        # Fire-and-forget: any redis-py error feeds the breaker, never the task.
+        except Exception as exc:  # noqa: BLE001
+            breaker.record_failure(
+                ticket,
+                self._event_identifier(event),
+                exc,
+                unconfirmed=_XADD_SENT.get() and _reply_lost(exc),
             )
+        else:
+            breaker.record_success(ticket)
+        finally:
+            _XADD_SENT.reset(sent)
 
     @staticmethod
     def _event_identifier(event: StreamEvent) -> str:
         """Create a stable identifier for logging."""
         if isinstance(event, TaskEvent):
             return event.task_id
-        return f"{event.hostname}:{event.pid}:{event.event_type}"
+        return f"{event.hostname}:{event.pid}:{event.event_type.value}"
 
     def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
@@ -424,8 +807,11 @@ class RedisTransport:
     def from_url(cls, url: str, prefix: str = "stemtrace", ttl: int = 86400) -> Self:
         """Create transport from Redis URL.
 
-        The client keeps redis-py's own timeout defaults (publishers share it);
-        consume() adapts its XREAD block window to them instead.
+        The consume client keeps redis-py's own timeout defaults; consume()
+        adapts its XREAD block window to them. publish() gets a separate
+        client with PUBLISH_CONNECT_TIMEOUT/PUBLISH_SOCKET_TIMEOUT and no
+        retries, overriding any timeouts given in the URL. Neither connects
+        before its first command.
         """
         from redis import Redis as RedisClient
 
@@ -434,4 +820,5 @@ class RedisTransport:
             client=RedisClient.from_url(url, decode_responses=False),
             prefix=prefix,
             ttl=ttl,
+            publish_client_factory=functools.partial(_publish_client_from_url, url),
         )
