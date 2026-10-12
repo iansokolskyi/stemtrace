@@ -1444,6 +1444,27 @@ class TestWorkerRegistry:
 
         assert registry.get_all_workers() == []
 
+    def test_removed_stale_older_worker_keeps_newest_revivable_by_ping(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Cleaning up an older pid leaves the node's newest pid as the one to revive."""
+        registry.register_worker(
+            "w1@devbox",
+            1,
+            [],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=60),
+        )
+        registry.register_worker("w1@devbox", 2, [])
+        registry.remove_stale_workers(
+            stale_timeout_minutes=3, cleanup_timeout_minutes=30
+        )
+        registry.mark_offline("w1@devbox", 2)
+
+        registry.mark_node_alive("w1@devbox")
+
+        workers = [(w.hostname, w.pid, w.status) for w in registry.get_all_workers()]
+        assert workers == [("w1@devbox", 2, WorkerStatus.ONLINE)]
+
     def test_get_registered_tasks_after_shutdown(
         self, registry: WorkerRegistry
     ) -> None:
