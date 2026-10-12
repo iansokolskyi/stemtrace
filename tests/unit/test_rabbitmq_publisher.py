@@ -610,6 +610,61 @@ class TestConnectAddresses:
 
         assert time.monotonic() - started < 0.3 + 0.2
 
+    def test_connect_gives_a_late_address_only_what_is_left_of_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The first address burns two thirds of the budget before refusing:
+        # the black-holed second one may only wait for the rest, not for a
+        # whole timeout of its own.
+        class SlowThenBlackHole(socket.socket):
+            def connect(self, address: Any) -> None:
+                if address[1] == 20000:
+                    time.sleep(0.2)
+                    raise ConnectionRefusedError
+                time.sleep(self.gettimeout() or 0)
+                raise TimeoutError
+
+        monkeypatch.setattr(
+            rabbitmq,
+            "PUBLISH_RESOLVER",
+            _Addresses([("127.0.0.1", 20000), ("127.0.0.1", 20001)]),
+        )
+        monkeypatch.setattr(socket, "socket", SlowThenBlackHole)
+        transport = SimpleNamespace(sock=None)
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            rabbitmq._connect_resolved(transport, "broker", 5672, 0.3)
+
+        assert time.monotonic() - started < 0.4
+
+    def test_connect_starts_at_the_address_that_worked_last_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts: list[Any] = []
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(2)
+            dead = ("127.0.0.1", _closed_port())
+            live = server.getsockname()
+
+            class Recording(socket.socket):
+                def connect(self, address: Any) -> None:
+                    attempts.append(address)
+                    super().connect(address)
+
+            monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", _Addresses([dead, live]))
+            monkeypatch.setattr(socket, "socket", Recording)
+            first, second = SimpleNamespace(sock=None), SimpleNamespace(sock=None)
+
+            rabbitmq._connect_resolved(first, "broker", 5672, 1.0)
+            rabbitmq._connect_resolved(second, "broker", 5672, 1.0)
+
+            # The refused address is tried once, not on every connect.
+            assert attempts == [dead, live, live]
+            first.sock.close()
+            second.sock.close()
+
     def test_connect_after_a_black_holed_first_address_starts_at_the_next_one(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
