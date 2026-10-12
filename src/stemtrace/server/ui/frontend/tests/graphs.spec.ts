@@ -1031,6 +1031,23 @@ test.describe('Graph Page - Live Updates', () => {
     expect(await position()).toBe(moved)
   })
 
+  test('keeps re-fitting after a click on the empty canvas', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const { push } = await openLiveGraph(page, first.task_id)
+    const fitted = await settledViewport(page)
+    // A click is a mouse down and up on the pane: no pan, no zoom
+    const box = (await page.locator('.react-flow').boundingBox())!
+    await page.mouse.click(box.x + box.width - 40, box.y + 40)
+    expect(await settledViewport(page)).toBe(fitted)
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+  })
+
   test('keeps the zoom the user chose', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()

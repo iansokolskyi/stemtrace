@@ -16,6 +16,7 @@ import {
   type ReactFlowInstance,
   useEdgesState,
   useNodesState,
+  type Viewport,
   type XYPosition,
 } from '@xyflow/react'
 import { useEffect, useMemo, useRef } from 'react'
@@ -565,6 +566,10 @@ function buildGraphElements(
   return { nodes: flowNodes, edges: flowEdges }
 }
 
+function sameViewport(a: Viewport, b: Viewport): boolean {
+  return a.x === b.x && a.y === b.y && a.zoom === b.zoom
+}
+
 /**
  * The graph for `graphNodes`, kept in step with it: new tasks, new links and
  * state changes show up as the data changes (a WebSocket event refetches the
@@ -584,6 +589,8 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
   const flow = useRef<ReactFlowInstance | null>(null)
   const draggedPositions = useRef(new Map<string, XYPosition>())
   const viewportChosen = useRef(false)
+  // Where the viewport was when the current user pan or zoom began
+  const moveStart = useRef<Viewport | null>(null)
   const shownNodeIds = useRef(layout.nodes.map((node) => node.id).join())
   // The ids a re-fit is waiting for React Flow to hold (see the second effect)
   const fitWhenHolding = useRef<string | null>(null)
@@ -639,10 +646,17 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
         flow.current = instance
       }}
       onNodeDragStop={rememberDraggedPositions}
-      // A user-driven pan or zoom comes with its mouse or touch event; the
-      // fits the page does itself (and the Controls buttons) come without one
-      onMoveStart={(event) => {
-        if (event) viewportChosen.current = true
+      // A pan or zoom the user made comes with its mouse or touch event; the fits
+      // the page does itself (and the Controls buttons) come without one. A
+      // mouse down on the canvas starts a move too, so what counts is whether the
+      // viewport is somewhere else when it ends: a plain click moves nothing.
+      onMoveStart={(event, viewport) => {
+        moveStart.current = event ? viewport : null
+      }}
+      onMoveEnd={(event, viewport) => {
+        const start = moveStart.current
+        moveStart.current = null
+        if (event && start && !sameViewport(start, viewport)) viewportChosen.current = true
       }}
       fitView
       fitViewOptions={FIT_VIEW_OPTIONS}
