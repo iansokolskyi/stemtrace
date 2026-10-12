@@ -107,6 +107,50 @@ def paginate(self: Any, page: int) -> int:
     return page
 
 
+@app.task(bind=True, name="flows.outer")
+def outer(self: Any) -> None:
+    """Replace this task with a chain whose first task replaces itself too."""
+    raise self.replace(chain(inner.si(), add.si(5, 5)))
+
+
+@app.task(bind=True, name="flows.inner")
+def inner(self: Any) -> None:
+    """Replace this task with a two-task chain."""
+    raise self.replace(chain(add.si(1, 1), add.si(2, 2)))
+
+
+@app.task(bind=True, name="flows.outer_g")
+def outer_g(self: Any) -> None:
+    """Replace this task with a chain whose first task replaces itself by a group."""
+    raise self.replace(chain(replace_with_group.si(), tsum.s()))
+
+
+@app.task(bind=True, name="flows.outer_last")
+def outer_last(self: Any) -> None:
+    """Replace this task with a chain whose last task replaces itself too."""
+    raise self.replace(chain(add.si(1, 1), replace_with_chain.si()))
+
+
+@app.task(name="flows.fetch")
+def fetch(page: int) -> int:
+    """Fetch one page."""
+    return page
+
+
+@app.task(bind=True, name="flows.prec")
+def prec(self: Any, page: int, pages: int) -> int:
+    """Paginate recursively: replace with chain(fetch(page), prec(page + 1))."""
+    if page < pages:
+        raise self.replace(chain(fetch.si(page), prec.si(page + 1, pages)))
+    return page
+
+
+@app.task(bind=True, name="flows.mid_replacer")
+def mid_replacer(self: Any) -> None:
+    """Replace this task with a three-task chain of different task names."""
+    raise self.replace(chain(add.si(1, 1), tsum.si([1, 2]), fetch.si(3)))
+
+
 @app.task(name="flows.send_with_parent")
 def send_with_parent(parent_id: str) -> None:
     """Send a task naming another, earlier task as its parent."""
@@ -230,6 +274,38 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         "group_of_chains_link_spawns": lambda: group(
             chain(add_with_subtask.s(1, 1), add.s(1)), chain(add.s(2, 2), add.s(2))
         ),
+        # task.replace() inside a replacement, in each position, and
+        # replacements of 3+ tasks in each position (--worker-process).
+        "nested_replace": lambda: chain(add.s(1, 1), outer.si()),
+        "nested_replace_root": lambda: outer.s(),
+        "nested_replace_header": lambda: chord([outer.si(), add.si(1, 1)], tsum.s()),
+        "nested_replace_group": lambda: chain(add.s(1, 1), outer_g.si()),
+        "nested_replace_group_root": lambda: outer_g.s(),
+        "nested_replace_last": lambda: chain(add.s(1, 1), outer_last.si()),
+        "recursive_replace": lambda: chain(add.s(1, 1), prec.si(0, 3)),
+        "recursive_replace_root": lambda: prec.s(0, 3),
+        "two_replacers": lambda: chain(
+            add.s(1, 1), replace_with_chain.si(), replace_with_chain.si()
+        ),
+        "two_replacers_root": lambda: chain(
+            replace_with_chain.si(), replace_with_chain.si()
+        ),
+        "mid_chain_replace3": lambda: chain(
+            add.s(1, 1), paginate_to.si(0, 3), add.si(7, 7)
+        ),
+        "mid_chain_replace_names": lambda: chain(
+            add.s(1, 1), mid_replacer.si(), add.si(7, 7)
+        ),
+        "chord_header_replace3": lambda: chord(
+            [paginate_to.si(0, 3), add.si(1, 1)], tsum.s()
+        ),
+        "chord_body_replace3": lambda: chord(
+            [add.si(1, 1), add.si(2, 2)], paginate_to.si(0, 3)
+        ),
+        "group_chain_replace3": lambda: group(
+            chain(add.si(1, 1), paginate_to.si(0, 3)), add.si(2, 2)
+        ),
+        "chain_replace12": lambda: chain(add.s(1, 1), paginate_to.si(0, 12)),
     }
 
 

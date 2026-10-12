@@ -567,10 +567,6 @@ def _add_to(index: dict[str, dict[str, None]], key: str, value: str) -> None:
     index.setdefault(key, {})[value] = None
 
 
-# Most tasks a walk over reported parents visits (replace() detection).
-_WALK_LIMIT = 256
-
-
 def _named_parents(node: TaskNode) -> set[str]:
     """IDs a task's events name as their parent (itself excluded)."""
     return {
@@ -588,6 +584,108 @@ def _named_ids(node: TaskNode) -> set[str]:
         for named in (event.parent_id, event.root_id)
         if named is not None
     }
+
+
+# Most reused IDs whose own parent one replacement check works out at once
+# (each nested replace() level is one; the work recurses, so it's bounded).
+_NESTING_LIMIT = 16
+
+
+class _OwnParentWalk:
+    """Walks up the parents tasks' own events report, for one replacement check.
+
+    Only a task's own parenthood counts as an edge: a task whose ID carries
+    one task follows its ``reported_parent_id``; a reused ID (see
+    ``TaskNode._is_reused``) follows the one parent its events report that
+    isn't its replacement's, worked out the same way, or none while that
+    isn't known. Its replacement's events point down into its own subtree
+    (the replacement's previous task); following them made a nested
+    replacement look like it descends from the outer task's replacement.
+
+    Every task the walks visit (also a missing one, where a walk stops) is
+    recorded for ``task_id``: a change to one re-runs its check
+    (``TaskGraph._recheck_walkers``). A walk is a path (one edge per task),
+    so it visits each task at most once; results are kept for the check.
+    Working out a reused ID's own parent walks from its parents in turn, so
+    a walk through ``replace()`` nested more than ``_NESTING_LIMIT`` levels
+    deep stops there, as at a missing task.
+    """
+
+    def __init__(self, graph: "TaskGraph", task_id: str) -> None:
+        """Prepare walks for the replacement check of ``task_id``."""
+        self._graph = graph
+        self._task_id = task_id
+        self._deps = graph._walk_deps
+        self._walks_of = graph._walks_of
+        # Reused IDs whose own parent is being worked out: a walk that meets
+        # one stops there, as at a missing task, so working out can't loop.
+        self._busy = {task_id}
+        self._edges: dict[str, str | None] = {}
+        self._reached: dict[str, bool] = {}
+
+    def reaches(self, start: str) -> bool:
+        """Whether the checked task is ``start`` or above it by own parents."""
+        known = self._reached.get(start)
+        if known is None:
+            known = self._reaches(start, self._task_id)
+            self._reached[start] = known
+        return known
+
+    def _reaches(self, start: str, target: str) -> bool:
+        """Whether ``target`` is ``start`` or above it by own parents."""
+        seen: set[str] = set()
+        current: str | None = start
+        while current is not None and current not in seen:
+            if current == target:
+                return True
+            seen.add(current)
+            self._note_dep(current)
+            current = self._own_parent(current)
+        return False
+
+    def _note_dep(self, node_id: str) -> None:
+        """Record that the check walked through ``node_id``."""
+        owner = self._task_id
+        walked = self._walks_of.get(owner)
+        if walked is None:
+            walked = self._walks_of[owner] = set()
+        if node_id not in walked and node_id != owner:
+            walked.add(node_id)
+            _add_to(self._deps, node_id, owner)
+
+    def _own_parent(self, task_id: str) -> str | None:
+        """The parent a task's own events report, or None (unknown or a root)."""
+        node = self._graph.nodes.get(task_id)
+        if node is None:
+            return None
+        if not node._is_reused():
+            return node.reported_parent_id
+        if task_id in self._busy or len(self._busy) > _NESTING_LIMIT:
+            return None
+        if task_id not in self._edges:
+            self._busy.add(task_id)
+            try:
+                self._edges[task_id] = self._reused_own_parent(node)
+            finally:
+                self._busy.discard(task_id)
+        return self._edges[task_id]
+
+    def _reused_own_parent(self, node: TaskNode) -> str | None:
+        """The own parent of a reused ID: the only one not below it, if known.
+
+        A replacement's events report a task below the reused ID (or the ID
+        itself, which the index leaves out). The task's own events report
+        one parent, or none for a root (its worker events name it as root
+        with no parent): then no other parent can be its own. While two
+        parents are left (a replacement whose tasks haven't all been seen),
+        which one is its own isn't known.
+        """
+        task_id = node.task_id
+        if any(e.parent_id is None and e.root_id == task_id for e in node.events):
+            return None
+        index = node._ensure_index()
+        own = [p for p in sorted(index.parents) if not self._reaches(p, task_id)]
+        return own[0] if len(own) == 1 else None
 
 
 def _drop_from(index: dict[str, dict[str, None]], key: str, value: str) -> None:
@@ -654,6 +752,10 @@ class TaskGraph(BaseModel):
     # Root ID -> other tasks with any event naming it as root (replace()
     # detection: they descend from it).
     _descendants: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
+    # Task ID (also of a missing task) -> reused tasks whose replacement
+    # check walked through it, and the reverse (see ``_OwnParentWalk``).
+    _walk_deps: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
+    _walks_of: dict[str, set[str]] = PrivateAttr(default_factory=dict)
     # Reported parent ID -> tasks that reported it, in arrival order.
     _reported_children: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     # Group member -> its chain links inside the group (bottom-up), and the
@@ -768,6 +870,7 @@ class TaskGraph(BaseModel):
             self._state_changed(node, tally, old_state)
         if new_parent:
             self._reported_parent_changed(node, old_parent)
+        self._walk_edge_recorded(node, event, new_parent=new_parent)
         if tally is not None and node.task_id in tally.counted():
             self._parent_evidence_changed(tally, node, event, new_parent=new_parent)
         if event.group_id is not None and event.group_id == node.group_id:
@@ -781,6 +884,26 @@ class TaskGraph(BaseModel):
         if self._cycle_broken:
             self._retry_cycle_broken()
         return event
+
+    def _walk_edge_recorded(
+        self, node: TaskNode, event: TaskEvent, *, new_parent: bool
+    ) -> None:
+        """Re-run the checks that walked through a task the event changed.
+
+        What a walk follows from a task (see ``_OwnParentWalk``) may change
+        when the task is new, when a new name or parent makes the ID reused
+        or gives it another parent to choose from, when a reused root's own
+        event rules out every parent, and when a single task's reported
+        parent changes.
+        """
+        if node._ensure_index().new_identity:  # also a new node's first event
+            changed = True
+        elif not node._is_reused():
+            changed = new_parent
+        else:
+            changed = event.parent_id is None and event.root_id == node.task_id
+        if changed:
+            self._recheck_walkers(node.task_id)
 
     def _record_on(self, node: TaskNode, event: TaskEvent) -> bool | None:
         """Record an event on an existing node and re-pick its identity.
@@ -809,9 +932,10 @@ class TaskGraph(BaseModel):
           client sends a task, also one sent with an explicit ``parent_id``;
         * for an ID carrying two tasks (two names or parents), the task
           itself (a single-signature replacement) or a task that descends
-          from it by the parents events report (the replacement's previous
-          task, a child of the task for a two-task chain, deeper for a
-          longer one), see ``_reaches``;
+          from it by the parents tasks' own events report (the
+          replacement's previous task, a child of the task for a two-task
+          chain, deeper for a longer one, also through tasks that were
+          replaced in turn), see ``_OwnParentWalk``;
         * a task that reports this one as its parent while this one reports
           it: a two-task cycle that only ID reuse makes. With nothing else to
           go on (e.g. the server missed the original events, and neither ID
@@ -821,6 +945,7 @@ class TaskGraph(BaseModel):
         task_id = node.task_id
         children = self._raw_children.get(task_id)
         descendants = self._descendants.get(task_id)
+        walk = _OwnParentWalk(self, task_id)
 
         def check(event: TaskEvent) -> bool:
             """Whether the event comes from a replacement (see above)."""
@@ -834,7 +959,7 @@ class TaskGraph(BaseModel):
             ):
                 return True
             if node._is_reused():
-                return parent == task_id or self._reaches(parent, task_id)
+                return parent == task_id or walk.reaches(parent)
             if children is None or parent not in children or task_id < parent:
                 return False
             other = self.nodes.get(parent)
@@ -842,62 +967,14 @@ class TaskGraph(BaseModel):
 
         return check
 
-    def _reaches(self, start: str, target: str) -> bool:
-        """Whether ``target`` is ``start`` or above it by reported parents.
+    def _recheck_walkers(self, node_id: str) -> None:
+        """Re-run the replacement checks that walked through a changed task.
 
-        Follows the parent of every event of each task on the way, up to
-        ``_WALK_LIMIT`` tasks (a cycle there only comes from ID reuse).
+        Called when the task appeared or went away, or what a walk follows
+        from it may have changed: its reported parent (one task under its
+        ID), or the parents and names its events report.
         """
-        seen = {start}
-        stack = [start]
-        while stack:
-            current = stack.pop()
-            if current == target:
-                return True
-            node = self.nodes.get(current)
-            if node is None:
-                continue
-            for parent in _named_parents(node) - seen:
-                if len(seen) >= _WALK_LIMIT:
-                    return False
-                seen.add(parent)
-                stack.append(parent)
-        return False
-
-    def _raw_ancestors(self, starts: set[str]) -> set[str]:
-        """``starts`` and the tasks above them by any event's parent (bounded)."""
-        seen = set(starts)
-        stack = list(starts)
-        while stack and len(seen) < _WALK_LIMIT:
-            node = self.nodes.get(stack.pop())
-            if node is not None:
-                for parent in _named_parents(node) - seen:
-                    seen.add(parent)
-                    stack.append(parent)
-        return seen
-
-    def _raw_descendants(self, start: str) -> set[str]:
-        """``start`` and the tasks whose events name it, or them, as parent (bounded)."""
-        seen = {start}
-        stack = [start]
-        while stack and len(seen) < _WALK_LIMIT:
-            for child in self._raw_children.get(stack.pop(), {}):
-                if child not in seen:
-                    seen.add(child)
-                    stack.append(child)
-        return seen
-
-    def _recheck_cycles(self, child_id: str, parent_ids: set[str]) -> None:
-        """Re-pick identities on a reported-parent cycle through a changed link.
-
-        A link from ``child_id`` up to ``parent_ids`` appeared or went away.
-        A reused task whose replacement reports a task below it (through
-        ``child_id``) can only tell once the link between them is known.
-        """
-        below = self._raw_descendants(child_id)
-        if len(below) == 1:
-            return  # nothing names the child: no cycle runs through it
-        for task_id in sorted((below & self._raw_ancestors(parent_ids)) - {child_id}):
+        for task_id in list(self._walk_deps.get(node_id, {})):
             self._recheck(task_id)
 
     def _join_from_event(self, node: TaskNode, event: TaskEvent) -> None:
@@ -934,7 +1011,6 @@ class TaskGraph(BaseModel):
             return
         _add_to(self._raw_children, parent_id, child_id)
         self._recheck_identity(parent_id, child_id)
-        self._recheck_cycles(child_id, {parent_id})
 
     def _recheck_identity(self, parent_id: str, child_id: str) -> None:
         """Re-pick a task's name and parent once the index around it changed.
@@ -957,6 +1033,8 @@ class TaskGraph(BaseModel):
             self._reported_parent_changed(node, old_parent)
             self._place(node)
             self._retrigger(task_id, changed=True)
+            if not node._is_reused():
+                self._recheck_walkers(task_id)
 
     def _recheck_mutual(self, node: TaskNode) -> None:
         """Re-pick the parents of tasks in a two-task cycle with a reused ID.
@@ -1020,7 +1098,6 @@ class TaskGraph(BaseModel):
     def _remove(self, node: TaskNode) -> None:
         """Do the work of ``remove_node`` (``node`` is marked as removing)."""
         task_id = node.task_id
-        cycle = self._cycle_through(node)
         if node.group_id is not None and task_id == _body_node_id(node.group_id):
             # A group body node: the chord rebuilds it if its body still is one.
             self._drop_body_group(node.group_id)
@@ -1035,7 +1112,7 @@ class TaskGraph(BaseModel):
             self._forget_group_node(node)
         del self.nodes[task_id]
         if node.node_type == NodeType.TASK:
-            self._recheck_after_removal(node, cycle)
+            self._recheck_after_removal(node)
         if node.group_id is not None:
             self._dissolve_if_too_small(node.group_id)
         owner = self._link_owner.pop(task_id, None)
@@ -1050,19 +1127,13 @@ class TaskGraph(BaseModel):
         for group_id in chords:
             self._resolve_callback(group_id)
 
-    def _cycle_through(self, node: TaskNode) -> set[str]:
-        """Tasks on a reported-parent cycle through a task (none for a group)."""
-        if node.node_type != NodeType.TASK:
-            return set()
-        below = self._raw_descendants(node.task_id)
-        return below & self._raw_ancestors(_named_parents(node)) - {node.task_id}
-
-    def _recheck_after_removal(self, node: TaskNode, cycle: set[str]) -> None:
+    def _recheck_after_removal(self, node: TaskNode) -> None:
         """Re-pick identities the removed task's events took part in deciding."""
+        for walked in self._walks_of.pop(node.task_id, set()):
+            _drop_from(self._walk_deps, walked, node.task_id)
         for related in _named_ids(node) - {node.task_id}:
             self._recheck_identity(related, node.task_id)
-        for related in sorted(cycle):
-            self._recheck(related)
+        self._recheck_walkers(node.task_id)
 
     def _dissolve_if_too_small(self, group_id: str) -> None:
         """Remove a GROUP node left with fewer than 2 members.

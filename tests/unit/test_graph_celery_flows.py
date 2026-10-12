@@ -227,6 +227,46 @@ _EXPECTED: dict[str, str] = {
     # sender's.
     "worker_explicit_parent": "add(add) | send_with_parent",
     "chord_with_chain_body": "chord{*>tsum(add), +add, +add}",
+    # outer replaces itself with chain(inner, add) and inner with chain(add,
+    # add): both IDs are reused, and outer's replacement reports inner (its
+    # own child) as parent while inner's own events report outer.
+    "nested_replace@worker_process": "add(^outer(^inner(add)))",
+    "nested_replace_root@worker_process": "^outer(^inner(add))",
+    "nested_replace_header@worker_process": "chord{*tsum, +^outer(^inner(add)), +add}",
+    "nested_replace_group@worker_process": (
+        "add(^outer_g(^replace_with_group(chord{+add, +add})))"
+    ),
+    "nested_replace_group_root@worker_process": (
+        "^outer_g(^replace_with_group(chord{+add, +add}))"
+    ),
+    # The replacement's last task replaces itself again, under the same ID.
+    "nested_replace_last@worker_process": "add(^outer_last(add, add))",
+    # prec(n) replaces itself with chain(fetch(n), prec(n + 1)): one ID
+    # carries every page's prec, each reporting the previous fetch.
+    "recursive_replace@worker_process": "add(^prec(fetch, fetch, fetch))",
+    "recursive_replace_root@worker_process": "^prec(fetch, fetch, fetch)",
+    "two_replacers@worker_process": (
+        "add(^replace_with_chain(^replace_with_chain(add), add))"
+    ),
+    "two_replacers_root@worker_process": (
+        "^replace_with_chain(^replace_with_chain(add), add)"
+    ),
+    "mid_chain_replace3@worker_process": "add(^paginate_to(add, paginate_to(paginate_to)))",
+    "mid_chain_replace_names@worker_process": "add(^mid_replacer(add, add(tsum)))",
+    "chord_header_replace3@worker_process": (
+        "chord{*tsum, +^paginate_to(paginate_to(paginate_to)), +add}"
+    ),
+    "chord_body_replace3@worker_process": (
+        "chord{*^paginate_to(paginate_to(paginate_to)), +add, +add}"
+    ),
+    "group_chain_replace3@worker_process": (
+        "group{+add, add(^paginate_to(paginate_to(paginate_to)))}"
+    ),
+    "chain_replace12@worker_process": (
+        "add(^paginate_to(paginate_to(paginate_to(paginate_to(paginate_to("
+        "paginate_to(paginate_to(paginate_to(paginate_to(paginate_to("
+        "paginate_to(paginate_to))))))))))))"
+    ),
 }
 
 
@@ -478,11 +518,27 @@ _REPLACE_FLOWS = (
     "chain_replace3@worker_process",
     "chain_replace4@worker_process",
     "chain_replace_group@worker_process",
+    "nested_replace@worker_process",
+    "nested_replace_root@worker_process",
+    "nested_replace_header@worker_process",
+    "nested_replace_group@worker_process",
+    "nested_replace_group_root@worker_process",
+    "nested_replace_last@worker_process",
+    "recursive_replace@worker_process",
+    "recursive_replace_root@worker_process",
+    "two_replacers@worker_process",
+    "two_replacers_root@worker_process",
+    "mid_chain_replace3@worker_process",
+    "mid_chain_replace_names@worker_process",
+    "chord_header_replace3@worker_process",
+    "chord_body_replace3@worker_process",
+    "group_chain_replace3@worker_process",
+    "chain_replace12@worker_process",
 )
 
 
-def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
-    """The replaced task's ID and the parent its own events report.
+def _replaced_tasks(events: list[dict[str, Any]]) -> dict[str, str | None]:
+    """The replaced tasks' IDs and the parent each one's own events report.
 
     A worker in its own process announces the replacement's last task, which
     reuses the ID, with a second attempt-0 PENDING. The task's first event
@@ -491,8 +547,16 @@ def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
     pending = Counter(
         e["task_id"] for e in events if e["state"] == "PENDING" and e["retries"] == 0
     )
-    (task_id,) = [t for t, count in pending.items() if count > 1]
-    parent = next(e["parent_id"] for e in events if e["task_id"] == task_id)
+    return {
+        task_id: next(e["parent_id"] for e in events if e["task_id"] == task_id)
+        for task_id, count in pending.items()
+        if count > 1
+    }
+
+
+def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
+    """The ID of a capture's only replaced task, and its own parent."""
+    ((task_id, parent),) = _replaced_tasks(events).items()
     return task_id, parent
 
 
@@ -501,15 +565,21 @@ def _replaced_task(events: list[dict[str, Any]]) -> tuple[str, str | None]:
 def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
     flow: str, skew_s: float
 ) -> None:
-    """The replacement's events for the replaced task's ID come from another
-    host: with its clock skewed either way, the replaced task keeps its name
-    and place, in any order."""
+    """The replacement's events for a replaced task's ID come from another
+    host: with its clock skewed either way, every replaced task keeps its
+    name and place, in any order."""
     events = _CAPTURES[flow]
-    original, first_parent = _replaced_task(events)
-    name = next(e["name"] for e in events if e["task_id"] == original)
+    replaced = _replaced_tasks(events)
+    names = {
+        task_id: next(e["name"] for e in events if e["task_id"] == task_id)
+        for task_id in replaced
+    }
     skewed = []
     for event in events:
-        if _is_replacement_event(event, original, first_parent):
+        task_id = event["task_id"]
+        if task_id in replaced and _is_replacement_event(
+            event, task_id, replaced[task_id]
+        ):
             shifted = datetime.fromisoformat(
                 event["timestamp"].replace("Z", "+00:00")
             ) + timedelta(seconds=skew_s)
@@ -518,7 +588,7 @@ def test_replay_replaced_task_with_skewed_worker_clock_keeps_identity(
     for order in _orders(skewed):
         graph = _replay(order)
 
-        assert graph.nodes[original].name == name
+        assert {t: graph.nodes[t].name for t in replaced} == names
         assert _structure(graph) == _EXPECTED[flow]
 
 
@@ -602,3 +672,206 @@ def test_replay_non_root_replaced_task_when_server_missed_its_start() -> None:
 
         assert _structure(graph) == "add | paginate(paginate)"
         assert graph.nodes[min(original, first)].parent_id == max(original, first)
+
+
+def _pages_like_capture(
+    flow: str, pages: int, *, skew_s: float = 0
+) -> tuple[list[dict[str, Any]], str, str]:
+    """A capture's replaced task with its replacement chain stretched.
+
+    ``chain_replace4@worker_process`` (chain(add, paginate_to(0, 4))): the
+    replaced task reports the workflow's first task as parent; page 1
+    reports the replaced task, each next page the one before, and the last
+    page's events, under the replaced task's ID, report the page before it
+    (``skew_s`` shifts their timestamps). Each page sends a PENDING, then
+    runs (STARTED, SUCCESS), as in the capture.
+
+    Returns:
+        The events in arrival order, the replaced task's ID and its parent.
+    """
+    captured = _CAPTURES[flow]
+    replaced, first = _replaced_task(captured)
+    assert first is not None
+    page = next(e for e in captured if e["parent_id"] == replaced)
+    start = datetime.fromisoformat(captured[0]["timestamp"].replace("Z", "+00:00"))
+    events = [e for e in captured if e["task_id"] in (first, replaced)][:5]
+    clock = iter(range(1, 10 * pages))
+
+    def stamp(event: dict[str, Any], shift: float = 0) -> dict[str, Any]:
+        at = start + timedelta(milliseconds=next(clock), seconds=shift)
+        return {**event, "timestamp": at.isoformat()}
+
+    events = [stamp(e) for e in events]
+    parent = replaced
+    for number in range(1, pages):
+        task_id = f"page-{number:05d}"
+        for state in ("PENDING", "STARTED", "SUCCESS"):
+            events.append(
+                stamp({**page, "task_id": task_id, "state": state, "parent_id": parent})
+            )
+        parent = task_id
+    last = {**page, "task_id": replaced, "parent_id": parent}
+    for state in ("PENDING", "STARTED", "SUCCESS"):
+        events.append(stamp({**last, "state": state}, skew_s))
+    return events, replaced, first
+
+
+@pytest.mark.parametrize("skew_s", [-3600, 0, 3600])
+def test_replay_long_replacement_chain_keeps_replaced_task_in_place(
+    skew_s: float,
+) -> None:
+    """A replacement chain of 300 tasks: the last one's events report a task
+    300 links below the replaced task, which still keeps its own parent and
+    name, with the chain under it, in shuffled orders."""
+    events, replaced, first = _pages_like_capture(
+        "chain_replace4@worker_process", 300, skew_s=skew_s
+    )
+    for order in _orders(events)[:4]:
+        graph = TaskGraph()
+        for event in order:
+            graph.add_event(TaskEvent.model_validate(event))
+        assert_graph_invariants(graph)
+
+        node = graph.nodes[replaced]
+        assert (node.name, node.parent_id) == ("flows.paginate_to", first)
+        depth, below = 0, node.children
+        while below:
+            (only,) = below
+            depth, below = depth + 1, graph.nodes[only].children
+        assert depth == 299
+
+
+def _nested_replacements(depth: int, *, skew_s: float = 0) -> list[dict[str, Any]]:
+    """``nested_replace_root@worker_process`` nested ``depth`` levels deep.
+
+    As in the capture, ``replaced-0`` (outer) replaces itself with a chain
+    whose first task replaces itself in turn, and so on: each
+    ``replaced-<n>`` reports the one above as parent, the innermost one's
+    replacement starts with ``leaf``, and each replacement's last task, under
+    the replaced task's ID, reports the task below as parent (``skew_s``
+    shifts the timestamps of those events).
+    """
+    captured = _CAPTURES["nested_replace_root@worker_process"]
+    base = {**captured[0], "root_id": "replaced-0", "parent_id": None}
+    start = datetime.fromisoformat(base["timestamp"].replace("Z", "+00:00"))
+    events: list[dict[str, Any]] = []
+
+    def emit(
+        task_id: str, name: str, parent: str | None, states: str, shift: float = 0
+    ):
+        for state in states.split():
+            at = start + timedelta(milliseconds=len(events), seconds=shift)
+            events.append(
+                {
+                    **base,
+                    "task_id": task_id,
+                    "name": name,
+                    "state": state,
+                    "parent_id": parent,
+                    "timestamp": at.isoformat(),
+                }
+            )
+
+    emit("replaced-0", "flows.outer", None, "PENDING STARTED")
+    for level in range(1, depth + 1):
+        emit(
+            f"replaced-{level}",
+            "flows.inner",
+            f"replaced-{level - 1}",
+            "PENDING STARTED",
+        )
+    emit("leaf", "flows.add", f"replaced-{depth}", "PENDING STARTED SUCCESS")
+    below = "leaf"
+    for level in range(depth, -1, -1):
+        emit(f"replaced-{level}", "flows.add", below, "PENDING STARTED SUCCESS", skew_s)
+        below = f"replaced-{level}"
+    return events
+
+
+@pytest.mark.parametrize("depth", [3, 16])
+@pytest.mark.parametrize("skew_s", [-3600, 0, 3600])
+def test_replay_deeply_nested_replacements_keep_each_task_in_place(
+    depth: int, skew_s: float
+) -> None:
+    """replace() nested 3 levels deep, and 16 (``_NESTING_LIMIT``): every
+    replaced task keeps its own name and parent, in shuffled orders and
+    with the replacements' clocks skewed."""
+    events = _nested_replacements(depth, skew_s=skew_s)
+    for order in _orders(events)[:4]:
+        graph = TaskGraph()
+        for event in order:
+            graph.add_event(TaskEvent.model_validate(event))
+        assert_graph_invariants(graph)
+
+        assert graph.root_ids == ["replaced-0"]
+        assert graph.nodes["leaf"].parent_id == f"replaced-{depth}"
+        for level in range(1, depth + 1):
+            node = graph.nodes[f"replaced-{level}"]
+            assert (node.name, node.parent_id) == (
+                "flows.inner",
+                f"replaced-{level - 1}",
+            )
+        assert graph.nodes["replaced-0"].name == "flows.outer"
+
+
+def test_replay_replacements_nested_past_the_limit_keeps_graph_invariants() -> None:
+    """replace() nested 40 levels deep, past what a check works out at once
+    (``_NESTING_LIMIT``): the graph keeps its invariants (the nesting is
+    then no longer told apart in every order)."""
+    graph = TaskGraph()
+    for event in _nested_replacements(40):
+        graph.add_event(TaskEvent.model_validate(event))
+    assert_graph_invariants(graph)
+    assert len(graph.nodes) == 42
+
+
+def _as_older_sender(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The capture as an older stemtrace worker sends it: its PENDING (from
+    Celery's ``task_sent``) carries no parent, root or group IDs."""
+    ids = ("parent_id", "root_id", "group_id", "chord_id", "chord_callback_id")
+    return [
+        {**e, **dict.fromkeys(ids)} if e["state"] == "PENDING" else e for e in events
+    ]
+
+
+@pytest.mark.parametrize("flow", sorted(_REPLACE_FLOWS))
+def test_replay_replaced_tasks_from_older_senders_builds_expected_graph(
+    flow: str,
+) -> None:
+    """From older workers, whose PENDING names no parent, a task's parent
+    only shows with its worker events: replaced tasks still end where they
+    were sent, in any order."""
+    for order in _orders(_as_older_sender(_CAPTURES[flow])):
+        assert _structure(_replay(order)) == _EXPECTED[flow]
+
+
+def test_remove_tasks_with_skewed_replacement_matches_rebuild() -> None:
+    """Nested replace() with the replacements' clocks an hour behind: after
+    removing any one task, every replaced task's name and parent are the
+    ones the remaining events give (e.g. without the inner replacement's
+    first task, nothing shows the outer task's replacement any more)."""
+    events = _CAPTURES["nested_replace@worker_process"]
+    replaced = _replaced_tasks(events)
+    skewed = [
+        {
+            **e,
+            "timestamp": (
+                datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
+                - timedelta(hours=1)
+            ).isoformat(),
+        }
+        if e["task_id"] in replaced
+        and _is_replacement_event(e, e["task_id"], replaced[e["task_id"]])
+        else e
+        for e in events
+    ]
+    for removed in sorted({e["task_id"] for e in events}):
+        graph = _replay(skewed)
+        graph.remove_node(removed)
+        assert_graph_invariants(graph)
+        rebuilt = _replay([e for e in skewed if e["task_id"] != removed])
+
+        assert {t: (n.name, n.reported_parent_id) for t, n in graph.nodes.items()} == {
+            t: (n.name, n.reported_parent_id) for t, n in rebuilt.nodes.items()
+        }
+        assert _graph_shape(graph) == _graph_shape(rebuilt)
