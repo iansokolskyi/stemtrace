@@ -401,8 +401,8 @@ again once events are re-consumed.
     first fork it resolves in a short-lived helper process instead (the same Python, so the
     same `/etc/hosts`, `resolv.conf` and name services), which never holds such a lock. Each
     such lookup starts a Python process: about 60-80ms in a `python:3.13-slim` container on an
-    unloaded host, more on a small CPU share. Where the helper can't run (a frozen app, or an
-    embedded interpreter such as uWSGI's), the forking process keeps resolving in-process and
+    unloaded host, more on a small CPU share. Where the helper can't run (a frozen app), the
+    forking process keeps resolving in-process and
     every fork waits up to 1s while a lookup that started less than 5s ago (glibc's per-try
     timeout), or that no fork waited for yet, is in flight; stemtrace logs a warning once. A
     helper is never started while the process forks, so a child can't inherit its pipes.
@@ -413,7 +413,8 @@ again once events are re-consumed.
     `--py-call-uwsgi-fork-hooks`, which stemtrace doesn't act on), and any of its processes
     may fork (the master, the first process when there is no `--master`, or app code calling
     `os.fork()`), so a fork can't wait for lookup threads. These processes therefore start no
-    lookup thread or helper process at all. After a failed connect, the next publish
+    lookup thread or helper process at all, and concurrent threads resolving the same host each
+    run their own lookup. After a failed connect, the next publish
     re-resolves on its own thread rather than in the background. A background thread of the
     app that publishes can still be inside glibc's DNS code during a fork: the same exposure
     as that thread's own broker lookups (pyuwsgi 2.0.30 runs threads without
