@@ -698,7 +698,10 @@ FastAPI 0.142 and later trace requests natively when an OpenTelemetry SDK is con
 ```python
 app = FastAPI(
     lifespan=my_lifespan,
-    telemetry={"exclude": lambda scope: scope.get("path", "").startswith("/stemtrace")},
+    telemetry={
+        "exclude": lambda scope: scope.get("path", "") == "/stemtrace"
+        or scope.get("path", "").startswith("/stemtrace/")
+    },
 )
 ```
 
