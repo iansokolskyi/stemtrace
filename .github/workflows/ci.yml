@@ -128,16 +128,23 @@ jobs:
         with:
           enable-cache: true
 
-      # The declared floors of the runtime dependencies (lowest-direct), then
-      # the pinned test tools (.github/lowest-test-tools.txt), constrained to
-      # what that installed so they can't upgrade a runtime dependency (e.g.
-      # typing-extensions) under test. Nothing is built from source (--no-build).
+      # The pinned floors must match pyproject.toml's declared minimums.
+      - name: Check the pinned floors are current
+        run: |
+          uv pip compile -q --python-version 3.10 --resolution lowest-direct --no-header --no-annotate pyproject.toml \
+            | diff <(grep -v '^#' .github/lowest-requirements.txt) - \
+            || { echo "::error::.github/lowest-requirements.txt is stale; regenerate it (see its header)"; exit 1; }
+
+      # The pinned floors of the runtime dependencies, the project itself without
+      # resolving again, then the pinned test tools constrained to those floors so
+      # they can't upgrade a runtime dependency (e.g. typing-extensions) under
+      # test. Nothing is built from source (--no-build).
       - name: Install the lowest declared versions
         run: |
           uv venv .venv-lowest
-          uv pip install --python .venv-lowest --resolution lowest-direct --no-build -e .
-          uv pip freeze --python .venv-lowest | grep -v '^-e ' > lowest-constraints.txt
-          uv pip install --python .venv-lowest --no-build -c lowest-constraints.txt -r .github/lowest-test-tools.txt
+          uv pip install --python .venv-lowest --no-build -r .github/lowest-requirements.txt
+          uv pip install --python .venv-lowest --no-build --no-deps -e .
+          uv pip install --python .venv-lowest --no-build -c .github/lowest-requirements.txt -r .github/lowest-test-tools.txt
 
       # Old floors (e.g. typer) emit deprecation warnings under current click;
       # the suite turns warnings into errors, which isn't what this job checks.

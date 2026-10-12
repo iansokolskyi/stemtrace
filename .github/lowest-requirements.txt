@@ -1,0 +1,50 @@
+# Runtime dependency floors for CI's test-lowest job: pyproject.toml's declared
+# minimums resolved with --resolution lowest-direct for Python 3.10, pinned so
+# the job installs locked versions. CI fails if this drifts from pyproject.toml;
+# regenerate with:
+#   uv pip compile -q --python-version 3.10 --resolution lowest-direct --no-header --no-annotate pyproject.toml -o .github/lowest-requirements.txt
+# and re-add this header.
+amqp==5.4.1
+annotated-types==0.8.0
+anyio==4.14.2
+billiard==3.6.4.0
+celery==5.2.0
+certifi==2026.7.22
+click==8.5.0
+click-didyoumean==0.3.1
+click-plugins==1.1.1.2
+click-repl==0.4.1
+deprecated==1.3.1
+exceptiongroup==1.3.1
+fastapi==0.112.1
+h11==0.14.0
+httpcore==0.17.3
+httptools==0.9.0
+httpx==0.24.0
+idna==3.20
+kombu==5.2.1
+markdown-it-py==4.2.0
+mdurl==0.1.2
+packaging==26.3
+prompt-toolkit==3.0.53
+pydantic==2.2.0
+pydantic-core==2.6.0
+pygments==2.21.0
+python-dotenv==1.2.4
+pytz==2026.5
+pyyaml==6.0.3
+redis==4.1.0
+rich==15.0.0
+setuptools==84.0.0
+shellingham==1.5.4
+sniffio==1.3.1
+starlette==0.38.6
+typer==0.13.0
+typing-extensions==4.8.0
+uvicorn==0.20.0
+uvloop==0.23.0
+vine==5.1.0
+watchfiles==1.3.0
+wcwidth==0.9.2
+websockets==16.1.1
+wrapt==2.5.0
