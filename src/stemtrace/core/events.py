@@ -109,7 +109,7 @@ class WorkerEvent(BaseModel):
 
     Attributes:
         event_type: Type of worker event (ready or shutdown).
-        hostname: Worker hostname for identification.
+        hostname: Celery nodename (``name@host``, e.g. ``celery@web-1``).
         pid: Worker process ID (with hostname, creates unique ID).
         timestamp: When this event occurred.
         registered_tasks: List of task names registered by this worker.

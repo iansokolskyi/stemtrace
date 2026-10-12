@@ -203,6 +203,9 @@ stemtrace.init_worker(
     # Task output (disabled by default, see "Task Output" below)
     capture_output=False,                      # Capture what each attempt prints/logs
     max_output_size=16384,                     # Max bytes kept per attempt (the end is kept)
+
+    # RECEIVED events (disabled by default, see "Received Events" below)
+    publish_received=False,                    # Publish RECEIVED when a worker takes a message
 )
 
 # Introspection (after init)
@@ -289,6 +292,29 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
 - **Not scrubbed**: output is free text, so the key-based scrubbing above can't
   apply. That's why it's off by default: only enable it if your tasks don't print
   or log secrets.
+
+#### Received Events (opt-in)
+
+By default a task's events are PENDING (sent), STARTED and SUCCESS/FAILURE. Turn on
+`publish_received` on the worker to also publish a RECEIVED event when the worker takes the
+task message, so the UI shows when a task reached a worker before it started, e.g. while it
+waits for its ETA or for a free pool slot:
+
+```python
+stemtrace.init_worker(app, publish_received=True)
+```
+
+It is off by default because it adds one synchronous publish per task message to the worker's
+consumer loop. Under prefork that loop is the worker's main process, so every task waits for it:
+on RabbitMQ it costs about 0.7 ms per message, about 22% of the throughput of no-op tasks
+(measured with prefork and RabbitMQ connection reuse). Redis was not measured.
+
+- It is published for each delivery of a task's first attempt. A retry's message adds none (its
+  RETRY event covers it). A message redelivered after a lost worker (`acks_late` with
+  `reject_on_worker_lost`) adds a second one, and both are listed ahead of the task's STARTED
+  events: the main process publishes RECEIVED and the pool child publishes STARTED, with clocks
+  that can differ, so first-attempt RECEIVED events are always listed first.
+- Verified with real workers on the prefork, threads, solo, gevent and eventlet pools.
 
 ### Canvas Graph Visualization
 
@@ -520,6 +546,16 @@ again once events are re-consumed.
     kombu.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
+  - A Celery nodename (`name@host`) has at most one live process, so a worker is shown online
+    only for its newest pid: when a node restarts, its older pids go offline, including one that
+    was killed without a `worker_shutdown` event. A ping reply carries no pid, so it can only
+    bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
+    inspect reply disagree, whichever is newer wins: events that arrive while the server waits
+    for a reply beat that reply.
+  - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
+    with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
+    told apart: Celery keeps only the last reply per nodename, so they flip between online and
+    offline on every refresh. Give each worker a unique nodename.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
   Celery broker is RabbitMQ (set `transport_url` in `stemtrace.init_worker(...)` and set
   `STEMTRACE_TRANSPORT_URL` for the server / embedded setup).
@@ -842,7 +878,7 @@ What is detected depends on the transport:
 ### What's Working Now
 
 - ✅ **Task flow graphs** — Visualize chains, groups, and chords as DAGs
-- ✅ **Full lifecycle tracking** — PENDING → RECEIVED → STARTED → SUCCESS/FAILURE
+- ✅ **Full lifecycle tracking** — PENDING → STARTED → SUCCESS/FAILURE, with RECEIVED when `publish_received=True` is set on the worker
 - ✅ **Canvas awareness** — Automatic GROUP/CHORD node visualization
 - ✅ **Arguments & results** — View inputs, outputs, and exceptions
 - ✅ **Task output** — What each attempt printed and logged (opt-in)
