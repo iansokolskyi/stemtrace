@@ -1094,7 +1094,7 @@ class TestInspectRefreshBranches:
         """If stats is unavailable but ping() responds, mark known workers online."""
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("celery@worker-1", 1111, ["a"])
-        worker_registry.mark_shutdown("celery@worker-1", 1111)
+        worker_registry.mark_offline("celery@worker-1", 1111)
 
         class _Inspect:
             def stats(self) -> None:
@@ -1269,7 +1269,7 @@ class TestInspectRefreshUsesCeleryNodenames:
         """Without stats, a ping reply from the node brings it back online."""
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
-        worker_registry.mark_shutdown("w1@devbox", 296481)
+        worker_registry.mark_offline("w1@devbox", 296481)
         fake = _FakeInspect(
             ping_result={"w1@devbox": {"ok": "pong"}},
             stats_result=None,
@@ -1286,8 +1286,8 @@ class TestInspectRefreshUsesCeleryNodenames:
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("w1@devbox", 296481, ["app.add"])
         worker_registry.register_worker("w2@devbox", 296482, ["app.add"])
-        worker_registry.mark_shutdown("w1@devbox", 296481)
-        worker_registry.mark_shutdown("w2@devbox", 296482)
+        worker_registry.mark_offline("w1@devbox", 296481)
+        worker_registry.mark_offline("w2@devbox", 296482)
         fake = _FakeInspect(
             ping_result={"w1@devbox": {"ok": "pong"}},
             stats_result=None,
@@ -1300,6 +1300,212 @@ class TestInspectRefreshUsesCeleryNodenames:
             w.hostname: w.status for w in worker_registry.get_all_workers()
         }
         assert status_by_node == {"w1@devbox": "online", "w2@devbox": "offline"}
+
+
+class TestRefreshOneProcessPerNodename:
+    """Registry entries are keyed ``(nodename, pid)`` but inspect only names the node.
+
+    A Celery nodename has at most one live process, so a restart leaves older
+    pids of the same node dead. ``stats()`` carries the live pid; ``ping()``
+    carries none, so only the entry registered last can be the live one.
+    """
+
+    @staticmethod
+    def _statuses(registry: WorkerRegistry) -> dict[tuple[str, int], str]:
+        return {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+
+    @staticmethod
+    def _refresh(
+        registry: WorkerRegistry,
+        *,
+        ping: dict[str, object] | None = None,
+        stats: dict[str, object] | None = None,
+    ) -> None:
+        fake = _FakeInspect(
+            ping_result=ping, stats_result=stats, registered_result=None
+        )
+        routes._refresh_worker_registry_from_inspect(registry, fake)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _registry_after_graceful_restart() -> WorkerRegistry:
+        """pid 100 got worker_shutdown, then pid 200 started on the same node."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+        registry.mark_shutdown("celery@web-1", 100)
+        registry.register_worker("celery@web-1", 200, ["app.add"])
+        return registry
+
+    def test_ping_after_graceful_restart_keeps_shut_down_pid_offline(self) -> None:
+        """A ping reply has no pid and must not revive the pid worker_shutdown closed."""
+        registry = self._registry_after_graceful_restart()
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 100): "offline",
+            ("celery@web-1", 200): "online",
+        }
+
+    def test_ping_after_crash_restart_revives_only_the_newest_pid(self) -> None:
+        """pid 100 died without worker_shutdown; only pid 200 answers the ping."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+        registry.register_worker("celery@web-1", 200, ["app.add"])
+        registry.mark_offline("celery@web-1", 200)  # e.g. missed an earlier refresh
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 100): "offline",
+            ("celery@web-1", 200): "online",
+        }
+
+    def test_ping_when_newest_pid_reported_shutdown_revives_nothing(self) -> None:
+        """worker_shutdown for the newest pid is final: a pid-less ping can't undo it."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+        registry.mark_shutdown("celery@web-1", 100)
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {("celery@web-1", 100): "offline"}
+
+    def test_ping_revives_a_pid_that_inspect_marked_offline(self) -> None:
+        """A node that missed one stats reply comes back on the next ping."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+        registry.mark_offline("celery@web-1", 100)
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {("celery@web-1", 100): "online"}
+
+    def test_ping_newest_is_registration_order_not_pid_or_clock(self) -> None:
+        """A restart can get a lower pid, and event clocks can be skewed."""
+        registry = WorkerRegistry()
+        skewed_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        registry.register_worker(
+            "celery@web-1", 900, ["app.add"], event_timestamp=skewed_future
+        )
+        registry.register_worker("celery@web-1", 50, ["app.add"])
+        registry.mark_offline("celery@web-1", 50)
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 900): "offline",
+            ("celery@web-1", 50): "online",
+        }
+
+    def test_stats_marks_crashed_pid_offline_when_node_restarted(self) -> None:
+        """pid 100 died without worker_shutdown; stats names pid 200 for the node."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+
+        self._refresh(registry, stats={"celery@web-1": {"pid": 200}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 100): "offline",
+            ("celery@web-1", 200): "online",
+        }
+
+    def test_stats_with_graceful_restart_keeps_one_online_pid(self) -> None:
+        """Stats agrees with the events: the shut-down pid stays offline."""
+        registry = self._registry_after_graceful_restart()
+
+        self._refresh(registry, stats={"celery@web-1": {"pid": 200}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 100): "offline",
+            ("celery@web-1", 200): "online",
+        }
+
+    def test_stats_revives_pid_reused_after_shutdown(self) -> None:
+        """The OS handed pid 100 to the restarted node: stats proves it is live."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+        registry.mark_shutdown("celery@web-1", 100)
+
+        self._refresh(registry, stats={"celery@web-1": {"pid": 100}})
+
+        assert self._statuses(registry) == {("celery@web-1", 100): "online"}
+
+    def test_stats_with_single_pid_leaves_it_online(self) -> None:
+        """The plain case: one node, one pid, answers stats."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+
+        self._refresh(registry, stats={"celery@web-1": {"pid": 100}})
+
+        assert self._statuses(registry) == {("celery@web-1", 100): "online"}
+
+    def test_ping_with_single_pid_leaves_it_online(self) -> None:
+        """The plain case, ping only: one node, one pid."""
+        registry = WorkerRegistry()
+        registry.register_worker("celery@web-1", 100, ["app.add"])
+
+        self._refresh(registry, ping={"celery@web-1": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {("celery@web-1", 100): "online"}
+
+    def test_stats_with_two_multi_nodes_restarting_one_keeps_the_other(self) -> None:
+        """``celery multi`` w1 and w2 share a host; restarting w1 must not touch w2."""
+        registry = WorkerRegistry()
+        registry.register_worker("w1@devbox", 100, ["app.add"])
+        registry.register_worker("w2@devbox", 101, ["app.add"])
+
+        self._refresh(
+            registry, stats={"w1@devbox": {"pid": 200}, "w2@devbox": {"pid": 101}}
+        )
+
+        assert self._statuses(registry) == {
+            ("w1@devbox", 100): "offline",
+            ("w1@devbox", 200): "online",
+            ("w2@devbox", 101): "online",
+        }
+
+    def test_ping_with_two_multi_nodes_restarting_one_keeps_the_other(self) -> None:
+        """Ping-only multi nodes: each node's newest pid is revived independently."""
+        registry = WorkerRegistry()
+        registry.register_worker("w1@devbox", 100, ["app.add"])
+        registry.mark_shutdown("w1@devbox", 100)
+        registry.register_worker("w1@devbox", 200, ["app.add"])
+        registry.register_worker("w2@devbox", 101, ["app.add"])
+        registry.mark_offline("w1@devbox", 200)
+        registry.mark_offline("w2@devbox", 101)
+
+        self._refresh(registry, ping={"w1@devbox": {"ok": "pong"}})
+
+        assert self._statuses(registry) == {
+            ("w1@devbox", 100): "offline",
+            ("w1@devbox", 200): "online",
+            ("w2@devbox", 101): "offline",
+        }
+
+    def test_stats_without_pid_treats_node_like_a_ping_reply(self) -> None:
+        """A node that answers stats but names no pid is alive; only its newest pid is."""
+        registry = self._registry_after_graceful_restart()
+        registry.mark_offline("celery@web-1", 200)
+
+        self._refresh(registry, stats={"celery@web-1": {"total": {}}})
+
+        assert self._statuses(registry) == {
+            ("celery@web-1", 100): "offline",
+            ("celery@web-1", 200): "online",
+        }
+
+    def test_stats_without_pid_keeps_other_silent_node_offline(self) -> None:
+        """The pid-less answerer doesn't keep a node that stayed silent online."""
+        registry = WorkerRegistry()
+        registry.register_worker("w1@devbox", 100, ["app.add"])
+        registry.register_worker("w2@devbox", 101, ["app.add"])
+
+        self._refresh(registry, stats={"w1@devbox": {"total": {}}})
+
+        assert self._statuses(registry) == {
+            ("w1@devbox", 100): "online",
+            ("w2@devbox", 101): "offline",
+        }
 
 
 class TestInspectRateLimiting:

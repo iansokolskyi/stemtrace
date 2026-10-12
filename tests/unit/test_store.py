@@ -1241,11 +1241,12 @@ class TestWorkerRegistry:
         assert worker.last_seen == ts2
         assert worker.status == WorkerStatus.ONLINE
 
-    def test_mark_online_noops_when_worker_missing(
+    def test_mark_node_alive_noops_when_node_unknown(
         self, registry: WorkerRegistry
     ) -> None:
-        """mark_online should return cleanly if the worker isn't registered."""
-        registry.mark_online("missing.example.com", 12345)
+        """mark_node_alive should return cleanly if the node isn't registered."""
+        registry.mark_node_alive("missing.example.com")
+        registry.mark_node_alive("missing.example.com", 12345)
         assert registry.get_all_workers() == []
 
     def test_get_nonexistent_worker(self, registry: WorkerRegistry) -> None:
@@ -1335,26 +1336,113 @@ class TestWorkerRegistry:
         assert worker is not None
         assert worker.status == WorkerStatus.OFFLINE
 
-    def test_mark_online_updates_status_and_last_seen(
+    def test_mark_node_alive_updates_status_and_last_seen(
         self, registry: WorkerRegistry
     ) -> None:
-        """Marking an existing worker as online updates status and last_seen."""
+        """A node that answered a ping comes back online with a fresh last_seen."""
         registry.register_worker(
             hostname="worker-1.example.com",
             pid=12345,
             tasks=["myapp.tasks.send"],
         )
-        registry.mark_shutdown("worker-1.example.com", 12345)
+        registry.mark_offline("worker-1.example.com", 12345)
 
         before = registry.get_worker("worker-1.example.com", 12345)
         assert before is not None
         before_last_seen = before.last_seen
 
-        registry.mark_online("worker-1.example.com", 12345)
+        registry.mark_node_alive("worker-1.example.com")
         after = registry.get_worker("worker-1.example.com", 12345)
         assert after is not None
         assert after.status == WorkerStatus.ONLINE
         assert after.last_seen >= before_last_seen
+
+    def test_mark_shutdown_sets_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """worker_shutdown is recorded; mark_offline (a missed reply) is not."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.register_worker("w2@devbox", 2, [])
+
+        registry.mark_shutdown("w1@devbox", 1)
+        registry.mark_offline("w2@devbox", 2)
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        w2 = registry.get_worker("w2@devbox", 2)
+        assert w1 is not None
+        assert w2 is not None
+        assert (w1.status, w1.shutdown_reported) == (WorkerStatus.OFFLINE, True)
+        assert (w2.status, w2.shutdown_reported) == (WorkerStatus.OFFLINE, False)
+
+    def test_mark_shutdown_and_mark_offline_noop_when_worker_missing(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Events and inspect results for unknown workers create nothing."""
+        registry.mark_shutdown("missing@devbox", 1)
+        registry.mark_offline("missing@devbox", 1)
+        assert registry.get_all_workers() == []
+
+    def test_register_worker_clears_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A new worker_ready for a reused pid makes the entry live again."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+
+        registry.register_worker("w1@devbox", 1, [])
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        assert w1 is not None
+        assert (w1.status, w1.shutdown_reported) == (WorkerStatus.ONLINE, False)
+
+    def test_mark_node_alive_without_pid_skips_shutdown_reported_entry(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A pid-less reply can't undo a worker_shutdown event."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+
+        registry.mark_node_alive("w1@devbox")
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        assert w1 is not None
+        assert w1.status == WorkerStatus.OFFLINE
+
+    def test_mark_node_alive_with_pid_revives_and_retires_others(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A reply naming the pid is authoritative for that node only."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+        registry.register_worker("w1@devbox", 2, [])
+        registry.register_worker("w2@devbox", 3, [])
+
+        registry.mark_node_alive("w1@devbox", 1)
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {
+            ("w1@devbox", 1): WorkerStatus.ONLINE,
+            ("w1@devbox", 2): WorkerStatus.OFFLINE,
+            ("w2@devbox", 3): WorkerStatus.ONLINE,
+        }
+
+    def test_removed_stale_newest_worker_is_not_revived_by_ping(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Once the newest entry is cleaned up, its node has nothing to revive."""
+        registry.register_worker(
+            "w1@devbox",
+            1,
+            [],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=60),
+        )
+        registry.remove_stale_workers(
+            stale_timeout_minutes=3, cleanup_timeout_minutes=30
+        )
+
+        registry.mark_node_alive("w1@devbox")
+
+        assert registry.get_all_workers() == []
 
     def test_get_registered_tasks_after_shutdown(
         self, registry: WorkerRegistry

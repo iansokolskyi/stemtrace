@@ -301,24 +301,26 @@ def _refresh_worker_registry_from_inspect(
             active = inspector.ping()
         if not active:
             return
-        for worker in worker_registry.get_all_workers():
-            if worker.hostname in active:
-                worker_registry.mark_online(worker.hostname, worker.pid)
+        for nodename in active:
+            worker_registry.mark_node_alive(nodename)
         return
 
-    # Treat stats responders as active workers and update online/offline state.
-    # If we got a non-empty stats response, mark known workers offline if they
-    # didn't respond. This makes the Workers view accurate even without events.
+    # A node that didn't answer is offline, whatever its pid. An unanswered
+    # inspect doesn't prove the process closed, so a later ping may revive it.
     for worker in worker_registry.get_all_workers():
         if worker.hostname not in stats:
-            worker_registry.mark_shutdown(worker.hostname, worker.pid)
+            worker_registry.mark_offline(worker.hostname, worker.pid)
 
     now = datetime.now(timezone.utc)
 
-    # Prefer canonical worker keys from stats (they include the pid).
+    # Entries are keyed (nodename, pid) but a node has one live process:
+    # stats names it, so registering it also retires the node's older pids
+    # (a worker killed without worker_shutdown, then restarted).
     for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
         if pid is None:
+            # The node answered but named no pid: same as a ping reply.
+            worker_registry.mark_node_alive(nodename)
             continue
 
         tasks = _tasks_for_worker_key(registered, nodename)
@@ -331,6 +333,7 @@ def _refresh_worker_registry_from_inspect(
             task_definitions=None,
             event_timestamp=now,
         )
+        worker_registry.mark_node_alive(nodename, pid)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:

@@ -51,9 +51,7 @@ class TestWorkersRefresh:
         store = GraphStore()
         worker_registry = WorkerRegistry()
         worker_registry.register_worker("celery@worker-1", 12345, ["tasks.add"])
-        worker_registry.mark_shutdown(
-            "celery@worker-1", 12345
-        )  # offline before refresh
+        worker_registry.mark_offline("celery@worker-1", 12345)  # offline before refresh
 
         started_at = datetime.now(timezone.utc)
         fake = _FakeInspect(
