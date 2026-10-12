@@ -763,6 +763,18 @@ class TestAfterTaskPublish:
 
         assert MemoryTransport.events == []
 
+    @pytest.mark.parametrize("body", [(), ([1],)], ids=["empty", "args-only"])
+    def test_short_protocol_two_body_is_ignored(
+        self, transport: MemoryTransport, body: tuple[Any, ...]
+    ) -> None:
+        # Protocol 2 sends (args, kwargs, embed); another producer's message
+        # can carry the headers with a shorter body.
+        _on_after_task_publish(
+            sender="tests.sample_task", body=body, headers=_publish_headers()
+        )
+
+        assert MemoryTransport.events == []
+
 
 class TestPendingDedupBound:
     def test_send_only_process_keeps_a_bounded_dedup_set(
