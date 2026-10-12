@@ -450,18 +450,22 @@ again once events are re-consumed.
     and RabbitMQ logs a warning about the dropped TCP connection.
   - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Events
     publish one at a time on the process's connection, and **an event never waits more than 2s
-    (one IO timeout) for another to finish: it is dropped instead**, which doesn't count as a
-    failure. The event that has to connect takes longer. It tries every host of the broker URL
-    once, and each step waits at most 2s: resolving the name, the TCP connect (up to three
-    addresses of a name), the TLS handshake, each of the three AMQP handshake replies and, after a
-    failure over TLS, the closing exchange; then opening the channel, declaring the exchange and
-    writing the event. That is at most about 24s with one URL host, and 18s more for each further
-    host, though a healthy broker takes milliseconds. A slow broker whose every step stays within
-    2s keeps publishing and doesn't open the breaker (events that arrive while a slow connect is
-    in progress are dropped). If the thread that took the connection never gives it back (a signal
-    handler raised at the wrong moment, or it is stuck for longer than the 24s), the next event
-    that notices starts over with a new connection after one such wait (at once if it was this
-    very thread that leaked it) and logs the warning `RabbitMQ publisher connection was not
+    in total (one IO timeout) for another to finish: it is dropped instead**, which doesn't
+    count as a failure. The event that has to connect takes longer. It tries every host of the
+    broker URL once, and each step waits at most 2s: resolving the name, the TCP connect (2s in
+    all for the addresses of a name: a refused address costs microseconds and never excludes a
+    live one, and after a black-holed one the next attempt starts with the next address), the TLS
+    handshake, each of the three AMQP handshake replies and, after a failure over TLS, the
+    closing exchange; then opening the channel, declaring the exchange and writing the event.
+    That is at most about 20s with one URL host, and 14s more for each further host, though a
+    healthy broker takes milliseconds. A slow broker whose every step stays within 2s keeps
+    publishing and doesn't open the breaker (events that arrive while a slow connect is in
+    progress are dropped). If the thread that took the connection never gives it back (a signal
+    handler raised at the wrong moment), a thread that finds the lock held by itself starts over
+    with a new connection at once; an event from another thread does after its wait (2s) if the
+    holder never recorded the lock, and otherwise only once the holder has had the longest an
+    attempt can take (about 20s with one host): until then events that find it taken are dropped
+    after their wait. Starting over logs the warning `RabbitMQ publisher connection was not
     released by its last user; starting over with a new connection`. A single failure, quick or
     timed out, loses only its own event and drops the connection; the next event connects again.
     Three failures in a row make the worker skip publishing for a cooldown that grows from 1s to
