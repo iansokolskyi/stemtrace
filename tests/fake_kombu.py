@@ -100,6 +100,8 @@ class FakeBroker:
         # Called at the start of every Producer.publish (e.g. to yield to
         # another greenlet or thread while the publisher holds its lock).
         self.on_publish: Callable[[], None] | None = None
+        # Raised by Connection.channel() (e.g. the broker refuses the channel).
+        self.channel_error: Exception | None = None
         self.alarm = False
         self.exchange_exists = True
         self.connections: list[FakeConnection] = []
@@ -341,6 +343,8 @@ class FakeConnection:
 
     def channel(self) -> FakeChannel:
         amqp = self.connection
+        if self.broker.channel_error is not None:
+            raise self.broker.channel_error
         self.sock_timeout_at_channel = amqp.transport.sock.gettimeout()
         return FakeChannel(self)
 

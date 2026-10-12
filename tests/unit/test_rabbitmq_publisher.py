@@ -13,9 +13,11 @@ import sys
 import textwrap
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -275,6 +277,57 @@ class TestPublisherDiscardsOnError:
 
         assert broker.connections[1].attempted == [H2]
         assert _ids(broker) == ["t-1"]
+
+
+class TestPublisherConnectFailures:
+    def test_publish_when_channel_cannot_open_discards_connection_and_rotates_host(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.channel_error = RuntimeError("channel refused")
+        transport = _transport(f"{H1};{H2}", clock)
+
+        transport.publish(_event("t-0"))
+        broker.channel_error = None
+        transport.publish(_event("t-1"))
+
+        assert broker.connections[0].connection.calls == ["collect"]
+        assert broker.connections[1].attempted == [H2]
+        assert _ids(broker) == ["t-1"]
+
+    def test_bound_io_without_a_socket_logs_and_returns_none(
+        self, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(
+            logging.DEBUG, logger="stemtrace.transports.rabbitmq_publisher"
+        )
+        publisher = _transport(H1, clock)._publisher
+
+        sock = publisher._bound_io(
+            SimpleNamespace(transport=SimpleNamespace(sock=None))
+        )
+
+        assert sock is None
+        assert "no socket to bound (got NoneType)" in caplog.text
+
+
+class TestPublisherModuleHooks:
+    def test_close_all_closes_every_publisher_of_the_process(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        first, second = _transport(H1, clock), _transport(H2, clock)
+        first.publish(_event("t-1"))
+        second.publish(_event("t-2"))
+
+        rabbitmq_publisher.close_all()
+
+        assert broker.live() == []
+
+    def test_blocked_callback_after_owner_is_gone_does_nothing(self) -> None:
+        proc = rabbitmq_publisher._Process()
+        proc_ref = weakref.ref(proc)
+        del proc
+
+        rabbitmq_publisher._set_blocked(proc_ref, True, "reason")
 
 
 class TestPublisherHeartbeat:

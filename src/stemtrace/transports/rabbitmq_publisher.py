@@ -113,6 +113,7 @@ class _Process:
     """Everything that belongs to one process: the lock and the connection."""
 
     def __init__(self) -> None:
+        """Start with no connection, owned by the current process."""
         self.pid = os.getpid()
         # Created here, not at import: gevent or eventlet may patch
         # ``threading`` after stemtrace is imported, and a real lock would
