@@ -65,8 +65,8 @@ class MultiNodes:
         host = socket.gethostname()
         return {f"{name}@{host}" for name in self.names}
 
-    def multi(self, command: str) -> None:
-        """Run ``celery multi <command>`` for both nodes."""
+    def multi(self, command: str, names: list[str] | None = None) -> None:
+        """Run ``celery multi <command>`` for ``names`` (default: both nodes)."""
         env = {
             **os.environ,
             "REDIS_URL": REDIS_URL,
@@ -80,7 +80,7 @@ class MultiNodes:
                 "celery",
                 "multi",
                 command,
-                *self.names,
+                *(names or self.names),
                 "-A",
                 "tests.integration.output_worker_app",
                 f"--pidfile={self.run_dir}/%n.pid",
@@ -117,6 +117,11 @@ def nodes(tmp_path: Path) -> Iterator[MultiNodes]:
         )
 
 
+def _main_pid(nodes: MultiNodes, name: str) -> int:
+    """PID of a node's main process, from its ``celery multi`` pidfile."""
+    return int((nodes.run_dir / f"{name}.pid").read_text().strip())
+
+
 def _wait_for_registered(registry: WorkerRegistry, count: int) -> None:
     """Wait until the registry has ``count`` workers from worker_ready events."""
     deadline = time.monotonic() + TIMEOUT_SECONDS
@@ -151,3 +156,76 @@ def test_multi_nodes_listed_once_each_under_nodename(nodes: MultiNodes) -> None:
     assert sorted(w["hostname"] for w in workers) == sorted(nodes.nodenames)
     assert {w["status"] for w in workers} == {"online"}
     assert all("output_test.noisy" in w["registered_tasks"] for w in workers)
+
+
+def _refresh_and_list(
+    nodes: MultiNodes, store: GraphStore, registry: WorkerRegistry
+) -> dict[tuple[str, int], str]:
+    """List workers through the API with a real ``celery inspect`` refresh."""
+    app = FastAPI()
+    app.include_router(
+        create_router(store=store, worker_registry=registry, broker_url=REDIS_URL)
+    )
+    response = TestClient(app).get("/api/workers?refresh=true")
+    assert response.status_code == 200
+    return {(w["hostname"], w["pid"]): w["status"] for w in response.json()["workers"]}
+
+
+def test_restarted_node_shows_only_its_new_process_online(nodes: MultiNodes) -> None:
+    """After ``celery multi restart`` each node has one online pid, the new one."""
+    store = GraphStore()
+    registry = WorkerRegistry()
+    consumer = EventConsumer(
+        REDIS_URL, store, prefix=nodes.prefix, worker_registry=registry
+    )
+    consumer.start()
+    try:
+        _wait_for_registered(registry, 2)
+        old_pids = {name: _main_pid(nodes, name) for name in nodes.names}
+
+        nodes.multi("restart")
+        _wait_for_registered(registry, 4)
+        listed = _refresh_and_list(nodes, store, registry)
+    finally:
+        consumer.stop()
+
+    new_pids = {name: _main_pid(nodes, name) for name in nodes.names}
+    host = socket.gethostname()
+    for name in nodes.names:
+        nodename = f"{name}@{host}"
+        assert new_pids[name] != old_pids[name]
+        assert listed[(nodename, new_pids[name])] == "online"
+        assert listed[(nodename, old_pids[name])] == "offline"
+
+
+def test_node_killed_without_shutdown_event_is_offline_once_restarted(
+    nodes: MultiNodes,
+) -> None:
+    """A SIGKILLed node sends no worker_shutdown; its restart retires the old pid."""
+    store = GraphStore()
+    registry = WorkerRegistry()
+    consumer = EventConsumer(
+        REDIS_URL, store, prefix=nodes.prefix, worker_registry=registry
+    )
+    consumer.start()
+    killed, kept = nodes.names
+    try:
+        _wait_for_registered(registry, 2)
+        killed_pid = _main_pid(nodes, killed)
+        kept_pid = _main_pid(nodes, kept)
+        os.kill(killed_pid, signal.SIGKILL)
+        (nodes.run_dir / f"{killed}.pid").unlink()
+
+        nodes.multi("start", [killed])
+        _wait_for_registered(registry, 3)
+        listed = _refresh_and_list(nodes, store, registry)
+        new_pid = _main_pid(nodes, killed)
+    finally:
+        consumer.stop()
+
+    host = socket.gethostname()
+    assert listed == {
+        (f"{killed}@{host}", killed_pid): "offline",
+        (f"{killed}@{host}", new_pid): "online",
+        (f"{kept}@{host}", kept_pid): "online",
+    }
