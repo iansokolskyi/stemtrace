@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Login: a `next` target containing a backslash or a control character now falls back to the default page after sign-in. This is hardening: Starlette percent-encodes the redirect, so such targets didn't lead off-site.
+- UI: updated `react` and `react-dom` 19.2.3 → 19.3.0 (with `scheduler` 0.27.0 → 0.28.0), `@xyflow/react` 12.10.0 → 12.12.0 (with `@xyflow/system` 0.0.74 → 0.0.83) and `date-fns` 4.1.0 → 4.4.0 in the bundled frontend. None of these fix a known advisory. Development: the frontend now type-checks with TypeScript 7.0 (was 5.9) and runs its E2E tests with Playwright 1.63.
 
 ### Deprecated
 - `stemtrace.transports.rabbitmq.PUBLISH_SLOW_ATTEMPT` (also exported by the deprecated `stemtrace.library.transports.rabbitmq`) is no longer used, since a single slow publish failure no longer opens the circuit breaker; accessing it emits a `DeprecationWarning`, and it will be removed in 1.0.
