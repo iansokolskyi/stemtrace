@@ -60,6 +60,14 @@ CONNECT_TIMEOUT = 2.0
 # it must stay well below the server consumer's 5s stop timeout.
 DRAIN_TIMEOUT = 1.0
 
+# With ``?heartbeat=N`` in the URL, the consume loop also sends heartbeats
+# (see _drain_until_stopped). py-amqp sends one at the first check after a
+# full interval of silence (amqp 5.0.6 ``heartbeat_tick``; 5.3.1 after half of
+# it) and RabbitMQ closes a connection after two silent intervals, so a wait
+# of a quarter interval leaves room in both. Longer intervals keep
+# DRAIN_TIMEOUT.
+HEARTBEAT_CHECKS_PER_INTERVAL = 4
+
 # Publishing runs in the Celery task's thread, so every step is bounded: each
 # host of the URL gets one connection attempt with CONNECT_TIMEOUT (no kombu
 # retry sleeps), and every later socket read/write (channel open, exchange
@@ -611,16 +619,35 @@ class RabbitMQTransport:
 
         Returns only once the stop event is set (checked after every drain,
         so within DRAIN_TIMEOUT); connection errors propagate to consume().
+
+        When the connection negotiated heartbeats (``?heartbeat=N`` in the
+        URL), they are serviced here: drain_events() only reads, so without
+        heartbeat_check() nothing ever sends them and the broker closes the
+        idle consumer after two intervals. heartbeat_check() raises
+        ConnectionForced when the broker's own heartbeats stop, which
+        consume() treats like any dropped connection. It does nothing when
+        heartbeats are off (the default).
         """
+        timeout = self._drain_timeout(conn)
         while True:
             # Periodic wakeup to allow outer loops to run.
             with contextlib.suppress(TimeoutError, socket.timeout):
-                conn.drain_events(timeout=DRAIN_TIMEOUT)
+                conn.drain_events(timeout=timeout)
+            conn.heartbeat_check()
             self._on_drained(health)
             if self._stopping():
                 return
             while pending:
                 yield pending.popleft()
+
+    @staticmethod
+    def _drain_timeout(conn: Any) -> float:
+        """Longest wait for frames: short enough to service the heartbeats."""
+        # Negotiated seconds; 0 or None when heartbeats are off.
+        interval: float | None = conn.get_heartbeat_interval()
+        if not interval:
+            return DRAIN_TIMEOUT
+        return min(DRAIN_TIMEOUT, interval / HEARTBEAT_CHECKS_PER_INTERVAL)
 
     def _on_drained(self, health: _ReconnectHealth) -> None:
         """Record a drain that returned or timed out on a live connection.

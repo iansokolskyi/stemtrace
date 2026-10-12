@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
+from amqp.exceptions import ConnectionForced
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
@@ -23,6 +24,7 @@ from stemtrace.transports.memory import MemoryTransport
 from stemtrace.transports.rabbitmq import (
     CONNECT_TIMEOUT,
     DRAIN_TIMEOUT,
+    HEARTBEAT_CHECKS_PER_INTERVAL,
     RECONNECT_INITIAL_BACKOFF,
     RECONNECT_MAX_BACKOFF,
     RabbitMQTransport,
@@ -723,6 +725,14 @@ def _install_fake_kombu_for_consume(  # noqa: C901
         down_hosts: ClassVar[set[str]] = set()
         # Optional hook called with each host as it is tried.
         on_attempt: ClassVar[Any] = None
+        # The heartbeat interval the broker negotiated, in seconds (kombu's
+        # get_heartbeat_interval(): amqp's Connection.heartbeat, 0 when off
+        # as without ``?heartbeat=N`` in the URL).
+        heartbeat_interval: ClassVar[float] = 0
+        # Optional hook called as heartbeat_check() runs; it may raise like
+        # amqp's heartbeat_tick() does (ConnectionForced) when the broker
+        # stopped sending heartbeats.
+        on_heartbeat_check: ClassVar[Any] = None
 
         def __init__(self, url: str, **kwargs: Any) -> None:
             self.url = url
@@ -736,6 +746,7 @@ def _install_fake_kombu_for_consume(  # noqa: C901
             self.collected = False
             self.ensure_calls: list[dict[str, Any]] = []
             self.drain_timeouts: list[float] = []
+            self.heartbeat_checks = 0
             self._channel = FakeChannel(self)
             self._drain_count = 0
             Connection.instances.append(self)
@@ -777,6 +788,15 @@ def _install_fake_kombu_for_consume(  # noqa: C901
         def collect(self) -> None:
             self.collected = True
             self.closed = True
+
+        def get_heartbeat_interval(self) -> float:
+            return Connection.heartbeat_interval
+
+        def heartbeat_check(self, rate: int = 2) -> None:
+            del rate
+            self.heartbeat_checks += 1
+            if Connection.on_heartbeat_check is not None:
+                Connection.on_heartbeat_check(self)
 
         def drain_events(self, *, timeout: float) -> None:
             self.drain_timeouts.append(timeout)
@@ -1547,6 +1567,111 @@ class TestRabbitMQConsumeBackoff:
         assert len(conn_cls.instances) == 2
         assert conn_cls.instances[0].released is True
         assert sleeper.delays == [1.0]
+        assert "reconnected after 1 failure(s)" in caplog.text
+
+    def test_consume_with_heartbeats_checks_them_after_every_drain(
+        self, monkeypatch: Any
+    ) -> None:
+        """drain_events() only reads: heartbeat_check() is what sends heartbeats."""
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count < 3:
+                raise TimeoutError
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        conn_cls.heartbeat_interval = 2
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost?heartbeat=2", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        next(gen)
+        gen.close()
+
+        (conn,) = conn_cls.instances
+        # Waits of a quarter interval, so a check happens well within it.
+        assert conn.drain_timeouts == [2 / HEARTBEAT_CHECKS_PER_INTERVAL] * 3
+        assert conn.heartbeat_checks == 3
+
+    def test_consume_with_long_heartbeat_interval_keeps_drain_timeout(
+        self, monkeypatch: Any
+    ) -> None:
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        conn_cls.heartbeat_interval = 60
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost?heartbeat=60", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        next(gen)
+        gen.close()
+
+        (conn,) = conn_cls.instances
+        assert conn.drain_timeouts == [DRAIN_TIMEOUT]
+        assert conn.heartbeat_checks == 1
+
+    def test_consume_without_heartbeats_keeps_drain_timeout(
+        self, monkeypatch: Any
+    ) -> None:
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            del drain_count
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        transport = RabbitMQTransport.from_url(
+            "amqp://localhost", prefix="test", ttl=60
+        )
+        gen = transport.consume()
+        next(gen)
+        gen.close()
+
+        (conn,) = conn_cls.instances
+        assert conn.drain_timeouts == [DRAIN_TIMEOUT]
+
+    def test_consume_when_broker_heartbeats_stop_reconnects_and_resumes(
+        self, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """heartbeat_check() raises ConnectionForced when the broker went silent."""
+        sleeper = _BoundedSleep()
+
+        def drain_handler(drain_count: int, callbacks: list[Any]) -> None:
+            if drain_count == 1:
+                raise TimeoutError
+            self._deliver(callbacks)
+
+        conn_cls = _install_fake_kombu_for_consume(
+            monkeypatch, drain_handler=drain_handler
+        )
+        conn_cls.heartbeat_interval = 2
+
+        def broker_silent_on_first_connection(conn: Any) -> None:
+            if conn is conn_cls.instances[0]:
+                raise ConnectionForced("Too many heartbeats missed")
+
+        conn_cls.on_heartbeat_check = broker_silent_on_first_connection
+        transport = RabbitMQTransport(
+            "amqp://localhost?heartbeat=2", prefix="test", ttl=60, sleep=sleeper
+        )
+
+        with caplog.at_level(logging.INFO):
+            gen = transport.consume()
+            received = next(gen)
+            gen.close()
+
+        assert received.task_id == "backoff-1"
+        assert len(conn_cls.instances) == 2
+        assert conn_cls.instances[0].released is True
+        assert sleeper.delays == [1.0]
+        assert "consume loop error" in caplog.text
         assert "reconnected after 1 failure(s)" in caplog.text
 
     def test_consume_connects_without_kombu_retry_and_with_bounded_timeouts(

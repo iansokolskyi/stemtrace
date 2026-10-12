@@ -457,6 +457,10 @@ again once events are re-consumed.
     the interpreter exits and when a prefork child exits (waiting at most half a second for the
     broker's reply); a process killed or ended with `os._exit()` leaves it to the operating system,
     and RabbitMQ logs a warning about the dropped TCP connection.
+  - The server's consumer connection does use `?heartbeat=N` from the broker URL: its read loop
+    sends the heartbeats and waits at most a quarter of the interval for frames (at most 1s), so
+    an idle consumer is not dropped by the broker, and a broker that stops sending heartbeats is
+    treated like a dropped connection (reconnect with backoff).
   - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Events
     publish one at a time on the process's connection, and **an event never waits more than 2s
     in total (one IO timeout) for another to finish: it is dropped instead**, which doesn't
