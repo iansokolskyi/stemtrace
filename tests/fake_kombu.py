@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from amqp.exceptions import ConnectionForced, NotFound, RecoverableConnectionError
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.transports.rabbitmq_publisher import track_connecting_transport
 
 # Reads of one frame that hit EAGAIN before the fake declares py-amqp spinning.
 SPIN_LIMIT = 100_000
@@ -119,6 +120,9 @@ class FakeBroker:
         self.on_publish: Callable[[], None] | None = None
         # Seconds a connect takes (a slow but healthy broker); real time.
         self.connect_delay = 0.0
+        # A transport-like object the connect "has started" (with a ``sock``)
+        # when it fails: what py-amqp leaves behind in a killed connect.
+        self.half_open_transport: Any = None
         # Raised by Connection.channel() (e.g. the broker refuses the channel).
         self.channel_error: Exception | None = None
         # Raised by collect() before the socket is closed (py-amqp 5.0.6 after an RST).
@@ -182,6 +186,8 @@ class _FakeAmqpTransport:
     def __init__(self) -> None:
         sock, self.peer = socket.socketpair()
         self.sock = _RecordingSocket(fileno=sock.detach())
+        # py-amqp TCPTransport._setup_transport(): reads go through this.
+        self._quick_recv = self.sock.recv
 
 
 class FakeAmqpConnection:
@@ -212,10 +218,17 @@ class FakeAmqpConnection:
         self.timeout_at_close: float | None = None
 
     def deliver(
-        self, kind: str, arg: Any = None, *, send_bytes: int | None = None
+        self,
+        kind: str,
+        arg: Any = None,
+        *,
+        send_bytes: int | None = None,
+        payload_size: int = 1,
     ) -> None:
         """The broker sends a frame; ``send_bytes`` sends only its first bytes."""
-        frame = struct.pack(">BHI", 1, 0, 1) + b"\x00" + b"\xce"
+        frame = (
+            struct.pack(">BHI", 1, 0, payload_size) + b"\x00" * payload_size + b"\xce"
+        )
         self.kinds.append((kind, arg))
         head = frame if send_bytes is None else frame[:send_bytes]
         self._tail = b"" if send_bytes is None else frame[send_bytes:]
@@ -241,11 +254,10 @@ class FakeAmqpConnection:
 
     def _fill(self, n: int, *, initial: bool) -> None:
         """py-amqp Transport._read(): wait for ``n`` buffered bytes."""
-        sock = self.transport.sock
         spins = 0
         while len(self._rbuf) < n:
             try:
-                data = sock.recv(n - len(self._rbuf))
+                data = self.transport._quick_recv(n - len(self._rbuf))
             except BlockingIOError:  # the socket timeout is 0: EAGAIN
                 if initial:
                     raise TimeoutError from None
@@ -393,6 +405,9 @@ class FakeConnection:
             self.attempted.append(host)
             if host in self.broker.auth_refused:
                 raise PermissionError(f"ACCESS_REFUSED on {host}")
+            if self.broker.half_open_transport is not None:
+                track_connecting_transport(self.broker.half_open_transport)
+                raise ConnectionRefusedError("killed mid-connect")
             if host not in self.broker.down:
                 if self.broker.connect_delay:
                     time.sleep(self.broker.connect_delay)

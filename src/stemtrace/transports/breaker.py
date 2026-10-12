@@ -252,16 +252,23 @@ class PublishBreaker:
         self._check_fork()
         return not self.is_open or ticket == self._epoch
 
-    def record_dropped(self) -> None:
+    def record_dropped(self, ticket: int) -> None:
         """Count an event dropped without an attempt (it says nothing about the broker).
 
         For an event that was skipped, or that couldn't get a shared resource
         in time: it is reported with the next log line like any dropped
-        event, but doesn't count as a failure and never changes the state.
+        event, but doesn't count as a failure and never changes the state. If
+        ``ticket`` is the outstanding probe's, the probe never reached the
+        broker, so its slot is freed for the next caller.
+
+        Args:
+            ticket: The ticket ``allow()`` returned for the dropped attempt.
         """
         self._check_fork()
         with self._lock:
             self._dropped += 1
+            if self._probe_ticket is not None and ticket == self._probe_ticket:
+                self._probe_ticket = None
 
     def record_success(self, ticket: int) -> None:
         """Report a successful publish attempt.

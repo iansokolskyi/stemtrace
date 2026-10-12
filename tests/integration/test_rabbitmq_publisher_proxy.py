@@ -12,11 +12,13 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from kombu import Connection
 
 from stemtrace.transports.rabbitmq import RabbitMQTransport
+from stemtrace.transports.rabbitmq_publisher import PublishDroppedError
 from tests.integration.test_rabbitmq_publisher_broker import (
     RABBITMQ_URL,
     _available,
@@ -142,23 +144,40 @@ class TestSlowBroker:
     ) -> None:
         # Each chunk the broker sends takes a second: connecting (Start, Tune,
         # Open-Ok, channel, declare) takes several seconds with the connection
-        # lock held, every step within its own 2s timeout.
+        # held, every step within its own 2s timeout. The events that can't
+        # get the connection within the short wait are dropped, not failed.
         proxy.delay = 1.0
+        dropped: list[BaseException] = []
+        real_publish = transport._publisher.publish
+
+        def counting_publish(*args: Any, **kwargs: Any) -> None:
+            try:
+                real_publish(*args, **kwargs)
+            except PublishDroppedError as exc:
+                dropped.append(exc)
+                raise
+
+        transport._publisher.publish = counting_publish  # type: ignore[method-assign]
         threads = [
             threading.Thread(target=transport.publish, args=(_event(f"slow-{i}"),))
             for i in range(4)
         ]
 
+        started = time.monotonic()
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join(timeout=60)
+        elapsed = time.monotonic() - started
 
         assert [t.is_alive() for t in threads] == [False] * 4
         assert transport._publish_breaker.is_open is False
-        assert sorted(_received(transport.queue_name, 4)) == [
-            f"slow-{i}" for i in range(4)
-        ]
+        delivered = _received(transport.queue_name, 4 - len(dropped))
+        assert len(delivered) >= 1
+        assert len(delivered) + len(dropped) == 4
+        # A task waits for the connection one IO timeout at most, not for the
+        # holder's several seconds: the dropped ones were back in about 2s.
+        assert elapsed < 20
 
 
 class TestFrozenBrokerMidFrame:
@@ -186,11 +205,6 @@ class TestFrozenBrokerMidFrame:
         thread.join(timeout=5)
         returned_in = time.monotonic() - started
         stuck = thread.is_alive()
-        if stuck:
-            import sys
-            import traceback
-
-            print("".join(traceback.format_stack(sys._current_frames()[thread.ident])))
         proxy.release()  # the rest of the frame arrives (ends a spinning read too)
         thread.join(timeout=10)
 

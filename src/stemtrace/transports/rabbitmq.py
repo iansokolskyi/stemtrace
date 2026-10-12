@@ -30,9 +30,10 @@ from typing_extensions import Self
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.rabbitmq_publisher import (
+    MAX_ADDRESSES_PER_HOST,
     PublishDroppedError,
     PublisherConnection,
-    track_connecting_socket,
+    track_connecting_transport,
 )
 from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
@@ -181,10 +182,13 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
         timeout=timeout or CONNECT_TIMEOUT,
     )
     error: OSError = socket.gaierror(socket.EAI_NONAME, f"No address for {host!r}")
-    for family, socktype, proto, _, address in entries:
+    track_connecting_transport(self)
+    # A bounded number of addresses, so that the longest a connect can take
+    # follows from the timeout (a name with many addresses is tried in order,
+    # and the next host or attempt takes over after these).
+    for family, socktype, proto, _, address in entries[:MAX_ADDRESSES_PER_HOST]:
         try:
             self.sock = socket.socket(family, socktype, proto)
-            track_connecting_socket(self.sock)
             with contextlib.suppress(NotImplementedError):
                 set_cloexec(self.sock, True)
             self.sock.settimeout(timeout)
@@ -318,6 +322,7 @@ class RabbitMQTransport:
             wrap_connection_class=_resolving_connection_class,
             connect_timeout=CONNECT_TIMEOUT,
             io_timeout=PUBLISH_IO_TIMEOUT,
+            monotonic=monotonic,
         )
 
         # Publish path: the breaker that skips publishing in outages. A probe
@@ -425,7 +430,7 @@ class RabbitMQTransport:
             )
         except PublishDroppedError:
             # Skipped or starved of the connection: not evidence about the broker.
-            breaker.record_dropped()
+            breaker.record_dropped(ticket)
         except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
             breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:

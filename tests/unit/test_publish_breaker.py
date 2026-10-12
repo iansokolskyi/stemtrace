@@ -778,7 +778,7 @@ class TestPublishBreakerRecordDropped:
         breaker = _make_breaker(FakeClock(), failures_to_open=3)
 
         for _ in range(10):
-            breaker.record_dropped()
+            breaker.record_dropped(_take(breaker))
 
         assert breaker.dropped == 10
         assert breaker.is_open is False
@@ -791,12 +791,39 @@ class TestPublishBreakerRecordDropped:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         breaker = _make_breaker(FakeClock(), failures_to_open=1)
-        breaker.record_dropped()
-        breaker.record_dropped()
+        breaker.record_dropped(_take(breaker))
+        breaker.record_dropped(_take(breaker))
 
         _attempt_fails(breaker)
 
         assert "3 event(s) dropped" in caplog.text
+
+    def test_record_dropped_for_probe_frees_the_probe_slot(self) -> None:
+        # A probe that never reached the broker (it couldn't get the shared
+        # connection) must not keep the next probe waiting for probe_timeout.
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        probe = _take(breaker)
+        assert breaker.allow() is None  # one probe at a time
+
+        breaker.record_dropped(probe)
+
+        assert breaker.is_open is True
+        assert breaker.allow() is not None  # the slot is free again
+
+    def test_record_dropped_for_other_attempt_keeps_the_probe_slot(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _take(breaker)  # the probe
+
+        breaker.record_dropped(in_flight)
+
+        assert breaker.allow() is None
 
 
 class TestPublishBreakerFork:
