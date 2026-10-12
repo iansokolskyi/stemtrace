@@ -23,9 +23,9 @@
     "@xyflow/react": "^12.12.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
-    "react": "^19.1.0",
+    "react": "^19.3.0",
     "react-day-picker": "^9.13.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
@@ -35,8 +35,8 @@
     "@tanstack/router-devtools": "^1.147.1",
     "@tanstack/router-plugin": "^1.167.1",
     "@types/node": "^22.20.5",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.1.2",
     "postcss": "^8.4.49",
     "tailwindcss": "^4.3.3",
