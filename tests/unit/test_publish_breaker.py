@@ -729,6 +729,48 @@ class TestPublishBreakerInFlightAttempts:
         assert sum(ticket is not None for ticket in results) == 1
 
 
+class TestPublishBreakerIsCurrent:
+    """is_current() tells a caller that waited whether its attempt is still wanted."""
+
+    def test_is_current_while_closed_is_true(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        assert breaker.is_current(_take(breaker)) is True
+
+    def test_is_current_after_breaker_opened_is_false_for_in_flight_attempt(
+        self,
+    ) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=1)
+        in_flight = _take(breaker)
+
+        _attempt_fails(breaker)
+
+        assert breaker.is_open is True
+        assert breaker.is_current(in_flight) is False
+
+    def test_is_current_for_probe_is_true_until_outcome_is_recorded(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        probe = _take(breaker)
+
+        assert breaker.is_current(probe) is True
+        assert breaker.is_current(in_flight) is False
+
+    def test_is_current_after_closing_again_is_false_for_old_attempt(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _attempt_succeeds(breaker)  # the probe: the breaker closes
+
+        assert breaker.is_open is False
+        assert breaker.is_current(in_flight) is False
+
+
 class TestPublishBreakerFork:
     """A forked child starts with a closed breaker and a fresh lock."""
 

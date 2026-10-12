@@ -236,6 +236,21 @@ class PublishBreaker:
             self._dropped += 1
             return None
 
+    def is_current(self, ticket: int) -> bool:
+        """Whether ``ticket``'s attempt started in the breaker's current state.
+
+        False once the breaker has opened (or opened and closed again) since
+        ``allow()`` issued the ticket: the attempt was already in flight and
+        says nothing about the broker now, so a caller that had to wait
+        before starting it may skip it. The probe's ticket stays current
+        until its outcome is recorded.
+
+        Args:
+            ticket: The ticket ``allow()`` returned for the attempt.
+        """
+        self._check_fork()
+        return ticket == self._epoch
+
     def record_success(self, ticket: int) -> None:
         """Report a successful publish attempt.
 
