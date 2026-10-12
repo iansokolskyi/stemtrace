@@ -32,6 +32,9 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT_SECONDS = 60
+# `celery multi start` imports the app in two new processes; on a loaded host that
+# alone took 25-60 s, so it gets more room than the waits on events do.
+MULTI_TIMEOUT_SECONDS = 180
 
 
 def _redis_available() -> bool:
@@ -91,7 +94,7 @@ class MultiNodes:
             env=env,
             check=False,
             capture_output=True,
-            timeout=TIMEOUT_SECONDS,
+            timeout=MULTI_TIMEOUT_SECONDS,
         )
 
     def kill_leftovers(self) -> None:
@@ -105,8 +108,8 @@ class MultiNodes:
 def nodes(tmp_path: Path) -> Iterator[MultiNodes]:
     """Start two nodes with ``celery multi`` and stop them afterwards."""
     multi = MultiNodes(uuid.uuid4().hex[:8], tmp_path)
-    multi.multi("start")
     try:
+        multi.multi("start")
         yield multi
     finally:
         multi.multi("stopwait")
