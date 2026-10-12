@@ -87,6 +87,17 @@ def create_workflow(items: list[int]):
     )
 
 
+@app.task(bind=True, name="e2e.batch_processor")
+def batch_processor(self, items: list) -> int:
+    """Spawn a group of process_item tasks without waiting for it.
+
+    The group members get this task as their parent, which is the "parent task
+    spawns a group" graph shape the UI specs look for.
+    """
+    group(process_item.s(item) for item in items).apply_async()
+    return len(items)
+
+
 # =============================================================================
 # Failure Tasks
 # =============================================================================

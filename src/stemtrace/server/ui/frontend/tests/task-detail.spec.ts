@@ -491,8 +491,6 @@ test.describe('Task Detail - Output', () => {
     const [chordNode, ...rest] = createGroup(2, { withCallback: true })
     const callback = rest[rest.length - 1]
     const groupId = chordNode.group_id as string
-    // The server lists the callback among the CHORD node's children.
-    chordNode.children.push(callback.task_id)
     for (const task of [chordNode, ...rest]) mockApi.addTask(task)
 
     const live = await openLiveTaskPage(page, chordNode.task_id)
