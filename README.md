@@ -695,6 +695,22 @@ extension = stemtrace.init_app(
 )
 ```
 
+#### FastAPI Telemetry
+
+FastAPI 0.142 and later trace requests natively when an OpenTelemetry SDK is configured in your process. Embedded, stemtrace's routes are part of your app, so each request the dashboard makes to `/stemtrace/api/...` and each `/stemtrace/ws` connection (one span for as long as the browser stays connected) gets a span. To keep them out of your traces, exclude the prefix:
+
+```python
+app = FastAPI(
+    lifespan=my_lifespan,
+    telemetry={
+        "exclude": lambda scope: scope.get("path", "") == "/stemtrace"
+        or scope.get("path", "").startswith("/stemtrace/")
+    },
+)
+```
+
+Use your own `prefix` if you changed it. `telemetry={"tracing": False}` turns tracing off for the whole app.
+
 #### With Custom Authentication
 
 ```python
@@ -841,13 +857,9 @@ What is detected depends on the transport:
 - ✅ **Workers page** — Monitor online/offline workers and their registered tasks
 - ✅ **Task registry** — Browse discovered + registered tasks with clear status badges
 
-### Coming Soon
+### What's Next
 
-- 🔜 **Anomaly detection** — Spot stuck, orphaned, or failed tasks
-- 🔜 **Dashboard with stats** — Success rates, durations, failure trends
-- 🔜 **OpenTelemetry export** — Send traces to Jaeger, Tempo, Datadog
-- 🔜 **Webhook notifications** — Push events to your systems
-- 🔜 **Data export** — Download execution history as JSON
+Planned work and ideas are tracked in [GitHub issues](https://github.com/iansokolskyi/stemtrace/issues). Open one, or comment on an existing one, to say what you'd use.
 
 ## 🤝 Contributing
 
