@@ -863,7 +863,9 @@ class TestCachedErrorsAreRaisedFresh:
 
 
 # (masterpid, worker_id, mule_id) as pyuwsgi 2.0.30 reports them; None masterpid
-# is this process. Every uWSGI process is covered, not just those that fork.
+# is this process. _under_uwsgi() reads none of these: the cases guard against
+# reintroducing per-mode detection (which missed mules, spoolers and workers).
+# The evidence for real uWSGI is the pyuwsgi run, not this fake.
 UWSGI_MODES = {
     "master": (None, 0, 0),
     "no-master-import": (0, 0, 0),
@@ -911,11 +913,14 @@ class TestUwsgiResolvesOnCallingThread:
         dns.answers = [ADDRESS, NEW_ADDRESS]
         resolver = _make(dns, FakeClock())  # type: ignore[arg-type]
         resolver.resolve("redis.local", 6379, timeout=1.0)
+        threads_before = set(threading.enumerate())
 
         resolver.invalidate("redis.local", 6379)
 
         assert [
-            t.name for t in threading.enumerate() if t.name.startswith("stemtrace-dns-")
+            t.name
+            for t in set(threading.enumerate()) - threads_before
+            if t.name.startswith("stemtrace-dns-")
         ] == []
         entry = resolver._state().entries[("redis.local", 6379, 0, 0, 0)]
         assert entry.lookup is None
@@ -945,39 +950,6 @@ class TestUwsgiResolvesOnCallingThread:
                 thread.join(JOIN_S)
 
         assert checks == []
-
-    def test_uwsgi_waits_for_lookup_already_in_flight(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No second lookup for a host while one runs."""
-        self._uwsgi(monkeypatch)
-        dns = FakeDns()
-        resolver = _make(dns, FakeClock())
-        state = resolver._state()
-        entry = state.entries.setdefault(
-            ("redis.local", 6379, 0, 0, 0), resolver_module._Entry()
-        )
-        entry.lookup = threading.Event()
-
-        with pytest.raises(socket.gaierror, match="Timed out") as info:
-            resolver.resolve("redis.local", 6379, timeout=0.05)
-
-        assert info.value.errno == socket.EAI_AGAIN
-        assert dns.calls == []
-
-    def test_uwsgi_serves_cached_answer_while_lookup_in_flight(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._uwsgi(monkeypatch)
-        dns, clock = FakeDns(), FakeClock()
-        resolver = _make(dns, clock)
-        resolver.resolve("redis.local", 6379, timeout=1.0)
-        entry = resolver._state().entries[("redis.local", 6379, 0, 0, 0)]
-        entry.lookup = threading.Event()
-        clock.now += 31.0  # past the TTL
-
-        assert resolver.resolve("redis.local", 6379, timeout=1.0) == ADDRESS
-        assert dns.calls == ["redis.local"]
 
     def test_uwsgi_cache_hit_needs_no_lookup(
         self, monkeypatch: pytest.MonkeyPatch

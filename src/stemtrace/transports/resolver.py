@@ -25,9 +25,9 @@ forks while a lookup runs can cause this, so:
 
 The helper is checked once per process before it is used (a check that
 doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
-can't run this Python (a frozen application, an embedded interpreter such as
-uWSGI's, whose sys.executable is the uwsgi binary), lookups stay in-process
-and every fork waits for them as above (one WARNING says so). A helper is
+can't run this Python (a frozen application, or a sys.executable that isn't a
+Python interpreter), lookups stay in-process and every fork waits for them as
+above (one WARNING says so). A helper is
 never started while the process forks (see _run_helper()). Under uWSGI (the
 ``uwsgi`` module is importable), which forks in C without Python's at-fork
 hooks (unless started with --py-call-uwsgi-fork-hooks, which the resolver
@@ -167,6 +167,8 @@ class BoundedResolver:
     in glibc's locked code (see the module docstring).
     At most one lookup per host runs at a time; callers that arrive while it
     runs wait for it (each up to its own timeout) instead of starting more.
+    Under uWSGI there are no lookup threads and no such deduplication: each
+    caller resolves on its own thread (see _under_uwsgi()).
     """
 
     def __init__(
@@ -245,7 +247,7 @@ class BoundedResolver:
         state = self._state()
         key = (host, port, family, socktype, proto)
         if _under_uwsgi():
-            return self._resolve_on_this_thread(state, key, timeout)
+            return self._resolve_on_this_thread(state, key)
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
             now = self._monotonic()
@@ -281,21 +283,22 @@ class BoundedResolver:
         raise socket.gaierror(socket.EAI_AGAIN, f"Could not resolve {host!r}")
 
     def _resolve_on_this_thread(
-        self, state: _State, key: tuple[Any, ...], timeout: float
+        self, state: _State, key: tuple[Any, ...]
     ) -> list[AddrInfo]:
-        """Resolve on the calling thread, without a wait bound (see _under_uwsgi()).
+        """Resolve on the calling thread, without a wait bound (under uWSGI).
 
         uWSGI forks in C, without running Python's at-fork hooks, so
         prepare_fork() can't keep a fork from catching a lookup thread inside
         glibc, in whichever of its processes forks. A lookup on the calling
-        thread is never running while that thread forks. Answers and failures are cached as in resolve(), but
-        past the TTL the refresh runs here too, so the caller waits for it
-        (falling back to the cached answer if it fails) instead of getting the
-        cached answer while it runs in the background.
+        thread is never running while that thread forks. Answers and failures
+        are cached as in resolve(), but past the TTL the refresh runs here
+        too, so the caller waits for it (falling back to the cached answer if
+        it fails) instead of getting the cached answer while it runs in the
+        background.
 
-        A lookup already running for the host isn't repeated: the cached
-        answer is used, or without one the caller waits for it up to
-        ``timeout``.
+        Each caller resolves on its own thread: concurrent callers for one
+        host (app threads) each run a lookup, with no deduplication, as
+        before lookups were cached and bounded.
         """
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -305,16 +308,6 @@ class BoundedResolver:
                     return entry.addresses
                 if entry.error is not None:
                     raise _fresh(entry.error)
-            running = entry.lookup
-            if running is not None and entry.addresses is not None:
-                return entry.addresses
-        if running is not None:
-            if not running.wait(timeout):
-                raise socket.gaierror(
-                    socket.EAI_AGAIN,
-                    f"Timed out resolving {key[0]!r} after {timeout:g}s",
-                )
-            return self._outcome(state, entry, key[0])
         getaddrinfo = self._getaddrinfo or socket.getaddrinfo
         try:
             addresses = _call_getaddrinfo(getaddrinfo, key)
@@ -597,8 +590,7 @@ def _helper_usable() -> bool:
     """Whether a helper process running this Python can be started here.
 
     Not for a frozen application or when sys.executable isn't a Python
-    interpreter (e.g. uWSGI's embedded one, where it is the uwsgi binary);
-    otherwise a trivial round trip must succeed.
+    interpreter; otherwise a trivial round trip must succeed.
     """
     executable = sys.executable
     if getattr(sys, "frozen", False) or not hasattr(os, "fork") or not executable:
