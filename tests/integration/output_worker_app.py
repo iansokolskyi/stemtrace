@@ -85,7 +85,9 @@ def dies_once(self: Task) -> str:
     Prefork only: elsewhere this would kill the worker itself. The marker lives
     in Redis because the second run is in a new process.
     """
-    marker = f"{os.environ.get('OUTPUT_TEST_QUEUE', 'output-test')}:died:{self.request.id}"
+    marker = (
+        f"{os.environ.get('OUTPUT_TEST_QUEUE', 'output-test')}:died:{self.request.id}"
+    )
     client = redis.Redis.from_url(REDIS_URL)
     if client.set(marker, 1, nx=True, ex=300):
         os.kill(os.getpid(), signal.SIGKILL)

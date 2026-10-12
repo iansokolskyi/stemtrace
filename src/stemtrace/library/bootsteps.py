@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from celery import bootsteps
 
 from stemtrace.core.events import TaskEvent, TaskState
+
+# Sibling-module imports within stemtrace.library: the chord-id parsing and the
+# transport publisher are shared with the signal handlers, so RECEIVED can't
+# drift from STARTED. They stay underscore-private because they aren't part of
+# the public API, which this package boundary doesn't change.
 from stemtrace.library.signals import _extract_chord_info
+from stemtrace.library.signals import _publish_event as _publish_via_transport
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -168,14 +174,19 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         logger.debug("Emitted RECEIVED for task %s", task_id)
 
 
-def register_bootsteps(app: Any, *, publish: Callable[[TaskEvent], None]) -> None:
+def register_bootsteps(
+    app: Any, *, publish: Callable[[TaskEvent], None] | None = None
+) -> None:
     """Register stemtrace bootsteps with the Celery app.
 
     Args:
         app: The Celery application instance.
         publish: Publishes the RECEIVED events. It runs in the worker's
             consumer loop for every task message, so it must not raise.
+            Defaults to publishing through the transport that
+            ``init_worker()``/``connect_signals()`` set up, like the task
+            signal handlers do.
     """
-    _set_publisher(publish)
+    _set_publisher(publish if publish is not None else _publish_via_transport)
     app.steps["consumer"].add(ReceivedEventStep)
     logger.debug("Registered ReceivedEventStep bootstep")

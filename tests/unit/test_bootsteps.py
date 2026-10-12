@@ -16,6 +16,7 @@ from stemtrace.library.bootsteps import (
     _set_publisher,
     register_bootsteps,
 )
+from stemtrace.library.signals import connect_signals, disconnect_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -334,3 +335,36 @@ class TestRegisterBootsteps:
         register_bootsteps(mock_app, publish=lambda _event: None)
 
         assert ReceivedEventStep in mock_app.steps["consumer"]
+
+    def test_default_publisher_is_the_signals_transport(self) -> None:
+        """register_bootsteps(app) with no publish= sends RECEIVED to the transport."""
+
+        class _RecordingTransport:
+            def __init__(self) -> None:
+                self.events: list[TaskEvent] = []
+
+            def publish(self, event: TaskEvent) -> None:
+                self.events.append(event)
+
+        transport = _RecordingTransport()
+        app = Celery("bootstep_default", broker="memory://")
+        connect_signals(transport)  # type: ignore[arg-type]  # structural stub
+        try:
+            register_bootsteps(app)
+            consumer = SimpleNamespace(strategies={"app.add": lambda *_a, **_k: None})
+            step_cls = next(c for c in app.steps["consumer"] if c is ReceivedEventStep)
+            step_cls(consumer).start(consumer)
+
+            consumer.strategies["app.add"](
+                SimpleNamespace(headers={"id": "task-1", "retries": 0}),
+                None,
+                None,
+                None,
+                None,
+            )
+        finally:
+            disconnect_signals()
+
+        assert [(e.task_id, e.name, e.state) for e in transport.events] == [
+            ("task-1", "app.add", TaskState.RECEIVED)
+        ]
