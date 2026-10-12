@@ -156,7 +156,6 @@ class _State:
         self.helper_usable: bool | None = None
         # When the one-off helper check started (monotonic), None before.
         self.helper_check_started: float | None = None
-        self.helper_warned = False
 
 
 class BoundedResolver:
@@ -437,18 +436,19 @@ class BoundedResolver:
                 if state.helper_usable is None:
                     state.helper_usable = usable
                     if not usable:
-                        self._warn_helper_unusable(state)
+                        self._warn_helper_unusable()
 
         with contextlib.suppress(RuntimeError):  # can't start: stay in-process
             threading.Thread(
                 target=check, name="stemtrace-dns-helper-check", daemon=True
             ).start()
 
-    def _warn_helper_unusable(self, state: _State) -> None:
-        """Log, once per process, that lookups stay in-process (lock held)."""
-        if state.helper_warned:
-            return
-        state.helper_warned = True
+    def _warn_helper_unusable(self) -> None:
+        """Log that lookups stay in-process.
+
+        Once per process: callers do it right after they set
+        ``helper_usable`` from None, under the lock, which happens only once.
+        """
         logger.warning(
             "stemtrace can't start %r to resolve broker host names in a helper "
             "process; resolving in-process, and every fork waits up to %gs for "
@@ -466,7 +466,7 @@ class BoundedResolver:
             and self._monotonic() - started >= HELPER_CHECK_TIMEOUT
         ):
             state.helper_usable = False
-            self._warn_helper_unusable(state)
+            self._warn_helper_unusable()
 
     def _start_lookup(
         self, state: _State, key: tuple[Any, ...], entry: _Entry
@@ -722,9 +722,25 @@ def _is_ip_address(host: str) -> bool:
 # Shared by the publishers of every transport in this process.
 PUBLISH_RESOLVER = BoundedResolver()
 
-if hasattr(os, "register_at_fork"):  # POSIX; prefork pools fork worker processes
-    os.register_at_fork(
-        before=PUBLISH_RESOLVER.prepare_fork,
-        after_in_parent=PUBLISH_RESOLVER.parent_after_fork,
-        after_in_child=PUBLISH_RESOLVER.child_after_fork,
+
+def _register_fork_hooks(
+    resolver: BoundedResolver,
+    register_at_fork: Callable[..., None] | None,
+) -> None:
+    """Make fork() run ``resolver``'s hooks (prefork pools fork worker processes).
+
+    Args:
+        resolver: The resolver whose process forks.
+        register_at_fork: ``os.register_at_fork``; None where it doesn't exist
+            (Windows, which has no fork either).
+    """
+    if register_at_fork is None:
+        return
+    register_at_fork(
+        before=resolver.prepare_fork,
+        after_in_parent=resolver.parent_after_fork,
+        after_in_child=resolver.child_after_fork,
     )
+
+
+_register_fork_hooks(PUBLISH_RESOLVER, getattr(os, "register_at_fork", None))

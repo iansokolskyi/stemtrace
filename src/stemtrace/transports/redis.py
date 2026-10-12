@@ -299,12 +299,12 @@ def _accepted_init_kwargs(connection_class: type[Any]) -> frozenset[str] | None:
     them to AbstractConnection in redis-py 4.5) until an __init__ without it.
     """
     names: set[str] = set()
-    for klass in connection_class.__mro__:
+    # Without object (always last): reaching it means ``**kwargs`` all the way
+    # up, so any keyword is accepted.
+    for klass in connection_class.__mro__[:-1]:
         init = klass.__dict__.get("__init__")
         if init is None:
             continue
-        if klass is object:
-            return None
         parameters = inspect.signature(init).parameters.values()
         names.update(
             p.name

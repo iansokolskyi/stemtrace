@@ -293,15 +293,18 @@ class PublishBreaker:
     def _on_closed_success(self) -> None:
         """End the failure run; write an owed recovery line or pending losses once due."""
         with self._lock:
-            if self._open_until is None:
-                self._consecutive_failures = 0
+            # Also right if a failure opened the breaker since record_success()
+            # looked: opening starts the run over and none counts while open.
+            self._consecutive_failures = 0
             now = self._monotonic()
             owed = self._recovery_owed
             recovery_due = self._log_due(self._last_recovery_log, now)
             report_due = self._log_due(self._last_report, now)
-            if owed is not None and (recovery_due or report_due):
-                if recovery_due:
-                    self._last_recovery_log = now
+            # Writing the recovery line also reports (see _take_losses()), so
+            # the last report is never older than the last recovery line: no
+            # recovery line due means no report is due either.
+            if owed is not None and recovery_due:
+                self._last_recovery_log = now
                 self._recovery_owed = None
             elif not (self._dropped or self._unconfirmed) or not report_due:
                 return
