@@ -16,6 +16,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports import redis as redis_transport_module
 from stemtrace.transports.redis import (
+    MIN_IDLE_READ_SECONDS,
     READ_TIMEOUT_WARN_AFTER,
     READ_TIMEOUT_WARN_INTERVAL,
     RECONNECT_MAX_BACKOFF,
@@ -37,14 +38,31 @@ class FakePool:
 
 
 class FakeRedis:
-    """Scripted Redis client: each xread() pops the next result or raises it."""
+    """Scripted Redis client: each xread() pops the next result or raises it.
+
+    A read that comes back empty or times out has waited ``idle_read_s``
+    first: redis-py 8.1.0 ``Connection.read_response`` raises ``TimeoutError``
+    only after ``socket.timeout`` fires, i.e. after the socket timeout, and
+    XREAD ``BLOCK`` answers an empty reply after its block window. The default
+    is the window consume() uses with redis-py's 5s socket timeout; pass a
+    small value to model a tiny ``socket_timeout`` in the URL. ``clock`` is
+    advanced by that wait (reads that return entries or fail to connect take
+    no time).
+    """
 
     def __init__(
-        self, script: list[Any], *, socket_timeout: float | None = None
+        self,
+        script: list[Any],
+        *,
+        socket_timeout: float | None = None,
+        clock: "FakeClock | None" = None,
+        idle_read_s: float = XREAD_BLOCK_MS / 1000,
     ) -> None:
         self.script = list(script)
         self.calls: list[tuple[dict[str, str], int]] = []
         self.connection_pool = FakePool(socket_timeout)
+        self._clock = clock
+        self._idle_read_s = idle_read_s
 
     def xread(self, streams: dict[str, str], block: int, count: int) -> Any:
         del count
@@ -52,6 +70,9 @@ class FakeRedis:
         if not self.script:
             raise AssertionError("xread called more times than scripted")
         item = self.script.pop(0)
+        idle = item == [] or item is None or item is READ_TIMEOUT
+        if idle and self._clock is not None:
+            self._clock.now += self._idle_read_s
         if isinstance(item, Exception):
             raise item
         return item
@@ -98,11 +119,16 @@ def _entry(message_id: str, event: TaskEvent) -> list[Any]:
 
 
 def _make(
-    script: list[Any], *, socket_timeout: float | None = None
+    script: list[Any],
+    *,
+    socket_timeout: float | None = None,
+    idle_read_s: float = XREAD_BLOCK_MS / 1000,
 ) -> tuple[RedisTransport, FakeRedis, SleepRecorder, FakeClock]:
     clock = FakeClock()
     sleeper = SleepRecorder(clock)
-    client = FakeRedis(script, socket_timeout=socket_timeout)
+    client = FakeRedis(
+        script, socket_timeout=socket_timeout, clock=clock, idle_read_s=idle_read_s
+    )
     transport = RedisTransport(
         client=client,  # type: ignore[arg-type]  # structural fake for redis.Redis
         prefix="test",
@@ -193,6 +219,88 @@ class TestSocketTimeoutConfiguration:
         assert client.calls[0][1] == 2000
 
 
+class TestIdleReadPacing:
+    """A tiny ``socket_timeout`` must not turn consume() into a busy loop.
+
+    redis-py 8.1.0 ``Connection.read_response`` raises ``TimeoutError`` once
+    the socket timeout passes, and consume() blocks XREAD for half of it
+    (``_xread_block_ms``, at least 1ms), so with ``socket_timeout=0.001`` an
+    idle read is over in about a millisecond. ``idle_read_s`` models that.
+    """
+
+    TINY = 0.001
+
+    @pytest.mark.parametrize("idle", ["empty", "timeout"])
+    def test_consume_with_tiny_socket_timeout_waits_out_the_idle_interval(
+        self, idle: str
+    ) -> None:
+        reads = 20
+        reply: Any = [] if idle == "empty" else READ_TIMEOUT
+        event = _event("a")
+        transport, client, sleeper, clock = _make(
+            [reply] * reads + [_entry("1-0", event)],
+            socket_timeout=self.TINY,
+            idle_read_s=self.TINY,
+        )
+
+        assert _take(transport.consume(), 1) == [event]
+
+        assert len(client.calls) == reads + 1
+        assert sleeper.delays == pytest.approx(
+            [MIN_IDLE_READ_SECONDS - self.TINY] * reads
+        )
+        # Bounded: no more than one read per MIN_IDLE_READ_SECONDS.
+        assert clock.now == pytest.approx(reads * MIN_IDLE_READ_SECONDS)
+
+    def test_consume_with_idle_reads_at_the_block_window_does_not_wait(self) -> None:
+        event = _event("a")
+        transport, _, sleeper, _ = _make(
+            [[], READ_TIMEOUT, [], _entry("1-0", event)],
+            socket_timeout=5.0,
+        )
+
+        assert _take(transport.consume(), 1) == [event]
+
+        assert sleeper.delays == []
+
+    def test_consume_with_events_flowing_does_not_wait(self) -> None:
+        events = [_event(f"e{i}") for i in range(3)]
+        transport, _, sleeper, _ = _make(
+            [_entry(f"{i}-0", e) for i, e in enumerate(events)],
+            idle_read_s=self.TINY,
+        )
+
+        assert _take(transport.consume(), 3) == events
+
+        assert sleeper.delays == []
+
+    def test_consume_idle_wait_uses_the_stop_event_and_ends_when_it_is_set(
+        self,
+    ) -> None:
+        class StopsDuringTheWait(threading.Event):
+            def __init__(self) -> None:
+                super().__init__()
+                self.waits: list[float | None] = []
+
+            def wait(self, timeout: float | None = None) -> bool:
+                self.waits.append(timeout)
+                self.set()  # the stop arrives while consume() is waiting
+                return True
+
+        transport, client, sleeper, _ = _make(
+            [[]] * 5, socket_timeout=self.TINY, idle_read_s=self.TINY
+        )
+        stop = StopsDuringTheWait()
+        transport.bind_stop_event(stop)
+
+        assert list(transport.consume()) == []
+
+        # One read, one wait on the stop event (not the injected sleep), done.
+        assert len(client.calls) == 1
+        assert stop.waits == pytest.approx([MIN_IDLE_READ_SECONDS - self.TINY])
+        assert sleeper.delays == []
+
+
 class TestReadTimeouts:
     def test_consume_with_single_read_timeout_retries_without_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -237,7 +345,8 @@ class TestReadTimeouts:
         # Disconnected once the warning threshold is reached, reconnected after.
         assert states[READ_TIMEOUT_WARN_AFTER] is False
         assert transport.connected is True
-        assert clock.now == 0.0
+        # All the timeouts fell within one warning interval.
+        assert clock.now < READ_TIMEOUT_WARN_INTERVAL
 
     def test_consume_with_read_timeouts_after_interval_warns_again(
         self, caplog: pytest.LogCaptureFixture
@@ -478,8 +587,9 @@ class TestFailureBookkeeping:
         with caplog.at_level(logging.WARNING):
             _take(transport.consume(), 1)
 
-        # Same instant, but the empty read in between ended the first streak.
-        assert clock.now == 0.0
+        # Within one warning interval, but the empty read in between ended the
+        # first streak.
+        assert clock.now < READ_TIMEOUT_WARN_INTERVAL
         assert [r.getMessage() for r in caplog.records] == [
             "XREAD on test:events timed out 3 times in a row; check the network "
             "and the socket_timeout setting"

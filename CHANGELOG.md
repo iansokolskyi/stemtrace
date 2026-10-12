@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PublishBreaker(slow_attempt=...)` and `PublishBreaker.record_failure(elapsed=...)` are ignored and emit a `DeprecationWarning`; they will be removed in 1.0.
 
 ### Fixed
+- Redis: a tiny `socket_timeout` in the broker URL (e.g. `?socket_timeout=0.001`) no longer makes the server's consumer loop spin: its idle reads returned within milliseconds and looped straight back (measured against Redis 7: 130 reads in 2 s and a quarter of a core for `0.001`). An idle read (an empty reply or a read timeout) now takes at least 0.25 s (4 reads a second when idle), so with such a URL a new event can be delayed by up to that long; with the default timeouts nothing changes. Repeated read timeouts still log the same warnings.
 - Graphs: events in which two chords share one `celery.chord_unlock` task or one group-body start (Celery workflows don't produce these) no longer crash event handling; the drawing can still depend on event order (see the README's graph limitations).
 - Graphs: a group's tasks are listed only inside the group, which sits under the task that started it; they used to also appear directly under that task once they started.
 - Graphs: a task or group whose parent task isn't in the store (not received yet, or evicted) is now listed as a graph of its own instead of being shown in no graph, and moves under its parent once the parent arrives. A task's `parent_id` is empty while it is listed that way.
