@@ -93,11 +93,12 @@ class RabbitMQContainer:
 
     def wait_ready(self) -> None:
         def ready() -> bool:
+            # The management plugin starts after the AMQP listeners, so its
+            # answer means both are up (and probing with an AMQP connection
+            # that fails mid-handshake leaks a socket in old py-amqp).
             try:
-                with Connection(self.url, connect_timeout=1) as conn:
-                    conn.connect()
                 self.management("GET", "overview")
-            except Exception:  # noqa: BLE001  anything means "not up yet"
+            except (OSError, urllib.error.URLError, ValueError):
                 return False
             return True
 
@@ -199,6 +200,10 @@ def _connection_name(broker: RabbitMQContainer) -> str:
 
 
 class TestBrokerRestart:
+    # A connect that fails mid-handshake (the broker is booting) leaves its
+    # socket to the garbage collector in py-amqp 5.0.6 (Connection.connect()
+    # only collects in later versions); the per-event connections did the same.
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
     def test_publish_after_broker_restart_recovers_on_one_new_connection(
         self, broker: RabbitMQContainer, transport: RabbitMQTransport
     ) -> None:

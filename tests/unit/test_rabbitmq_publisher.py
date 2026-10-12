@@ -472,8 +472,12 @@ class TestPublisherFork:
             pid = os.fork()
             if pid == 0:
                 os.close(read_fd)
+                # Before publishing anything: did the fork hook already drop
+                # the parent's descriptor (so the child can't keep it open)?
+                dropped_at_fork = parent.connection.transport.sock.detached
                 transport.publish(_event("child-1"))
                 report = {
+                    "dropped_at_fork": dropped_at_fork,
                     "connections": len(broker.connections),
                     "child_conn_calls": broker.connections[-1].connection.calls,
                     "child_used_parent": broker.connections[-1] is parent,
@@ -497,6 +501,7 @@ class TestPublisherFork:
 
         out = _run(script, str(int(hook)))
 
+        assert out["child"]["dropped_at_fork"] is hook
         assert out["child"]["connections"] == 2
         assert out["child"]["child_used_parent"] is False
         assert out["child"]["child_conn_calls"] == []
