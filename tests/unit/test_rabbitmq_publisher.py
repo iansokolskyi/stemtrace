@@ -1931,7 +1931,13 @@ event = TaskEvent(task_id="a", name="n", state=TaskState.STARTED,
                   timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc))
 # The broker accepts and never answers: the connect waits in the handshake.
 victim = {spawn}(transport.publish, event)
-{sleep}(0.5)
+# Wait for the connect to reach the listener (a loaded host may take a while),
+# then give it a moment to get into the handshake (TLS wraps its socket there).
+for _ in range(300):
+    if held:
+        break
+    {sleep}(0.1)
+{sleep}(0.3)
 mid_connect = sockets() - before
 {kill}
 print(json.dumps({{"mid_connect": mid_connect, "after_kill": sockets() - before,
