@@ -256,9 +256,10 @@ class TestBoundedResolverRobustness:
     def test_invalid_host_name_fails_fast_without_lookup(self) -> None:
         dns, clock = FakeDns(), FakeClock()
         host = "a" * 64 + ".example.com"  # DNS labels are at most 63 octets
+        resolver = _make(dns, clock)
 
         with pytest.raises(socket.gaierror, match="Invalid host name"):
-            _make(dns, clock).resolve(host, 6379, timeout=1.0)
+            resolver.resolve(host, 6379, timeout=1.0)
 
         assert dns.calls == []
 
@@ -629,39 +630,37 @@ class TestBoundedResolverCreatesLocksLazily:
 class TestBoundedResolverConcurrentFirstUse:
     """Threads resolving at once in a fresh process share one state."""
 
-    def test_concurrent_first_resolves_share_one_state(self) -> None:
-        previous = sys.getswitchinterval()
-        sys.setswitchinterval(1e-6)  # switch threads as often as possible
-        failures: list[BaseException] = []
-        try:
-            for _ in range(200):
-                resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
-                start = threading.Barrier(8)
+    def test_concurrent_first_resolves_share_one_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        racers = 8
+        all_see_no_state = threading.Barrier(racers)
 
-                def resolve(
-                    resolver: BoundedResolver = resolver,
-                    start: threading.Barrier = start,
-                ) -> None:
-                    start.wait()
-                    try:
-                        assert (
-                            resolver.resolve("redis.local", 6379, timeout=0.5)
-                            == ADDRESS
-                        )
-                    except BaseException as exc:  # noqa: BLE001  collected for the assertion
-                        failures.append(exc)
+        class _StateBuiltAfterTheRace(resolver_module._State):
+            """Builds its state only once every racer found none installed."""
 
-                threads = [threading.Thread(target=resolve) for _ in range(8)]
-                for thread in threads:
-                    thread.start()
-                for thread in threads:
-                    thread.join(JOIN_S)
-                if failures:
-                    break
-        finally:
-            sys.setswitchinterval(previous)
+            def __init__(self) -> None:
+                # Not met if state creation became exclusive: that is fine too.
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    all_see_no_state.wait(JOIN_S)
+                super().__init__()
 
-        assert failures == []
+        monkeypatch.setattr(resolver_module, "_State", _StateBuiltAfterTheRace)
+        resolver = BoundedResolver(getaddrinfo=FakeDns(), monotonic=FakeClock())
+        used: list[object] = []
+
+        threads = [
+            threading.Thread(target=lambda: used.append(resolver._state()))
+            for _ in range(racers)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(JOIN_S)
+
+        assert [thread.is_alive() for thread in threads] == [False] * racers
+        assert len(used) == racers
+        assert {id(state) for state in used} == {id(resolver._state())}
 
 
 class _FakePopen:
@@ -700,7 +699,7 @@ class TestHelperSpawnVersusFork:
     def test_helper_starts_under_spawn_lock(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _FakePopen.held_elsewhere = []
+        monkeypatch.setattr(_FakePopen, "held_elsewhere", [])
         monkeypatch.setattr(resolver_module.subprocess, "Popen", _FakePopen)
 
         assert resolver_module._getaddrinfo_in_helper("redis.local", 1, 0, 0, 0) == []
