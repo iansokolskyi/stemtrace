@@ -204,29 +204,6 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
     raise error
 
 
-def _closing_socket(base_close: Callable[[Any], None]) -> Callable[[Any], None]:
-    """A py-amqp transport ``close()`` that always closes the socket.
-
-    py-amqp 5.0.6 _AbstractTransport.close() calls ``sock.shutdown()`` without
-    a try: after an RST it raises ENOTCONN and skips ``sock.close()``, and
-    py-amqp then leaves the socket to the garbage collector (on every failed
-    handshake and every discarded connection). Later versions guard it.
-    """
-
-    def close(self: Any) -> None:
-        """Close the transport; the socket is closed even if shutdown fails."""
-        sock = self.sock
-        with contextlib.suppress(OSError):
-            base_close(self)
-        if sock is not None:
-            with contextlib.suppress(OSError):
-                sock.close()
-        self.sock = None
-        self.connected = False
-
-    return close
-
-
 def _bounded_tls_setup(base_setup: Callable[[Any], None]) -> Callable[[Any], None]:
     """A py-amqp ``SSLTransport._setup_transport()`` whose handshake can time out.
 
@@ -262,14 +239,13 @@ def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     tcp = type(
         "ResolvingTCPTransport",
         (TCPTransport,),
-        {"_connect": _connect_resolved, "close": _closing_socket(TCPTransport.close)},
+        {"_connect": _connect_resolved},
     )
     tls = type(
         "ResolvingSSLTransport",
         (SSLTransport,),
         {
             "_connect": _connect_resolved,
-            "close": _closing_socket(SSLTransport.close),
             "_setup_transport": _bounded_tls_setup(SSLTransport._setup_transport),
         },
     )

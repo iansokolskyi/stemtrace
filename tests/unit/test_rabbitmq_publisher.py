@@ -6,7 +6,6 @@ monkey-patch run in their own interpreter.
 """
 
 import errno
-import gc
 import json
 import logging
 import os
@@ -17,7 +16,6 @@ import sys
 import textwrap
 import threading
 import time
-import warnings
 import weakref
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -26,7 +24,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from amqp.connection import Connection as AmqpConnection
 from amqp.transport import TCPTransport
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -701,41 +698,51 @@ class TestPyAmqpReadSemantics:
 class TestResolvingTransportsAreBounded:
     """Real py-amqp transports, as the publisher builds them."""
 
-    def test_connect_to_peer_that_resets_leaves_no_unclosed_socket(self) -> None:
+    def test_publish_to_peer_that_hangs_up_leaves_no_unclosed_socket(self) -> None:
         # py-amqp 5.0.6 _AbstractTransport.close() calls sock.shutdown()
-        # without a try: after an RST it raises ENOTCONN and skips
+        # without a try: once the peer is gone it can raise ENOTCONN and skip
         # sock.close(), and connect() calls it when the handshake fails.
-        with socket.socket() as server:
+        # (In its own interpreter: pytest's log capture keeps tracebacks, and
+        # with them the sockets, alive.)
+        script = _script(
+            """
+            import gc, json, logging, socket, threading, warnings
+            from stemtrace.transports.rabbitmq import RabbitMQTransport
+            from tests.fake_kombu import sample_event
+
+            logging.disable(logging.CRITICAL)
+            server = socket.socket()
             server.bind(("127.0.0.1", 0))
-            server.listen(1)
+            server.listen(4)
             port = server.getsockname()[1]
 
-            def reset_first_connection() -> None:
-                conn, _ = server.accept()
-                conn.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
-                )
-                conn.close()
+            def hang_up_twice():
+                for _ in range(2):
+                    conn, _ = server.accept()
+                    conn.close()
 
-            acceptor = threading.Thread(target=reset_first_connection)
+            acceptor = threading.Thread(target=hang_up_twice)
             acceptor.start()
-            connection = rabbitmq._resolving_amqp_connection_class(AmqpConnection)(
-                host=f"127.0.0.1:{port}", connect_timeout=2
+            transport = RabbitMQTransport(
+                f"amqp://guest:guest@127.0.0.1:{port}//", prefix="t", ttl=60
             )
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                try:
-                    connection.connect()
-                except OSError:
-                    failed = True
-                else:
-                    failed = False
-                del connection
+                transport.publish(sample_event("t-1"))
+                transport.publish(sample_event("t-2"))
+                del transport
                 gc.collect()
             acceptor.join(timeout=5)
+            print(json.dumps({"unclosed": [
+                str(w.message)[:40] for w in caught
+                if issubclass(w.category, ResourceWarning)
+            ]}))
+            """
+        )
 
-        assert failed is True
-        assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+        out = _run(script)
+
+        assert out == {"unclosed": []}
 
     def test_publish_to_silent_tls_peer_returns_within_the_connect_timeout(
         self,
