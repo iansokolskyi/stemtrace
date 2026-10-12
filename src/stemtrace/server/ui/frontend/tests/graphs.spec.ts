@@ -1,7 +1,13 @@
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
-import { createGroup, createSuccessTask, createWorkflowWithGroup } from './fixtures/mock-data'
+import {
+  createChain,
+  createGroup,
+  createSuccessTask,
+  createWorkflowWithGroup,
+  type MockTask,
+} from './fixtures/mock-data'
 
 /**
  * Tests for the Graphs page.
@@ -858,5 +864,163 @@ test.describe('Graph Page - Malformed Links', () => {
     // parent -> callback, parent -> chord, and one edge per header -> callback
     await expect(page.locator('.react-flow__edge')).toHaveCount(4)
     expect(messages.filter((text) => /key|duplicate|React Flow/i.test(text))).toEqual([])
+  })
+})
+
+/**
+ * Opens a graph with the live socket mocked and returns a function that pushes
+ * an event, as the server does after each change to the graph. The page then
+ * refetches the graph from the API, and the returned function resolves once that
+ * response is in, so a test that still sees the old graph is looking at a page
+ * that did not draw the new data. Resolves once the page reports "Live".
+ */
+async function openLiveGraph(
+  page: Page,
+  rootId: string,
+): Promise<(task: MockTask) => Promise<void>> {
+  const sockets: WebSocketRoute[] = []
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    sockets.push(ws)
+  })
+  await openGraphById(page, rootId)
+  await expect(page.getByText('Live', { exact: true })).toBeVisible()
+  // StrictMode (dev) opens and drops a socket before the one that goes live
+  const ws = sockets[sockets.length - 1]
+  return async (task) => {
+    const refetched = page.waitForResponse(
+      (response) =>
+        response.request().resourceType() === 'fetch' &&
+        decodeURIComponent(new URL(response.url()).pathname).endsWith(`/api/graphs/${rootId}`),
+    )
+    ws.send(
+      JSON.stringify({
+        task_id: task.task_id,
+        name: task.name,
+        state: task.state,
+        timestamp: new Date().toISOString(),
+        parent_id: task.parent_id,
+        root_id: task.root_id,
+        group_id: null,
+        trace_id: null,
+        retries: 0,
+      }),
+    )
+    await refetched
+  }
+}
+
+/** The task node a graph draws for `taskId`. */
+function graphNode(page: Page, taskId: string) {
+  return page.locator(`.react-flow__node[data-id="${taskId}"]`)
+}
+
+test.describe('Graph Page - Live Updates', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  /** step_1 -> step_2 (running), as the store holds it before the update. */
+  function runningChain() {
+    const [first, second] = createChain('app.flow', 2)
+    second.state = 'STARTED'
+    return { first, second }
+  }
+
+  /** The store after step_2 finished and spawned step_3. */
+  function finishStepTwo(mockApi: MockApiContext, first: MockTask, second: MockTask): MockTask {
+    const [, , third] = createChain('app.flow', 3)
+    third.task_id = `${first.task_id.slice(0, -4)}ffff`
+    third.root_id = first.task_id
+    third.parent_id = second.task_id
+    third.state = 'STARTED'
+    second.state = 'SUCCESS'
+    second.children.push(third.task_id)
+    mockApi.addTask(third)
+    return third
+  }
+
+  test('shows a new task and a state change without a reload', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const push = await openLiveGraph(page, first.task_id)
+    await expect(page.locator('.react-flow__node')).toHaveCount(2)
+    await expect(graphNode(page, second.task_id)).toContainText('STARTED')
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+
+    await expect(graphNode(page, third.task_id)).toContainText('step_3')
+    // Nobody panned or zoomed, so the view re-fits to show the new task
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(page.locator('.react-flow__node')).toHaveCount(3)
+    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+    await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
+    await expect(graphNode(page, second.task_id)).not.toContainText('STARTED')
+  })
+
+  test('shows a new task and a state change by polling while the socket is down', async ({
+    page,
+  }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    // A socket the server closes at once: the page falls back to polling
+    await page.routeWebSocket(/\/ws$/, (ws) => ws.close())
+    await openGraphById(page, first.task_id)
+    await expect(page.getByText('Polling', { exact: true })).toBeVisible()
+    await expect(graphNode(page, second.task_id)).toContainText('STARTED')
+
+    const third = finishStepTwo(mockApi, first, second)
+
+    // The page polls every 5 s
+    await expect(graphNode(page, third.task_id)).toContainText('step_3', { timeout: 15_000 })
+    await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
+  })
+
+  test('keeps a node the user dragged where it was left', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const push = await openLiveGraph(page, first.task_id)
+    const dragged = graphNode(page, first.task_id)
+    const before = (await dragged.boundingBox())!
+    // Drag by the card's id line, not the link text (a click would navigate)
+    await page.mouse.move(before.x + 4, before.y + 4)
+    await page.mouse.down()
+    await page.mouse.move(before.x + 4, before.y + 124, { steps: 8 })
+    await page.mouse.up()
+    await expect.poll(async () => (await dragged.boundingBox())!.y).toBeGreaterThan(before.y + 50)
+    // The node's own position (flow coordinates), unlike its box on screen,
+    // does not change when the page re-fits the view for the new task
+    const position = async () => dragged.evaluate((el) => (el as HTMLElement).style.transform)
+    const moved = await position()
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+    await expect(graphNode(page, third.task_id)).toBeVisible()
+
+    expect(await position()).toBe(moved)
+  })
+
+  test('keeps the zoom the user chose', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const push = await openLiveGraph(page, first.task_id)
+    const viewport = page.locator('.react-flow__viewport')
+    const box = (await page.locator('.react-flow').boundingBox())!
+    const fitted = await viewport.getAttribute('style')
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    // Zoom out: the fitted view of two nodes is already at the maximum zoom
+    await page.mouse.wheel(0, 400)
+    await expect.poll(async () => viewport.getAttribute('style')).not.toBe(fitted)
+    await page.waitForTimeout(300)
+    const zoomed = await viewport.getAttribute('style')
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+    await expect(graphNode(page, third.task_id)).toBeAttached()
+    await page.waitForTimeout(500)
+
+    expect(await viewport.getAttribute('style')).toBe(zoomed)
   })
 })

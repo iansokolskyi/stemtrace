@@ -10,12 +10,15 @@ import {
   Controls,
   type Edge,
   type Node,
+  type OnNodeDrag,
   Position,
   ReactFlow,
+  type ReactFlowInstance,
   useEdgesState,
   useNodesState,
+  type XYPosition,
 } from '@xyflow/react'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import '@xyflow/react/dist/style.css'
 import { Link } from '@tanstack/react-router'
 import type { GraphNode, NodeType } from '@/api/client'
@@ -52,6 +55,7 @@ const LEVEL_SPACING = 320
 const ROW_GAP = 40
 const LEVEL_GAP = 160
 const CALLBACK_GAP = 60
+const FIT_VIEW_OPTIONS = { padding: 0.2 }
 
 /**
  * A node's children without links back to itself. The server never sends
@@ -550,14 +554,61 @@ function buildGraphElements(
   return { nodes: flowNodes, edges: flowEdges }
 }
 
+/**
+ * The graph for `graphNodes`, kept in step with it: new tasks, new links and
+ * state changes show up as the data changes (a WebSocket event refetches the
+ * graph, or polling does when the socket is down).
+ *
+ * React Flow's `useNodesState(initial)` reads `initial` once, so the laid-out
+ * elements are copied into its state whenever they change. Two things the
+ * user did are kept across that copy: where they dragged a node, and the
+ * viewport once they have panned or zoomed (until then, the view re-fits when
+ * the set of nodes changes, so a new task is never off screen).
+ */
 export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => buildGraphElements(graphNodes, rootId),
-    [graphNodes, rootId],
-  )
+  const layout = useMemo(() => buildGraphElements(graphNodes, rootId), [graphNodes, rootId])
 
-  const [nodes, , onNodesChange] = useNodesState(initialNodes)
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges)
+  const [nodes, setNodes, onNodesChange] = useNodesState(layout.nodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState(layout.edges)
+  const flow = useRef<ReactFlowInstance | null>(null)
+  const draggedPositions = useRef(new Map<string, XYPosition>())
+  const viewportChosen = useRef(false)
+  const shownNodeIds = useRef(layout.nodes.map((node) => node.id).join())
+  // The ids a re-fit is waiting for React Flow to hold (see the second effect)
+  const fitWhenHolding = useRef<string | null>(null)
+
+  useEffect(() => {
+    setNodes((previous) => {
+      const measured = new Map(previous.map((node) => [node.id, node.measured]))
+      return layout.nodes.map((node) => ({
+        ...node,
+        // Keep the size React Flow measured: without it the node is hidden
+        // until it is measured again
+        measured: measured.get(node.id),
+        position: draggedPositions.current.get(node.id) ?? node.position,
+      }))
+    })
+    setEdges(layout.edges)
+
+    const nodeIds = layout.nodes.map((node) => node.id).join()
+    if (nodeIds !== shownNodeIds.current) {
+      shownNodeIds.current = nodeIds
+      if (!viewportChosen.current) fitWhenHolding.current = nodeIds
+    }
+  }, [layout, setNodes, setEdges])
+
+  // Fit once React Flow holds the new nodes: asked any earlier (in the effect
+  // above, where setNodes has only been queued) fitView fits the old ones.
+  useEffect(() => {
+    if (fitWhenHolding.current === null) return
+    if (nodes.map((node) => node.id).join() !== fitWhenHolding.current) return
+    fitWhenHolding.current = null
+    void flow.current?.fitView(FIT_VIEW_OPTIONS)
+  }, [nodes])
+
+  const rememberDraggedPositions: OnNodeDrag = (_event, _node, draggedNodes) => {
+    for (const node of draggedNodes) draggedPositions.current.set(node.id, node.position)
+  }
 
   if (Object.keys(graphNodes).length === 0) {
     return (
@@ -573,13 +624,33 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
       edges={edges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onInit={(instance) => {
+        flow.current = instance
+      }}
+      onNodeDragStop={rememberDraggedPositions}
+      // A user-driven pan or zoom comes with its mouse or touch event; the
+      // fits the page does itself (and the Controls buttons) come without one
+      onMoveStart={(event) => {
+        if (event) viewportChosen.current = true
+      }}
       fitView
-      fitViewOptions={{ padding: 0.2 }}
+      fitViewOptions={FIT_VIEW_OPTIONS}
       minZoom={0.1}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
     >
-      <Controls className="bg-slate-800 border-slate-700" />
+      <Controls
+        className="bg-slate-800 border-slate-700"
+        onZoomIn={() => {
+          viewportChosen.current = true
+        }}
+        onZoomOut={() => {
+          viewportChosen.current = true
+        }}
+        onFitView={() => {
+          viewportChosen.current = false
+        }}
+      />
       <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#1E293B" />
     </ReactFlow>
   )
