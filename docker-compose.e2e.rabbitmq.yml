@@ -16,7 +16,11 @@ services:
       - "5672:5672"
       - "15672:15672"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # Run the check as the rabbitmq user. As root (docker exec's default) the
+      # Erlang CLI can create a root-owned /var/lib/rabbitmq/.erlang.cookie before
+      # the broker has, and the broker (rabbitmq user) then dies with eacces.
+      # (gosu ships in the rabbitmq image; checked on 3.13.7)
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 2s
       timeout: 5s
       retries: 20
@@ -48,9 +52,13 @@ services:
     command: ["celery", "-A", "tests.e2e.tasks", "worker", "--loglevel=info", "--concurrency=2", "-E"]
     healthcheck:
       test: ["CMD", "celery", "-A", "tests.e2e.tasks", "inspect", "ping"]
-      interval: 5s
-      timeout: 10s
-      retries: 10
+      # Each check starts a whole Celery CLI process (about 5 s of CPU, mostly
+      # Celery startup and importing the app), so on a small or busy runner it
+      # takes well over 10 s of wall time. The timeout leaves room for that and
+      # the interval keeps the checks from adding to the load.
+      interval: 10s
+      timeout: 30s
+      retries: 6
       start_period: 10s
 
   server:

@@ -404,13 +404,13 @@ class TestWorkerEventHandling:
         should be marked offline by the stale check mechanism.
         """
         worker_registry = WorkerRegistry()
-        # Pre-register a worker that we'll manually mark as stale
-        worker_registry.register_worker("stale-worker", 11111, ["tasks.stale"])
-
-        # Manually set last_seen to 20 minutes ago to trigger stale detection
-        with worker_registry._lock:
-            worker = worker_registry._workers["stale-worker:11111"]
-            worker.last_seen = datetime.now(timezone.utc) - timedelta(minutes=20)
+        # Pre-register a worker last seen 20 minutes ago to trigger stale detection
+        worker_registry.register_worker(
+            "stale-worker",
+            11111,
+            ["tasks.stale"],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=20),
+        )
 
         # Create a task event to trigger processing (stale check happens after events)
         task_event = TaskEvent(
