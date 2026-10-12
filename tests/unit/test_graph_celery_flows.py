@@ -647,6 +647,9 @@ def test_remove_group_body_node_of_real_chord_rebuilds_the_body() -> None:
     assert graph.nodes[body.task_id].children == body_tasks
     assert {graph.nodes[t].parent_id for t in body_tasks} == {body.task_id}
     assert set(graph._body_members) == {chord.group_id}
+    assert graph._callback_of == {body.task_id: chord.group_id}
+    assert graph.nodes[body.task_id].parent_id == chord.task_id
+    assert graph.root_ids == [chord.task_id]
 
 
 def test_remove_chord_node_of_real_capture_releases_headers_and_unlock_task() -> None:

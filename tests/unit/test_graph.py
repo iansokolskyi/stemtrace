@@ -2686,6 +2686,7 @@ def _ev(
     state: TaskState = TaskState.PENDING,
     /,
     *,
+    name: str = "myapp.tasks.process",
     parent_id: str | None = None,
     root_id: str | None = None,
     group_id: str | None = None,
@@ -2693,7 +2694,7 @@ def _ev(
 ) -> TaskEvent:
     return TaskEvent(
         task_id=task_id,
-        name="myapp.tasks.process",
+        name=name,
         state=state,
         timestamp=_BASE_TIME,
         parent_id=parent_id,
@@ -3035,6 +3036,58 @@ class TestRemoveNode:
         assert graph._awaiting_parent == {}
         assert graph.nodes["t0"].children == ["group:g"]
 
+    def test_remove_node_group_whose_member_loops_back_leaves_no_dangling_root(
+        self,
+    ) -> None:
+        # t2 and t5 report each other as parent, so the cycle is broken at
+        # group g2's link; removing g2 while that link is being re-placed used
+        # to unlink it twice (a dangling root on f4f9169, ValueError after
+        # dropping the guard).
+        def event(
+            task_id: str,
+            state: TaskState,
+            seconds: int,
+            *,
+            parent_id: str | None = None,
+            group_id: str | None = None,
+            chord_callback_id: str | None = None,
+            retries: int = 0,
+        ) -> TaskEvent:
+            return TaskEvent(
+                task_id=task_id,
+                name="tests.task",
+                state=state,
+                timestamp=_BASE_TIME + timedelta(seconds=seconds),
+                parent_id=parent_id,
+                group_id=group_id,
+                chord_callback_id=chord_callback_id,
+                retries=retries,
+            )
+
+        graph = _build(
+            event("t5", TaskState.FAILURE, 18, parent_id="t6", group_id="g2"),
+            event("t2", TaskState.FAILURE, 55, parent_id="t3", retries=1),
+            event("t0", TaskState.RECEIVED, 25, parent_id="t7"),
+            event("t5", TaskState.RETRY, 5, parent_id="t2", group_id="g2"),
+            event("t8", TaskState.FAILURE, 40, group_id="g2"),
+            event("t8", TaskState.FAILURE, 32, parent_id="t0", group_id="g0"),
+            event("t2", TaskState.STARTED, 41, parent_id="t5"),
+            event(
+                "t7",
+                TaskState.PENDING,
+                30,
+                group_id="g0",
+                chord_callback_id="t8",
+                retries=1,
+            ),
+        )
+
+        graph.remove_node("group:g2")
+
+        assert_graph_invariants(graph)
+        assert "group:g2" not in graph.nodes
+        assert graph.root_ids == ["group:g0", "t2"]
+
     def test_remove_node_unknown_id_is_ignored(self) -> None:
         graph = _build(_ev("t"))
 
@@ -3042,6 +3095,85 @@ class TestRemoveNode:
 
         assert list(graph.nodes) == ["t"]
         assert graph.root_ids == ["t"]
+
+
+class TestSharedChordTasks:
+    """Two chords reaching one task: it is drawn under one chord, the smaller
+    group ID, whichever resolves first (as for callbacks)."""
+
+    @pytest.mark.parametrize(("first", "second"), [("gA", "gB"), ("gB", "gA")])
+    def test_add_event_chords_sharing_a_chord_unlock_task_keeps_one_owner(
+        self, first: str, second: str
+    ) -> None:
+        unlock = "celery.chord_unlock"
+        graph = _build(
+            _ev("U", name=unlock),
+            *(
+                event
+                for g in (first, second)
+                for event in (
+                    _ev(f"h{g}", group_id=g, chord_callback_id=f"c{g}"),
+                    _ev(f"c{g}", parent_id="U"),
+                )
+            ),
+        )
+        assert graph._unlock_by_chord == {"gA": "U"}
+        assert graph._unlock_of == {"U": "gA"}
+        assert graph.nodes["U"].parent_id == "group:gA"
+
+        # Each callback now reports its chord's group (a worker event): the
+        # chords re-resolve, and the second used to raise KeyError("U").
+        for g in (first, second):
+            graph.add_event(
+                _ev(
+                    f"c{g}",
+                    TaskState.STARTED,
+                    parent_id="U",
+                    group_id=g,
+                    chord_callback_id=f"c{g}",
+                )
+            )
+            assert_graph_invariants(graph)
+
+        assert graph._unlock_by_chord == {}
+        assert graph._unlock_of == {}
+        assert sorted(graph.nodes["U"].children) == ["group:gA", "group:gB"]
+
+    @pytest.mark.parametrize(("first", "second"), [("g0", "g1"), ("g1", "g0")])
+    def test_add_event_chords_sharing_group_body_tasks_keeps_one_owner(
+        self, first: str, second: str
+    ) -> None:
+        # Both chords' body tasks (stamped with their group IDs, which the
+        # headers name) run below S and S2, which a chord_unlock task fired.
+        graph = _build(
+            _ev("U", name="celery.chord_unlock"),
+            _ev("S", parent_id="U"),
+            _ev("S2", parent_id="U"),
+            *(
+                event
+                for g in (first, second)
+                for event in (
+                    _ev(f"h{g}", group_id=g, chord_callback_id=g),
+                    _ev(f"{g}a", TaskState.STARTED, group_id=g, parent_id="S"),
+                    _ev(f"{g}b", TaskState.STARTED, group_id=g, parent_id="S2"),
+                )
+            ),
+        )
+
+        # The smaller group ID draws the body; the other chord has none.
+        assert graph._body_members == {"g0": ["S", "S2"]}
+        assert graph._body_of == {"S": "g0", "S2": "g0"}
+        assert graph.nodes["group:g0"].chord_id == "group:g0:body"
+        assert graph.nodes["group:g1"].chord_id is None
+        assert graph.nodes["S"].parent_id == "group:g0:body"
+
+        # Removing a body task releases both (it used to raise KeyError("S")).
+        graph.remove_node("S")
+
+        assert_graph_invariants(graph)
+        assert graph._body_of == {}
+        graph.remove_node("S2")
+        assert_graph_invariants(graph)
 
 
 class TestGroupStatePriority:

@@ -1113,6 +1113,8 @@ class TaskGraph(BaseModel):
         if node.group_id is not None and task_id == _body_node_id(node.group_id):
             # A group body node: the chord rebuilds it if its body still is one.
             self._drop_body_group(node.group_id)
+            # The rebuilt body (same ID) isn't being removed: it can be placed.
+            self._removing.discard(task_id)
             self._resolve_callback(node.group_id)
             return
         self._unlink(node)
@@ -1321,7 +1323,8 @@ class TaskGraph(BaseModel):
             if parent_id is not None:
                 return parent_id
         group_node_id = self._inside_group_of(node)
-        if group_node_id is not None:
+        # A group being removed is already unlinked: it isn't moved again.
+        if group_node_id is not None and group_node_id not in self._removing:
             self._move(self.nodes[group_node_id], None)
             self._cycle_broken[group_node_id] = None
             parent_id = self._safe_parent(node, desired)
@@ -1980,14 +1983,17 @@ class TaskGraph(BaseModel):
         """Whether a found callback can be drawn after this chord.
 
         Not if that would close a cycle, nor if another chord with a smaller
-        group ID draws it (two chords leading to one body would otherwise
-        take it in turns).
+        group ID draws it, or holds it in its group body (two chords leading
+        to one body would otherwise take it in turns).
         """
         if self._loops_back(callback_id, chord_node, chord_parent):
             self._cycles_refused += 1
             return False
         owner = self._callback_of.get(callback_id)
-        if owner is not None and owner < group_id:
+        body_owner = self._body_of.get(callback_id)
+        if (owner is not None and owner < group_id) or (
+            body_owner is not None and body_owner < group_id
+        ):
             self._add_chord_dep(group_id, callback_id)
             return False
         return True
@@ -2005,6 +2011,12 @@ class TaskGraph(BaseModel):
             found = self._walk_to_body(group_id, tail_id, tally, chord_parent)
             if found is not None:
                 starts.setdefault(found[0], found[1])
+        # A task is drawn in one chord's group body: the smaller group ID keeps
+        # a start both chords found (as for callbacks, ``_may_draw_callback``).
+        for start_id in [
+            s for s in starts if self._body_of.get(s, group_id) < group_id
+        ]:
+            del starts[start_id]
         if not starts:
             return None
         if len(starts) == 1:
@@ -2030,6 +2042,17 @@ class TaskGraph(BaseModel):
             self._link(body)
         previous = self._body_members.get(group_id, [])
         self._body_members[group_id] = members
+        # Starts a larger group ID's body holds come to this one; it re-resolves
+        # at the end, without them.
+        displaced = {
+            owner
+            for m in members
+            if (owner := self._body_of.get(m, group_id)) != group_id
+        }
+        for owner in displaced:
+            self._body_members[owner] = [
+                m for m in self._body_members[owner] if m not in members
+            ]
         for member_id in previous:
             if member_id not in members and self._body_of.get(member_id) == group_id:
                 del self._body_of[member_id]
@@ -2039,6 +2062,8 @@ class TaskGraph(BaseModel):
         self._refresh_body_state(group_id)
         for member_id in members:
             self._place_if_present(member_id)
+        for owner in sorted(displaced):
+            self._resolve_callback(owner)
         return body_id
 
     def _refresh_body_state(self, group_id: str) -> None:
@@ -2183,6 +2208,10 @@ class TaskGraph(BaseModel):
                 self._release_callback(chord_node, group_id, previous)
             if callback_id is not None:
                 self._claim_callback(group_id, callback_id)
+        elif callback_id is not None and self._callback_of.get(callback_id) != group_id:
+            # Still the chord's callback, but its claim was dropped (a group
+            # body node removed and rebuilt under the same ID).
+            self._claim_callback(group_id, callback_id)
         if callback_id is None:
             return
         self._place(self.nodes[callback_id])
@@ -2195,6 +2224,16 @@ class TaskGraph(BaseModel):
 
     def _set_unlock(self, group_id: str, unlock_id: str | None) -> None:
         """Record the chord_unlock task that fired a chord's body (None: none)."""
+        if unlock_id is not None:
+            owner = self._unlock_of.get(unlock_id)
+            if owner is not None and owner != group_id:
+                # One chord draws it, as for callbacks (``_may_draw_callback``):
+                # the smaller group ID, whichever resolves first; the other
+                # would take it in turns.
+                if owner < group_id:
+                    unlock_id = None
+                else:
+                    del self._unlock_by_chord[owner]
         previous = self._unlock_by_chord.get(group_id)
         if previous == unlock_id:
             return

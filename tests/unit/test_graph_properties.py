@@ -17,6 +17,8 @@ _T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _TASK_IDS = [f"t{i}" for i in range(10)]
 _GROUP_IDS = ["g0", "g1", "g2"]
 _STATES = list(TaskState)
+_UNLOCK = "celery.chord_unlock"
+_NAMES = ["tests.task", "tests.other", _UNLOCK]
 
 
 def _make_celery_shaped(
@@ -102,7 +104,37 @@ def _plan_chord_body(
     return callback
 
 
-def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[TaskEvent]:
+def _hang_callbacks_from_unlocks(
+    rng: random.Random,
+    callback_of: dict[str, str | None],
+    parent_of: dict[str, str | None],
+    name_of: dict[str, str],
+    group_of: dict[str, str | None],
+) -> None:
+    """Make some chord callbacks children of ``celery.chord_unlock`` tasks.
+
+    Celery's chord_unlock task fires the body, so the body's tasks report it
+    as their parent. Callbacks of different chords may pick the same unlock
+    task. Only earlier, group-less tasks qualify, so parents stay acyclic.
+    """
+    for callback in callback_of.values():
+        if callback is None or callback not in _TASK_IDS or rng.random() < 0.4:
+            continue
+        index = _TASK_IDS.index(callback)
+        unlocks = [
+            t
+            for t in _TASK_IDS[:index]
+            if group_of[t] is None and t != parent_of[callback]
+        ]
+        if unlocks:
+            unlock = rng.choice(unlocks)
+            name_of[unlock] = _UNLOCK
+            parent_of[callback] = unlock
+
+
+def _random_events(
+    seed: int, count: int, *, acyclic: bool = False, odd_names: bool = True
+) -> list[TaskEvent]:
     """Events for a small pool of tasks with groups, chords and odd parents.
 
     Each task mostly keeps one group and one parent, like real Celery tasks,
@@ -111,6 +143,14 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
     parent is an earlier task (or missing), as in Celery, where a task's
     parent is sent before it; a group's members share one parent; chords
     name distinct callbacks; a task keeps its group.
+
+    Events carry a ``root_id`` and a callback may name a group ID (the
+    chord's own included). With ``odd_names``, some tasks are named
+    ``celery.chord_unlock`` (the parent of a chord callback, shared between
+    chords) and some events report another name for their task ID, as a
+    reused ID (``task.replace()``) does. Removal then differs from a rebuild
+    for some inputs (a known gap, outside what these checks cover), so the
+    remove-vs-rebuild test turns it off.
     """
     rng = random.Random(seed)
     group_of = {t: rng.choice([*_GROUP_IDS, None, None]) for t in _TASK_IDS}
@@ -136,10 +176,22 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
         )
         for i, t in enumerate(_TASK_IDS)
     }
-    callback_of = {g: rng.choice([*_TASK_IDS, None]) for g in _GROUP_IDS}
+    callback_of = {g: rng.choice([*_TASK_IDS, *_GROUP_IDS, None]) for g in _GROUP_IDS}
     headers = set(_TASK_IDS)
     if acyclic:
         callback_of, headers = _make_celery_shaped(rng, group_of, parent_of)
+    # A separate stream, so the plan above keeps its draws.
+    extra = random.Random(seed ^ 0x5EED)
+    names = ["tests.task", "tests.task", _UNLOCK] if odd_names else ["tests.task"]
+    name_of = {t: extra.choice(names) for t in _TASK_IDS}
+    root_of = {
+        t: extra.choice(
+            [None, None, t, "ghost", *(_TASK_IDS[:i] if acyclic else _TASK_IDS)]
+        )
+        for i, t in enumerate(_TASK_IDS)
+    }
+    if acyclic and odd_names:
+        _hang_callbacks_from_unlocks(extra, callback_of, parent_of, name_of, group_of)
     events = []
     for i in range(count):
         task_id = rng.choice(_TASK_IDS)
@@ -160,7 +212,12 @@ def _random_events(seed: int, count: int, *, acyclic: bool = False) -> list[Task
         events.append(
             TaskEvent(
                 task_id=task_id,
-                name="tests.task",
+                name=(
+                    extra.choice(_NAMES)
+                    if odd_names and extra.random() < 0.08
+                    else name_of[task_id]
+                ),
+                root_id=None if extra.random() < 0.15 else root_of[task_id],
                 state=rng.choice(_STATES),
                 timestamp=_T0 + timedelta(seconds=rng.randint(0, count)),
                 parent_id=parent_id,
@@ -214,7 +271,7 @@ def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
     depends on which link came first); with this plan none does.
     """
     rng = random.Random(20_000 + seed)
-    events = _random_events(seed, 60, acyclic=True)
+    events = _random_events(seed, 60, acyclic=True, odd_names=False)
     graph = TaskGraph()
     for event in events:
         graph.add_event(event)

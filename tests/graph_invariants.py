@@ -100,14 +100,27 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
     for node_id, node in nodes.items():
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"
+            assert graph._callback_of.get(node.chord_id) == node.group_id, node_id
+        if node.node_type == NodeType.CHORD and node.chord_callback_id is not None:
+            named = graph._chord_by_callback.get(node.chord_callback_id)
+            assert named == node.group_id, (node_id, node.chord_callback_id, named)
     for callback_id, group_id in graph._callback_of.items():
         chord = nodes.get(_group_node_id(group_id))
         assert chord is not None, (callback_id, group_id, "callback of no chord")
         assert chord.chord_id == callback_id, (callback_id, group_id)
-    assert {u: g for g, u in graph._unlock_by_chord.items()} == graph._unlock_of
+    # One owner each way: a chord_unlock task is drawn under one chord.
+    assert len(set(graph._unlock_by_chord.values())) == len(graph._unlock_by_chord), (
+        graph._unlock_by_chord
+    )
+    for group_id, unlock_id in graph._unlock_by_chord.items():
+        assert graph._unlock_of.get(unlock_id) == group_id, (group_id, unlock_id)
+    for unlock_id, group_id in graph._unlock_of.items():
+        assert graph._unlock_by_chord.get(group_id) == unlock_id, (group_id, unlock_id)
     for group_id, members in graph._body_members.items():
         assert _body_node_id(group_id) in nodes, f"{group_id} lost its body node"
+        assert len(set(members)) == len(members), (group_id, members)
         for member_id in members:
+            # A task is in one chord's group body only.
             assert graph._body_of.get(member_id) == group_id, member_id
     for member_id, group_id in graph._body_of.items():
         assert member_id in graph._body_members[group_id], member_id
@@ -126,6 +139,34 @@ def _check_missing_parent_indexes(graph: TaskGraph) -> None:
             node = graph.nodes.get(walker)
             assert node is not None, (walked, walker, "walker is gone")
             assert node.node_type == NodeType.TASK, (walked, walker)
+
+
+def _check_dependency_indexes(graph: TaskGraph) -> None:
+    """Chord and replacement-walk dependencies agree with their reverse maps."""
+    for node_id, group_ids in graph._chord_deps.items():
+        for group_id in group_ids:
+            assert node_id in graph._deps_of_chord.get(group_id, ()), (
+                node_id,
+                group_id,
+            )
+    for group_id, node_ids in graph._deps_of_chord.items():
+        for node_id in node_ids:
+            assert group_id in graph._chord_deps.get(node_id, {}), (node_id, group_id)
+    for owner, walked_ids in graph._walks_of.items():
+        for walked in walked_ids:
+            assert owner in graph._walk_deps.get(walked, {}), (walked, owner)
+    for walked, walkers in graph._walk_deps.items():
+        for walker in walkers:
+            assert walked in graph._walks_of.get(walker, ()), (walked, walker)
+
+
+def _check_reported_children(graph: TaskGraph) -> None:
+    """Each task listed under a reported parent exists and reports it."""
+    for parent_id, child_ids in graph._reported_children.items():
+        for child_id in child_ids:
+            child = graph.nodes.get(child_id)
+            assert child is not None, (parent_id, child_id, "reporter is gone")
+            assert child.reported_parent_id == parent_id, (parent_id, child_id)
 
 
 def assert_graph_invariants(graph: TaskGraph) -> None:
@@ -155,3 +196,5 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
     _check_group_indexes(graph)
     _check_chord_indexes(graph)
     _check_missing_parent_indexes(graph)
+    _check_dependency_indexes(graph)
+    _check_reported_children(graph)
