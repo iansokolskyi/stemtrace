@@ -4,6 +4,9 @@ Configured through environment variables so each test run uses its own
 queue and stemtrace stream:
 
 - ``OUTPUT_TEST_REDIRECT=0`` turns off Celery's stdout/stderr redirect.
+- ``OUTPUT_TEST_PUBLISH_RECEIVED=0`` leaves the opt-in RECEIVED event off
+  (``publish_received`` defaults to False in ``init_worker``; the other tests
+  here turn it on).
 - ``OUTPUT_TEST_NOOP_LOGGING=1`` connects a ``setup_logging`` receiver that
   configures nothing, so the worker has no logging handlers and Python falls
   back to ``logging.lastResort`` (WARNING+ to stderr).
@@ -46,6 +49,7 @@ stemtrace.init_worker(
     prefix=os.environ.get("OUTPUT_TEST_PREFIX", "output_test"),
     ttl=300,
     capture_output=True,
+    publish_received=os.environ.get("OUTPUT_TEST_PUBLISH_RECEIVED", "1") != "0",
 )
 
 task_logger = get_task_logger(__name__)

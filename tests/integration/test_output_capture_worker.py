@@ -161,6 +161,18 @@ def prefork_worker(tmp_path_factory: pytest.TempPathFactory) -> Iterator[WorkerR
 
 
 @pytest.fixture(scope="module")
+def received_off_worker(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[WorkerRun]:
+    """A prefork worker that leaves the opt-in RECEIVED event off."""
+    yield from _start_worker(
+        "prefork",
+        {"OUTPUT_TEST_PUBLISH_RECEIVED": "0"},
+        tmp_path_factory.mktemp("worker-received-off"),
+    )
+
+
+@pytest.fixture(scope="module")
 def unconfigured_logging_worker(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[WorkerRun]:
@@ -232,6 +244,20 @@ def test_received_is_published_per_delivery_of_the_first_attempt(
     received = next(e for e in events if e.state == TaskState.RECEIVED)
     first_start = next(e for e in events if e.state == TaskState.STARTED)
     assert received.timestamp <= first_start.timestamp
+
+
+def test_received_is_not_published_unless_enabled(
+    received_off_worker: WorkerRun,
+) -> None:
+    """Without publish_received the worker publishes STARTED and SUCCESS only."""
+    task_id = received_off_worker.send("output_test.noisy")
+
+    events = received_off_worker.wait_for(task_id, TaskState.SUCCESS)
+
+    assert [e.state for e in events if e.task_id == task_id] == [
+        TaskState.STARTED,
+        TaskState.SUCCESS,
+    ]
 
 
 def test_redelivered_message_publishes_received_again(

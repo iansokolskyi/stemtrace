@@ -1,6 +1,7 @@
 """Tests for REST API routes."""
 
 import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -1505,6 +1506,142 @@ class TestRefreshOneProcessPerNodename:
         assert self._statuses(registry) == {
             ("w1@devbox", 100): "online",
             ("w2@devbox", 101): "offline",
+        }
+
+
+class _InspectApplyingEvents(_FakeInspect):
+    """Inspect whose slow call lets worker events reach the registry meanwhile.
+
+    A real refresh waits up to 0.5 s for ``stats()`` and again for
+    ``registered()`` (``_INSPECT_TIMEOUT_SECONDS``), while the consumer thread
+    keeps applying worker events. ``during`` runs inside the named call and the
+    reply it then returns is what was true before those events.
+    """
+
+    def __init__(
+        self,
+        *,
+        stats_result: dict[str, object] | None,
+        during: Callable[[], None],
+        in_call: str = "stats",
+    ) -> None:
+        super().__init__(
+            ping_result=None, stats_result=stats_result, registered_result=None
+        )
+        self._during = during
+        self._in_call = in_call
+
+    def stats(self, timeout: float | None = None) -> dict[str, object] | None:
+        if self._in_call == "stats":
+            self._during()
+        return super().stats(timeout)
+
+    def registered(self, timeout: float | None = None) -> dict[str, object] | None:
+        if self._in_call == "registered":
+            self._during()
+        return super().registered(timeout)
+
+
+class TestStaleInspectReplyLosesToNewerEvents:
+    """A reply describes the node as of when inspect asked, not when it arrived.
+
+    Source precedence per nodename: a worker event applied after the refresh
+    started beats the reply (the reply predates it); a reply beats events
+    applied before the refresh started (it is the fresher observation, e.g. a
+    pid the OS reused after ``worker_shutdown``).
+    """
+
+    NODE = "celery@web-1"
+
+    @staticmethod
+    def _statuses(registry: WorkerRegistry) -> dict[tuple[str, int], str]:
+        return {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+
+    @pytest.mark.parametrize("in_call", ["stats", "registered"])
+    def test_stale_stats_after_restart_events_keeps_new_pid_live(
+        self, in_call: str
+    ) -> None:
+        """worker_shutdown(A) and worker_ready(B) land while stats() is pending."""
+        registry = WorkerRegistry()
+        registry.register_worker(self.NODE, 100, ["app.add"])
+
+        def restart_events() -> None:
+            registry.mark_shutdown(self.NODE, 100)
+            registry.register_worker(self.NODE, 200, ["app.add"])
+
+        stale = _InspectApplyingEvents(
+            stats_result={self.NODE: {"pid": 100}},
+            during=restart_events,
+            in_call=in_call,
+        )
+        routes._refresh_worker_registry_from_inspect(registry, stale)  # type: ignore[arg-type]
+
+        expected = {(self.NODE, 100): "offline", (self.NODE, 200): "online"}
+        assert self._statuses(registry) == expected
+
+        # The stale reply must not have made A the node's newest entry either:
+        # a ping-only refresh afterwards revives B, not A.
+        registry.mark_offline(self.NODE, 200)
+        ping = _FakeInspect(
+            ping_result={self.NODE: {"ok": "pong"}},
+            stats_result=None,
+            registered_result=None,
+        )
+        routes._refresh_worker_registry_from_inspect(registry, ping)  # type: ignore[arg-type]
+
+        assert self._statuses(registry) == expected
+
+    def test_stale_stats_does_not_mark_a_node_that_just_started_offline(self) -> None:
+        """A node whose worker_ready arrived mid-inspect is missing from the reply."""
+        registry = WorkerRegistry()
+        registry.register_worker("w1@devbox", 100, ["app.add"])
+
+        def second_node_ready() -> None:
+            registry.register_worker("w2@devbox", 101, ["app.add"])
+
+        stale = _InspectApplyingEvents(
+            stats_result={"w1@devbox": {"pid": 100}}, during=second_node_ready
+        )
+        routes._refresh_worker_registry_from_inspect(registry, stale)  # type: ignore[arg-type]
+
+        assert self._statuses(registry) == {
+            ("w1@devbox", 100): "online",
+            ("w2@devbox", 101): "online",
+        }
+
+    def test_reply_still_wins_over_events_applied_before_the_refresh(self) -> None:
+        """No event during the call: stats naming a reused pid revives it."""
+        registry = WorkerRegistry()
+        registry.register_worker(self.NODE, 100, ["app.add"])
+        registry.mark_shutdown(self.NODE, 100)
+
+        fresh = _FakeInspect(
+            ping_result=None,
+            stats_result={self.NODE: {"pid": 100}},
+            registered_result=None,
+        )
+        routes._refresh_worker_registry_from_inspect(registry, fresh)  # type: ignore[arg-type]
+
+        assert self._statuses(registry) == {(self.NODE, 100): "online"}
+
+    def test_events_for_another_node_do_not_discard_the_reply(self) -> None:
+        """The guard is per nodename: w2's events leave w1's reply applicable."""
+        registry = WorkerRegistry()
+        registry.register_worker("w1@devbox", 100, ["app.add"])
+        registry.mark_offline("w1@devbox", 100)
+
+        def other_node_ready() -> None:
+            registry.register_worker("w2@devbox", 101, ["app.add"])
+
+        inspect = _InspectApplyingEvents(
+            stats_result={"w1@devbox": {"pid": 100}, "w2@devbox": {"pid": 101}},
+            during=other_node_ready,
+        )
+        routes._refresh_worker_registry_from_inspect(registry, inspect)  # type: ignore[arg-type]
+
+        assert self._statuses(registry) == {
+            ("w1@devbox", 100): "online",
+            ("w2@devbox", 101): "online",
         }
 
 

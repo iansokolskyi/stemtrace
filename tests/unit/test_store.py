@@ -1466,6 +1466,44 @@ class TestWorkerRegistry:
         workers = [(w.hostname, w.pid, w.status) for w in registry.get_all_workers()]
         assert workers == [("w1@devbox", 2, WorkerStatus.ONLINE)]
 
+    def test_register_worker_retires_the_nodes_other_pids(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """worker_ready(B) means A is gone, even if A never sent worker_shutdown."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w2@devbox", 300, ["a"])
+
+        registry.register_worker("w1@devbox", 200, ["a"])
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {
+            ("w1@devbox", 100): WorkerStatus.OFFLINE,
+            ("w1@devbox", 200): WorkerStatus.ONLINE,
+            ("w2@devbox", 300): WorkerStatus.ONLINE,
+        }
+
+    def test_register_worker_retired_pid_is_not_marked_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Only a worker_shutdown event is final; a retired pid can be revived."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w1@devbox", 200, ["a"])
+
+        old = registry.get_worker("w1@devbox", 100)
+
+        assert old is not None
+        assert old.shutdown_reported is False
+
+    def test_register_worker_same_pid_again_stays_online(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Re-registering the live pid (worker_ready replay) retires nothing."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w1@devbox", 100, ["a", "b"])
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {("w1@devbox", 100): WorkerStatus.ONLINE}
+
     def test_get_registered_tasks_after_shutdown(
         self, registry: WorkerRegistry
     ) -> None:

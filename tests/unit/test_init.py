@@ -310,10 +310,9 @@ class TestInit:
         assert config is not None
         assert config.node_alias_from_arguments is None
 
-    def test_init_worker_publishes_received_when_worker_receives_task(self) -> None:
-        """The RECEIVED bootstep init_worker registers publishes to the transport."""
-        app = Celery("received_test", broker="memory://")
-        init_worker(app, transport_url="memory://")
+    @staticmethod
+    def _deliver(app: Celery, message_id: str) -> None:
+        """Run a task message through the RECEIVED step the app registered."""
         consumer = SimpleNamespace(strategies={"app.add": lambda *_a, **_k: None})
         step = next(
             step_cls(consumer)
@@ -321,16 +320,48 @@ class TestInit:
             if step_cls is ReceivedEventStep
         )
         step.start(consumer)
-
-        message = SimpleNamespace(headers={"id": "task-1", "retries": 0})
+        message = SimpleNamespace(headers={"id": message_id, "retries": 0})
         consumer.strategies["app.add"](message, ((), {}, {}), None, None, None)
 
-        received = [
+    @staticmethod
+    def _received() -> list[tuple[str, str, TaskState]]:
+        return [
             (e.task_id, e.name, e.state)
             for e in MemoryTransport.events
             if isinstance(e, TaskEvent)
         ]
-        assert received == [("task-1", "app.add", TaskState.RECEIVED)]
+
+    def test_init_worker_with_publish_received_publishes_one_per_delivery(
+        self,
+    ) -> None:
+        """publish_received=True: each delivery publishes exactly one RECEIVED."""
+        app = Celery("received_test", broker="memory://")
+        init_worker(app, transport_url="memory://", publish_received=True)
+
+        self._deliver(app, "task-1")
+
+        assert self._received() == [("task-1", "app.add", TaskState.RECEIVED)]
+
+    def test_init_worker_default_registers_no_received_step(self) -> None:
+        """Off by default: no step, so no per-message work in the consumer loop."""
+        app = Celery("received_off_test", broker="memory://")
+
+        init_worker(app, transport_url="memory://")
+
+        assert ReceivedEventStep not in app.steps["consumer"]
+        config = get_config()
+        assert config is not None
+        assert config.publish_received is False
+
+    def test_init_worker_publish_received_false_registers_no_received_step(
+        self,
+    ) -> None:
+        """Explicit False behaves like the default."""
+        app = Celery("received_false_test", broker="memory://")
+
+        init_worker(app, transport_url="memory://", publish_received=False)
+
+        assert ReceivedEventStep not in app.steps["consumer"]
 
 
 class TestInitAppNodeAlias:

@@ -7,7 +7,10 @@ import contextlib
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+
+# FastAPI evaluates the Query annotations below at runtime, so datetime must be
+# a real import, not a type-checking one.
+from datetime import datetime  # noqa: TC003
 from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
@@ -284,7 +287,10 @@ def _refresh_worker_registry_from_inspect(
         worker_registry: Worker registry to populate/update.
         inspector: Celery inspector to query.
     """
-    # Attempt to discover workers and their registered tasks.
+    # The replies describe the workers as of now, but the consumer keeps
+    # applying worker events while inspect waits (up to 0.5 s per call).
+    seen = worker_registry.event_generations()
+
     # We need PID to register a worker. `stats()` typically includes it.
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
@@ -303,39 +309,21 @@ def _refresh_worker_registry_from_inspect(
             active = inspector.ping()
         if not active:
             return
-        for nodename in active:
-            worker_registry.mark_node_alive(nodename)
+        worker_registry.apply_ping_reply(seen, active)
         return
 
-    # A node that didn't answer is offline, whatever its pid. An unanswered
-    # inspect doesn't prove the process closed, so a later ping may revive it.
-    for worker in worker_registry.get_all_workers():
-        if worker.hostname not in stats:
-            worker_registry.mark_offline(worker.hostname, worker.pid)
-
-    now = datetime.now(timezone.utc)
-
-    # Entries are keyed (nodename, pid) but a node has one live process:
-    # stats names it, so registering it also retires the node's older pids
-    # (a worker killed without worker_shutdown, then restarted).
+    # If we got a non-empty stats response, workers that didn't answer go
+    # offline (an unanswered inspect doesn't prove the process closed, so a
+    # later ping may revive them), and each node's one live process is the pid
+    # stats names: its older pids retire (a worker killed without
+    # worker_shutdown, then restarted). A node that answers without a pid is
+    # treated like a ping reply.
+    replies: dict[str, tuple[int | None, list[str] | None]] = {}
     for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
-        if pid is None:
-            # The node answered but named no pid: same as a ping reply.
-            worker_registry.mark_node_alive(nodename)
-            continue
-
-        tasks = _tasks_for_worker_key(registered, nodename)
-        if tasks is None:
-            tasks = worker_registry.get_registered_tasks(nodename, pid)
-        worker_registry.register_worker(
-            hostname=nodename,
-            pid=pid,
-            tasks=tasks,
-            task_definitions=None,
-            event_timestamp=now,
-        )
-        worker_registry.mark_node_alive(nodename, pid)
+        tasks = _tasks_for_worker_key(registered, nodename) if pid else None
+        replies[nodename] = (pid, tasks)
+    worker_registry.apply_stats_reply(seen, replies)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:

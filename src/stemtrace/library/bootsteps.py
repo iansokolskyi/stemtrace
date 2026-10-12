@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from celery import bootsteps
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.config import get_config
 
 # Sibling-module imports within stemtrace.library: the chord-id parsing and the
 # transport publisher are shared with the signal handlers, so RECEIVED can't
@@ -177,16 +178,26 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 def register_bootsteps(
     app: Any, *, publish: Callable[[TaskEvent], None] | None = None
 ) -> None:
-    """Register stemtrace bootsteps with the Celery app.
+    """Register the RECEIVED bootstep with the Celery app, if RECEIVED is wanted.
+
+    Registering adds a synchronous publish to the worker's consumer loop for
+    every task message, so nothing is registered unless it was asked for.
 
     Args:
         app: The Celery application instance.
-        publish: Publishes the RECEIVED events. It runs in the worker's
-            consumer loop for every task message, so it must not raise.
-            Defaults to publishing through the transport that
-            ``init_worker()``/``connect_signals()`` set up, like the task
-            signal handlers do.
+        publish: Publishes the RECEIVED events and registers the step. It runs
+            in the worker's consumer loop for every task message, so it must
+            not raise. When omitted, the step is registered only if
+            ``init_worker(publish_received=True)`` ran, and publishes through
+            the transport it set up, like the task signal handlers do. Without
+            that, this does nothing (as in 0.3.10, where the step never
+            published).
     """
-    _set_publisher(publish if publish is not None else _publish_via_transport)
+    if publish is None:
+        config = get_config()
+        if config is None or not config.publish_received:
+            return
+        publish = _publish_via_transport
+    _set_publisher(publish)
     app.steps["consumer"].add(ReceivedEventStep)
     logger.debug("Registered ReceivedEventStep bootstep")

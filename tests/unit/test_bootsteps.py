@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -16,6 +17,7 @@ from stemtrace.library.bootsteps import (
     _set_publisher,
     register_bootsteps,
 )
+from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.signals import connect_signals, disconnect_signals
 
 if TYPE_CHECKING:
@@ -24,9 +26,11 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _reset_publisher() -> Iterator[None]:
-    """Keep each test's publisher from leaking into the next."""
+    """Keep each test's publisher and config from leaking into the next."""
+    _reset_config()
     yield
     _set_publisher(None)
+    _reset_config()
 
 
 def _received_via_real_message(
@@ -336,8 +340,31 @@ class TestRegisterBootsteps:
 
         assert ReceivedEventStep in mock_app.steps["consumer"]
 
-    def test_default_publisher_is_the_signals_transport(self) -> None:
-        """register_bootsteps(app) with no publish= sends RECEIVED to the transport."""
+    def test_without_publish_and_not_initialized_registers_nothing_silently(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """v0.3.10 behavior: register_bootsteps(app) before init_worker is a no-op."""
+        app = MagicMock()
+        app.steps = {"consumer": set()}
+
+        with caplog.at_level(logging.DEBUG):
+            register_bootsteps(app)
+
+        assert app.steps["consumer"] == set()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_without_publish_and_publish_received_off_registers_nothing(self) -> None:
+        """An initialized worker that didn't opt in gets no RECEIVED step."""
+        app = MagicMock()
+        app.steps = {"consumer": set()}
+        set_config(StemtraceConfig(transport_url="memory://"))
+
+        register_bootsteps(app)
+
+        assert app.steps["consumer"] == set()
+
+    def test_without_publish_and_publish_received_on_uses_the_transport(self) -> None:
+        """publish_received=True in the config publishes through the signals transport."""
 
         class _RecordingTransport:
             def __init__(self) -> None:
@@ -348,6 +375,7 @@ class TestRegisterBootsteps:
 
         transport = _RecordingTransport()
         app = Celery("bootstep_default", broker="memory://")
+        set_config(StemtraceConfig(transport_url="memory://", publish_received=True))
         connect_signals(transport)  # type: ignore[arg-type]  # structural stub
         try:
             register_bootsteps(app)
