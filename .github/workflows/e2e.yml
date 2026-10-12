@@ -165,34 +165,14 @@ jobs:
             --expect-json status=ok \
             --expect-json consumer_connected=true
 
-      - name: Submit test tasks
+      - name: Seed test tasks and wait for them
         run: |
-          # Submit some tasks to populate the UI for testing
-          uv run --locked --no-build python -c "
-          from tests.e2e.tasks import add, batch_processor, create_workflow, always_fails
-          # Submit a few tasks
-          add.delay(1, 2)
-          add.delay(3, 4)
-          create_workflow([1, 2, 3]).apply_async()
-          batch_processor.delay([1, 2])
-          always_fails.delay('test failure')
-          print('Tasks submitted!')
-          "
-
-      - name: Wait for seeded tasks to reach the API
-        run: |
-          # Events travel worker -> broker -> server consumer, so the specs must
-          # not start before every seeded task has reached its terminal state.
-          # This guards against worker/consumer startup lag; on timeout the script
+          # tests/e2e/seed.py owns the list of seeded tasks and waits until every one
+          # has reached its terminal state before the specs start. Events travel
+          # worker -> broker -> server consumer, so the specs must not start before
+          # then. This guards against worker/consumer startup lag; on timeout it
           # lists the tasks it did see.
-          uv run --locked --no-build python scripts/wait_for_http.py \
-            "http://localhost:8000/stemtrace/api/tasks?limit=500" \
-            --timeout 90 --interval 2 \
-            --expect-task e2e.add=SUCCESS:2 \
-            --expect-task e2e.process_item=SUCCESS:5 \
-            --expect-task e2e.batch_processor=SUCCESS \
-            --expect-task e2e.aggregate=SUCCESS \
-            --expect-task e2e.always_fails=FAILURE
+          uv run --locked --no-build python -m tests.e2e.seed
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

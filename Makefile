@@ -218,8 +218,15 @@ e2e-down:
 e2e-api:
 	uv run pytest tests/e2e/ -m e2e -v
 
-# Run Playwright E2E tests against real Docker backend
-e2e-playwright-real:
+# Seed the stack with the tasks the Playwright specs need and wait for them
+# (requires e2e-up first; tests/e2e/seed.py owns the list). Also run by
+# e2e-playwright-real; the CI Playwright job runs the same script.
+e2e-seed:
+	uv run python -m tests.e2e.seed
+
+# Run Playwright E2E tests against real Docker backend (requires e2e-up).
+# Seeds first: the real-mode specs need that data, so no entry point skips it.
+e2e-playwright-real: e2e-seed
 	cd $(FRONTEND_DIR) && E2E_MODE=real PLAYWRIGHT_BASE_URL=http://localhost:8000 npm test
 
 # Run all E2E tests against Docker (full integration)
@@ -249,7 +256,12 @@ e2e-api-rabbitmq:
 	CELERY_RESULT_BACKEND=redis://localhost:16380/1 \
 	uv run pytest tests/e2e/ -m e2e -v
 
-e2e-playwright-real-rabbitmq:
+e2e-seed-rabbitmq:
+	CELERY_BROKER_URL=amqp://guest:guest@localhost:5672// \
+	CELERY_RESULT_BACKEND=redis://localhost:16380/1 \
+	uv run python -m tests.e2e.seed
+
+e2e-playwright-real-rabbitmq: e2e-seed-rabbitmq
 	cd $(FRONTEND_DIR) && E2E_MODE=real PLAYWRIGHT_BASE_URL=http://localhost:8000 npm test
 
 e2e-rabbitmq:
