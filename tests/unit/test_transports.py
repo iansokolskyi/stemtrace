@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import types
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -26,6 +27,7 @@ from stemtrace.transports.rabbitmq import (
     RECONNECT_MAX_BACKOFF,
     RabbitMQTransport,
 )
+from stemtrace.transports.rabbitmq_publisher import PublisherConnection
 from stemtrace.transports.redis import (
     RECONNECT_INITIAL_BACKOFF as REDIS_RECONNECT_INITIAL_BACKOFF,
 )
@@ -868,63 +870,6 @@ class _BoundedSleep:
             raise _RunawayLoopError(f"still reconnecting after {self._limit} sleeps")
 
 
-class _RecordingPublishChannel:
-    def __init__(self, published: dict[str, Any]) -> None:
-        self.published = published
-
-
-class _RecordingPublishAmqpConnection:
-    """py-amqp connection that records close() and collect() calls."""
-
-    def __init__(self, published: dict[str, Any]) -> None:
-        self._published = published
-
-    def close(self) -> None:
-        self._published["closed"] = True
-
-    def collect(self) -> None:
-        self._published["collected"] = True
-
-
-class _RecordingPublishConnection:
-    """kombu Connection that always connects; a subclass binds ``published``."""
-
-    published: ClassVar[dict[str, Any]]
-
-    def __init__(self, url: str, **_: Any) -> None:
-        self.url = url
-        self.alt: list[str] = []
-        self.connection = _RecordingPublishAmqpConnection(self.published)
-        self._channel = _RecordingPublishChannel(self.published)
-
-    def __enter__(self) -> "_RecordingPublishConnection":
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        del exc_type, exc, tb
-
-    def ensure_connection(self, **_: Any) -> "_RecordingPublishConnection":
-        return self
-
-    def channel(self) -> _RecordingPublishChannel:
-        return self._channel
-
-
-class _RecordingPublishExchange:
-    def __init__(self, name: str, *, type: str, durable: bool) -> None:
-        self.name = name
-        del type, durable
-
-
-class _RecordingPublishProducer:
-    def __init__(self, channel: _RecordingPublishChannel) -> None:
-        self.channel = channel
-
-    def publish(self, body: Any, **kwargs: Any) -> None:
-        self.channel.published["body"] = body
-        self.channel.published.update(kwargs)
-
-
 class TestRabbitMQTransport:
     """Tests for RabbitMQTransport without a broker."""
 
@@ -936,11 +881,17 @@ class TestRabbitMQTransport:
             "amqp://localhost", prefix="test", ttl=60
         )
 
-        def _boom(_self: RabbitMQTransport, _payload: dict[str, Any]) -> None:
+        def _boom(
+            _self: PublisherConnection,
+            _payload: dict[str, Any],
+            *,
+            current: Callable[[], bool],
+        ) -> None:
+            del current
             raise ConnectionError("RabbitMQ unavailable")
 
-        # Patch the internal publisher to avoid depending on kombu in this test.
-        monkeypatch.setattr(RabbitMQTransport, "_publish_payload", _boom)
+        # Patch the publisher connection to avoid depending on kombu in this test.
+        monkeypatch.setattr(PublisherConnection, "publish", _boom)
 
         event = TaskEvent(
             task_id="task-123",
@@ -994,10 +945,16 @@ class TestRabbitMQTransport:
         )
         seen: dict[str, Any] = {}
 
-        def _capture(self: RabbitMQTransport, payload: dict[str, Any]) -> None:
+        def _capture(
+            self: PublisherConnection,
+            payload: dict[str, Any],
+            *,
+            current: Callable[[], bool],
+        ) -> None:
+            del current
             seen.update(payload)
 
-        monkeypatch.setattr(RabbitMQTransport, "_publish_payload", _capture)
+        monkeypatch.setattr(PublisherConnection, "publish", _capture)
 
         event = TaskEvent(
             task_id="t2",
@@ -1216,10 +1173,16 @@ class TestRabbitMQTransport:
             "amqp://localhost", prefix="test", ttl=60
         )
 
-        def _boom(_self: RabbitMQTransport, _payload: dict[str, Any]) -> None:
+        def _boom(
+            _self: PublisherConnection,
+            _payload: dict[str, Any],
+            *,
+            current: Callable[[], bool],
+        ) -> None:
+            del current
             raise ConnectionError("RabbitMQ unavailable")
 
-        monkeypatch.setattr(RabbitMQTransport, "_publish_payload", _boom)
+        monkeypatch.setattr(PublisherConnection, "publish", _boom)
 
         event = WorkerEvent(
             event_type=WorkerEventType.WORKER_READY,
@@ -1231,37 +1194,6 @@ class TestRabbitMQTransport:
 
         transport.publish(event)
         assert "Failed to publish event worker-1:12345" in caplog.text
-
-    def test_publish_uses_kombu_producer_without_network(
-        self, monkeypatch: Any
-    ) -> None:
-        """_publish_payload runs against a fake kombu module (no broker required)."""
-        published: dict[str, Any] = {}
-        fake_kombu = types.ModuleType("kombu")
-        fake_kombu.Connection = type(
-            "Connection", (_RecordingPublishConnection,), {"published": published}
-        )
-        fake_kombu.Exchange = _RecordingPublishExchange
-        fake_kombu.Producer = _RecordingPublishProducer
-
-        monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
-
-        transport = RabbitMQTransport.from_url(
-            "amqp://localhost", prefix="test", ttl=60
-        )
-        event = TaskEvent(
-            task_id="t4",
-            name="tests.t4",
-            state=TaskState.STARTED,
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        )
-        transport.publish(event)
-
-        assert published["body"]["task_id"] == "t4"
-        assert published["serializer"] == "json"
-        assert published["delivery_mode"] == 2
-        assert published["closed"] is True
-        assert "collected" not in published
 
 
 class _RecordingStopEvent(threading.Event):

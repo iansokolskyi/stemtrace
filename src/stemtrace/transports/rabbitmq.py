@@ -28,6 +28,7 @@ from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.transports.breaker import PublishBreaker
+from stemtrace.transports.rabbitmq_publisher import PublisherConnection
 from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,8 @@ DRAIN_TIMEOUT = 1.0
 # Publishing runs in the Celery task's thread, so every step is bounded: each
 # host of the URL gets one connection attempt with CONNECT_TIMEOUT (no kombu
 # retry sleeps), and every later socket read/write (channel open, exchange
-# declare, publish, close) times out after PUBLISH_IO_TIMEOUT.
+# declare, publish) times out after PUBLISH_IO_TIMEOUT. The connection is kept
+# between publishes (see rabbitmq_publisher).
 PUBLISH_IO_TIMEOUT = 2.0
 
 # Seconds after which a breaker probe that never reported back (e.g. its
@@ -85,15 +87,6 @@ _DEPRECATED_CONSTANTS: dict[str, Any] = {
 # most one line each for a failure while closed, an outage starting, an outage
 # ending, and a report of losses still unreported (see PublishBreaker).
 PUBLISH_FAILURE_LOG_INTERVAL = 60.0
-
-
-class _PublishUnconfirmedError(Exception):
-    """The event was sent, but the broker never confirmed the connection close.
-
-    This is how a RabbitMQ that blocks publishers (memory or disk alarm) looks
-    from a fresh connection: it stops reading after the publish, so Close-Ok
-    never arrives. The event may still be delivered once the alarm clears.
-    """
 
 
 class _StopRequestedError(Exception):
@@ -290,9 +283,8 @@ class RabbitMQTransport:
         self._stop_event: threading.Event | None = None
         self._prefix = _normalize_prefix(prefix)
 
-        # Publish path: the index of the failover host to try first (the last
-        # that worked) and the breaker that skips publishing in outages.
-        self._publish_first_host = 0
+        # Publish path: the breaker that skips publishing in outages and the
+        # per-process connection it publishes on.
         self._publish_breaker = PublishBreaker(
             "RabbitMQ",
             logger=logger,
@@ -306,6 +298,13 @@ class RabbitMQTransport:
 
         # Fanout exchange to broadcast events.
         self._exchange_name = f"{self._prefix}.events"
+        self._publisher = PublisherConnection(
+            url=url,
+            exchange_name=self._exchange_name,
+            wrap_connection_class=_resolving_connection_class,
+            connect_timeout=CONNECT_TIMEOUT,
+            io_timeout=PUBLISH_IO_TIMEOUT,
+        )
 
         # Per-consumer queue name. We intentionally avoid new env vars/flags and
         # derive a stable-ish id from the hostname.
@@ -359,28 +358,26 @@ class RabbitMQTransport:
         """Publish an event to RabbitMQ.
 
         Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. An attempt tries each host of the URL once, with
-        CONNECT_TIMEOUT to connect and PUBLISH_IO_TIMEOUT per socket operation
-        after that, and includes the connection close: a broker that stops
-        reading after the publish (e.g. a memory or disk alarm blocking
-        publishers) makes the Close-Ok wait time out, and the event counts as
-        sent but unconfirmed.
+        dropped, not queued. Events go out on one connection per process that
+        is kept between publishes. An attempt that has to connect tries each
+        host of the URL once, with CONNECT_TIMEOUT to connect and
+        PUBLISH_IO_TIMEOUT per socket operation after that; a connection the
+        broker closed in the meantime is replaced within the same attempt.
+        While the broker reports the connection blocked (a memory or disk
+        alarm), events are dropped without being sent.
 
-        PUBLISH_FAILURES_TO_OPEN failures in a row (timeouts and unconfirmed
-        ones included) open a circuit breaker; until then a failure loses
-        only its own event. While open,
-        events are dropped without connecting for a cooldown (1s, doubling per
-        failed retry up to 30s; 30s after two unconfirmed attempts in a row,
-        i.e. while the broker blocks publishers; reset by a successful
-        publish), so a broker outage costs
-        tasks about one bounded attempt per cooldown instead of one per event.
-        Only one retry (probe) runs at a time, and failures of attempts that
-        were already in flight don't lengthen the cooldown. Per
-        PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING lines are written
-        (a failure while closed, an outage starting, an outage ending, and a
-        report of losses still unreported), each with the number of events
-        lost since the previous line; each event dropped while the breaker
-        is open also gets a DEBUG line.
+        PUBLISH_FAILURES_TO_OPEN failures in a row (timeouts included) open a
+        circuit breaker; until then a failure loses only its own event. While
+        open, events are dropped without connecting for a cooldown (1s,
+        doubling per failed retry up to 30s, reset by a successful publish),
+        so a broker outage costs tasks about one bounded attempt per cooldown
+        instead of one per event. Only one retry (probe) runs at a time, and
+        failures of attempts that were already in flight don't lengthen the
+        cooldown. Per PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING
+        lines are written (a failure while closed, an outage starting, an
+        outage ending, and a report of losses still unreported), each with
+        the number of events lost since the previous line; each event dropped
+        while the breaker is open also gets a DEBUG line.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -394,161 +391,14 @@ class RabbitMQTransport:
             )
             return
         try:
-            self._publish_payload(event.model_dump(mode="json"))
-        except _PublishUnconfirmedError as exc:
-            breaker.record_failure(
-                ticket,
-                self._event_identifier(event),
-                exc,
-                unconfirmed=True,
+            self._publisher.publish(
+                event.model_dump(mode="json"),
+                current=functools.partial(breaker.is_current, ticket),
             )
         except Exception as exc:  # noqa: BLE001  fire-and-forget: any kombu error feeds the breaker, never the task
-            breaker.record_failure(
-                ticket,
-                self._event_identifier(event),
-                exc,
-            )
+            breaker.record_failure(ticket, self._event_identifier(event), exc)
         else:
             breaker.record_success(ticket)
-
-    def _publish_payload(self, payload: dict[str, Any]) -> None:
-        """Publish a JSON-serializable payload via kombu.
-
-        Raises whatever kombu/py-amqp raise; publish() handles it.
-
-        Raises:
-            _PublishUnconfirmedError: The publish was sent but the connection
-                close timed out (the event may still be delivered).
-
-        Worst case per attempt once connected: one PUBLISH_IO_TIMEOUT, since
-        a failure drops the socket instead of waiting for Close-Ok too.
-        """
-        # kombu is imported lazily to keep import-time side effects minimal.
-        from kombu import Connection, Exchange, Producer
-
-        exchange = Exchange(self._exchange_name, type="fanout", durable=True)
-        # Publish persistent messages so the broker can retain them in queues.
-        delivery_mode = 2
-
-        failed_hosts = 0
-
-        def on_host_error(exc: Exception, interval: float) -> None:
-            """Count a failed host; kombu switches to the next one after this."""
-            nonlocal failed_hosts
-            del interval
-            failed_hosts += 1
-            logger.debug(
-                "RabbitMQ publish: failover host unreachable (%s); trying the next",
-                exc,
-            )
-
-        # Start with the host that worked last, so a dead first host doesn't
-        # cost every event a connect timeout.
-        hosts = self._publish_host_count()
-        first = self._publish_first_host % hosts
-        with self._publish_connection(
-            _resolving_connection_class(Connection), first
-        ) as conn:
-            # One connection attempt per host, without sleeping: kombu raises
-            # once retries reach max_retries (before switching hosts), so
-            # max_retries=0 would never try the alternates of a failover URL.
-            # The zero intervals keep kombu from sleeping after a full round.
-            try:
-                conn.ensure_connection(
-                    errback=on_host_error,
-                    max_retries=max(len(conn.alt) - 1, 0),
-                    interval_start=0,
-                    interval_step=0,
-                    interval_max=0,
-                    reraise_as_library_errors=False,
-                )
-            except BaseException:
-                # Every host failed, or one failed in a way kombu doesn't
-                # retry on another host (e.g. a refused login): start from the
-                # URL's own order next time instead of sticking to this host.
-                self._publish_first_host = 0
-                raise
-            self._publish_first_host = (first + failed_hosts) % hosts
-            # The py-amqp connection (connected, so this doesn't reconnect).
-            amqp_conn = conn.connection
-            self._bound_publish_io(amqp_conn)
-            try:
-                channel = conn.channel()
-                producer = Producer(channel)
-                producer.publish(
-                    payload,
-                    exchange=exchange,
-                    routing_key="",
-                    declare=[exchange],
-                    serializer="json",
-                    delivery_mode=delivery_mode,
-                    retry=False,
-                )
-                # Close here, inside the attempt: kombu's release() (run by
-                # the with block) swallows a Close-Ok timeout, so a broker
-                # that stopped reading would look healthy. After a successful
-                # close, release() has nothing left to do.
-                try:
-                    amqp_conn.close()
-                except TimeoutError as exc:
-                    raise _PublishUnconfirmedError(
-                        "RabbitMQ did not confirm the connection close after "
-                        "the publish (is it blocking publishers?)"
-                    ) from exc
-            except BaseException:
-                # The attempt failed or timed out: drop the socket without the
-                # close handshake, which would wait out another timeout.
-                with contextlib.suppress(Exception):
-                    amqp_conn.collect()
-                # The fault may be local to this node: start with the next
-                # host of a failover URL next time.
-                self._publish_first_host = (first + failed_hosts + 1) % hosts
-                raise
-
-    def _publish_host_count(self) -> int:
-        """Number of hosts in the URL (``;``-separated failover entries)."""
-        return max(len(self._url.split(";")), 1)
-
-    def _publish_connection(self, connection_cls: Any, first: int) -> Any:
-        """Create a kombu connection for the URL, set to start at host ``first``.
-
-        It switches hosts the way kombu's own failover does, so every entry
-        gets exactly the parameters kombu resolves for it: a bare host
-        (``;rabbit2``) takes credentials, port, virtual host and TLS options
-        from the first entry; a URL-form entry (``;amqp://rabbit2``) gets no
-        credentials (guest/guest) unless it names them, and takes port and
-        virtual host from the previous entry only when it omits them.
-        Rebuilding the URL with a different first entry would resolve them
-        differently (e.g. a bare ``;rabbit2`` would lose the first entry's
-        credentials and vhost). No I/O happens here.
-        """
-        conn = connection_cls(self._url, connect_timeout=CONNECT_TIMEOUT)
-        for _ in range(first):
-            conn.maybe_switch_next()
-        return conn
-
-    @staticmethod
-    def _bound_publish_io(amqp_conn: Any) -> None:
-        """Make every later socket read/write of a py-amqp connection time out.
-
-        py-amqp's ``read_timeout`` transport option doesn't bound reads (its
-        reader retries on the resulting EAGAIN), and its frame waits outside
-        the handshake use the socket's own timeout. Setting that timeout on
-        the connected socket bounds channel open, declare, publish and close.
-        A no-op for transports without a socket attribute.
-        """
-        transport = getattr(amqp_conn, "transport", None)
-        sock = getattr(transport, "sock", None)
-        # socket.socket is looked up at call time, so gevent's monkey-patched
-        # socket class matches too.
-        if isinstance(sock, socket.socket):
-            sock.settimeout(PUBLISH_IO_TIMEOUT)
-        else:
-            logger.debug(
-                "RabbitMQ publish: no socket to bound (got %s); reads and writes "
-                "after connecting may block",
-                type(sock).__name__,
-            )
 
     def _declare_exchange_and_queue(self) -> None:
         """Declare the fanout exchange and this transport's durable consumer queue.
