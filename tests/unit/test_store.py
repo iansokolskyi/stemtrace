@@ -1411,16 +1411,15 @@ class TestWorkerRegistry:
     def test_remove_stale_workers(self, registry: WorkerRegistry) -> None:
         """Mark workers as stale if not seen recently."""
 
+        # A backdated event timestamp makes the worker stale without waiting: relying
+        # on the clock advancing between register and check depended on timer
+        # resolution.
         registry.register_worker(
             hostname="old-worker.example.com",
             pid=11111,
             tasks=["old.task"],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=5),
         )
-        # Backdate last_seen: relying on the clock advancing between register and
-        # check made the stale branch depend on timer resolution.
-        with registry._lock:
-            worker = registry._workers["old-worker.example.com:11111"]
-            worker.last_seen = datetime.now(timezone.utc) - timedelta(minutes=5)
 
         registry.remove_stale_workers(stale_timeout_minutes=3)
 
@@ -1449,23 +1448,22 @@ class TestWorkerRegistry:
 
     def test_cleanup_old_offline_workers(self, registry: WorkerRegistry) -> None:
         """Very old offline workers should be removed entirely."""
-        from datetime import timedelta, timezone
-
         registry.register_worker(
             hostname="old-worker.example.com",
             pid=11111,
             tasks=["old.task"],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(hours=2),
         )
-
-        # Manually set last_seen to a long time ago
-        with registry._lock:
-            worker = registry._workers["old-worker.example.com:11111"]
-            worker.last_seen = datetime.now(timezone.utc) - timedelta(hours=2)
-            worker.status = WorkerStatus.OFFLINE
-
-        # Cleanup should remove workers offline for > cleanup_timeout_minutes
+        # First mark it offline but keep it (cleanup timeout far in the future)...
         registry.remove_stale_workers(
-            stale_timeout_minutes=0, cleanup_timeout_minutes=0
+            stale_timeout_minutes=3, cleanup_timeout_minutes=24 * 60
+        )
+        workers = registry.get_all_workers()
+        assert [w.status for w in workers] == [WorkerStatus.OFFLINE]
+
+        # ...then cleanup removes workers offline for > cleanup_timeout_minutes
+        registry.remove_stale_workers(
+            stale_timeout_minutes=3, cleanup_timeout_minutes=30
         )
 
         workers = registry.get_all_workers()
