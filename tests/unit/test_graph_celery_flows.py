@@ -674,6 +674,24 @@ def test_replay_non_root_replaced_task_when_server_missed_its_start() -> None:
         assert graph.nodes[min(original, first)].parent_id == max(original, first)
 
 
+@pytest.mark.parametrize(
+    "flow", ["chain_replace3@worker_process", "chain_replace4@worker_process"]
+)
+def test_replay_longer_replacement_when_server_missed_its_start(flow: str) -> None:
+    """Without the replaced task's own events, a replacement of 3+ tasks
+    leaves the reused ID and the replacement's tasks naming each other as
+    parents in a loop: they still make one graph of their own (apart from
+    the workflow's first task), whatever the order; which of them is on top
+    depends on the order (the loop is broken where it closes)."""
+    events = _without_own_events(_CAPTURES[flow])
+    chain = flow.removeprefix("chain_replace").removesuffix("@worker_process")
+    expected = (
+        "add | " + "(".join(["paginate_to"] * int(chain)) + ")" * (int(chain) - 1)
+    )
+    for order in _orders(events):
+        assert _structure(_replay(order)) == expected
+
+
 def _pages_like_capture(
     flow: str, pages: int, *, skew_s: float = 0
 ) -> tuple[list[dict[str, Any]], str, str]:
