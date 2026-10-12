@@ -501,6 +501,31 @@ class TestRootIds:
         assert restored.get_group_members("g") == ["m1", "m2", "m3"]
         assert restored.root_ids == ["P", "ghost"]
 
+    @pytest.mark.parametrize(
+        "saved_roots",
+        [
+            pytest.param(["ghost", "P"], id="stale-ids"),
+            pytest.param(["P"], id="missing-a-root"),
+            pytest.param(None, id="absent"),
+        ],
+    )
+    def test_roundtrip_with_other_saved_root_ids_takes_roots_from_the_events(
+        self, saved_roots: list[str] | None
+    ) -> None:
+        graph = TaskGraph()
+        for event in (_ev("P"), _ev("Q"), _ev("c", parent_id="P")):
+            graph.add_event(event)
+        data = graph.model_dump(mode="json")
+        data.pop("root_ids")
+        if saved_roots is not None:
+            data["root_ids"] = saved_roots
+
+        restored = TaskGraph.model_validate(data)
+
+        assert_graph_invariants(restored)
+        assert restored.root_ids == ["P", "Q"]
+        assert restored.nodes["P"].children == ["c"]
+
 
 class TestGroupIdCapture:
     """Tests for group_id field on events and nodes."""

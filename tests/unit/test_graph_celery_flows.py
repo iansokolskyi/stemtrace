@@ -621,6 +621,76 @@ def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
             assert sorted(graph.root_ids) == sorted(rebuilt.root_ids), (flow, removed)
 
 
+def _only_node(graph: TaskGraph, node_type: NodeType, suffix: str = "") -> TaskNode:
+    (node,) = (
+        n for n in _nodes_of_type(graph, node_type) if n.task_id.endswith(suffix)
+    )
+    return node
+
+
+def test_remove_group_body_node_of_real_chord_rebuilds_the_body() -> None:
+    """The chord of a real capture whose body is a group still draws it, with
+    the same tasks inside, after the body's synthetic node is removed."""
+    events = _CAPTURES["chord_group_body"]
+    graph = _replay(events)
+    chord = _only_node(graph, _C)
+    body = _only_node(graph, _G, ":body")
+    body_tasks = list(body.children)
+    nodes_before = set(graph.nodes)
+
+    graph.remove_node(body.task_id)
+
+    assert_graph_invariants(graph)
+    assert set(graph.nodes) == nodes_before
+    assert chord.chord_id == body.task_id
+    assert chord.children[-1] == body.task_id
+    assert graph.nodes[body.task_id].children == body_tasks
+    assert {graph.nodes[t].parent_id for t in body_tasks} == {body.task_id}
+    assert set(graph._body_members) == {chord.group_id}
+
+
+def test_remove_chord_node_of_real_capture_releases_headers_and_unlock_task() -> None:
+    """Removing a chord's synthetic node leaves its headers, the chord_unlock
+    task and the callback as plain tasks, and forgets the unlock task's role."""
+    graph = _replay(_CAPTURES["chord@chord_unlock"])
+    assert graph._unlock_of
+    chord = _only_node(graph, _C)
+
+    graph.remove_node(chord.task_id)
+
+    assert_graph_invariants(graph)
+    assert _structure(graph) == "add | add | add | celery.chord_unlock(tsum)"
+    assert graph._unlock_of == {}
+    assert graph._unlock_by_chord == {}
+    assert graph._callback_of == {}
+
+
+def test_remove_task_from_three_task_group_body_shrinks_the_body() -> None:
+    """A body of three tasks losing one is a body of two, as a rebuild gives.
+
+    The capture's group body has two tasks; one of them is repeated under
+    another task ID (same events, so same parent and group) to get three.
+    """
+    events = _CAPTURES["chord_group_body"]
+    body_task = next(e["task_id"] for e in events if e["name"] == "flows.tsum")
+    extra = "extra-" + body_task
+    with_extra = events + [
+        {**e, "task_id": extra} for e in events if e["task_id"] == body_task
+    ]
+    graph = _replay(with_extra)
+    assert _structure(graph) == "chord{*group{+tsum, +tsum, +tsum}, +add, +add}"
+    assert extra in graph._body_of
+
+    graph.remove_node(extra)
+
+    assert_graph_invariants(graph)
+    assert _structure(graph) == "chord{*group{+tsum, +tsum}, +add, +add}"
+    assert extra not in graph._body_of
+    rebuilt = _replay(events)
+    assert _graph_shape(graph) == _graph_shape(rebuilt)
+    assert sorted(graph.root_ids) == sorted(rebuilt.root_ids)
+
+
 def _is_replacement_event(
     event: dict[str, Any], task_id: str, first_parent: str | None = None
 ) -> bool:
