@@ -1,0 +1,9 @@
+# Test tools for CI's test-lowest job, pinned (resolved against the declared
+# runtime floors, so they can't upgrade a runtime dependency under test).
+# They differ from uv.lock on purpose: uv.lock's pytest-asyncio needs a newer
+# typing-extensions than pydantic 2.2's floor allows. Update with the job.
+hatchling==1.32.4
+pytest==8.4.2
+pytest-asyncio==1.1.1
+pytest-cov==7.1.0
+websockets==16.1.1
