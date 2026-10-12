@@ -522,6 +522,45 @@ class TestResolvingTransportHelpers:
         assert calls == [("settimeout", 1.5), ("handshake", transport.sock)]
 
 
+class TestConnectAddresses:
+    def test_connect_tries_a_bounded_number_of_addresses_of_one_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Each address gets its own connect timeout, so the longest a connect
+        # takes only follows from the timeout if the addresses are capped.
+        attempts: list[Any] = []
+
+        class Refusing(socket.socket):
+            def connect(self, address: Any) -> None:
+                attempts.append(address)
+                raise ConnectionRefusedError
+
+        class FiveAddresses:
+            def resolve(self, host: str, port: int, *args: Any, timeout: float) -> Any:
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("127.0.0.1", 20000 + i),
+                    )
+                    for i in range(5)
+                ]
+
+            def invalidate(self, *key: Any) -> None:
+                pass
+
+        monkeypatch.setattr(rabbitmq, "PUBLISH_RESOLVER", FiveAddresses())
+        monkeypatch.setattr(socket, "socket", Refusing)
+        transport = SimpleNamespace(sock=None)
+
+        with pytest.raises(ConnectionRefusedError):
+            rabbitmq._connect_resolved(transport, "broker", 5672, 1.0)
+
+        assert len(attempts) == rabbitmq_publisher.MAX_ADDRESSES_PER_HOST
+
+
 class TestPublisherHeartbeat:
     def test_connect_with_heartbeat_in_url_negotiates_none(
         self, broker: FakeBroker, clock: FakeClock
