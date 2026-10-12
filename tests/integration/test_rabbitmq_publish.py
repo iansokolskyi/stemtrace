@@ -169,17 +169,32 @@ class TestRabbitMQPublishFailFastNoBroker:
     """publish() returns quickly and stops connecting while the broker is down."""
 
     def test_publish_refused_port_fails_fast_then_skips(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
+        publisher = transport._publisher
+        real_publish = publisher.publish
+        reached_connection: list[str] = []
+
+        def counting_publish(*args: Any, **kwargs: Any) -> None:
+            reached_connection.append("attempt")
+            real_publish(*args, **kwargs)
+
+        monkeypatch.setattr(publisher, "publish", counting_publish)
 
         # Fast failures drop only their own event until three in a row open
         # the breaker.
         attempts = [_timed_publish(transport, f"t-{i}") for i in range(3)]
-        rest = [_timed_publish(transport, f"t-{i}") for i in range(3, 103)]
+        for i in range(3, 103):
+            transport.publish(_event(f"t-{i}"))
 
+        # A refused connect returns at once; kombu's own retry would sleep 2s.
         assert max(attempts) < 0.5
-        assert max(rest) < 0.01
+        # Skipped events never reach the connection. Counting the attempts
+        # replaces a per-publish time bound, which any scheduler pause beat
+        # (19-65ms against 10ms under CPU load, ~7us otherwise).
+        assert len(reached_connection) == rabbitmq.PUBLISH_FAILURES_TO_OPEN
+        assert transport._publish_breaker.is_open is True
         # One line for the first failure, one when the breaker opens.
         assert len(_warnings(caplog)) == 2
 

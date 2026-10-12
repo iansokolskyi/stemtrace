@@ -19,7 +19,7 @@ import textwrap
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1560,6 +1560,33 @@ class TestPublisherHealsStuckLock:
         assert transport._publish_breaker.dropped == 1
 
 
+class _LockHeldElsewhere:
+    """Lock another holder owns for good: ``acquire`` waits out its timeout.
+
+    Waiting only moves ``wall`` (a virtual clock) forward, so a test can check
+    how long a thread waits without sleeping or depending on the scheduler.
+    ``timeouts`` records what each ``acquire`` asked for.
+    """
+
+    def __init__(self, wall: FakeClock) -> None:
+        self._wall = wall
+        self.on_timeout: Callable[[], None] | None = None
+        self.timeouts: list[float] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        self.timeouts.append(timeout)
+        self._wall.advance(timeout)
+        if self.on_timeout is not None:
+            self.on_timeout()
+        return False
+
+    def release(self) -> None:
+        raise AssertionError("the holder is elsewhere; nobody here releases it")
+
+    def locked(self) -> bool:
+        return True
+
+
 class TestPublisherWaitIsOneDeadline:
     @pytest.fixture(autouse=True)
     def short_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1567,36 +1594,48 @@ class TestPublisherWaitIsOneDeadline:
         monkeypatch.setattr(rabbitmq, "PUBLISH_IO_TIMEOUT", 0.2)
 
     def test_waiter_behind_stuck_lock_then_slow_new_connect_waits_once_in_total(
-        self, broker: FakeBroker, clock: FakeClock
+        self, broker: FakeBroker, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A's holder is gone. While C waits on A's lock, B replaces the state
         # and starts a slow connect (a young holder on the new lock). C's
         # second round must not wait a second full wait on B's lock.
+        #
+        # The wait runs on a virtual clock the locks advance, so the bound
+        # holds however long the scheduler keeps the waiting thread (a wall
+        # clock bound with 0.1s of slack failed at 0.31s and 0.33s under CPU
+        # load). What C asks of each lock is the deadline arithmetic itself.
+        wall = FakeClock()
+        start = wall()
+        monkeypatch.setattr(
+            rabbitmq_publisher,
+            "time",
+            SimpleNamespace(monotonic=wall, sleep=wall.advance),
+        )
         transport = _transport(H1, clock)
         publisher = transport._publisher
+        stuck_lock = _LockHeldElsewhere(wall)
         stuck = publisher._process()
-        stuck.lock.acquire()
+        stuck.lock = stuck_lock
         stuck.holder = 111
         stuck.held_since = clock()
         clock.advance(publisher._attempt_bound() + 1.0)
+        new_lock = _LockHeldElsewhere(wall)
         replacement = rabbitmq_publisher._Process()
-        replacement.lock.acquire()
+        replacement.lock = new_lock
         replacement.holder = 222
         replacement.held_since = clock()  # young: B is mid-connect
+        # B replaces the state while C waits on the stuck lock.
+        stuck_lock.on_timeout = lambda: setattr(publisher, "_proc", replacement)
 
-        def b_replaces() -> None:
-            time.sleep(0.05)
-            publisher._proc = replacement
-
-        replacer = threading.Thread(target=b_replaces)
-        replacer.start()
-        started = time.monotonic()
-        with pytest.raises(PublisherBusyError):
+        with pytest.raises(PublisherBusyError) as busy:
             publisher._acquire(stuck)
-        waited = time.monotonic() - started
-        replacer.join(timeout=5)
 
-        assert waited <= publisher._lock_wait + 0.1
+        assert stuck_lock.timeouts == [pytest.approx(publisher._lock_wait)]
+        assert sum(stuck_lock.timeouts + new_lock.timeouts) == pytest.approx(
+            publisher._lock_wait
+        )
+        assert wall() - start == pytest.approx(publisher._lock_wait)
+        assert "waited 0.20s" in str(busy.value)
 
     def test_busy_error_reports_how_long_the_event_waited(
         self, clock: FakeClock
