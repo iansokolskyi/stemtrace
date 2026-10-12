@@ -12,6 +12,7 @@ import {
   stateColors,
   TimelineBar,
 } from '@/components/TimelineBar'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -37,6 +38,7 @@ function TaskDetailPage() {
   }
 
   const { task, children } = data
+  const childNames = shortestUniqueSuffixes(children.map((child) => child.name))
   const startedEvent = task.events.find((e) => e.state === 'STARTED')
   const hasParams = startedEvent?.args || startedEvent?.kwargs
   const successEvent = task.events.find((e) => e.state === 'SUCCESS')
@@ -138,7 +140,9 @@ function TaskDetailPage() {
                 className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 transition-colors"
               >
                 <div className="flex-1 truncate">
-                  <span className="text-slate-200">{child.name.split('.').pop()}</span>
+                  <span className="text-slate-200" title={child.name}>
+                    {childNames.get(child.name) ?? child.name}
+                  </span>
                   <span className="text-slate-500 text-xs ml-2">{child.task_id.slice(0, 8)}</span>
                 </div>
                 <TaskStateBadge state={child.state} />

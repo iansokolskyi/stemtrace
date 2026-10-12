@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import type { TaskNode } from '@/api/client'
 import { useTasks } from '@/api/queries'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { formatDuration, stateColors, TERMINAL_STATES, TimelineBar } from './TimelineBar'
 
 interface TaskTimelineProps {
@@ -45,6 +46,8 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
     return <div className="text-center py-12 text-slate-400">No timing data available</div>
   }
 
+  const shortNames = shortestUniqueSuffixes(tasks.map((t) => t.name))
+
   const times = tasks.flatMap((t) => [
     new Date(t.first_seen!).getTime(),
     new Date(t.last_updated!).getTime(),
@@ -63,7 +66,13 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
 
       <div className="space-y-2">
         {tasks.map((task) => (
-          <TaskTimelineRow key={task.task_id} task={task} minTime={minTime} range={range} />
+          <TaskTimelineRow
+            key={task.task_id}
+            task={task}
+            label={shortNames.get(task.name) ?? task.name}
+            minTime={minTime}
+            range={range}
+          />
         ))}
       </div>
 
@@ -83,11 +92,13 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
 
 interface TaskTimelineRowProps {
   task: TaskNode
+  /** The task's name as far as it takes to tell it from the others shown. */
+  label: string
   minTime: number
   range: number
 }
 
-function TaskTimelineRow({ task, minTime, range }: TaskTimelineRowProps) {
+function TaskTimelineRow({ task, label, minTime, range }: TaskTimelineRowProps) {
   const taskStart = task.first_seen ? new Date(task.first_seen).getTime() : minTime
   const taskStartPct = ((taskStart - minTime) / range) * 100
   const wouldOverflow = taskStartPct > 85
@@ -100,7 +111,7 @@ function TaskTimelineRow({ task, minTime, range }: TaskTimelineRowProps) {
         className="w-44 truncate text-sm text-slate-300 hover:text-emerald-400 transition-colors"
         title={task.name}
       >
-        {task.name.split('.').pop()}
+        {label}
       </Link>
 
       <div className="flex-1 relative h-6">

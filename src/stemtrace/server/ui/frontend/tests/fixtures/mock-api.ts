@@ -294,12 +294,15 @@ export async function setupMockApi(
       return
     }
 
+    // Like the real API, list the task's children as nodes
+    const children = tasks.filter((t) => task.children.includes(t.task_id))
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         task: serializeTask(task),
-        children: [],
+        children: children.map(serializeTask),
       }),
     })
   })

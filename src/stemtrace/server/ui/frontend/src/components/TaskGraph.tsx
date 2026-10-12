@@ -23,6 +23,7 @@ import '@xyflow/react/dist/style.css'
 import { Link } from '@tanstack/react-router'
 import type { GraphNode, NodeType } from '@/api/client'
 import { formatDuration, formatTime } from '@/utils/format'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 interface TaskGraphProps {
   nodes: Record<string, GraphNode>
@@ -124,6 +125,13 @@ function buildGraphElements(
 ): { nodes: Node[]; edges: Edge[] } {
   const flowNodes: Node[] = []
   const flowEdges: Edge[] = []
+  // GROUP and CHORD nodes are drawn by type, not by name
+  const shortNames = shortestUniqueSuffixes(
+    Object.values(nodes)
+      .filter((node) => (node.node_type ?? 'TASK') === 'TASK')
+      .map((node) => node.name),
+  )
+  const shortName = (name: string): string => shortNames.get(name) ?? name
   const visited = new Set<string>()
   const levels: Map<string, number> = new Map()
   const positions: Map<number, number> = new Map()
@@ -343,8 +351,8 @@ function buildGraphElements(
                 className="block p-2 text-left h-full"
               >
                 <div className="text-xs text-slate-400 font-mono mb-1">{childId.slice(0, 8)}</div>
-                <div className="text-sm text-slate-100 font-medium">
-                  {childNode.name.split('.').pop()}
+                <div className="text-sm text-slate-100 font-medium" title={childNode.name}>
+                  {shortName(childNode.name)}
                 </div>
                 {(startTime || duration) && (
                   <div className="text-xs text-slate-500 mt-1">
@@ -424,8 +432,8 @@ function buildGraphElements(
                     <div className="text-xs text-slate-400 font-mono mb-1">
                       {childId.slice(0, 8)}
                     </div>
-                    <div className="text-sm text-slate-100 font-medium">
-                      {callbackNode.name.split('.').pop()}
+                    <div className="text-sm text-slate-100 font-medium" title={callbackNode.name}>
+                      {shortName(callbackNode.name)}
                     </div>
                     {(callbackStartTime || callbackDuration) && (
                       <div className="text-xs text-slate-500 mt-1">
@@ -478,8 +486,11 @@ function buildGraphElements(
           label: (
             <Link to="/tasks/$taskId" params={{ taskId: id }} className="block p-3 text-left">
               <div className="text-xs text-slate-400 font-mono mb-1">{id.slice(0, 8)}</div>
-              <div className="text-sm text-slate-100 font-medium whitespace-nowrap">
-                {node.name.split('.').pop()}
+              <div
+                className="text-sm text-slate-100 font-medium whitespace-nowrap"
+                title={node.name}
+              >
+                {shortName(node.name)}
               </div>
               {(startTime || duration) && (
                 <div className="text-xs text-slate-500 mt-1">
