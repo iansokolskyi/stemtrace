@@ -1,7 +1,8 @@
 """Shared pytest fixtures."""
 
+import socket
 import urllib.parse
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterator, MutableMapping
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Any
@@ -95,3 +96,22 @@ def raw_get() -> RawGet:
         return int(start["status"])
 
     return _get
+
+
+@pytest.fixture
+def listener() -> Iterator[socket.socket]:
+    """A loopback server socket that accepts connections."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    yield server
+    server.close()
+
+
+@pytest.fixture
+def refused_address() -> tuple[str, int]:
+    """A loopback address nothing listens on (its port was just released)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        host, port = probe.getsockname()
+    return host, port

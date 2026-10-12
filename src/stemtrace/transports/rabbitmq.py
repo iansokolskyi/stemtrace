@@ -162,6 +162,51 @@ def _resolving_transport_class(transport_cls: Any) -> Any:
     )
 
 
+def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) -> None:
+    """Connect a py-amqp transport to the first resolved address that accepts.
+
+    The loop of py-amqp 5.3 _AbstractTransport._connect(), with the addresses
+    taken from PUBLISH_RESOLVER, which waits at most the connect timeout.
+    Unlike py-amqp's, an empty answer fails here too (it would otherwise
+    return with no socket, which py-amqp only notices on its next use).
+
+    Raises:
+        OSError: The last address's failure, or a gaierror for an empty
+            answer.
+    """
+    from amqp.utils import set_cloexec
+
+    entries = PUBLISH_RESOLVER.resolve(
+        host,
+        port,
+        socket.AF_UNSPEC,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        timeout=timeout or CONNECT_TIMEOUT,
+    )
+    error: OSError = socket.gaierror(socket.EAI_NONAME, f"No address for {host!r}")
+    for family, socktype, proto, _, address in entries:
+        try:
+            self.sock = socket.socket(family, socktype, proto)
+            with contextlib.suppress(NotImplementedError):
+                set_cloexec(self.sock, True)
+            self.sock.settimeout(timeout)
+            self.sock.connect(address)
+        except OSError as exc:
+            error = exc
+            if self.sock:
+                self.sock.close()
+            self.sock = None
+        else:
+            return
+    # The host may have moved (e.g. a DNS failover): refresh its cached
+    # addresses for the next attempt.
+    PUBLISH_RESOLVER.invalidate(
+        host, port, socket.AF_UNSPEC, socket.SOCK_STREAM, socket.IPPROTO_TCP
+    )
+    raise error
+
+
 @functools.cache
 def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     """py-amqp Connection whose transports connect to resolved addresses.
@@ -177,45 +222,13 @@ def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     may now be reached over IPv6 first.
     """
     from amqp.transport import SSLTransport, TCPTransport
-    from amqp.utils import set_cloexec
 
-    def _connect(self: Any, host: str, port: int, timeout: float | None) -> None:
-        """Connect to the first resolved address that accepts (py-amqp's loop)."""
-        entries = PUBLISH_RESOLVER.resolve(
-            host,
-            port,
-            socket.AF_UNSPEC,
-            socket.SOCK_STREAM,
-            socket.IPPROTO_TCP,
-            timeout=timeout or CONNECT_TIMEOUT,
-        )
-        for i, (family, socktype, proto, _, address) in enumerate(entries):
-            try:
-                self.sock = socket.socket(family, socktype, proto)
-                with contextlib.suppress(NotImplementedError):
-                    set_cloexec(self.sock, True)
-                self.sock.settimeout(timeout)
-                self.sock.connect(address)
-            except OSError:
-                if self.sock:
-                    self.sock.close()
-                self.sock = None
-                if i + 1 >= len(entries):
-                    # The host may have moved (e.g. a DNS failover): refresh
-                    # its cached addresses for the next attempt.
-                    PUBLISH_RESOLVER.invalidate(
-                        host,
-                        port,
-                        socket.AF_UNSPEC,
-                        socket.SOCK_STREAM,
-                        socket.IPPROTO_TCP,
-                    )
-                    raise
-            else:
-                break
-
-    tcp = type("ResolvingTCPTransport", (TCPTransport,), {"_connect": _connect})
-    tls = type("ResolvingSSLTransport", (SSLTransport,), {"_connect": _connect})
+    tcp = type(
+        "ResolvingTCPTransport", (TCPTransport,), {"_connect": _connect_resolved}
+    )
+    tls = type(
+        "ResolvingSSLTransport", (SSLTransport,), {"_connect": _connect_resolved}
+    )
 
     def transport(  # noqa: PLR0917  py-amqp 5.3 Connection.connect() passes these positionally
         _self: Any,
