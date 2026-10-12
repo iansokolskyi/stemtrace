@@ -24,6 +24,7 @@ from celery.signals import setup_logging, task_postrun
 from celery.utils.log import get_task_logger
 
 import stemtrace
+from stemtrace.library import output_capture
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 
@@ -127,3 +128,27 @@ if os.environ.get("OUTPUT_TEST_NOOP_LOGGING") == "1":
     def _warn_after_task(task_id: str, **_: object) -> None:
         """Log a warning after stemtrace stopped capturing (outside the task)."""
         module_logger.warning("after-task warning %s", task_id)
+
+
+@app.task(name="output_test.soft_limited", soft_time_limit=1)
+def soft_limited() -> str:
+    """Hit the soft time limit while print() is inside the output capture.
+
+    The limit arrives as SIGUSR1 in this prefork child and raises
+    SoftTimeLimitExceeded wherever the task is, here inside ``TeeStream.write``
+    (a stalled capture lookup stands in for the microseconds a real task
+    spends there). The task must fail; if the capture code swallowed the
+    exception, the second print would run and the task would succeed.
+    """
+    original = output_capture._record_being_emitted
+
+    def stalled() -> None:
+        time.sleep(30)
+
+    output_capture._record_being_emitted = stalled  # type: ignore[assignment]  # test stand-in for a slow lookup
+    try:
+        print("inside the capture")
+    finally:
+        output_capture._record_being_emitted = original
+    print("the soft time limit was swallowed")
+    return "finished"

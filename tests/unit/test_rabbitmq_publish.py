@@ -10,6 +10,12 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
+from celery.exceptions import (
+    SoftTimeLimitExceeded,
+    Terminated,
+    TimeLimitExceeded,
+    WorkerLostError,
+)
 from kombu import Connection as KombuConnection
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
@@ -379,6 +385,81 @@ class TestRabbitMQPublishFailoverResolution:
         assert [(host, body["task_id"]) for host, body, _ in broker.published] == [
             (H2, "t-1"),
             (H1, "t-3"),
+        ]
+
+
+class TestRabbitMQPublishTaskInterrupts:
+    """Celery's control flow raised into the task mid-publish is the task's."""
+
+    @pytest.mark.parametrize(
+        "interrupt",
+        [SoftTimeLimitExceeded, TimeLimitExceeded, Terminated, WorkerLostError],
+    )
+    def test_publish_task_interrupt_propagates_without_charging_breaker(
+        self,
+        interrupt: type[Exception],
+        broker: FakeBroker,
+        clock: FakeClock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        broker.publish_error = interrupt("limit")
+        transport = _transport(H1, clock)
+
+        for _ in range(PUBLISH_FAILURES_TO_OPEN + 1):
+            with pytest.raises(interrupt):
+                transport.publish(_event())
+        broker.publish_error = None
+        transport.publish(_event("after"))
+
+        assert transport._publish_breaker.is_open is False
+        assert transport._publish_breaker.dropped == 0
+        assert _records(caplog, logging.WARNING) == []
+        assert [body["task_id"] for _, body, _ in broker.published] == ["after"]
+
+    def test_publish_task_interrupt_in_probe_frees_the_probe_slot(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+        for _ in range(PUBLISH_FAILURES_TO_OPEN):
+            transport.publish(_event())
+        assert transport._publish_breaker.is_open is True
+        clock.advance(transport._publish_breaker.cooldown)
+        broker.publish_error = SoftTimeLimitExceeded("limit")
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            transport.publish(_event("probe"))
+        broker.publish_error = None
+        transport.publish(_event("second probe"))
+
+        # The interrupted probe says nothing about the broker: the next event
+        # is the new probe and closes the breaker, instead of being dropped.
+        assert transport._publish_breaker.is_open is False
+        assert [body["task_id"] for _, body, _ in broker.published] == ["second probe"]
+
+    def test_publish_task_interrupt_while_reading_pending_frames_propagates(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("before"))
+        # The soft limit lands in the pre-publish read of the broker's frames.
+        broker.connections[0].connection.deliver(
+            "channel_error", SoftTimeLimitExceeded("limit")
+        )
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            transport.publish(_event("interrupted"))
+
+        # Not mistaken for a lost connection (which would reconnect and send
+        # the event anyway); the half-read connection is dropped.
+        assert [body["task_id"] for _, body, _ in broker.published] == ["before"]
+        assert broker.connections[0].connection.calls == ["collect"]
+        assert len(broker.connections) == 1
+        transport.publish(_event("after"))
+        assert len(broker.connections) == 2
+        assert [body["task_id"] for _, body, _ in broker.published] == [
+            "before",
+            "after",
         ]
 
 

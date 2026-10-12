@@ -270,6 +270,24 @@ class PublishBreaker:
             if self._probe_ticket is not None and ticket == self._probe_ticket:
                 self._probe_ticket = None
 
+    def record_interrupted(self, ticket: int) -> None:
+        """Release an attempt the task's own control flow cut short.
+
+        For an attempt ended by something that isn't about the broker (a
+        Celery soft time limit raised into the task mid-publish): it counts
+        neither as a failure nor as a dropped event, and never changes the
+        state. If ``ticket`` is the outstanding probe's, its slot is freed for
+        the next caller; otherwise the probe would stay "outstanding" until
+        ``probe_timeout`` and every event in between would be dropped.
+
+        Args:
+            ticket: The ticket ``allow()`` returned for the interrupted attempt.
+        """
+        self._check_fork()
+        with self._lock:
+            if self._probe_ticket is not None and ticket == self._probe_ticket:
+                self._probe_ticket = None
+
     def record_success(self, ticket: int) -> None:
         """Report a successful publish attempt.
 

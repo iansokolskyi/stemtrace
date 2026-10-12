@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import Self
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
+from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.transports.breaker import PublishBreaker
 from stemtrace.transports.resolver import PUBLISH_RESOLVER
 
@@ -36,6 +37,15 @@ StreamEvent = TaskEvent | WorkerEvent
 # before the socket times out. Publishing uses a separate client (see below),
 # so the consume client keeps redis-py's own timeouts.
 XREAD_BLOCK_MS = 5000
+
+# Least time one idle read (an empty reply or a read timeout) takes in
+# consume(); a faster one is followed by a wait for the rest. The block window
+# is half the socket timeout (see _xread_block_ms), so a tiny ``socket_timeout``
+# in the URL (or a Redis slower than it) would otherwise make idle reads
+# return at once and loop back, one round trip after another (measured: 110
+# reads/s and a quarter of a core for ``socket_timeout=0.001``). With
+# redis-py's 5s default the block window is 2.5s and this never applies.
+MIN_IDLE_READ_SECONDS = 0.25
 
 # Consecutive XREAD read timeouts tolerated silently before warning.
 READ_TIMEOUT_WARN_AFTER = 3
@@ -566,7 +576,10 @@ class RedisTransport:
         """Publish an event to the Redis stream.
 
         Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. With a transport from from_url(), an attempt
+        dropped, not queued. The one exception is Celery's control flow, e.g.
+        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
+        propagates and is not counted as a broker failure. With a transport
+        from from_url(), an attempt
         takes at most PUBLISH_CONNECT_TIMEOUT to resolve the host when it has
         no cached address, PUBLISH_CONNECT_TIMEOUT per address to connect,
         and PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
@@ -607,7 +620,14 @@ class RedisTransport:
                 approximate=True,
             )
         # Fire-and-forget: any redis-py error feeds the breaker, never the task.
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                # A soft time limit landed mid-publish: the task's, not a
+                # broker fault. redis-py drops the connection on it (it
+                # disconnects on BaseException), so the next publish starts
+                # clean; the breaker slot is freed without a failure.
+                breaker.record_interrupted(ticket)
+                raise
             breaker.record_failure(
                 ticket,
                 self._event_identifier(event),
@@ -636,7 +656,11 @@ class RedisTransport:
         transport logs a warning, backs off exponentially (capped at
         RECONNECT_MAX_BACKOFF seconds, reset after a successful read) and
         resumes from the last stream id it saw. An occasional read timeout is
-        retried immediately; repeated read timeouts are logged as warnings.
+        retried at once; repeated read timeouts are logged as warnings. An
+        idle read (an empty reply or a read timeout) that returns sooner than
+        MIN_IDLE_READ_SECONDS is followed by a wait for the rest, so a tiny
+        ``socket_timeout`` in the URL doesn't turn the loop into a busy loop;
+        it adds at most that much latency to the next event.
         Other Redis errors (e.g. WRONGTYPE, NOPERM) propagate to the caller.
         The iterator ends once a stop event bound with bind_stop_event() is
         set, and that event also interrupts the backoff wait.
@@ -656,6 +680,7 @@ class RedisTransport:
         health = _ReadHealth()
 
         while not self._stopping():
+            started = self._monotonic()
             try:
                 results = self._client.xread(
                     {self._stream_key: self._last_id},
@@ -667,6 +692,7 @@ class RedisTransport:
                     self._on_unreachable(health, exc)
                 else:
                     self._on_read_timeout(health)
+                    self._pace_idle_read(started)
                 continue
             except RedisConnectionError as exc:
                 self._on_unreachable(health, exc)
@@ -678,11 +704,31 @@ class RedisTransport:
                 raise
 
             self._on_read(health)
+            if not results:
+                self._pace_idle_read(started)
             yield from self._events_from(results)
 
     def _stopping(self) -> bool:
         """Whether a bound stop event has been set."""
         return self._stop_event is not None and self._stop_event.is_set()
+
+    def _pace_idle_read(self, started: float) -> None:
+        """Wait out what is left of MIN_IDLE_READ_SECONDS since ``started``.
+
+        Called after an empty reply or a read timeout, the two ways a read
+        returns without events. Reads that took the block window (the normal
+        idle case) don't wait. A bound stop event ends the wait early.
+        """
+        remaining = MIN_IDLE_READ_SECONDS - (self._monotonic() - started)
+        if remaining > 0:
+            self._wait(remaining)
+
+    def _wait(self, seconds: float) -> None:
+        """Sleep ``seconds``, or until the bound stop event is set."""
+        if self._stop_event is not None:
+            self._stop_event.wait(seconds)
+        else:
+            self._sleep(seconds)
 
     def _on_unreachable(self, health: _ReadHealth, exc: Exception) -> None:
         """Count a failure to reach Redis, then back off before the next read.
@@ -783,10 +829,7 @@ class RedisTransport:
                 exc,
                 backoff,
             )
-        if self._stop_event is not None:
-            self._stop_event.wait(backoff)
-        else:
-            self._sleep(backoff)
+        self._wait(backoff)
         return min(backoff * 2, RECONNECT_MAX_BACKOFF)
 
     def _parse_event(self, data_str: str) -> StreamEvent:
