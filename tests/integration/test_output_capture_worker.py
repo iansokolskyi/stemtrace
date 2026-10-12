@@ -26,6 +26,7 @@ import redis
 from celery import Celery
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import TaskGraph
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,6 +155,12 @@ def worker(
 
 
 @pytest.fixture(scope="module")
+def prefork_worker(tmp_path_factory: pytest.TempPathFactory) -> Iterator[WorkerRun]:
+    """A prefork worker, for tests that kill a pool child."""
+    yield from _start_worker("prefork", {}, tmp_path_factory.mktemp("worker-prefork"))
+
+
+@pytest.fixture(scope="module")
 def unconfigured_logging_worker(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[WorkerRun]:
@@ -199,12 +206,14 @@ def test_each_attempt_has_its_own_output(worker: WorkerRun) -> None:
     }
 
 
-def test_received_is_published_once_before_started(worker: WorkerRun) -> None:
+def test_received_is_published_per_delivery_of_the_first_attempt(
+    worker: WorkerRun,
+) -> None:
     """The worker publishes RECEIVED when it takes the message, before STARTED.
 
     With prefork, RECEIVED comes from the main process (the consumer) and
-    STARTED from a pool child. The retry's redelivery publishes no second
-    RECEIVED: its RETRY event covers it.
+    STARTED from a pool child. The retry message (``retries=1``) publishes no
+    RECEIVED of its own: its RETRY event covers it.
     """
     task_id = worker.send("output_test.flaky")
 
@@ -223,6 +232,36 @@ def test_received_is_published_once_before_started(worker: WorkerRun) -> None:
     received = next(e for e in events if e.state == TaskState.RECEIVED)
     first_start = next(e for e in events if e.state == TaskState.STARTED)
     assert received.timestamp <= first_start.timestamp
+
+
+def test_redelivered_message_publishes_received_again(
+    prefork_worker: WorkerRun,
+) -> None:
+    """acks_late + reject_on_worker_lost: a killed child's message is delivered twice.
+
+    Each delivery of the first attempt (``retries=0``) publishes RECEIVED, so
+    the task has two. The graph keeps attempt-0 RECEIVED events ahead of the
+    first STARTED (their clocks come from the main process, not the child), so
+    both RECEIVED precede both STARTED even though the second was published
+    after the first run died.
+    """
+    worker = prefork_worker
+    task_id = worker.send("output_test.dies_once")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    node = graph.nodes[task_id]
+    assert [(e.state, e.retries) for e in node.events] == [
+        (TaskState.RECEIVED, 0),
+        (TaskState.RECEIVED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.STARTED, 0),
+        (TaskState.SUCCESS, 0),
+    ]
+    assert node.state == TaskState.SUCCESS
 
 
 def test_concurrent_tasks_keep_their_own_output(worker: WorkerRun) -> None:

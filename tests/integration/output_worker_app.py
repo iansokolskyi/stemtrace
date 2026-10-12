@@ -11,9 +11,11 @@ queue and stemtrace stream:
 
 import logging
 import os
+import signal
 import sys
 import time
 
+import redis
 from celery import Celery, Task
 from celery.signals import setup_logging, task_postrun
 from celery.utils.log import get_task_logger
@@ -69,6 +71,25 @@ def flaky(self: Task) -> None:
     if retries == 0:
         raise self.retry(countdown=0)
     raise ValueError("gave up")
+
+
+@app.task(
+    name="output_test.dies_once",
+    bind=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def dies_once(self: Task) -> str:
+    """Kill the pool child on the first delivery; Celery requeues, so a second runs.
+
+    Prefork only: elsewhere this would kill the worker itself. The marker lives
+    in Redis because the second run is in a new process.
+    """
+    marker = f"{os.environ.get('OUTPUT_TEST_QUEUE', 'output-test')}:died:{self.request.id}"
+    client = redis.Redis.from_url(REDIS_URL)
+    if client.set(marker, 1, nx=True, ex=300):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return "survived"
 
 
 @app.task(name="output_test.tagged")
