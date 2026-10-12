@@ -78,6 +78,23 @@ test.describe('Task names - colliding short names', () => {
     await expectSendLabelsTold(page)
   })
 
+  test('graph nodes and timeline links carry the full task name for screen readers', async ({
+    page,
+  }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { root, billing, email } = sendWorkflow()
+    mockApi.addTasks([root, billing, email])
+
+    await page.goto(`/graph/${root.task_id}`)
+    await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
+    await expect(page.getByRole('link', { name: /app\.billing\.send/ })).toHaveCount(1)
+    await expect(page.getByRole('link', { name: /app\.email\.send/ })).toHaveCount(1)
+
+    await page.goto('/?view=timeline')
+    await expect(page.getByRole('link', { name: 'app.billing.send' })).toHaveCount(1)
+    await expect(page.getByRole('link', { name: 'app.email.send' })).toHaveCount(1)
+  })
+
   test('registry cards show the shortest unique name', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     mockApi.setRegistry([

@@ -118,6 +118,7 @@ function TaskTimelineRow({ task, label, minTime, range }: TaskTimelineRowProps) 
         params={{ taskId: task.task_id }}
         className="w-44 truncate text-sm text-slate-300 hover:text-emerald-400 transition-colors"
         title={task.name}
+        aria-label={task.name}
       >
         {label}
       </Link>

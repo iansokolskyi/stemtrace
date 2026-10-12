@@ -349,6 +349,7 @@ function buildGraphElements(
               <Link
                 to="/tasks/$taskId"
                 params={{ taskId: childId }}
+                aria-label={`${childNode.name}, ${childNode.state}`}
                 className="block p-2 text-left h-full"
               >
                 <div className="text-xs text-slate-400 font-mono mb-1">{childId.slice(0, 8)}</div>
@@ -428,6 +429,7 @@ function buildGraphElements(
                   <Link
                     to="/tasks/$taskId"
                     params={{ taskId: childId }}
+                    aria-label={`${callbackNode.name}, ${callbackNode.state}`}
                     className="block p-2 text-left h-full"
                   >
                     <div className="text-xs text-slate-400 font-mono mb-1">
@@ -485,7 +487,12 @@ function buildGraphElements(
         position: { x: levelX(level), y: yPos },
         data: {
           label: (
-            <Link to="/tasks/$taskId" params={{ taskId: id }} className="block p-3 text-left">
+            <Link
+              to="/tasks/$taskId"
+              params={{ taskId: id }}
+              aria-label={`${node.name}, ${node.state}`}
+              className="block p-3 text-left"
+            >
               <div className="text-xs text-slate-400 font-mono mb-1">{id.slice(0, 8)}</div>
               <div
                 className="text-sm text-slate-100 font-medium whitespace-nowrap"
