@@ -71,7 +71,7 @@ async function listRootGraphs(
 }
 
 /**
- * Open a specific graph from the graphs list.
+ * Open a specific graph, chosen from the API's graph list.
  *
  * Unlike navigateToFirstGraph this never skips: the data it looks for is
  * created by the E2E seed (real mode) or the mock fixtures (mock mode), so a
@@ -99,10 +99,10 @@ async function openGraph(
     throw new Error(`No graph with ${wanted}; found: ${found || 'none'}`)
   }
 
-  await page.goto('/graphs')
-  const link = page.locator('a[href*="/graph/"]').filter({ hasText: match.task_id })
-  await expect(link).toBeVisible({ timeout: 15_000 })
-  await link.click()
+  // Open the graph by its route instead of finding its link: the /graphs list shows
+  // one page, and on a reused stack the match can be on a later one. Navigating
+  // from the list is covered by "can navigate to graph detail".
+  await page.goto(`/graph/${encodeURIComponent(match.task_id)}`)
   await page.waitForLoadState('networkidle')
 }
 
