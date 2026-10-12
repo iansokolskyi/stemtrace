@@ -6,6 +6,7 @@ monkey-patch run in their own interpreter.
 """
 
 import errno
+import importlib.util
 import json
 import logging
 import os
@@ -51,6 +52,16 @@ H1 = "amqp://guest:guest@h1:5672//"
 H2 = "amqp://guest:guest@h2:5672//"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_TIMEOUT_S = 60
+
+# The green-pool tests run their script in a fresh interpreter, so a missing
+# package fails the script instead of skipping; skip them where it isn't
+# installed (CI's test-lowest job installs only the runtime floors).
+NEEDS_GEVENT = pytest.mark.skipif(
+    importlib.util.find_spec("gevent") is None, reason="gevent is not installed"
+)
+NEEDS_EVENTLET = pytest.mark.skipif(
+    importlib.util.find_spec("eventlet") is None, reason="eventlet is not installed"
+)
 
 
 @pytest.fixture
@@ -1797,18 +1808,21 @@ class TestPublisherGreenPools:
     @pytest.mark.parametrize(
         ("patch", "sleep", "body"),
         [
-            (
+            pytest.param(
                 "import gevent\nfrom gevent import monkey\nmonkey.patch_all()",
                 "gevent.sleep",
                 _GEVENT_BODY,
+                id="gevent",
+                marks=NEEDS_GEVENT,
             ),
-            (
+            pytest.param(
                 "import eventlet\neventlet.monkey_patch()",
                 "eventlet.sleep",
                 _EVENTLET_BODY,
+                id="eventlet",
+                marks=NEEDS_EVENTLET,
             ),
         ],
-        ids=["gevent", "eventlet"],
     )
     def test_publish_from_many_greenlets_shares_one_connection_without_deadlock(
         self, patch: str, sleep: str, body: str
@@ -1877,7 +1891,11 @@ _EVENTLET_PARTIAL = (
 
 class TestPublisherPartialFrameUnderGreenPools:
     @pytest.mark.parametrize(
-        "variant", [_GEVENT_PARTIAL, _EVENTLET_PARTIAL], ids=["gevent", "eventlet"]
+        "variant",
+        [
+            pytest.param(_GEVENT_PARTIAL, id="gevent", marks=NEEDS_GEVENT),
+            pytest.param(_EVENTLET_PARTIAL, id="eventlet", marks=NEEDS_EVENTLET),
+        ],
     )
     def test_publish_with_half_a_frame_pending_never_stalls_the_hub(
         self, variant: tuple[str, str, str, str]
@@ -1949,20 +1967,23 @@ class TestPublisherKilledMidConnect:
     @pytest.mark.parametrize(
         ("patch", "spawn", "sleep", "kill"),
         [
-            (
+            pytest.param(
                 "from gevent import monkey; monkey.patch_all(); import gevent",
                 "gevent.spawn",
                 "gevent.sleep",
                 "victim.kill(block=True, timeout=5)",
+                id="gevent",
+                marks=NEEDS_GEVENT,
             ),
-            (
+            pytest.param(
                 "import eventlet; eventlet.monkey_patch()",
                 "eventlet.spawn",
                 "eventlet.sleep",
                 "victim.kill(); eventlet.sleep(0.1)",
+                id="eventlet",
+                marks=NEEDS_EVENTLET,
             ),
         ],
-        ids=["gevent", "eventlet"],
     )
     @pytest.mark.parametrize("scheme", ["amqp", "amqps"])
     def test_greenlet_killed_while_connecting_closes_its_half_open_socket(

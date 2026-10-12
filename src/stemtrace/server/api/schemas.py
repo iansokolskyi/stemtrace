@@ -60,7 +60,10 @@ class TaskNodeResponse(BaseModel):
     node_type: NodeType = NodeType.TASK
     group_id: str | None = None
     chord_id: str | None = None
+    # Where the node sits in the graph (a group member: its group node).
     parent_id: str | None = None
+    # The parent the task's events reported (None for GROUP/CHORD nodes).
+    reported_parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
     events: list[TaskEventResponse] = Field(default_factory=list)
     first_seen: datetime | None = None
@@ -93,7 +96,10 @@ class GraphNodeResponse(BaseModel):
     node_type: NodeType = NodeType.TASK
     group_id: str | None = None
     chord_id: str | None = None
+    # Where the node sits in the graph (a group member: its group node).
     parent_id: str | None = None
+    # The parent the task's events reported (None for GROUP/CHORD nodes).
+    reported_parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
     duration_ms: int | None = None
     first_seen: datetime | None = None

@@ -241,7 +241,7 @@ test.describe('Task Detail - Mock Scenarios', () => {
     const base = Date.now() - 10_000
     const at = (ms: number) => new Date(base + ms).toISOString()
     const { task_id, name } = task
-    // task_sent fires after publish, so the sender's PENDING can be stamped
+    // after_task_publish fires after publish, so the sender's PENDING can be stamped
     // after the worker's STARTED and SUCCESS.
     task.events = [
       createMockEvent(task_id, name, 'STARTED', { timestamp: at(10), retries: 0 }),

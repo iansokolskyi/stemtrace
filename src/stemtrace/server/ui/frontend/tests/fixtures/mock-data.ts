@@ -283,13 +283,10 @@ export function createGroup(
         }),
       ],
     }
-    // Each member points to callback
-    for (const member of members) {
-      member.children.push(callback_id)
-    }
-    // Like the real API, the CHORD node names its callback in chord_id and lists it
-    // among its children. The graph view only draws the header-task-to-callback
-    // edges (and the callback node) when it finds the callback this way.
+    // As the server sends it: the CHORD names its callback (chord_id) and lists it
+    // among its children, and the header tasks do not list the callback themselves.
+    // The graph view only draws the header-task-to-callback edges (and the callback
+    // node) when it finds the callback through the CHORD.
     groupNode.chord_id = callback_id
     groupNode.children.push(callback_id)
     allTasks.push(callback)

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 
@@ -11,6 +11,20 @@ import { setupMockApi } from './fixtures/mock-api'
 
 const isRealMode = process.env.E2E_MODE === 'real'
 
+/**
+ * Navigate (or reload) and wait until the page has fetched its workers list.
+ *
+ * The app keeps retrying its WebSocket (no backend in mock mode), so
+ * `networkidle` isn't a reliable "page is ready" signal; the API response is.
+ */
+async function loadWorkersPage(page: Page, navigate: () => Promise<unknown>): Promise<void> {
+  const workersResponse = page.waitForResponse((response) =>
+    /\/api\/workers(\?|$)/.test(new URL(response.url()).pathname),
+  )
+  await navigate()
+  await workersResponse
+}
+
 test.describe('Workers Page', () => {
   let mockApi: Awaited<ReturnType<typeof setupMockApi>> | null = null
 
@@ -20,17 +34,14 @@ test.describe('Workers Page', () => {
     } else {
       mockApi = null
     }
-    await page.goto('/workers')
+    await loadWorkersPage(page, () => page.goto('/workers'))
   })
 
   test('displays workers page', async ({ page }) => {
-    await page.waitForLoadState('networkidle')
     await expect(page.getByRole('heading', { name: 'Workers', level: 1 })).toBeVisible()
   })
 
   test('shows worker entries from API', async ({ page }) => {
-    await page.waitForLoadState('networkidle')
-
     if (isRealMode) {
       // Real Docker mode: assert we render at least one worker card from the backend.
       const workerHeadings = page.getByRole('heading', { level: 3 })
@@ -56,8 +67,7 @@ test.describe('Workers Page', () => {
     }
 
     mockApi?.clearWorkers()
-    await page.reload()
-    await page.waitForLoadState('networkidle')
+    await loadWorkersPage(page, () => page.reload())
 
     await expect(page.getByText('No workers registered')).toBeVisible()
   })
