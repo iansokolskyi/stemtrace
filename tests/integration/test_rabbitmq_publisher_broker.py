@@ -33,6 +33,7 @@ from kombu import Connection
 from kombu.exceptions import KombuError
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.transports import rabbitmq_publisher
 from stemtrace.transports.rabbitmq import RabbitMQTransport
 from stemtrace.transports.rabbitmq_publisher import PublishDroppedError
 
@@ -254,7 +255,10 @@ class TestBrokerClosesTheConnection:
         )
         # The broker closes the channel on this publish (404): lost, no error.
         transport.publish(_event("lost"))
-        time.sleep(0.3)
+        proc = transport._publisher._proc
+        assert proc is not None
+        # Wait until the broker's channel-close (404) frame has arrived.
+        _wait_for(lambda: rabbitmq_publisher._readable(proc.sock), "the channel close")
         transport._declare_exchange_and_queue()
 
         transport.publish(_event("after-1"))
