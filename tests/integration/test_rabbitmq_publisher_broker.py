@@ -120,6 +120,22 @@ def _exactly(pid: int, count: int) -> Callable[[], list[dict[str, Any]] | None]:
     return condition
 
 
+def _replaced(pid: int, old_name: str) -> Callable[[], list[dict[str, Any]] | None]:
+    """Condition: the management API lists only newer connections of ``pid``.
+
+    Its stats lag by seconds, so right after a reconnect it may still list the
+    old connection and not yet the new one.
+    """
+
+    def condition() -> list[dict[str, Any]] | None:
+        connections = _publisher_connections(pid)
+        if connections and all(c["name"] != old_name for c in connections):
+            return connections
+        return None
+
+    return condition
+
+
 def _current_name(pid: int) -> str:
     """The management name of the only publisher connection of ``pid``."""
     connections = _wait_for(_exactly(pid, 1), "one publisher connection")
@@ -241,7 +257,7 @@ class TestBrokerClosesTheConnection:
         # idle publisher only gives when it next reads the socket: the publish.
         transport.publish(_event("after"))
 
-        assert _current_name(os.getpid()) != name
+        _wait_for(_replaced(os.getpid(), name), "a new connection")
         assert transport._publish_breaker.is_open is False
         assert _received(transport.queue_name, 2) == ["before", "after"]
 
@@ -264,7 +280,7 @@ class TestBrokerClosesTheConnection:
         transport.publish(_event("after-1"))
         transport.publish(_event("after-2"))
 
-        assert _current_name(os.getpid()) != first
+        _wait_for(_replaced(os.getpid(), first), "a new connection")
         assert _received(transport.queue_name, 3) == ["before", "after-1", "after-2"]
 
 
