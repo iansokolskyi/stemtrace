@@ -200,10 +200,6 @@ def _connection_name(broker: RabbitMQContainer) -> str:
 
 
 class TestBrokerRestart:
-    # A connect that fails mid-handshake (the broker is booting) leaves its
-    # socket to the garbage collector in py-amqp 5.0.6 (Connection.connect()
-    # only collects in later versions); the per-event connections did the same.
-    @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
     def test_publish_after_broker_restart_recovers_on_one_new_connection(
         self, broker: RabbitMQContainer, transport: RabbitMQTransport
     ) -> None:
