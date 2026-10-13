@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { TaskStatus } from '@/api/client'
 import { useTaskRegistry } from '@/api/queries'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/registry')({
   component: RegistryPage,
@@ -38,6 +39,10 @@ function RegistryPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(undefined)
   const { data, isLoading, error } = useTaskRegistry(searchQuery || undefined, statusFilter)
+  const shortNames = useMemo(
+    () => shortestUniqueSuffixes(data?.tasks.map((task) => task.name) ?? []),
+    [data],
+  )
 
   return (
     <div className="space-y-6">
@@ -119,7 +124,11 @@ function RegistryPage() {
       {data && data.tasks.length > 0 && (
         <div className="space-y-3">
           {data.tasks.map((task) => (
-            <TaskCard key={task.name} task={task} />
+            <TaskCard
+              key={task.name}
+              task={task}
+              shortName={shortNames.get(task.name) ?? task.name}
+            />
           ))}
         </div>
       )}
@@ -154,6 +163,8 @@ function RegistryPage() {
 }
 
 interface TaskCardProps {
+  /** The name as far as it takes to tell it from the other tasks listed. */
+  shortName: string
   task: {
     name: string
     signature: string | null
@@ -199,9 +210,8 @@ function StatusBadge({ status }: { status: TaskStatus }) {
   )
 }
 
-function TaskCard({ task }: TaskCardProps) {
+function TaskCard({ task, shortName }: TaskCardProps) {
   const [expanded, setExpanded] = useState(false)
-  const shortName = task.name.split('.').pop() || task.name
   const hasExecutions = task.execution_count > 0
 
   // Icon colors based on status
@@ -244,7 +254,9 @@ function TaskCard({ task }: TaskCardProps) {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium text-slate-100 truncate">{shortName}</h3>
+              <h3 className="font-medium text-slate-100 truncate" title={task.name}>
+                {shortName}
+              </h3>
               <StatusBadge status={task.status} />
             </div>
             <p className="text-sm text-slate-500 mt-0.5">
@@ -397,7 +409,7 @@ function TaskCard({ task }: TaskCardProps) {
             {hasExecutions && (
               <Link
                 to="/"
-                search={{ name: shortName }}
+                search={{ name_exact: task.name }}
                 className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
               >
                 View runs →

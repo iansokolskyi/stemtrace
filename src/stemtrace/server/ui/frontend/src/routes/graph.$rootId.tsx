@@ -43,7 +43,7 @@ function GraphDetailPage() {
       {/* Graph visualization */}
       <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
         <div className="h-[600px]">
-          <TaskGraph nodes={data.nodes} rootId={data.root_id} />
+          <TaskGraph key={data.root_id} nodes={data.nodes} rootId={data.root_id} />
         </div>
       </div>
     </div>

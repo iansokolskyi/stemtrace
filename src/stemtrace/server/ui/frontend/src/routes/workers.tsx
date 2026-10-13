@@ -1,6 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
+import { useMemo } from 'react'
 import { useWorkers } from '@/api/queries'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/workers')({
   component: WorkersPage,
@@ -8,6 +10,11 @@ export const Route = createFileRoute('/workers')({
 
 function WorkersPage() {
   const { data, isLoading, error } = useWorkers()
+  // Across every worker listed, so one label means one task on the whole page
+  const shortNames = useMemo(
+    () => shortestUniqueSuffixes(data?.workers.flatMap((worker) => worker.registered_tasks) ?? []),
+    [data],
+  )
 
   return (
     <div className="space-y-6">
@@ -47,7 +54,11 @@ function WorkersPage() {
       {data && data.workers.length > 0 && (
         <div className="space-y-3">
           {data.workers.map((worker) => (
-            <WorkerCard key={`${worker.hostname}:${worker.pid}`} worker={worker} />
+            <WorkerCard
+              key={`${worker.hostname}:${worker.pid}`}
+              worker={worker}
+              shortNames={shortNames}
+            />
           ))}
         </div>
       )}
@@ -80,6 +91,8 @@ function WorkersPage() {
 }
 
 interface WorkerCardProps {
+  /** Short label per task name, unique across the workers listed. */
+  shortNames: Map<string, string>
   worker: {
     hostname: string
     pid: number
@@ -90,7 +103,7 @@ interface WorkerCardProps {
   }
 }
 
-function WorkerCard({ worker }: WorkerCardProps) {
+function WorkerCard({ worker, shortNames }: WorkerCardProps) {
   const isOnline = worker.status === 'online'
   const lastSeenDate = new Date(worker.last_seen)
   const lastSeenRelative = formatDistanceToNow(lastSeenDate, { addSuffix: true })
@@ -145,13 +158,13 @@ function WorkerCard({ worker }: WorkerCardProps) {
                   <p className="text-xs text-slate-500 mb-2">Registered tasks:</p>
                   <div className="flex flex-wrap gap-2">
                     {worker.registered_tasks.slice(0, 10).map((task) => {
-                      const shortName = task.split('.').pop() || task
                       return (
                         <span
                           key={task}
+                          title={task}
                           className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-400 font-mono"
                         >
-                          {shortName}
+                          {shortNames.get(task) ?? task}
                         </span>
                       )
                     })}

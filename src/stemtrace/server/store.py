@@ -508,6 +508,7 @@ class GraphStore:
         offset: int = 0,
         state: TaskState | None = None,
         name_contains: str | None = None,
+        name_exact: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
     ) -> tuple[list[TaskNode], int]:
@@ -515,6 +516,11 @@ class GraphStore:
 
         Excludes synthetic nodes (GROUP, CHORD) which are for graph
         visualization only.
+
+        ``name_contains`` matches a case-insensitive substring of the task
+        name; ``name_exact`` matches the whole name, case-sensitively like
+        Celery's task registry (``app.add`` does not match ``app.add_numbers``
+        or ``app.Add``). Both can be given; a node must pass each.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -533,6 +539,8 @@ class GraphStore:
             if name_contains is not None:
                 name_lower = name_contains.lower()
                 nodes = [n for n in nodes if name_lower in n.name.lower()]
+            if name_exact is not None:
+                nodes = [n for n in nodes if n.name == name_exact]
             if from_date is not None:
                 from_dt = _ensure_tz_aware(from_date)
                 nodes = [

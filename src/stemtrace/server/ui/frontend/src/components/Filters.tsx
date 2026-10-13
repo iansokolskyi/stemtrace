@@ -10,12 +10,15 @@ interface FiltersProps {
   filters: {
     state: string | undefined
     name: string
+    /** Set by a task's "View runs": the whole task name to show. */
+    name_exact?: string
     from_date?: string
     to_date?: string
   }
   onFiltersChange: (filters: {
     state: string | undefined
     name: string
+    name_exact?: string
     from_date?: string
     to_date?: string
   }) => void
@@ -48,7 +51,8 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
     })
   }
 
-  const hasActiveFilters = filters.state || filters.name || filters.from_date || filters.to_date
+  const hasActiveFilters =
+    filters.state || filters.name || filters.name_exact || filters.from_date || filters.to_date
 
   return (
     <div className="flex flex-wrap items-center gap-4 p-4 bg-slate-900/50 rounded-lg border border-slate-800">
@@ -94,6 +98,22 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
         />
       </div>
 
+      {/* Exact task name, from the registry's "View runs" */}
+      {filters.name_exact && (
+        <span className="flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-slate-800 text-slate-300">
+          <span className="text-slate-500">Task:</span>
+          <span className="font-mono">{filters.name_exact}</span>
+          <button
+            type="button"
+            aria-label="Remove task filter"
+            onClick={() => onFiltersChange({ ...filters, name_exact: undefined })}
+            className="text-slate-500 hover:text-slate-300"
+          >
+            ×
+          </button>
+        </span>
+      )}
+
       {/* Clear filters */}
       {hasActiveFilters && (
         <button
@@ -102,6 +122,7 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
             onFiltersChange({
               state: undefined,
               name: '',
+              name_exact: undefined,
               from_date: undefined,
               to_date: undefined,
             })

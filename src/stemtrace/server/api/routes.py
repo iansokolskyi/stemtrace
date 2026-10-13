@@ -571,6 +571,10 @@ def _add_task_routes(
         name: Annotated[
             str | None, Query(description="Filter by name substring")
         ] = None,
+        name_exact: Annotated[
+            str | None,
+            Query(description="Filter by exact task name (case-sensitive)"),
+        ] = None,
         from_date: Annotated[
             datetime | None, Query(description="Filter by start date (ISO format)")
         ] = None,
@@ -578,7 +582,11 @@ def _add_task_routes(
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
     ) -> TaskListResponse:
-        """List tasks with optional filtering by state, name, and date range."""
+        """List tasks with optional filtering by state, name, and date range.
+
+        ``name`` is a case-insensitive substring match (the search box);
+        ``name_exact`` is an exact match on the full task name.
+        """
         from stemtrace.core.events import TaskState as TS
 
         task_state: TaskState | None = None
@@ -591,6 +599,7 @@ def _add_task_routes(
             offset=offset,
             state=task_state,
             name_contains=name,
+            name_exact=name_exact,
             from_date=from_date,
             to_date=to_date,
         )

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
+import { createRegistryEntry, createSuccessTask } from './fixtures/mock-data'
 
 /**
  * Tests for the Registry page.
@@ -145,5 +146,31 @@ test.describe('Registry - Mock Scenarios', () => {
     // Should show multiply (short name from 'tasks.multiply')
     const multiplyTask = page.getByRole('heading', { name: 'multiply', level: 3 })
     await expect(multiplyTask).toBeVisible()
+  })
+})
+
+test.describe('Registry - View runs', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('lists the runs of that exact task, not of tasks whose names extend it', async ({
+    page,
+  }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    mockApi.setRegistry([createRegistryEntry('app.add'), createRegistryEntry('app.add_numbers')])
+    mockApi.addTasks([
+      createSuccessTask('app.add'),
+      createSuccessTask('app.add_numbers'),
+      createSuccessTask('other.app.add'),
+    ])
+    await page.goto('/registry')
+    await page.getByRole('heading', { name: 'add', level: 3, exact: true }).click()
+    await page.getByRole('link', { name: 'View runs' }).click()
+
+    // One row per run listed; the filter chip also shows the name, so count rows
+    const rows = page.locator('a[href^="/tasks/"]')
+    await expect(rows).toHaveCount(1)
+    await expect(rows.first().locator('p').first()).toHaveText('app.add')
+    await expect(page.getByText('app.add_numbers')).toHaveCount(0)
+    await expect(page.getByText('other.app.add')).toHaveCount(0)
   })
 })
