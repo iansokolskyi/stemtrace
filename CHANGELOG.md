@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Highlights:**
+- Task graphs match what Celery runs: chains with chords, groups of chains, chord bodies, `task.replace()` (any event order and worker clock skew), and the graph page updates live.
+- Workers never wait on a broken event broker: Redis gets the circuit breaker RabbitMQ has, DNS lookups are bounded, and RabbitMQ reuses one connection per process (about 0.3 ms per event instead of 8 ms).
+- Celery soft time limits are no longer swallowed by stemtrace, and the Workers page lists each worker once across restarts and `celery multi`.
+- The built-in login throttles failed sign-ins and works behind a path-prefixing proxy.
+- Minimum versions are now `celery>=5.2.2`, `pydantic>=2.4.0`, `kombu>=5.2.2` and `typer>=0.13.0`. RECEIVED events are opt-in (`init_worker(publish_received=True)`).
+
 **Upgrading:** upgrade the server before (or together with) the workers. This release's workers put the parent and group IDs on the PENDING event they send. A 0.3.10 server shows more tasks twice when it gets those events: on Celery 5.2, both headers of `chain(a, chord([b, c], d))` also appear directly under `a` (one does with older workers). This release's server draws the same graphs from older workers' events as from this release's (checked on every captured test workflow).
 
 ### Added
