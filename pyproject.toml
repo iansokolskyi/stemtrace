@@ -38,7 +38,7 @@ dependencies = [
     "redis>=4.1.0",  # lowest version verified by the test suite at release time; 4.0.x needs distutils (gone in Python 3.12)
     "fastapi>=0.112.1",  # lowest version verified by the test suite at release time
     "starlette>=0.38.6",  # imported directly; lowest version verified by the test suite at release time
-    "typer>=0.13.0",  # lowest version verified by the test suite; older ones reject `str | None` options
+    "typer>=0.16.0",  # first version whose --help works with click 8.2+ (passes make_metavar its ctx); verified by the test suite
     "uvicorn[standard]>=0.20.0",
     "httpx>=0.24.0",  # Required for healthchecks in Docker
 ]
