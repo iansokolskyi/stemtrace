@@ -197,6 +197,31 @@ class TestTiming:
 
         assert _timing(node) == expected
 
+    @pytest.mark.parametrize(
+        ("behind", "expected"),
+        [
+            (5, (10000, 2000, 2000)),
+            (6, (9000, 1000, 1000)),
+            (8, (7000, 0, 0)),
+            (20, (0, 0, 0)),
+        ],
+    )
+    def test_lost_run_redelivered_to_a_worker_whose_clock_is_behind(
+        self, behind: float, expected: tuple[int | None, ...]
+    ) -> None:
+        # Documented limitation: worker A's pool process is lost after STARTED
+        # (acks_late, no end event); B, `behind` seconds slow, runs it in 2 s.
+        # Once B's STARTED is stamped before A's, A's STARTED starts the last
+        # run, read against B's SUCCESS: too short, 0 at worst.
+        node = _node(
+            _event(P, 0),
+            _event(S, 10),
+            _event(S, 15 - behind),
+            _event(OK, 17 - behind),
+        )
+
+        assert _timing(node) == expected
+
     def test_clock_stepped_back_mid_run_counts_as_zero(self) -> None:
         # One worker's clock stepped back (NTP) between STARTED and SUCCESS.
         node = _node(_event(S, 10), _event(RT, 11), _event(S, 12), _event(OK, 9))

@@ -159,15 +159,19 @@ Limitations:
   in the queue.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
-  after `self.retry(throw=False)`. With `throw=False` and the second worker's clock behind the
+  after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
+  the first worker's by more than the time between the two starts, the lost run's STARTED is
+  taken as the last run's start instead: `runtime_ms` and `total_runtime_ms` come out too short
+  (0 at worst), and `queue_wait_ms` shorter. With `throw=False` and the second worker's clock behind the
   first's by more than the time between the two runs' ends, the first run's SUCCESS becomes the
   task's final event, and both fields are empty.
 - A FAILURE Celery reports from the worker's main process (a hard time limit) doesn't say which
-  attempt failed. If the events of the attempts in between were missed, the runtime is counted
+  attempt failed, and neither does the FAILURE of a first attempt that raised after
+  `self.retry(throw=False)`: both carry retry count 0. If the events of the attempts in between were missed, the runtime is counted
   from the last STARTED the server has, so it can be too long.
-- Each run's start and end come from the clock of the worker that ran it, so a span only goes
-  negative if that clock steps back mid-run; it then counts as 0. When Celery runs the same
-  attempt again on another worker (after losing the broker connection) whose clock is behind the
-  first worker's by about the gap between them, the runs can't be put in order: `runtime_ms` and
-  `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter by that offset (see the
+- A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run, or a
+  span read across two workers' clocks (above). When Celery runs the same attempt again on
+  another worker after losing the broker connection, and that worker's clock is behind the
+  first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
+  and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the
   same-attempt limitation in [Worker, queue and exception type](#worker-queue-and-exception-type)).
