@@ -150,12 +150,16 @@ def _event_key(event: TaskEvent) -> _EventKey:
 _NO_TIME = timedelta(0)
 
 
-def _ms(delta: timedelta) -> int:
-    """Whole milliseconds of a non-negative span (negative spans count as 0).
+_MILLISECOND = timedelta(milliseconds=1)
 
-    Truncated like the API's ``duration_ms``.
+
+def _ms(delta: timedelta) -> int:
+    """Whole milliseconds of a span, truncated; negative spans count as 0.
+
+    Integer division of the timedelta: going through float seconds loses a
+    millisecond (``int(1.001 * 1000)`` is 1000).
     """
-    return max(0, int(delta.total_seconds() * 1000))
+    return max(0, delta // _MILLISECOND)
 
 
 def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
@@ -303,11 +307,7 @@ class TaskNode(BaseModel):
         None until the task finished, and when the last run's STARTED is
         missing (see ``_runs``).
         """
-        runs = self._runs()
-        if runs is None:
-            return None
-        started, ended = runs[-1]
-        return _ms(ended.timestamp - started.timestamp)
+        return self.run_times()[0]
 
     @property
     def total_runtime_ms(self) -> int | None:
@@ -315,14 +315,15 @@ class TaskNode(BaseModel):
 
         None exactly when ``runtime_ms`` is.
         """
+        return self.run_times()[1]
+
+    def run_times(self) -> tuple[int | None, int | None]:
+        """``runtime_ms`` and ``total_runtime_ms`` from one pass over the events."""
         runs = self._runs()
         if runs is None:
-            return None
-        spans = (
-            max(ended.timestamp - started.timestamp, _NO_TIME)
-            for started, ended in runs
-        )
-        return _ms(sum(spans, _NO_TIME))
+            return None, None
+        spans = [max(end.timestamp - start.timestamp, _NO_TIME) for start, end in runs]
+        return _ms(spans[-1]), _ms(sum(spans, _NO_TIME))
 
     def _runs(self) -> list[tuple[TaskEvent, TaskEvent]] | None:
         """Each run's STARTED with the RETRY or final event that ended it.
@@ -330,10 +331,13 @@ class TaskNode(BaseModel):
         Events are taken in ``_precedence`` order (the order that decides the
         state, so worker clocks can't swap attempts): each STARTED pairs with
         the next RETRY, the last with the final event. A run whose end was
-        missed is left out. None unless the task finished and its last run's
-        STARTED is known: that STARTED must be from the final event's attempt
-        or later (a FAILURE Celery sends from the worker's main process has
-        ``retries=0`` whatever the attempt).
+        missed, or that ended in a terminal event that isn't the final one
+        (``self.retry(throw=False)``), is left out. None unless the task
+        finished and its last run's STARTED is from the final event's attempt.
+        The exception is a FAILURE with ``retries=0``: Celery sends one from the
+        worker's main process (hard time limit, lost worker) whatever the
+        attempt (celery 5.6.3 worker/request.py ``Request.on_failure``); a
+        REVOKED there carries the request's real count (``_announce_revoked``).
         """
         final = max(self.events, key=_precedence, default=None)
         if final is None or final.state not in _TERMINAL_STATES:
@@ -350,7 +354,10 @@ class TaskNode(BaseModel):
             elif started is not None:
                 runs.append((started, event))
                 started = None
-        if not runs or runs[-1][1] is not final or final.retries > runs[-1][0].retries:
+        if not runs or runs[-1][1] is not final:
+            return None
+        from_main_process = final.state == TaskState.FAILURE and final.retries == 0
+        if final.retries != runs[-1][0].retries and not from_main_process:
             return None
         return runs
 

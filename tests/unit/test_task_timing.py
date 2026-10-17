@@ -125,6 +125,17 @@ class TestTiming:
 
         assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
 
+    def test_failure_of_an_earlier_retry_never_ends_a_later_run(self) -> None:
+        # Only a retries=0 FAILURE comes from the worker's main process; a
+        # FAILURE(1) stamped after STARTED(2) (skewed clocks) is attempt 1's.
+        node = _node(
+            _event(S, 1, retries=1),
+            _event(FAIL, 30, retries=1),
+            _event(S, 12, retries=2),
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+
     def test_waiting_to_retry_has_no_runtime(self) -> None:
         node = _node(_event(P, 0), _event(S, 1), _event(RT, 2))
 
@@ -147,6 +158,18 @@ class TestTiming:
         )
 
         assert _timing(node) == (1000, 2000, 3000)
+
+    def test_sub_second_spans_are_exact_milliseconds(self) -> None:
+        # int(1.001 * 1000) is 1000 in floating point.
+        node = _node(_event(P, 0), _event(S, 1.003), _event(OK, 2.004))
+
+        assert _timing(node) == (1003, 1001, 1001)
+
+    def test_run_without_a_reported_end_is_left_out(self) -> None:
+        # A pool process lost mid-run reports nothing; acks_late redelivers.
+        node = _node(_event(P, 0), _event(S, 1), _event(S, 5), _event(OK, 7))
+
+        assert _timing(node) == (1000, 2000, 2000)
 
     def test_terminal_before_started_is_zero(self) -> None:
         # Redelivered within one attempt to a worker whose clock is behind.
@@ -238,6 +261,33 @@ class TestTimingSweep:
                     assert _timing(_node(*order)) == expected, (pre_start, sender_skew)
 
 
+@pytest.mark.parametrize("last_end", [OK, FAIL])
+@pytest.mark.parametrize("skews", list(itertools.product(SKEWS, repeat=2)))
+def test_retry_without_raising_never_pairs_attempts(
+    skews: tuple[int, int], last_end: TaskState
+) -> None:
+    # self.retry(throw=False) republishes and returns: attempt 0 ends in its
+    # own SUCCESS (celery 5.6.3 app/task.py Task.retry, `return ret`; no
+    # task_retry). With worker 1's clock behind, that SUCCESS is the final
+    # event; it must not end attempt 1's run.
+    first, second = skews
+    events = [
+        _event(P, 0),
+        _event(S, 1 + first),
+        _event(OK, 2 + first),
+        _event(S, 12 + second, retries=1),
+        _event(last_end, 15 + second, retries=1),
+    ]
+    attempt0_is_final = 2 + first >= 15 + second
+    # Attempt 0's run ended in a terminal event that isn't the final one, so
+    # it isn't counted in the total.
+    expected = (None, None) if attempt0_is_final else (3000, 3000)
+
+    for order in (events, events[::-1], random.Random(str(skews)).sample(events, 5)):
+        node = _node(*order)
+        assert (node.runtime_ms, node.total_runtime_ms) == expected
+
+
 def _capture(flow: str) -> list[TaskEvent]:
     return [TaskEvent.model_validate(e) for e in json.loads(FLOWS.read_text())[flow]]
 
@@ -257,7 +307,7 @@ class TestRealCaptures:
             return mine[b] - mine[a]
 
         def ms(delta: timedelta) -> int:
-            return int(delta.total_seconds() * 1000)  # as duration_ms rounds
+            return delta // timedelta(milliseconds=1)
 
         assert _timing(flaky) == (
             ms(span((P, 0), (S, 0))),
