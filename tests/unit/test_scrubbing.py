@@ -1,5 +1,7 @@
 """Tests for sensitive data scrubbing."""
 
+from enum import Enum, IntEnum
+
 import pytest
 
 from stemtrace.library.scrubbing import (
@@ -302,8 +304,49 @@ class _StrIsPassword:
         return "<_StrIsPassword>"
 
 
-UNNAMED_KEYS = [1, None, 1.5, (1, 2), b"name", ("user", 1), _StrIsPassword()]
-UNNAMED_KEY_IDS = ["int", "none", "float", "tuple", "bytes", "tuple_mixed", "object"]
+class _Cred(Enum):
+    """Enum members are names: matched by their name and their value."""
+
+    PASSWORD = "pw"
+    LOOKUP = "api_key"
+    COLOR = 1
+
+
+class _StrCred(str, Enum):
+    """A str-mixin Enum is a str, but its name is matched too."""
+
+    SECRET = "s"
+
+
+class _Slot(IntEnum):
+    """An IntEnum is an int, but its members still have names."""
+
+    TOKEN = 1
+    OTHER = 2
+
+
+UNNAMED_KEYS = [
+    1,
+    None,
+    1.5,
+    (1, 2),
+    b"name",
+    ("user", 1),
+    _StrIsPassword(),
+    _Cred.COLOR,
+    _Slot.OTHER,
+]
+UNNAMED_KEY_IDS = [
+    "int",
+    "none",
+    "float",
+    "tuple",
+    "bytes",
+    "tuple_mixed",
+    "object",
+    "enum",
+    "int_enum",
+]
 NAMED_KEYS = [
     b"password",
     b"\xffpassword",
@@ -311,6 +354,10 @@ NAMED_KEYS = [
     ("user", b"token"),
     (("nested", "cookie"),),
     frozenset({"secret"}),
+    _Cred.PASSWORD,
+    _Cred.LOOKUP,
+    _Slot.TOKEN,
+    _StrCred.SECRET,
 ]
 NAMED_KEY_IDS = [
     "bytes",
@@ -319,6 +366,10 @@ NAMED_KEY_IDS = [
     "tuple_bytes",
     "tuple_nested",
     "frozenset",
+    "enum_name",
+    "enum_value",
+    "int_enum",
+    "str_enum",
 ]
 ALL_KEYS = [(key, False) for key in UNNAMED_KEYS] + [(key, True) for key in NAMED_KEYS]
 ALL_KEY_IDS = [f"unnamed_{i}" for i in UNNAMED_KEY_IDS] + [
@@ -414,9 +465,10 @@ class TestNonStringKeys:
 
         result = safe_serialize(_wrapped(where, _with_key(key, "x")))
 
-        # json.dumps takes int, float and None keys; other keys make it raise
-        # TypeError, and safe_serialize falls back to str() of the scrubbed value.
-        json_key = key is None or isinstance(key, int | float)
+        # json.dumps takes str, int, float and None keys (subclasses too, such
+        # as mixin Enums); other keys make it raise TypeError, and
+        # safe_serialize falls back to str() of the scrubbed value.
+        json_key = key is None or isinstance(key, str | int | float)
         assert result == (expected if json_key else str(expected))
 
     def test_safe_serialize_with_scrubbing_off_and_non_string_key_keeps_values(
@@ -426,3 +478,10 @@ class TestNonStringKeys:
         value = [{1: "a", b"password": "x", "password": "x"}]
 
         assert safe_serialize(value, sensitive_keys=frozenset()) == str(value)
+
+    def test_safe_serialize_with_scrubbing_off_and_int_key_keeps_shape(
+        self,
+    ) -> None:
+        value = [{1: "a", "password": "x"}]
+
+        assert safe_serialize(value, sensitive_keys=frozenset()) == value
