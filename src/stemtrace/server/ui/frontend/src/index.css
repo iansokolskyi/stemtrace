@@ -1,9 +1,50 @@
 @import "tailwindcss";
 @import "react-day-picker/style.css";
 
-@theme {
-  --font-sans: "JetBrains Mono", ui-monospace, monospace;
+@import "./styles/tokens.css";
 
+/* Signal box tokens as Tailwind utilities (bg-surface, text-muted, ...). `inline` keeps the
+   var() references, so switching the theme only swaps the custom properties. */
+@theme inline {
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+  --color-ground: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-on-ink: var(--on-ink);
+  --color-rule: var(--rule);
+  --color-track: var(--track);
+  --color-hover: var(--hover);
+  --color-press: var(--press);
+  --color-scrim: var(--scrim);
+  --color-sprout: var(--sprout);
+  --color-success: var(--success);
+  --color-failure: var(--failure);
+  --color-retry: var(--retry);
+  --color-running: var(--running);
+  --color-pending: var(--pending);
+  --color-anomaly: var(--anomaly);
+  --color-success-t: var(--success-t);
+  --color-failure-t: var(--failure-t);
+  --color-retry-t: var(--retry-t);
+  --color-running-t: var(--running-t);
+  --color-pending-t: var(--pending-t);
+  --color-anomaly-t: var(--anomaly-t);
+  --color-on-success: var(--on-success);
+  --color-on-failure: var(--on-failure);
+  --color-on-retry: var(--on-retry);
+  --color-on-running: var(--on-running);
+  --color-on-pending: var(--on-pending);
+  --color-on-anomaly: var(--on-anomaly);
+  --shadow-pop: var(--shadow);
+  --shadow-side: var(--shadow-side);
+}
+
+/* Legacy page bodies (task list, graphs, task detail, registry, workers) still use these until
+   their redesign PRs; they are not Signal box tokens. */
+@theme {
   /* Task state colors */
   --color-pending: #6b7280;
   --color-received: #6b7280;
@@ -16,7 +57,29 @@
 }
 
 body {
-  @apply antialiased;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px / 1.45 var(--sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .task-state-badge {
