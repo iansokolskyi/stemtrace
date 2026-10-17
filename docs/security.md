@@ -19,6 +19,10 @@ By default, stemtrace scrubs common sensitive keys from task arguments:
 
 Scrubbed values appear as `[Filtered]` in the UI.
 
+Scrubbing goes by key name: keyword arguments, and keys of dicts inside arguments and results.
+Positional values that aren't dicts or lists (e.g. the password in
+`login.delay("alice", "hunter2")`), exception messages and tracebacks are shown as they are.
+
 Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, or turn scrubbing off with
 `scrub_sensitive_data=False` (see [Worker options](configuration.md#worker-options)). Task output
 (`capture_output`) is free text and is not scrubbed; see

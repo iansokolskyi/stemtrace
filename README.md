@@ -69,8 +69,9 @@ What to know before you rely on it:
 - **The dashboard keeps its state in one process**, with the event consumer inside it. A
   multi-process mode is planned. Don't embed it in an app that runs several worker processes;
   see [Running several processes](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md#running-several-processes).
-- **Scrubbing goes by key name only.** Positional arguments, exception messages, tracebacks and
-  task output are shown as they are. That's why capturing output is opt-in.
+- **Scrubbing goes by key name only.** Positional values that aren't dicts or lists (e.g. the
+  password in `login.delay("alice", "hunter2")`), exception messages, tracebacks and task output
+  are shown as they are. That's why capturing output is opt-in.
 - **Limitations are documented next to each feature**, for example graph edge cases with
   `task.replace()` and older Celery versions in
   [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md).

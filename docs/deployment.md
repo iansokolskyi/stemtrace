@@ -154,8 +154,8 @@ Embedded consumer modes:
 | Embedded | Development, simple apps | Default: consumer runs in FastAPI process |
 | External | Production, high scale | Planned |
 
-With the built-in login and more than one process or replica, set the same
-`STEMTRACE_LOGIN_SECRET` everywhere; see
+If you run several processes or replicas anyway, accepting that they can show different data,
+and use the built-in login, set the same `STEMTRACE_LOGIN_SECRET` everywhere; see
 [Built-in login page](security.md#built-in-login-page).
 
 ## Health endpoint
