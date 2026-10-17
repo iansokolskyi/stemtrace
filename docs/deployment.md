@@ -171,7 +171,7 @@ and use the built-in login, set the same `STEMTRACE_LOGIN_SECRET` everywhere; se
 | `websocket_connections` | Open UI WebSocket connections |
 | `node_count` | Tasks currently held in memory |
 
-Because the status code stays 200, check `status` in the body if you want monitoring to alert on a degraded consumer. With an [API key](security.md#api-key-for-scripts-and-coding-agents), this endpoint needs it: send `Authorization: Bearer <key>`. With only the [login page](security.md#built-in-login-page), it needs a session cookie. For checks without credentials, probe `/stemtrace/api/health/live`, which needs neither (a custom `auth_dependency` still applies to it).
+Because the status code stays 200, check `status` in the body if you want monitoring to alert on a degraded consumer. With an [API key](security.md#api-key-for-scripts-and-coding-agents), this endpoint needs it: send `Authorization: Bearer <key>` (with the login page too, a session cookie also works). With only the [login page](security.md#built-in-login-page), it needs a session cookie. For checks without credentials, probe `/stemtrace/api/health/live`, which needs neither (a custom `auth_dependency` still applies to it).
 
 What is detected depends on the transport:
 
