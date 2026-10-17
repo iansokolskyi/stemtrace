@@ -23,6 +23,7 @@ from celery.signals import (
 import stemtrace.library.signals as signals_module
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
+from stemtrace.library.scrubbing import FILTERED
 from stemtrace.library.signals import (
     _MAX_DOCSTRING_CHARS,
     _extract_chord_info,
@@ -1158,6 +1159,27 @@ class TestSignalsScrubbingAndCaptureBranches:
         event = MemoryTransport.events[0]
         assert event.kwargs is not None
         assert "_truncated" in event.kwargs
+
+    def test_task_prerun_with_uppercase_additional_sensitive_key_filters(
+        self, mock_task: MagicMock
+    ) -> None:
+        set_config(
+            StemtraceConfig(
+                transport_url="memory://", additional_sensitive_keys=frozenset({"MRN"})
+            )
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=({"mrn": 1},),
+            kwargs={"patient_MRN": 2, "name": "alice"},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.args == [{"mrn": FILTERED}]
+        assert event.kwargs == {"patient_MRN": FILTERED, "name": "alice"}
 
     def test_task_postrun_omits_result_when_capture_result_disabled(self) -> None:
         """When capture_result=False, SUCCESS events should have result=None."""

@@ -283,3 +283,49 @@ class TestDefaultSensitiveKeys:
         data = {key: "sensitive_value"}
         result = scrub_dict(data)
         assert result[key] == FILTERED
+
+
+PATTERN_CASES = ["mrn", "MRN", "Mrn"]
+KEYS_FOR_MRN = ["mrn", "MRN", "patient_Mrn"]
+
+
+class TestPatternCase:
+    """Patterns match whatever case the user wrote them in."""
+
+    @pytest.mark.parametrize("key", KEYS_FOR_MRN)
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_is_sensitive_key_with_any_pattern_case_matches(
+        self, pattern: str, key: str
+    ) -> None:
+        assert _is_sensitive_key(key, frozenset({pattern})) is True
+
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_scrub_dict_with_additional_key_in_any_case_filters(
+        self, pattern: str
+    ) -> None:
+        data = dict.fromkeys(KEYS_FOR_MRN, 1) | {"name": "alice"}
+
+        result = scrub_dict(data, additional_keys=frozenset({pattern}))
+
+        assert result == dict.fromkeys(KEYS_FOR_MRN, FILTERED) | {"name": "alice"}
+
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_scrub_args_and_safe_serialize_with_sensitive_key_in_any_case_filter(
+        self, pattern: str
+    ) -> None:
+        value = [{"MRN": 1, "nested": {"mrn": 2}}]
+        expected = [{"MRN": FILTERED, "nested": {"mrn": FILTERED}}]
+
+        assert scrub_args(tuple(value), frozenset({pattern})) == expected
+        assert safe_serialize(value, sensitive_keys=frozenset({pattern})) == expected
+
+    def test_safe_key_in_any_case_still_overrides_pattern_in_any_case(self) -> None:
+        data = {"MRN_PUBLIC": 1, "mrn": 2}
+
+        result = scrub_dict(
+            data,
+            additional_keys=frozenset({"MRN"}),
+            safe_keys=frozenset({"Mrn_Public"}),
+        )
+
+        assert result == {"MRN_PUBLIC": 1, "mrn": FILTERED}

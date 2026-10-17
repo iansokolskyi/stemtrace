@@ -60,9 +60,11 @@ def _is_sensitive_key(
 ) -> bool:
     """Check if a key matches any sensitive pattern.
 
-    Uses case-insensitive partial matching:
+    Uses case-insensitive partial matching, whatever case the key and the
+    patterns are in (patterns come from user config as written):
     - 'user_password' matches 'password'
     - 'API_KEY' matches 'api_key'
+    - 'mrn' matches 'MRN'
 
     Args:
         key: The key name to check.
@@ -76,7 +78,7 @@ def _is_sensitive_key(
         return False
 
     key_lower = key.lower()
-    return any(pattern in key_lower for pattern in sensitive_keys)
+    return any(pattern.lower() in key_lower for pattern in sensitive_keys)
 
 
 def scrub_dict(

@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: updated `react` and `react-dom` 19.2.3 → 19.3.0 (with `scheduler` 0.27.0 → 0.28.0), `@xyflow/react` 12.10.0 → 12.12.0 (with `@xyflow/system` 0.0.74 → 0.0.83) and `date-fns` 4.1.0 → 4.4.0 in the bundled frontend. None of these fix a known advisory. Development: the frontend now type-checks with TypeScript 7.0 (was 5.9) and runs its E2E tests with Playwright 1.63.
 - Docs: the README is now a short overview (what stemtrace helps you debug, what it adds to a production system, when Flower or other tools fit better, quick start), and the details moved to pages under [`docs/`](https://github.com/iansokolskyi/stemtrace/tree/main/docs): configuration, deployment, security, brokers, event retention, graphs and features. A new page covers adopting stemtrace in an existing project.
 
+### Fixed
+- `additional_sensitive_keys` (and the `sensitive_keys`/`additional_keys` arguments of the scrubbing functions) now match keys case-insensitively whatever case they are written in. A pattern with an uppercase letter, such as `{"MRN"}`, never matched any key before, so those values were published unscrubbed.
+
 ## [0.4.0] - 2026-10-13
 
 **Highlights:**
