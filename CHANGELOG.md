@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docs: the README is now a short overview (what stemtrace helps you debug, what it adds to a production system, when Flower or other tools fit better, quick start), and the details moved to pages under [`docs/`](https://github.com/iansokolskyi/stemtrace/tree/main/docs): configuration, deployment, security, brokers, event retention, graphs and features. A new page covers adopting stemtrace in an existing project.
+
 ## [0.4.0] - 2026-10-13
 
 **Highlights:**
