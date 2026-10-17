@@ -2215,6 +2215,7 @@ class TestApiRouteTable:
             ("/api/tasks/{task_id}/children", ["GET"]),
             ("/api/graphs", ["GET"]),
             ("/api/graphs/{root_id}", ["GET"]),
+            ("/api/groups", ["GET"]),
             ("/api/workers", ["GET"]),
             ("/api/workers/{hostname}", ["GET"]),
         ]

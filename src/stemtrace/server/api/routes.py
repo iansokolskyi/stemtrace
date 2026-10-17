@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Annotated
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 
+from stemtrace.core.graph import NodeType
+from stemtrace.core.groups import GroupConfig, TaskAttributes
 from stemtrace.server.api.schemas import (
     ErrorResponse,
     GraphListResponse,
@@ -26,6 +28,8 @@ from stemtrace.server.api.schemas import (
     RegisteredTaskResponse,
     TaskDetailResponse,
     TaskEventResponse,
+    TaskGroupListResponse,
+    TaskGroupResponse,
     TaskListResponse,
     TaskNodeResponse,
     TaskRegistryResponse,
@@ -44,6 +48,9 @@ if TYPE_CHECKING:
     from stemtrace.server.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
+
+# Automatic groups only: the default when no group rules are configured.
+_AUTO_GROUPS = GroupConfig()
 
 
 def _monotonic() -> float:
@@ -94,8 +101,22 @@ def _event_to_response(event: TaskEvent, include_output: bool) -> TaskEventRespo
     return response
 
 
+def _group_of(node: TaskNode, groups: GroupConfig) -> tuple[str | None, list[str]]:
+    """Return a node's task group name and tags; synthetic nodes have none.
+
+    Resolved from the task name, never the alias-resolved display name.
+    """
+    if node.node_type != NodeType.TASK:
+        return None, []
+    group = groups.resolve(TaskAttributes(name=node.name))
+    return group.name, list(group.tags)
+
+
 def _node_to_response(
-    node: TaskNode, *, include_output: bool = False
+    node: TaskNode,
+    *,
+    include_output: bool = False,
+    groups: GroupConfig = _AUTO_GROUPS,
 ) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
@@ -104,6 +125,7 @@ def _node_to_response(
         include_output: Keep captured task output on events. Off for list
             responses: output can be up to ``max_output_size`` per attempt and
             only the task detail page shows it.
+        groups: Group rules that set ``task_group`` and ``tags``.
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -115,6 +137,7 @@ def _node_to_response(
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
 
+    task_group, tags = _group_of(node, groups)
     return TaskNodeResponse(
         task_id=node.task_id,
         name=node.name,
@@ -125,6 +148,8 @@ def _node_to_response(
         parent_id=node.parent_id,
         reported_parent_id=node.reported_parent_id,
         children=node.children,
+        task_group=task_group,
+        tags=tags,
         events=[_event_to_response(e, include_output) for e in node.events],
         first_seen=first_seen,
         last_updated=last_updated,
@@ -171,6 +196,7 @@ def _node_to_graph_response(
     node: TaskNode,
     all_nodes: dict[str, TaskNode] | None = None,
     node_alias_key: str | None = None,
+    groups: GroupConfig = _AUTO_GROUPS,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -180,6 +206,7 @@ def _node_to_graph_response(
         node: Task node from graph store.
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
+        groups: Group rules that set ``task_group`` and ``tags``.
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -215,6 +242,7 @@ def _node_to_graph_response(
             key=lambda c: getattr(all_nodes.get(c), "node_type", None) != "TASK",
         )
 
+    task_group, tags = _group_of(node, groups)
     return GraphNodeResponse(
         task_id=node.task_id,
         name=_resolve_node_alias(node, node_alias_key),
@@ -225,6 +253,8 @@ def _node_to_graph_response(
         parent_id=node.parent_id,
         reported_parent_id=node.reported_parent_id,
         children=children,
+        task_group=task_group,
+        tags=tags,
         duration_ms=duration_ms,
         first_seen=first_seen,
         last_updated=last_updated,
@@ -432,6 +462,7 @@ def _registered_task_response(
     execution_count: int,
     registered_by: list[str],
     status: TaskStatus,
+    groups: GroupConfig,
 ) -> RegisteredTaskResponse:
     """Describe one task, preferring worker-reported metadata.
 
@@ -441,6 +472,7 @@ def _registered_task_response(
     definition = worker_registry.get_task_definition(name) if worker_registry else None
     parts = name.rsplit(".", 1)
     fallback_module = parts[0] if len(parts) > 1 else None
+    group = groups.resolve(TaskAttributes(name=name))
     return RegisteredTaskResponse(
         name=name,
         module=definition.module
@@ -453,6 +485,8 @@ def _registered_task_response(
         registered_by=registered_by,
         last_run=store.get_last_execution_time(name),
         status=status,
+        task_group=group.name,
+        tags=list(group.tags),
     )
 
 
@@ -462,17 +496,17 @@ def _build_task_registry(
     *,
     query: str | None,
     status: str | None,
+    groups: GroupConfig,
 ) -> list[RegisteredTaskResponse]:
     """List every known task: executed ones and ones registered by workers.
 
     Sorted by name. ``query`` filters by case-insensitive name substring and
     ``status`` by :class:`TaskStatus` value; an unknown status matches nothing.
     """
-    observed_names = store.get_unique_task_names()
     hostnames_by_task = _hostnames_by_registered_task(worker_registry)
 
     tasks: list[RegisteredTaskResponse] = []
-    for name in sorted(observed_names | set(hostnames_by_task)):
+    for name in sorted(_known_task_names(store, worker_registry)):
         if query and query.lower() not in name.lower():
             continue
         execution_count = store.get_task_execution_count(name)
@@ -488,9 +522,19 @@ def _build_task_registry(
                 execution_count=execution_count,
                 registered_by=registered_by,
                 status=task_status,
+                groups=groups,
             )
         )
     return tasks
+
+
+def _known_task_names(
+    store: GraphStore, worker_registry: WorkerRegistry | None
+) -> set[str]:
+    """Task names seen in events or registered by a worker (the registry's set)."""
+    return store.get_unique_task_names() | set(
+        _hostnames_by_registered_task(worker_registry)
+    )
 
 
 def _add_health_routes(
@@ -550,6 +594,7 @@ def _add_task_routes(
     store: GraphStore,
     worker_registry: WorkerRegistry | None,
     refresher: _InspectRefresher,
+    groups: GroupConfig,
 ) -> None:
     """Register the task list, task registry, task detail and children routes.
 
@@ -604,7 +649,7 @@ def _add_task_routes(
             to_date=to_date,
         )
         return TaskListResponse(
-            tasks=[_node_to_response(n) for n in nodes],
+            tasks=[_node_to_response(n, groups=groups) for n in nodes],
             total=total,
             limit=limit,
             offset=offset,
@@ -641,7 +686,9 @@ def _add_task_routes(
         if refresh and worker_registry is not None:
             await refresher.maybe_refresh()
 
-        tasks = _build_task_registry(store, worker_registry, query=query, status=status)
+        tasks = _build_task_registry(
+            store, worker_registry, query=query, status=status, groups=groups
+        )
         return TaskRegistryResponse(tasks=tasks, total=len(tasks))
 
     @router.get(
@@ -657,8 +704,8 @@ def _add_task_routes(
 
         node, children = found
         return TaskDetailResponse(
-            task=_node_to_response(node, include_output=True),
-            children=[_node_to_response(c) for c in children],
+            task=_node_to_response(node, include_output=True, groups=groups),
+            children=[_node_to_response(c, groups=groups) for c in children],
         )
 
     @router.get(
@@ -673,7 +720,7 @@ def _add_task_routes(
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         _, children = found
-        return [_node_to_response(c) for c in children]
+        return [_node_to_response(c, groups=groups) for c in children]
 
 
 def _add_graph_routes(
@@ -681,6 +728,7 @@ def _add_graph_routes(
     *,
     store: GraphStore,
     node_alias_key: str | None,
+    groups: GroupConfig,
 ) -> None:
     """Register the graph list and graph detail routes."""
 
@@ -705,7 +753,9 @@ def _add_graph_routes(
         )
         return GraphListResponse(
             graphs=[
-                _node_to_graph_response(r, all_nodes, node_alias_key=node_alias_key)
+                _node_to_graph_response(
+                    r, all_nodes, node_alias_key=node_alias_key, groups=groups
+                )
                 for r in roots
             ],
             total=total,
@@ -729,10 +779,44 @@ def _add_graph_routes(
             root_id=root_id,
             nodes={
                 tid: _node_to_graph_response(
-                    n, all_nodes, node_alias_key=node_alias_key
+                    n, all_nodes, node_alias_key=node_alias_key, groups=groups
                 )
                 for tid, n in graph.items()
             },
+        )
+
+
+def _add_group_routes(
+    router: APIRouter,
+    *,
+    store: GraphStore,
+    worker_registry: WorkerRegistry | None,
+    groups: GroupConfig,
+) -> None:
+    """Register the task group list route."""
+
+    @router.get("/groups", response_model=TaskGroupListResponse)
+    async def list_groups() -> TaskGroupListResponse:
+        """List task groups with their source, tags, color and task names.
+
+        Task names are the ones the server has seen in events or in workers'
+        registered tasks (the task registry's names). Code-defined groups are
+        listed even before any of their tasks is seen. Sorted by name, with
+        ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
+        """
+        members = groups.members(_known_task_names(store, worker_registry))
+        return TaskGroupListResponse(
+            groups=[
+                TaskGroupResponse(
+                    name=m.group.name,
+                    source=m.group.source,
+                    tags=list(m.group.tags),
+                    color=m.group.color,
+                    task_names=list(m.task_names),
+                )
+                for m in members
+            ],
+            total=len(members),
         )
 
 
@@ -801,6 +885,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     worker_registry: WorkerRegistry | None = None,
     broker_url: str | None = None,
     node_alias_from_arguments: str | None = None,
+    groups: GroupConfig | None = None,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -812,6 +897,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         broker_url: Optional Celery broker URL for on-demand inspection.
         node_alias_from_arguments: Key to derive node display name from task
             arguments. Digit string for args[index], string for kwargs[key].
+        groups: Code-defined task group rules. None gives automatic groups only.
 
     Returns:
         Configured API router.
@@ -822,9 +908,22 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     refresher = _InspectRefresher(worker_registry, broker_url)
 
     _add_health_routes(router, store=store, consumer=consumer, ws_manager=ws_manager)
+    group_config = groups if groups is not None else _AUTO_GROUPS
     _add_task_routes(
-        router, store=store, worker_registry=worker_registry, refresher=refresher
+        router,
+        store=store,
+        worker_registry=worker_registry,
+        refresher=refresher,
+        groups=group_config,
     )
-    _add_graph_routes(router, store=store, node_alias_key=node_alias_from_arguments)
+    _add_graph_routes(
+        router,
+        store=store,
+        node_alias_key=node_alias_from_arguments,
+        groups=group_config,
+    )
+    _add_group_routes(
+        router, store=store, worker_registry=worker_registry, groups=group_config
+    )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
     return router

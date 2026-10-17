@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse
 from stemtrace.server.consumer import AsyncEventConsumer
 from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
+from stemtrace.server.groups import build_group_config
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.ui.static import get_static_router
 from stemtrace.server.websocket import WebSocketManager
@@ -21,7 +22,9 @@ if TYPE_CHECKING:
 
     from fastapi import APIRouter, FastAPI
 
+    from stemtrace.core.groups import GroupConfig
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
+    from stemtrace.server.groups import GroupsInput
 
     LifespanNone = Callable[[Any], AbstractAsyncContextManager[None, bool | None]]
     LifespanState = Callable[
@@ -71,6 +74,7 @@ class StemtraceExtension:
         auth_dependency: Any = None,
         form_auth_config: FormAuthConfig | None = None,
         node_alias_from_arguments: str | None = None,
+        groups: GroupsInput = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -87,6 +91,13 @@ class StemtraceExtension:
             form_auth_config: Optional cookie-session configuration used to protect WebSocket.
             node_alias_from_arguments: Key to derive graph node display name from task
                 arguments. Digit string for args[index], string for kwargs[key].
+            groups: Code-defined task groups: a list of ``GroupRule`` (or dicts
+                with the same fields) or a path to a TOML file. First match wins;
+                other tasks get their automatic group. None for automatic only.
+                Unlike ``init_app()``, doesn't read ``STEMTRACE_GROUPS``.
+
+        Raises:
+            ConfigurationError: If ``groups`` is invalid or its file can't be loaded.
         """
         self._broker_url = broker_url
         self._transport_url = transport_url or broker_url
@@ -110,6 +121,7 @@ class StemtraceExtension:
             )
 
         self._node_alias_from_arguments = node_alias_from_arguments
+        self._groups = build_group_config(groups)
 
         self._store.add_listener(self._ws_manager.queue_event)
 
@@ -117,6 +129,11 @@ class StemtraceExtension:
     def _normalize_prefix(prefix: str) -> str:
         """Normalize a mount/stream prefix by stripping leading/trailing slashes."""
         return prefix.strip("/")
+
+    @property
+    def groups(self) -> GroupConfig:
+        """The validated task group rules."""
+        return self._groups
 
     @property
     def store(self) -> GraphStore:
@@ -150,6 +167,7 @@ class StemtraceExtension:
             auth_dependency=self._auth_dependency,
             form_auth_config=self._form_auth_config,
             node_alias_from_arguments=self._node_alias_from_arguments,
+            groups=self._groups,
         )
 
         if self._serve_ui:

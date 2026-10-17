@@ -1,9 +1,11 @@
 """Tests for public API."""
 
 import logging
+import sys
 import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,6 +16,7 @@ from fastapi import FastAPI
 import stemtrace
 from stemtrace import (
     ConfigurationError,
+    GroupRule,
     StemtraceConfig,
     __version__,
     _reset,
@@ -24,6 +27,7 @@ from stemtrace import (
     is_initialized,
 )
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.groups import GroupConfig
 from stemtrace.library.bootsteps import ReceivedEventStep, _set_publisher
 from stemtrace.library.signals import disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
@@ -226,6 +230,7 @@ class TestInit:
                 auth_dependency: object = None,
                 form_auth_config: object = None,
                 node_alias_from_arguments: str | None = None,
+                groups: object = None,
             ) -> None:
                 captured["broker_url"] = broker_url
                 captured["transport_url"] = transport_url
@@ -238,6 +243,7 @@ class TestInit:
                     auth_dependency,
                     form_auth_config,
                     node_alias_from_arguments,
+                    groups,
                 )
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
@@ -526,3 +532,100 @@ class TestIntrospection:
         assert "get_config" in stemtrace.__all__
         assert "get_transport" in stemtrace.__all__
         assert "StemtraceConfig" in stemtrace.__all__
+
+
+class TestInitAppGroups:
+    """Tests for task group resolution in init_app()."""
+
+    @pytest.fixture
+    def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        """Swap StemtraceExtension for a fake that records its kwargs."""
+        recorded: dict[str, object] = {}
+
+        class _FakeExtension:
+            def __init__(self, broker_url: str, **kwargs: object) -> None:
+                recorded["broker_url"] = broker_url
+                recorded.update(kwargs)
+
+            def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:
+                del prefix
+
+        monkeypatch.setattr(stemtrace, "StemtraceExtension", _FakeExtension)
+        monkeypatch.delenv("STEMTRACE_GROUPS", raising=False)
+        return recorded
+
+    def test_init_app_with_rules_passes_validated_config(
+        self, captured: dict[str, object]
+    ) -> None:
+        """GroupRule objects and dicts are validated and keep their order."""
+        init_app(
+            FastAPI(),
+            broker_url="memory://",
+            groups=[
+                GroupRule(name="money", match=["billing.*"]),
+                {"name": "search", "match": ["search.*"], "tags": ["s"]},
+            ],
+        )
+
+        assert captured["groups"] == GroupConfig(
+            rules=[
+                GroupRule(name="money", match=["billing.*"]),
+                GroupRule(name="search", match=["search.*"], tags=["s"]),
+            ]
+        )
+
+    def test_init_app_without_groups_or_env_var_is_automatic_only(
+        self, captured: dict[str, object]
+    ) -> None:
+        """No rules: every task gets its automatic group."""
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["groups"] == GroupConfig()
+
+    def test_init_app_with_invalid_groups_raises_before_installing(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Invalid rules fail at startup, before the extension is created."""
+        with pytest.raises(ConfigurationError, match="duplicate group name 'a'"):
+            init_app(
+                FastAPI(),
+                broker_url="memory://",
+                groups=[{"name": "a", "match": ["a.*"]}, {"name": "a", "match": ["b"]}],
+            )
+
+        assert captured == {}
+
+    @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
+    def test_init_app_without_groups_reads_env_var_file(
+        self,
+        captured: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """STEMTRACE_GROUPS names a TOML file used when groups= is omitted."""
+        path = tmp_path / "groups.toml"
+        path.write_text('[[groups]]\nname = "env"\nmatch = ["*"]\n', encoding="utf-8")
+        monkeypatch.setenv("STEMTRACE_GROUPS", str(path))
+
+        init_app(FastAPI(), broker_url="memory://")
+
+        assert captured["groups"] == GroupConfig(
+            rules=[GroupRule(name="env", match=["*"])]
+        )
+
+    def test_init_app_with_groups_ignores_env_var(
+        self,
+        captured: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """An explicit groups= wins: the env file isn't even read."""
+        monkeypatch.setenv("STEMTRACE_GROUPS", str(tmp_path / "missing.toml"))
+
+        init_app(
+            FastAPI(), broker_url="memory://", groups=[{"name": "c", "match": ["*"]}]
+        )
+
+        assert captured["groups"] == GroupConfig(
+            rules=[GroupRule(name="c", match=["*"])]
+        )
