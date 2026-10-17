@@ -182,6 +182,11 @@ def test_build_group_config_from_rules_and_dicts_keeps_order() -> None:
     assert config.rules[1].tags == ("s",)
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_build_group_config_blank_string_is_automatic_only(blank: str) -> None:
+    assert build_group_config(blank) == GroupConfig()
+
+
 def test_build_group_config_from_empty_list_is_automatic_only() -> None:
     assert build_group_config([]) == GroupConfig()
 

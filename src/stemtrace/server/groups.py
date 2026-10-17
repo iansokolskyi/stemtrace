@@ -112,8 +112,8 @@ def build_group_config(groups: GroupsInput) -> GroupConfig:
 
     Args:
         groups: A GroupConfig (returned as is), rules (GroupRule objects or
-            dicts with the same fields), a path to a TOML file, or None for
-            automatic groups only.
+            dicts with the same fields), a path to a TOML file, or None (or a
+            blank string) for automatic groups only.
 
     Returns:
         The validated configuration.
@@ -122,6 +122,8 @@ def build_group_config(groups: GroupsInput) -> GroupConfig:
         ConfigurationError: If a rule is invalid, two rules share a name, or
             the file can't be loaded (see :func:`load_groups_file`).
     """
+    if isinstance(groups, str):
+        groups = groups.strip() or None  # blank means none, not the cwd
     if groups is None:
         return GroupConfig()
     if isinstance(groups, GroupConfig):
