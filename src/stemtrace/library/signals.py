@@ -249,9 +249,7 @@ def _scrub_and_serialize_kwargs(
     # TRUNCATED_PREFIX).
     if isinstance(result, dict):
         return result
-    if result is None:
-        return scrubbed
-    label = "_truncated" if str(result).startswith(TRUNCATED_PREFIX) else "_as_text"
+    label = "_truncated" if result.startswith(TRUNCATED_PREFIX) else "_as_text"
     return {label: result}
 
 

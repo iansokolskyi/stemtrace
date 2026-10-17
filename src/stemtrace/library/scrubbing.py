@@ -55,6 +55,18 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _lowercase_patterns(
+    sensitive_keys: frozenset[str], additional_keys: frozenset[str] | None
+) -> frozenset[str]:
+    """All sensitive patterns, lowercased once per call.
+
+    Keys are lowercased before matching; patterns come from user config as
+    written (``additional_sensitive_keys={"MRN"}``), so they are too.
+    """
+    patterns = sensitive_keys | additional_keys if additional_keys else sensitive_keys
+    return frozenset(pattern.lower() for pattern in patterns)
+
+
 def _is_sensitive_key(
     key: str,
     sensitive_keys: frozenset[str],
@@ -62,15 +74,14 @@ def _is_sensitive_key(
 ) -> bool:
     """Check if a key matches any sensitive pattern.
 
-    Uses case-insensitive partial matching, whatever case the key and the
-    patterns are in (patterns come from user config as written):
+    Uses case-insensitive partial matching:
     - 'user_password' matches 'password'
     - 'API_KEY' matches 'api_key'
-    - 'mrn' matches 'MRN'
 
     Args:
         key: The key name to check.
-        sensitive_keys: Set of sensitive key patterns.
+        sensitive_keys: Set of sensitive key patterns, lowercase (see
+            ``_lowercase_patterns``).
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
@@ -80,7 +91,7 @@ def _is_sensitive_key(
         return False
 
     key_lower = key.lower()
-    return any(pattern.lower() in key_lower for pattern in sensitive_keys)
+    return any(pattern in key_lower for pattern in sensitive_keys)
 
 
 def scrub_dict(
@@ -104,9 +115,7 @@ def scrub_dict(
         >>> scrub_dict({"password": "secret123", "name": "Alice"})
         {'password': '[Filtered]', 'name': 'Alice'}
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
 
     result: dict[str, Any] = {}
     for key, value in data.items():
@@ -150,9 +159,7 @@ def scrub_args(
     Returns:
         List of scrubbed arguments.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
     return [_scrub_value(arg, all_sensitive, safe_keys) for arg in args]
 
 
@@ -175,9 +182,7 @@ def safe_serialize(
     Returns:
         JSON-serializable value, or string representation if serialization fails.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
 
     # First scrub the value
     scrubbed = _scrub_value(value, all_sensitive, safe_keys)

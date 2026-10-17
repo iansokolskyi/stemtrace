@@ -294,10 +294,12 @@ class TestPatternCase:
 
     @pytest.mark.parametrize("key", KEYS_FOR_MRN)
     @pytest.mark.parametrize("pattern", PATTERN_CASES)
-    def test_is_sensitive_key_with_any_pattern_case_matches(
+    def test_scrub_dict_with_sensitive_key_in_any_case_filters(
         self, pattern: str, key: str
     ) -> None:
-        assert _is_sensitive_key(key, frozenset({pattern})) is True
+        result = scrub_dict({key: 1, "name": "alice"}, frozenset({pattern}))
+
+        assert result == {key: FILTERED, "name": "alice"}
 
     @pytest.mark.parametrize("pattern", PATTERN_CASES)
     def test_scrub_dict_with_additional_key_in_any_case_filters(

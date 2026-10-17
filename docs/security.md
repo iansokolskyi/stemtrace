@@ -24,8 +24,9 @@ Values that aren't dicts, lists or tuples, whether positional arguments or retur
 the password in `login.delay("alice", "hunter2")`), exception messages and tracebacks are shown
 as they are.
 
-Add or exempt keys with `additional_sensitive_keys` and `safe_keys` (in any case: they match keys
-case-insensitively, like the defaults), or turn scrubbing off with
+Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, written in any case: keys and
+both settings are compared lowercased (`str.lower()`), so `MRN` matches `mrn` and `patient_Mrn`.
+Or turn scrubbing off with
 `scrub_sensitive_data=False` (see [Worker options](configuration.md#worker-options)). Task output
 (`capture_output`) is free text and is not scrubbed; see
 [Task output](configuration.md#task-output-print-and-logging).
