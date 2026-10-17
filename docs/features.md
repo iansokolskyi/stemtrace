@@ -133,11 +133,12 @@ also split it up:
 | `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
 | `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
 
-- `queue_wait_ms` covers the first attempt only. A retry's wait includes its countdown, so it is
-  in `duration_ms` but not here. It is set once the task starts, while it is still running.
+- `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
+  so it is in `duration_ms` but not here. It is set once the task starts, while it is still
+  running.
 - `runtime_ms` and `total_runtime_ms` are set once the task finishes, and are equal for a task
   that ran once. A run that Celery started again after losing the broker connection counts in
-  `total_runtime_ms`.
+  `total_runtime_ms`. Values are whole milliseconds, truncated.
 - Fields are empty when the events they need are missing: `queue_wait_ms` without a PENDING
   (the code that sent the task doesn't run stemtrace) and without RECEIVED (off by default), or
   without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
@@ -153,6 +154,13 @@ Limitations:
   A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
   (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
   earlier.
+- A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
+  in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
+  in the queue.
+- `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
+  running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
+  after `self.retry(throw=False)`. With `throw=False` and the second worker's clock behind the
+  first's, the first run's SUCCESS is the task's final event, and both fields are empty.
 - Each run's start and end come from the clock of the worker that ran it. Within one attempt, a
   run started again on another worker whose clock is behind can end before it started; that
   run counts as 0 (see the same-attempt limitation in
