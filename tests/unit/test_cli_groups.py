@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ needs_tomllib = pytest.mark.skipif(
 
 _TOML = '[[groups]]\nname = "money"\nmatch = ["billing.*"]\ntags = ["pci"]\n'
 _OTHER_TOML = '[[groups]]\nname = "other"\nmatch = ["other.*"]\n'
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _fake_static_router(
@@ -61,7 +63,9 @@ def _run(*args: str, env: dict[str, str] | None = None) -> tuple[int, str]:
     result = CliRunner().invoke(
         cli.app, ["server", "--broker-url", "memory://", *args], env=env
     )
-    return result.exit_code, result.output
+    # Typer colors its errors when CI forces a terminal (GITHUB_ACTIONS),
+    # which splits the option name with ANSI codes.
+    return result.exit_code, _ANSI.sub("", result.output)
 
 
 def _file(tmp_path: Path, name: str, text: str) -> str:
