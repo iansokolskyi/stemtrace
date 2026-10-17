@@ -454,3 +454,30 @@ def test_timeseries_window_starts_at_the_first_bucket_edge(store: GraphStore) ->
     assert body["window"]["start"] == "2026-10-18T11:00:00Z"
     assert body["starts"][0] == body["window"]["start"]
     assert body["counts"] == {"SUCCESS": [1, 0]}
+
+
+@pytest.mark.parametrize(
+    ("url", "earliest_start"),
+    [
+        # now - 3650d = 2016-10-20 12:00, rounded down to a 7d bucket edge
+        ("/api/stats/timeseries", "2016-10-13"),
+        # rounded down to a 3650d edge (epoch multiples)
+        (
+            "/api/stats/timeseries?from_date=0001-01-02T00:00:00Z&bucket=3650d",
+            "2009-12-22",
+        ),
+        ("/api/failures?from_date=1900-01-01T00:00:00Z", "2016-10-20T12:00:00Z"),
+    ],
+)
+def test_windows_start_at_most_ten_years_back(
+    store: GraphStore, url: str, earliest_start: str
+) -> None:
+    """A worker clock decades behind can't push a default series past 1440 buckets."""
+    store.add_event(_event("ancient", TaskState.FAILURE, 36 * 365 * 24 * 60))  # ~1990
+    store.add_event(_event("new", TaskState.SUCCESS, 1))
+
+    resp = _client(store).get(url)
+
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["window"]["start"] >= earliest_start
+    assert resp.json()["window"]["start"] < "2016-10-21"

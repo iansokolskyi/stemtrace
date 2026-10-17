@@ -36,7 +36,9 @@ MAX_BUCKETS: Final[int] = 1440
 #: Most sample task IDs listed per failure group.
 FAILURE_SAMPLES: Final[int] = 5
 
-#: Longest accepted window or bucket (10 years): keeps date arithmetic in range.
+#: Longest window or bucket (10 years). Summary windows start at most this far
+#: back, so even the largest automatic bucket (7d) fits in ``MAX_BUCKETS`` and
+#: bucket edges stay within the dates Python can represent.
 MAX_DURATION: Final[timedelta] = timedelta(days=3650)
 
 #: Bucket sizes tried, smallest first, when a time series doesn't name one.

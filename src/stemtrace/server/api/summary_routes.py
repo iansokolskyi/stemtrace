@@ -27,6 +27,7 @@ from stemtrace.server.api.schemas import (
 )
 from stemtrace.server.groups import group_lookup
 from stemtrace.server.stats import (
+    MAX_DURATION,
     Window,
     auto_bucket,
     failure_groups,
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from stemtrace.server.stats import RunRecord
     from stemtrace.server.store import GraphStore, WorkerRegistry
 
-_WITHIN_HELP = "Relative window ending now: 30s, 15m, 6h or 7d"
+_WITHIN_HELP = "Relative window ending now, e.g. 30s, 15m, 6h or 7d (at most 3650d)"
 
 
 def _window_response(window: Window) -> TimeWindowResponse:
@@ -61,11 +62,20 @@ def _unprocessable(detail: str) -> HTTPException:
 def _recent_window(
     within: str | None, from_date: datetime | None, now: datetime, oldest: datetime
 ) -> Window:
-    """The window ending now: from ``within``, ``from_date``, or ``oldest`` (all retained)."""
+    """The window ending now: from ``within``, ``from_date``, or ``oldest`` (all retained).
+
+    It starts at most ``MAX_DURATION`` before now (a worker clock decades
+    behind would otherwise need more than ``MAX_BUCKETS`` of the largest
+    automatic bucket); the response's window shows the start used.
+    """
     start = params.start_from(within, from_date, now)
     if start is not None and start > now:
         raise _unprocessable("from_date is after now")
-    return Window(start if start is not None else oldest, now, open_end=True)
+    return Window(
+        max(start if start is not None else oldest, now - MAX_DURATION),
+        now,
+        open_end=True,
+    )
 
 
 def add_summary_routes(
@@ -124,8 +134,9 @@ def add_summary_routes(
             str | None,
             Query(
                 description=(
-                    "Bucket size: 30s, 15m, 6h or 7d. Default: the smallest of "
-                    "1m, 5m, 15m, 1h, 6h, 1d, 7d that fits in 1440 buckets"
+                    "Bucket size, e.g. 30s, 15m, 6h or 7d (at most 3650d). Default: "
+                    "the smallest of 1m, 5m, 15m, 1h, 6h, 1d, 7d that fits in 1440 "
+                    "buckets"
                 )
             ),
         ] = None,

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.stats import RunRecord
 from stemtrace.server.store import GraphStore
 
@@ -130,42 +130,49 @@ def _assert_index_matches_graph(store: GraphStore) -> None:
     assert _records(store) == expected
 
 
-def test_record_follows_a_rename_from_another_tasks_event() -> None:
-    """``task.replace()`` reuse: the graph re-picks ``u``'s name on ``d``'s event."""
-    store = GraphStore()
-    store.add_event(
-        TaskEvent(
-            task_id="u",
-            name="billing.first",
-            state=TaskState.PENDING,
-            timestamp=T0,
-            parent_id="d",
-            root_id="u",
-        )
-    )
-    store.add_event(
-        TaskEvent(
-            task_id="u",
-            name="search.second",
-            state=TaskState.FAILURE,
-            timestamp=T0 + timedelta(seconds=1),
-            parent_id="d",
-            root_id="u",
-            exception_type="x.Boom",
-        )
-    )
-    store.add_event(
-        TaskEvent(
-            task_id="d",
-            name="flows.d",
-            state=TaskState.STARTED,
-            timestamp=T0 + timedelta(seconds=2),
-            root_id="u",
-        )
-    )
+def _shuffled(flow: str, seed: int) -> list[TaskEvent]:
+    order = [TaskEvent.model_validate(e) for e in _CAPTURES[flow]]
+    if seed:
+        random.Random(seed).shuffle(order)
+    return order
 
-    assert _records(store)["u"].name == store.get_node("u").name  # type: ignore[union-attr]
+
+def test_record_follows_a_rename_on_another_tasks_event() -> None:
+    """A ``task.replace()`` reuse re-picks a task's name on another task's event."""
+    order = _shuffled("nested_replace_header@worker_process", seed=1)
+    at = 10  # found by search: this event renames a task other than its own
+    graph, store = TaskGraph(), GraphStore()
+    for event in order[:at]:
+        graph.add_event(event)
+        store.add_event(event)
+    graph.take_renamed()
+
+    graph.add_event(order[at])
+    renamed = graph.take_renamed() - {order[at].task_id}
+    store.add_event(order[at])
+
+    assert renamed  # the premise: another task was renamed
+    records = _records(store)
+    for task_id in renamed:
+        node = store.get_node(task_id)
+        assert node is not None
+        assert records[task_id].name == node.name
     _assert_index_matches_graph(store)
+
+
+@pytest.mark.parametrize(
+    ("flow", "seed"),
+    [
+        ("nested_replace_last@worker_process", 13),
+        ("nested_replace_last@worker_process", 14),
+    ],
+)
+def test_record_follows_a_rename_caused_by_eviction(flow: str, seed: int) -> None:
+    """Removing a node while evicting can rename a surviving task."""
+    store = GraphStore(max_nodes=2)
+    for event in _shuffled(flow, seed):
+        store.add_event(event)
+        _assert_index_matches_graph(store)
 
 
 @pytest.mark.parametrize("flow", sorted(_CAPTURES))

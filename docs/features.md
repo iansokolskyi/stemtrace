@@ -127,11 +127,14 @@ Aggregates over the tasks the server holds, for dashboards and scripts that shou
 through every task. A task counts at the time of its last event (the final event once it
 finished) and under its current state, so a task that failed and then succeeded on retry counts
 as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now,
-or from `from_date` (pass one or the other; a date or time without a timezone is UTC, and a
-start after now is a `422`). Every response says which window it covered. A window ending now
-also takes tasks stamped later by a worker whose clock is ahead.
+or, on the time series and failures, from `from_date` (pass one or the other). A time without
+a timezone is UTC; a date alone (`2026-10-18`) means its UTC midnight with pydantic 2.5 or
+later, while pydantic 2.4 rejects it as it does on the task list. A start after now is a `422`,
+and a window starts at most 3,650 days back, whatever `from_date` or the oldest task says.
+Every response says which window it covered. A window ending now also takes tasks stamped
+later by a worker whose clock is ahead.
 
-- `GET /api/overview?within=1h` (default `1h`): finished runs, failures, runs per minute and the
+- `GET /api/overview?within=1h` (default `1h`; it takes `within` only): finished runs, failures, runs per minute and the
   failure rate (FAILURE over finished runs; 0 with none), each with `baseline`, the same value for
   the window of equal length just before. Finished means SUCCESS, FAILURE, REVOKED or REJECTED.
   `workers` counts online and known workers from worker events, without asking the workers.
