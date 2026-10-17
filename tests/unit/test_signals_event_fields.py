@@ -251,16 +251,26 @@ class TestExceptionType:
         ] == [(TaskState.RETRY, "ConnectionError"), (TaskState.SUCCESS, None)]
 
     def test_retry_with_suppressed_context_is_celery_retry(self) -> None:
-        try:
-            raise ConnectionError("refused")
-        except ConnectionError:
-            retry = Retry()
-            retry.__suppress_context__ = True
-            retry.__context__ = ConnectionError("refused")
+        # What `raise Retry() from None` inside an except block leaves.
+        retry = Retry()
+        retry.__context__ = ConnectionError("refused")
+        retry.__suppress_context__ = True
         request = _request()
         _on_task_retry(sender=_task(request), request=request, reason=retry)
 
         assert _only_event().exception_type == "celery.exceptions.Retry"
+
+    def test_retry_cause_comes_before_context(self) -> None:
+        # As traceback.py picks them: the cause even when the context isn't
+        # suppressed (assigning __cause__ suppresses it; undo that).
+        retry = Retry()
+        retry.__context__ = ConnectionError("refused")
+        retry.__cause__ = PartnerAPIError("502")
+        retry.__suppress_context__ = False
+        request = _request()
+        _on_task_retry(sender=_task(request), request=request, reason=retry)
+
+        assert _only_event().exception_type == f"{__name__}.PartnerAPIError"
 
     def test_retry_with_explicit_cause_names_it(self) -> None:
         retry = Retry()

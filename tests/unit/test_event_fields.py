@@ -128,6 +128,23 @@ class TestTaskNodeFields:
             "TimeoutError",
         )
 
+    def test_redelivery_in_same_attempt_reports_the_second_worker(self) -> None:
+        # A lost broker connection cancels the run (RETRY without exception,
+        # same retries count) and the message is redelivered to another worker,
+        # which fails it from its main process (no worker fields). Clocks agree.
+        graph = TaskGraph()
+        for event in (
+            _event(TaskState.STARTED, 1, hostname="celery@w0", queue="q"),
+            _event(TaskState.RETRY, 2, hostname="celery@w0", queue="q"),
+            _event(TaskState.RECEIVED, 3, hostname="celery@w1", queue="q"),
+            _event(TaskState.STARTED, 4, hostname="celery@w1", queue="q"),
+            _event(TaskState.FAILURE, 5, exception_type="TimeLimitExceeded"),
+        ):
+            graph.add_event(event)
+
+        node = graph.nodes["task-1"]
+        assert (node.state, node.hostname) == (TaskState.FAILURE, "celery@w1")
+
     def test_null_on_last_event_keeps_earlier_value(self) -> None:
         # A FAILURE sent from the worker's main process carries no hostname.
         graph = TaskGraph()
