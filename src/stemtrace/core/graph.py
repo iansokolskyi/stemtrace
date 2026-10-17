@@ -3,10 +3,10 @@
 import bisect
 import hashlib
 from collections import Counter
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import (
     BaseModel,
@@ -175,6 +175,10 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     if event.state in _TERMINAL_STATES:
         return (1, 0, 0, event.timestamp, tiebreak)
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
+
+
+# Header outcomes that make Celery fail a chord instead of running its callback.
+_FAILED_HEADER_STATES = frozenset({TaskState.FAILURE, TaskState.REJECTED})
 
 
 class NodeType(str, Enum):
@@ -2387,3 +2391,35 @@ class TaskGraph(BaseModel):
         """Get task IDs that belong to a group (a chord's headers)."""
         tally = self._groups.get(group_id)
         return list(tally.counted()) if tally is not None else []
+
+
+def chord_not_run_reason(
+    chord: TaskNode, nodes: Mapping[str, TaskNode]
+) -> Literal["header_failed", "header_revoked"] | None:
+    """Why a chord's callback never ran, once that is certain; else None.
+
+    Celery runs a chord's callback only when every header succeeded; a
+    failed (or rejected) or revoked header makes it fail the chord instead,
+    once all headers are done. So a CHORD node gets a reason when every
+    header (a task of its group whose events named a callback) has a
+    terminal state, at least one did not succeed, and no callback is drawn.
+    ``nodes`` must hold the chord's whole graph. A failed header wins over a
+    revoked one.
+    """
+    if chord.node_type != NodeType.CHORD or chord.chord_id is not None:
+        return None
+    headers = [
+        node
+        for node in nodes.values()
+        if node.node_type == NodeType.TASK
+        and node.group_id == chord.group_id
+        and any(event.chord_callback_id is not None for event in node.events)
+    ]
+    if not headers or any(h.state not in _TERMINAL_STATES for h in headers):
+        return None
+    states = {h.state for h in headers}
+    if states & _FAILED_HEADER_STATES:
+        return "header_failed"
+    if TaskState.REVOKED in states:
+        return "header_revoked"
+    return None

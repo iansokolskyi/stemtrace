@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -129,6 +129,9 @@ class GraphNodeResponse(BaseModel):
     hostname: str | None = None
     queue: str | None = None
     routing_key: str | None = None
+    # CHORD nodes in a full graph (GET /graphs/{root_id}) only: why the
+    # callback never ran, once that is certain (see chord_not_run_reason).
+    not_run_reason: Literal["header_failed", "header_revoked"] | None = None
 
 
 class GraphResponse(BaseModel):

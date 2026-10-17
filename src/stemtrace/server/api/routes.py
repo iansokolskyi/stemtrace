@@ -12,12 +12,12 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 
-from stemtrace.core.graph import NodeType
+from stemtrace.core.graph import NodeType, chord_not_run_reason
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api.schemas import (
     ErrorResponse,
@@ -220,6 +220,7 @@ def _node_to_graph_response(
     node_alias_key: str | None = None,
     *,
     group_of: Callable[[str], ResolvedGroup],
+    not_run_reason: Literal["header_failed", "header_revoked"] | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -230,6 +231,9 @@ def _node_to_graph_response(
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
         group_of: Task group by task name (see ``_group_lookup``).
+        not_run_reason: Why a CHORD's callback never ran; only known when
+            the caller has the chord's whole graph (see
+            ``chord_not_run_reason``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -285,6 +289,7 @@ def _node_to_graph_response(
         hostname=node.hostname,
         queue=node.queue,
         routing_key=node.routing_key,
+        not_run_reason=not_run_reason,
     )
 
 
@@ -831,7 +836,12 @@ def _add_graph_routes(
             root_id=root_id,
             nodes={
                 tid: _node_to_graph_response(
-                    n, all_nodes, node_alias_key=node_alias_key, group_of=group_of
+                    n,
+                    all_nodes,
+                    node_alias_key=node_alias_key,
+                    group_of=group_of,
+                    # The whole graph is here, so every header is known.
+                    not_run_reason=chord_not_run_reason(n, all_nodes),
                 )
                 for tid, n in graph.items()
             },
