@@ -816,9 +816,10 @@ class TestTeeUserVisibleWrites:
         broken = _quiet_logger("tests.broken", console, TaskOutputHandler())
         try:
             # The report ends with logging's "Call stack:", every frame from the log
-            # call up to pytest's entry point, with file paths under the checkout:
-            # about 7.7 KB at a 75-character checkout path, over 10 KB past ~150. A
-            # cap the report can't reach keeps the test independent of both.
+            # call up to the test runner's entry point, each with its file path
+            # (site-packages, the checkout). Its size follows the runner's frame count
+            # and the install path, so a cap the report can't reach keeps the test
+            # independent of both.
             start_capture("t1", max_bytes=1_000_000)
             broken.info("%d", "abc")
             out = stop_capture("t1")
