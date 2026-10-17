@@ -333,12 +333,13 @@ node and event responses include them, with no configuration:
 - `exception_type` is the class only (`module.Class`, just `Class` for builtins), never the
   message, so it carries no task arguments. On a RETRY it is the exception the retry was for:
   the `exc` given to `self.retry()`, or else the exception being handled when it was called
-  (`except ConnectionError: raise self.retry()`). Only a retry with neither (e.g. polling until
-  something is ready) reports `celery.exceptions.Retry`.
+  (`except ConnectionError: raise self.retry()`). A retry with neither (e.g. polling until
+  something is ready) reports `celery.exceptions.Retry`, and one Celery cancelled after losing
+  the broker connection has none.
 - A task (in the task list, the task detail and graph nodes) has the value from its furthest-along
-  event that reports one, judged the way its state is, so skewed worker clocks don't mix up
-  attempts. Its `exception_type` is the last exception it raised, also when a retry then
-  succeeded; add `state=FAILURE` to get failures only.
+  event that reports one, judged the way its state is: a later retry beats an earlier one
+  whatever the worker clocks say. Its `exception_type` is the last exception it raised, also
+  when a retry then succeeded; add `state=FAILURE` to get failures only.
 - `GET /api/tasks` filters on them exactly: `?hostname=celery@media-gpu-1`, `?queue=media`,
   `?exception_type=myapp.errors.PartnerAPIError`.
 
@@ -351,7 +352,16 @@ Limitations:
   `routing_key` is set. Checked with a topic exchange on real Redis and RabbitMQ workers.
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
   (`billiard.exceptions.TimeLimitExceeded`), carries no `hostname`, `queue` or `routing_key`,
-  like its parent and root IDs. The task keeps the values from its STARTED event.
+  like its parent and root IDs. The task keeps the values of its furthest-along earlier event
+  that has them, normally the STARTED of the run that failed. Within one retry, events are
+  ordered by time: when a lost broker connection makes Celery run the same attempt again on
+  another worker whose clock is behind the first one's, the task can name the first worker.
+- Run eagerly (`task_always_eager`) from inside an `except` block, a task's bare
+  `raise self.retry()` reports the caller's exception being handled, since it runs on the
+  caller's stack.
+- `GET /api/tasks` filters on these fields by looking at every task, and at all of a task's
+  events when its last one lacks the field: on a full store of 10,000 tasks a filtered request
+  took 50 to 90 ms against about 12 ms for a name filter (2-vCPU host under load).
 
 ### Canvas Graph Visualization
 

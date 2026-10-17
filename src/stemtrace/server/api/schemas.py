@@ -73,7 +73,8 @@ class TaskNodeResponse(BaseModel):
     first_seen: datetime | None = None
     last_updated: datetime | None = None
     duration_ms: int | None = None
-    # Where the task ran and came from, and what it raised (latest non-null across the task's events).
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
     exception_type: str | None = None
     hostname: str | None = None
     queue: str | None = None
@@ -113,7 +114,8 @@ class GraphNodeResponse(BaseModel):
     duration_ms: int | None = None
     first_seen: datetime | None = None
     last_updated: datetime | None = None
-    # Where the task ran and came from, and what it raised (latest non-null across the task's events).
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
     exception_type: str | None = None
     hostname: str | None = None
     queue: str | None = None

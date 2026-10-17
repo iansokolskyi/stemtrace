@@ -299,6 +299,7 @@ def _retry_cause(reason: Any) -> BaseException | None:
     """
     if not isinstance(reason, BaseException):
         return None
+    # Kept typed: narrowing to celery's untyped Retry makes ``reason`` Any.
     cause: BaseException = reason
     if isinstance(reason, Retry):
         if isinstance(reason.exc, BaseException):

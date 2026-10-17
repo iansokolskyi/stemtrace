@@ -605,8 +605,8 @@ def _add_task_routes(
 
         ``name`` is a case-insensitive substring match (the search box);
         ``name_exact`` is an exact match on the full task name. ``hostname``,
-        ``queue`` and ``exception_type`` match the task's latest known value
-        exactly.
+        ``queue`` and ``exception_type`` match the task's value (see
+        ``TaskNode._latest``) exactly.
         """
         from stemtrace.core.events import TaskState as TS
 

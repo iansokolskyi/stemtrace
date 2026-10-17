@@ -525,7 +525,8 @@ class GraphStore:
         Celery's task registry (``app.add`` does not match ``app.add_numbers``
         or ``app.Add``). Both can be given; a node must pass each.
         ``hostname``, ``queue`` and ``exception_type`` match the node's
-        value (the latest one its events report) exactly.
+        value (see ``TaskNode._latest``) exactly; computing it can read all
+        of a node's events, so these cost several times the name filters.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
