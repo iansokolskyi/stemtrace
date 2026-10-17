@@ -5,6 +5,10 @@ import { createRoot } from 'react-dom/client'
 import { UnauthorizedError } from './api/client'
 import { WebSocketProvider } from './hooks/WebSocketContext'
 import { routeTree } from './routeTree.gen'
+// Imported here, not from index.css: Tailwind inlines CSS @imports, which breaks the
+// packages' relative ./files/*.woff2 URLs; Vite resolves them when it loads the CSS itself.
+import '@fontsource-variable/overpass/wght.css'
+import '@fontsource-variable/overpass-mono/wght.css'
 import './index.css'
 
 // Create query client
