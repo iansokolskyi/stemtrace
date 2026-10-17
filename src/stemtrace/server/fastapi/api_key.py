@@ -47,6 +47,10 @@ WS_SUBPROTOCOL: Final[str] = "stemtrace"
 #: parameter: uvicorn's access log prints the query string.
 WS_BEARER_PREFIX: Final[str] = "stemtrace.bearer."
 
+#: Set in the ASGI scope by the key dependency, so the form-login middleware can
+#: tell a request it deferred actually reached the key check.
+GATE_SCOPE_KEY: Final[str] = "stemtrace.api_key_checked"
+
 #: Route names the key doesn't guard (the liveness probe, used by container
 #: health checks that carry no credentials).
 PUBLIC_ROUTE_NAMES: Final[frozenset[str]] = frozenset({"stemtrace_health_live"})
@@ -199,6 +203,7 @@ def api_key_dependency(
     """
 
     async def _verify(request: Request) -> None:
+        request.scope[GATE_SCOPE_KEY] = True
         route_name = getattr(request.scope.get("route"), "name", None)
         if route_name in PUBLIC_ROUTE_NAMES:
             return

@@ -13,7 +13,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.responses import Response
 
-from stemtrace.server.fastapi.api_key import bearer_token
+from stemtrace.server.fastapi.api_key import GATE_SCOPE_KEY, bearer_token
 from stemtrace.server.fastapi.form_auth import (
     LOGIN_REASON_SESSION_MISMATCH,
     SESSION_SECRET_MISMATCH_REASON,
@@ -105,6 +105,26 @@ def _unauthenticated_response(
     )
 
 
+def _require_api_key_check(
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Callable[[Request], Awaitable[Response]]:
+    """Wrap ``call_next`` so a request no API route key-checked gets a 404.
+
+    A Bearer request is let past the cookie check only for the API key
+    dependency to check it. If the path isn't an API route (``api/tasks/``,
+    ``apix``), something else (e.g. the UI's catch-all) would answer without
+    any check; it gets a 404 instead.
+    """
+
+    async def _call(request: Request) -> Response:
+        response = await call_next(request)
+        if request.scope.get(GATE_SCOPE_KEY):
+            return response
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+    return _call
+
+
 def create_form_auth_middleware(
     config: FormAuthConfig,
     *,
@@ -142,8 +162,10 @@ def create_form_auth_middleware(
       generated secret, the body carries ``reason: "session_secret_mismatch"``.
     - With ``api_key_configured``, API requests that carry Bearer credentials
       skip the cookie check: the API key dependency on the API router checks
-      the key (and answers 401/429 itself). Without a key configured, a Bearer
-      header proves nothing and the cookie is still required.
+      the key (and answers 401/429 itself). If no API route ran that check
+      (the path isn't an API route), the answer is a 404 instead of whatever
+      else matched. Without a key configured, a Bearer header proves nothing
+      and the cookie is still required.
     - Everything else (UI routes) redirects to the login page with ``next``
       (and ``reason=session_mismatch`` for the same case).
 
@@ -199,6 +221,8 @@ def create_form_auth_middleware(
             and path.startswith(api_prefix)
             and bearer_token(request.headers.get("authorization")) is not None
         )
+        if defer_to_api_key:
+            call_next = _require_api_key_check(call_next)
         if path in open_paths or path.startswith(assets_dir) or defer_to_api_key:
             return await call_next(request)
         if not path.startswith(api_prefix) and is_misplaced_asset_path(path):
