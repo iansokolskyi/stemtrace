@@ -815,7 +815,12 @@ class TestTeeUserVisibleWrites:
         console = logging.StreamHandler(io.StringIO())
         broken = _quiet_logger("tests.broken", console, TaskOutputHandler())
         try:
-            start_capture("t1", max_bytes=10_000)
+            # The report ends with logging's "Call stack:", every frame from the log
+            # call up to the test runner's entry point, each with its file path
+            # (site-packages, the checkout). Its size follows the runner's frame count
+            # and the install path, so a cap the report can't reach keeps the test
+            # independent of both.
+            start_capture("t1", max_bytes=1_000_000)
             broken.info("%d", "abc")
             out = stop_capture("t1")
         finally:
@@ -825,6 +830,7 @@ class TestTeeUserVisibleWrites:
             "--- Logging error ---\nTraceback (most recent call last):"
         )
         assert "TypeError" in out
+        assert out.endswith("Message: '%d'\nArguments: ('abc',)")
         assert "--- Logging error ---" in sys.stderr.getvalue()
 
     def test_prints_during_message_formatting_are_captured(

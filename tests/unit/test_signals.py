@@ -831,6 +831,15 @@ class TestRealPublish:
         def add(x: int, y: int) -> int:
             return x + y
 
+        @app.task(name="tests.echo")
+        def echo(data: Any, **_: Any) -> dict[Any, Any]:
+            return {1: data, "password": "x"}
+
+        @app.task(name="tests.redis_hash")
+        def redis_hash() -> dict[Any, Any]:
+            # What redis-py's hgetall() returns without decode_responses.
+            return {b"password": "hunter2", ("api_key",): "sk-1", "token": "t0k"}
+
         return app
 
     def test_send_task_pending_carries_parent_and_root(self, app: Celery) -> None:
@@ -882,6 +891,66 @@ class TestRealPublish:
         assert [type(body) for body in bodies] == [body_type]
         [event] = MemoryTransport.events
         assert event.args == [1, 2]
+
+    def test_delay_with_non_string_dict_keys_emits_pending(self, app: Celery) -> None:
+        # after_task_publish gets the body before the json serializer turns
+        # the keys into strings (celery 5.6.3 amqp.send_task_message).
+        app.tasks["tests.echo"].delay({1: "a", "password": "x"}, opts={None: "b"})
+
+        [event] = MemoryTransport.events
+        assert event.state == TaskState.PENDING
+        assert event.args == [{1: "a", "password": FILTERED}]
+        assert event.kwargs == {"opts": {None: "b"}}
+
+    @pytest.mark.parametrize(
+        ("key", "kwargs"),
+        [
+            (1, {"1": "a"}),
+            (None, {"None": "a"}),
+            # json.dumps rejects these keys: safe_serialize falls back to str().
+            ((1, 2), {"_as_text": "{(1, 2): 'a'}"}),
+            (b"k", {"_as_text": "{b'k': 'a'}"}),
+        ],
+        ids=["int", "none", "tuple", "bytes"],
+    )
+    def test_send_task_with_non_string_keyword_emits_pending(
+        self, app: Celery, key: object, kwargs: dict[str, Any]
+    ) -> None:
+        # send_task doesn't check keyword types (Task.apply_async does), and
+        # TaskEvent.kwargs only takes str keys. Pickle, because kombu's json
+        # encoder refuses tuple and bytes keys before the message is sent.
+        app.conf.task_serializer = "pickle"
+        app.send_task("tests.echo", kwargs={key: "a"})
+
+        [event] = MemoryTransport.events
+        assert event.kwargs == kwargs
+
+    def test_apply_with_non_string_dict_keys_emits_started_and_success(
+        self, app: Celery
+    ) -> None:
+        # Eager apply runs Celery's tracer, which sends task_prerun and
+        # task_postrun with the objects as given: what a pickle worker gets
+        # (a json worker gets string keys), and every worker's return value.
+        app.tasks["tests.echo"].apply(args=({1: "a"},), kwargs={"opts": {None: "b"}})
+
+        started, success = MemoryTransport.events
+        assert (started.state, success.state) == (TaskState.STARTED, TaskState.SUCCESS)
+        assert started.args == [{1: "a"}]
+        assert started.kwargs == {"opts": {None: "b"}}
+        assert success.result == {1: {1: "a"}, "password": FILTERED}
+
+    def test_result_with_bytes_and_tuple_keys_is_scrubbed_by_name(
+        self, app: Celery
+    ) -> None:
+        # A return value reaches task_postrun unserialized with any serializer.
+        app.tasks["tests.redis_hash"].apply()
+
+        success = MemoryTransport.events[-1]
+        assert success.state == TaskState.SUCCESS
+        # json.dumps rejects the keys, so safe_serialize falls back to str().
+        assert success.result == str(
+            {b"password": FILTERED, ("api_key",): FILTERED, "token": FILTERED}
+        )
 
     def test_eager_apply_publishes_no_pending(self, app: Celery) -> None:
         app.tasks["tests.add"].apply(args=(1, 2))
@@ -950,6 +1019,127 @@ class TestFireAndForget:
 
         # Error should be logged
         assert "Failed to publish event" in caplog.text
+
+
+class _StrRaises:
+    """A value json.dumps(default=str) can't turn into text."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def __str__(self) -> str:
+        raise self.error
+
+    def __repr__(self) -> str:
+        raise self.error
+
+
+def _cyclic_list() -> list[Any]:
+    value: list[Any] = []
+    value.append(value)
+    return value
+
+
+class TestUncapturableData:
+    """Task data stemtrace can't capture becomes a placeholder, never an error."""
+
+    @pytest.mark.parametrize(
+        ("value", "error_name"),
+        [
+            (_StrRaises(RuntimeError("boom")), "RuntimeError"),
+            (_cyclic_list(), "RecursionError"),
+        ],
+        ids=["str_raises", "cyclic"],
+    )
+    def test_prerun_and_postrun_with_uncapturable_data_publish_placeholders(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+        value: Any,
+        error_name: str,
+    ) -> None:
+        placeholder = f"[Not captured: {error_name}]"
+
+        _on_task_prerun(
+            task_id="task-123", task=mock_task, args=(value,), kwargs={"k": value}
+        )
+        _on_task_postrun(
+            task_id="task-123",
+            task=mock_task,
+            args=(),
+            kwargs={},
+            retval=value,
+            state="SUCCESS",
+        )
+
+        started, success = MemoryTransport.events
+        assert started.args == [placeholder]
+        assert started.kwargs == {"_not_captured": placeholder}
+        assert success.result == placeholder
+
+    @pytest.mark.parametrize(
+        ("body", "error_name"),
+        [
+            (((_StrRaises(RuntimeError("boom")),), {}, {}), "RuntimeError"),
+            ((5, {}, {}), "TypeError"),
+        ],
+        ids=["str_raises", "args_not_iterable"],
+    )
+    def test_after_publish_with_uncapturable_args_publishes_placeholder(
+        self, transport: MemoryTransport, body: Any, error_name: str
+    ) -> None:
+        _on_after_task_publish(
+            sender="tests.sample_task",
+            body=body,
+            headers={"id": "task-123", "task": "tests.sample_task"},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.state == TaskState.PENDING
+        assert event.args == [f"[Not captured: {error_name}]"]
+
+    def test_after_publish_with_uncapturable_kwargs_publishes_placeholder(
+        self, transport: MemoryTransport
+    ) -> None:
+        _on_after_task_publish(
+            sender="tests.sample_task",
+            body=((), [("a",)], {}),
+            headers={"id": "task-123", "task": "tests.sample_task"},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.kwargs == {"_not_captured": "[Not captured: ValueError]"}
+
+    def test_prerun_with_scrubbing_off_and_non_string_keys_keeps_args(
+        self, mock_task: MagicMock
+    ) -> None:
+        set_config(
+            StemtraceConfig(transport_url="memory://", scrub_sensitive_data=False)
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=({1: "a", "password": "x"},),
+            kwargs={},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.args == [{1: "a", "password": "x"}]
+
+    def test_soft_time_limit_while_capturing_propagates(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """Celery's control flow is not a capture failure (as in _publish_event)."""
+        value = _StrRaises(SoftTimeLimitExceeded())
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            _on_task_prerun(
+                task_id="task-123", task=mock_task, args=(value,), kwargs={}
+            )
+
+        assert MemoryTransport.events == []
 
 
 class TestExtractChordInfo:
@@ -1160,11 +1350,16 @@ class TestSignalsScrubbingAndCaptureBranches:
         assert event.kwargs is not None
         assert "_truncated" in event.kwargs
 
-    @pytest.mark.parametrize("kwargs", [None, ["a", 1]], ids=["none", "list"])
+    @pytest.mark.parametrize(
+        ("kwargs", "error_name"),
+        [(None, "TypeError"), (["a", 1], "ValueError")],
+        ids=["none", "list"],
+    )
     def test_task_prerun_with_scrubbing_off_and_non_dict_kwargs_publishes(
-        self, mock_task: MagicMock, kwargs: Any
+        self, mock_task: MagicMock, kwargs: Any, error_name: str
     ) -> None:
-        # Celery always sends a dict; a non-Celery producer may not.
+        # Celery always sends a dict; a non-Celery producer may not. dict()
+        # rejects these inside the capture boundary.
         set_config(
             StemtraceConfig(transport_url="memory://", scrub_sensitive_data=False)
         )
@@ -1173,7 +1368,7 @@ class TestSignalsScrubbingAndCaptureBranches:
         _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs=kwargs)
 
         [event] = MemoryTransport.events
-        assert event.kwargs is None
+        assert event.kwargs == {"_not_captured": f"[Not captured: {error_name}]"}
 
     def test_task_prerun_with_uppercase_additional_sensitive_key_filters(
         self, mock_task: MagicMock

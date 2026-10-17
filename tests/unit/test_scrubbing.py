@@ -1,5 +1,7 @@
 """Tests for sensitive data scrubbing."""
 
+from enum import Enum, Flag, IntEnum, IntFlag
+
 import pytest
 
 from stemtrace.library import scrubbing
@@ -371,3 +373,279 @@ class TestPatternsLoweredOncePerCall:
         safe_serialize([{"a": {"b": i}} for i in range(50)])
 
         assert len(lowercase_calls) == 1
+
+
+# Dict keys that aren't strings: Celery's after_task_publish gets the body before
+# it is serialized, the pickle serializer keeps them on the worker, and a task
+# result is never serialized before task_postrun (redis-py returns bytes-keyed
+# dicts without decode_responses). A key is matched by the names it carries:
+# bytes decoded as UTF-8, and the str/bytes parts of a tuple or frozenset key.
+
+
+class _StrIsPassword:
+    """A key that is no name, though its str() looks like one."""
+
+    def __str__(self) -> str:
+        return "password"
+
+    def __repr__(self) -> str:
+        return "<_StrIsPassword>"
+
+
+class _Cred(Enum):
+    """Enum members are names: matched by their name and their value."""
+
+    PASSWORD = "pw"
+    LOOKUP = "api_key"
+    COLOR = 1
+
+
+class _StrCred(str, Enum):
+    """A str-mixin Enum is a str, but its name is matched too."""
+
+    SECRET = "s"
+
+
+class _Slot(IntEnum):
+    """An IntEnum is an int, but its members still have names."""
+
+    TOKEN = 1
+    OTHER = 2
+
+
+class _Perm(Flag):
+    """Flag pseudo-members (empty, and on 3.10 composite) have no name."""
+
+    READ = 1
+    WRITE = 2
+    SECRET = 4
+
+
+class _IPerm(IntFlag):
+    """An IntFlag value with bits outside its members has no name."""
+
+    READ = 1
+    WRITE = 2
+    TOKEN = 8
+
+
+class _Combo(Flag):
+    """A multi-bit named member: Python 3.11+ leaves it out of iteration."""
+
+    A = 1
+    B = 2
+    TOKEN_PAIR = 3
+    C = 4
+
+
+class _Alias(Flag):
+    """An alias is another name for a member's bits."""
+
+    READ = 1
+    TOKEN = 1
+
+
+class _Nameless(Enum):
+    """An Enum may override name; a None name carries nothing."""
+
+    A = "x"
+
+    @property
+    def name(self) -> None:  # type: ignore[override]  # the case under test
+        return None
+
+
+class _Mode(Flag):
+    """A zero-valued member is in no Flag value, whatever its name."""
+
+    NO_TOKEN = 0
+    READ = 1
+
+
+UNNAMED_KEYS = [
+    1,
+    None,
+    1.5,
+    (1, 2),
+    b"name",
+    ("user", 1),
+    _StrIsPassword(),
+    _Cred.COLOR,
+    _Slot.OTHER,
+    _Perm(0),
+    _Perm.READ | _Perm.WRITE,
+    _IPerm(0),
+    _IPerm(4),
+    _Mode.READ,
+    _Combo.A | _Combo.C,
+    _Nameless.A,
+]
+UNNAMED_KEY_IDS = [
+    "int",
+    "none",
+    "float",
+    "tuple",
+    "bytes",
+    "tuple_mixed",
+    "object",
+    "enum",
+    "int_enum",
+    "flag_empty",
+    "flag_composite",
+    "int_flag_empty",
+    "int_flag_unknown_bits",
+    "flag_with_zero_member",
+    "flag_without_multi_bit_member",
+    "enum_name_none",
+]
+NAMED_KEYS = [
+    b"password",
+    b"\xffpassword",
+    ("api_key",),
+    ("user", b"token"),
+    (("nested", "cookie"),),
+    frozenset({"secret"}),
+    _Cred.PASSWORD,
+    _Cred.LOOKUP,
+    _Slot.TOKEN,
+    _StrCred.SECRET,
+    _Perm.SECRET,
+    # Composites have no name on Python 3.10: matched by their members.
+    _Perm.READ | _Perm.SECRET,
+    _IPerm.READ | _IPerm.TOKEN,
+    _IPerm(4) | _IPerm.TOKEN,
+    _Combo.TOKEN_PAIR | _Combo.C,
+    _Alias.READ,
+]
+NAMED_KEY_IDS = [
+    "bytes",
+    "bytes_not_utf8",
+    "tuple",
+    "tuple_bytes",
+    "tuple_nested",
+    "frozenset",
+    "enum_name",
+    "enum_value",
+    "int_enum",
+    "str_enum",
+    "flag_member",
+    "flag_composite",
+    "int_flag_composite",
+    "int_flag_unknown_bits",
+    "flag_multi_bit_member",
+    "flag_alias",
+]
+ALL_KEYS = [(key, False) for key in UNNAMED_KEYS] + [(key, True) for key in NAMED_KEYS]
+ALL_KEY_IDS = [f"unnamed_{i}" for i in UNNAMED_KEY_IDS] + [
+    f"named_{i}" for i in NAMED_KEY_IDS
+]
+
+
+def _with_key(key: object, secret: object) -> dict[object, object]:
+    """A dict with a non-string key next to a sensitive one."""
+    return {key: {"password": secret, "v": 1}, "password": secret}
+
+
+def _scrubbed(key: object, named: bool) -> dict[object, object]:
+    """``_with_key`` after scrubbing: a named key's whole value is filtered."""
+    value = FILTERED if named else {"password": FILTERED, "v": 1}
+    return {key: value, "password": FILTERED}
+
+
+def _wrapped(where: str, value: object) -> object:
+    """Put a value where a task's data can hold a dict."""
+    match where:
+        case "top":
+            return value
+        case "in_list":
+            return [value]
+        case "in_tuple":
+            return (value,)
+        case _:
+            return {"outer": value}
+
+
+WRAPPERS = ["top", "in_list", "in_tuple", "in_dict"]
+
+
+class TestNonStringKeys:
+    """Dicts with non-string keys are scrubbed by the names the keys carry."""
+
+    @pytest.mark.parametrize("safe_keys", [None, frozenset({"public_key"})])
+    @pytest.mark.parametrize(("key", "named"), ALL_KEYS, ids=ALL_KEY_IDS)
+    def test_is_sensitive_key_with_non_string_key_matches_names_only(
+        self, key: object, named: bool, safe_keys: frozenset[str] | None
+    ) -> None:
+        assert _is_sensitive_key(key, DEFAULT_SENSITIVE_KEYS, safe_keys) is named
+
+    @pytest.mark.parametrize(
+        ("key", "sensitive"),
+        [
+            (b"session_id", False),
+            (("session_id",), False),
+            (("session_id", "token"), True),
+        ],
+        ids=["bytes", "tuple", "tuple_with_unsafe_part"],
+    )
+    def test_is_sensitive_key_with_safe_name_in_non_string_key(
+        self, key: object, sensitive: bool
+    ) -> None:
+        safe = frozenset({"SESSION_ID"})
+
+        assert _is_sensitive_key(key, DEFAULT_SENSITIVE_KEYS, safe) is sensitive
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize(("key", "named"), ALL_KEYS, ids=ALL_KEY_IDS)
+    def test_scrub_args_with_non_string_key_scrubs_by_name(
+        self, key: object, named: bool, where: str
+    ) -> None:
+        args = (_wrapped(where, _with_key(key, "x")),)
+
+        assert scrub_args(args) == [_wrapped(where, _scrubbed(key, named))]
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize(("key", "named"), ALL_KEYS, ids=ALL_KEY_IDS)
+    def test_scrub_dict_with_non_string_key_scrubs_by_name(
+        self, key: object, named: bool, where: str
+    ) -> None:
+        kwargs = {"data": _wrapped(where, _with_key(key, "x"))}
+
+        assert scrub_dict(kwargs, safe_keys=frozenset({"public_key"})) == {
+            "data": _wrapped(where, _scrubbed(key, named))
+        }
+
+    @pytest.mark.parametrize(("key", "named"), ALL_KEYS, ids=ALL_KEY_IDS)
+    def test_scrub_dict_with_top_level_non_string_key_scrubs_by_name(
+        self, key: object, named: bool
+    ) -> None:
+        assert scrub_dict(_with_key(key, "x")) == _scrubbed(key, named)
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize(("key", "named"), ALL_KEYS, ids=ALL_KEY_IDS)
+    def test_safe_serialize_with_non_string_key_scrubs_result(
+        self, key: object, named: bool, where: str
+    ) -> None:
+        expected = _wrapped(where, _scrubbed(key, named))
+
+        result = safe_serialize(_wrapped(where, _with_key(key, "x")))
+
+        # json.dumps takes str, int, float and None keys (subclasses too, such
+        # as mixin Enums); other keys make it raise TypeError, and
+        # safe_serialize falls back to str() of the scrubbed value.
+        json_key = key is None or isinstance(key, str | int | float)
+        assert result == (expected if json_key else str(expected))
+
+    def test_safe_serialize_with_scrubbing_off_and_non_string_key_keeps_values(
+        self,
+    ) -> None:
+        # The signal handlers pass an empty pattern set when scrubbing is off.
+        value = [{1: "a", b"password": "x", "password": "x"}]
+
+        assert safe_serialize(value, sensitive_keys=frozenset()) == str(value)
+
+    def test_safe_serialize_with_scrubbing_off_and_int_key_keeps_shape(
+        self,
+    ) -> None:
+        value = [{1: "a", "password": "x"}]
+
+        assert safe_serialize(value, sensitive_keys=frozenset()) == value
