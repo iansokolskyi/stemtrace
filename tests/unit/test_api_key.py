@@ -39,6 +39,12 @@ class FakeClock:
         return self.now
 
 
+def _throttle(clock: FakeClock) -> LoginThrottle:
+    # Fixed hash key and enough buckets that the many-IP tests can't hit a
+    # chance collision lock (a random key made them flaky).
+    return LoginThrottle(clock=clock, buckets=4096, hash_key=b"stemtrace-test" * 2)
+
+
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock()
@@ -46,7 +52,7 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def guard(clock: FakeClock) -> ApiKeyGuard:
-    return ApiKeyGuard(KEY, LoginThrottle(clock=clock, buckets=64))
+    return ApiKeyGuard(KEY, _throttle(clock))
 
 
 # --- configuration ---------------------------------------------------------
@@ -241,7 +247,7 @@ def test_guard_failures_from_many_ips_never_lock_out_the_key(
 
 
 def test_guard_shares_ip_counts_with_login_failures(clock: FakeClock) -> None:
-    throttle = LoginThrottle(clock=clock, buckets=64)
+    throttle = _throttle(clock)
     shared = ApiKeyGuard(KEY, throttle)
     login = LoginAttempt(client_ip="1.2.3.4", username="admin", device_id=None)
     for _ in range(LOGIN_IP_MAX_FAILURES):
@@ -253,7 +259,7 @@ def test_guard_shares_ip_counts_with_login_failures(clock: FakeClock) -> None:
 def test_throttle_attempt_without_username_counts_only_the_ip(
     clock: FakeClock,
 ) -> None:
-    throttle = LoginThrottle(clock=clock, buckets=64)
+    throttle = _throttle(clock)
     for i in range(LOGIN_USERNAME_MAX_FAILURES):
         throttle.record_failure(
             LoginAttempt(client_ip=f"10.0.0.{i}", username=None, device_id=None)
