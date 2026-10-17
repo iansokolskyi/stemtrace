@@ -272,8 +272,10 @@ class TimeSeriesResponse(BaseModel):
     window: TimeWindowResponse
     bucket_seconds: int
     starts: list[datetime]
-    counts: dict[TaskState, list[int]]
-    by_task_group: dict[str, dict[TaskState, list[int]]] | None = None
+    # Keyed by state name (str, not TaskState: pydantic 2.4 warns serializing
+    # enum dict keys).
+    counts: dict[str, list[int]]
+    by_task_group: dict[str, dict[str, list[int]]] | None = None
 
 
 class FailureGroupResponse(BaseModel):

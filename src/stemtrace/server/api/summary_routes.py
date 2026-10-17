@@ -37,6 +37,7 @@ from stemtrace.server.stats import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from stemtrace.core.events import TaskState
     from stemtrace.core.groups import GroupConfig
     from stemtrace.server.stats import RunRecord
     from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -46,6 +47,10 @@ _WITHIN_HELP = "Relative window ending now: 30s, 15m, 6h or 7d"
 
 def _window_response(window: Window) -> TimeWindowResponse:
     return TimeWindowResponse(start=window.start, end=window.end)
+
+
+def _by_state_name(counts: dict[TaskState, list[int]]) -> dict[str, list[int]]:
+    return {state.value: series for state, series in counts.items()}
 
 
 def _unprocessable(detail: str) -> HTTPException:
@@ -156,8 +161,12 @@ def add_summary_routes(
             window=_window_response(window),
             bucket_seconds=int(size.total_seconds()),
             starts=series.starts,
-            counts=series.counts,
-            by_task_group=series.by_key if group_by else None,
+            counts=_by_state_name(series.counts),
+            by_task_group={
+                key: _by_state_name(counts) for key, counts in series.by_key.items()
+            }
+            if group_by
+            else None,
         )
 
     @router.get("/failures", response_model=FailureGroupListResponse)
