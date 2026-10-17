@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- UI: updated `react` and `react-dom` 19.2.3 → 19.3.0 (with `scheduler` 0.27.0 → 0.28.0), `@xyflow/react` 12.10.0 → 12.12.0 (with `@xyflow/system` 0.0.74 → 0.0.83) and `date-fns` 4.1.0 → 4.4.0 in the bundled frontend. None of these fix a known advisory. Development: the frontend now type-checks with TypeScript 7.0 (was 5.9) and runs its E2E tests with Playwright 1.63.
+- Docs: the README is now a short overview (what stemtrace helps you debug, what it adds to a production system, when Flower or other tools fit better, quick start), and the details moved to pages under [`docs/`](https://github.com/iansokolskyi/stemtrace/tree/main/docs): configuration, deployment, security, brokers, event retention, graphs and features. A new page covers adopting stemtrace in an existing project.
+
 ### Fixed
 - Graphs: a chord whose node was removed (`TaskGraph.remove_node`) while its headers stayed lost its callback: when a later event of one of its tasks recreated the node, it no longer knew the callback the headers had named, so it drew none. It now draws the callback a graph built from the same events draws. Removing the last header after the node no longer leaves that callback ID recorded for the chord.
 - Graphs: a chord's callback and a group's chain links no longer depend on event order when an earlier event renames a task to or from `celery.chord_unlock` (one task ID reporting two names), or when the parent of a chord's body group changes while that group is drawn as the callback. Celery workflows don't produce these events; they showed up when comparing removals with rebuilds.

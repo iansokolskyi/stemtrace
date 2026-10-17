@@ -65,7 +65,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/iansokolskyi/stemtrace"
-Documentation = "https://github.com/iansokolskyi/stemtrace#readme"
+Documentation = "https://github.com/iansokolskyi/stemtrace/tree/main/docs"
 Repository = "https://github.com/iansokolskyi/stemtrace"
 Issues = "https://github.com/iansokolskyi/stemtrace/issues"
 Changelog = "https://github.com/iansokolskyi/stemtrace/blob/main/CHANGELOG.md"
