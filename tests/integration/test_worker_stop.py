@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import celery
 import pytest
 import redis
 from celery import Celery
@@ -22,6 +23,12 @@ from celery import Celery
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
+# Celery 5.5 added on_cold_shutdown, which cancels running tasks in the signal
+# handler (each gets a RETRY "cancelled by Celery"); these tests pin its behavior.
+CELERY_55 = tuple(int(p) for p in celery.__version__.split(".")[:2]) >= (5, 5)
+needs_celery_55 = pytest.mark.skipif(
+    not CELERY_55, reason="pins Celery 5.5+ cold-shutdown behavior"
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT_SECONDS = 60
 
@@ -173,14 +180,34 @@ def test_warm_stop_finishes_running_task_before_worker_shutdown(
     assert "worker_terminating" not in kinds
 
 
+def _kinds(entries: list[TaskEvent | WorkerEvent], task_id: str) -> list[str]:
+    return [
+        e.event_type.value
+        if isinstance(e, WorkerEvent)
+        else f"{e.state.value}:{e.task_id == task_id}"
+        for e in entries
+    ]
+
+
+def _cancelled(entries: list[TaskEvent | WorkerEvent], task_id: str) -> bool:
+    return any(
+        isinstance(e, TaskEvent)
+        and e.task_id == task_id
+        and e.state == TaskState.RETRY
+        and e.exception == "cancelled by Celery"
+        for e in entries
+    )
+
+
+@needs_celery_55
 def test_cold_stop_publishes_worker_terminating(worker: StoppableWorker) -> None:
-    """Prefork: the running task is killed and worker_terminating says so.
+    """Prefork: the running task is cancelled (RETRY "cancelled by Celery"),
+    and worker_terminating marks the end the worker reports nothing else for.
 
     Threads: Celery 5.6.3 can't terminate a thread-pool job (its cold-shutdown
     handler, ``on_cold_shutdown`` -> ``Request.cancel``, gets
     ``NotImplementedError`` from ``TaskPool.terminate_job``), so the worker
-    falls back to a warm stop: the task finishes, then worker_shutdown, and
-    nothing is terminated.
+    falls back to a warm stop: the task finishes, then worker_shutdown.
     """
     task_id = _start_sleepy(worker, 30 if worker.pool == "prefork" else 4)
 
@@ -188,12 +215,7 @@ def test_cold_stop_publishes_worker_terminating(worker: StoppableWorker) -> None
     worker.proc.wait(timeout=TIMEOUT_SECONDS)
 
     entries = worker.entries()
-    kinds = [
-        e.event_type.value
-        if isinstance(e, WorkerEvent)
-        else f"{e.state.value}:{e.task_id == task_id}"
-        for e in entries
-    ]
+    kinds = _kinds(entries, task_id)
     log = worker.log_path.read_text(errors="replace")[-3000:]
     if worker.pool == "threads":
         assert "worker_terminating" not in kinds, log
@@ -205,5 +227,30 @@ def test_cold_stop_publishes_worker_terminating(worker: StoppableWorker) -> None
         if e.event_type == WorkerEventType.WORKER_TERMINATING
     ]
     assert terminating.hostname == worker.nodename
+    assert _cancelled(entries, task_id), log
     assert "SUCCESS:True" not in kinds, log
     assert "worker_shutdown" not in kinds, log
+
+
+@needs_celery_55
+def test_cold_stop_after_warm_stop_ends_with_worker_shutdown(
+    worker: StoppableWorker,
+) -> None:
+    """SIGQUIT during a warm stop: Celery cancels the running task, but the warm
+    stop it interrupts still ends with worker_shutdown (no worker_terminating)."""
+    if worker.pool != "prefork":
+        pytest.skip("only prefork can cancel a running task")
+    task_id = _start_sleepy(worker, 30)
+
+    worker.proc.send_signal(signal.SIGTERM)
+    time.sleep(1)
+    worker.proc.send_signal(signal.SIGQUIT)
+    worker.proc.wait(timeout=TIMEOUT_SECONDS)
+
+    entries = worker.entries()
+    kinds = _kinds(entries, task_id)
+    log = worker.log_path.read_text(errors="replace")[-3000:]
+    assert _cancelled(entries, task_id), log
+    assert "worker_shutdown" in kinds, log
+    assert "worker_terminating" not in kinds, log
+    assert "SUCCESS:True" not in kinds, log

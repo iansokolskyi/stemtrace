@@ -993,11 +993,11 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 
 
 def on_worker_terminating(sender: Any = None) -> None:
-    """Publish WORKER_TERMINATING: a cold shutdown is terminating running tasks.
+    """Publish WORKER_TERMINATING: the worker ends without a worker_shutdown.
 
-    Called from ``WorkerTerminatingStep.terminate`` (see ``bootsteps``), in
-    the worker's main process and outside Celery's signal handler: the
-    handler only sets ``should_terminate``, and the consumer loop then raises
+    Called from ``WorkerTerminatingStep.terminate`` (see ``bootsteps``) in the
+    worker's main process, after Celery's signal handler returned: the
+    handler sets ``should_terminate``, and the consumer loop then raises
     ``WorkerTerminate`` and stops the worker blueprint (celery 5.2.2 to 5.6.3
     ``WorkController.start`` / ``terminate`` / ``_shutdown(warm=False)``).
     Fire-and-forget, like ``on_worker_shutdown``.

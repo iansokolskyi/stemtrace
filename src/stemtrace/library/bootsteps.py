@@ -190,28 +190,25 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 
 
 class WorkerTerminatingStep(bootsteps.StartStopStep):  # type: ignore[misc]
-    """Publish WORKER_TERMINATING when a cold shutdown terminates the worker.
+    """Publish WORKER_TERMINATING when the worker ends through Celery's terminate path.
 
-    A cold shutdown (e.g. SIGQUIT) terminates the running tasks and sends no
-    ``worker_shutdown`` (celery 5.6.3 ``WorkController.terminate``). With the
-    threads pool Celery can't terminate jobs and falls back to a warm stop. Celery calls a worker step's ``terminate`` on a cold
-    stop and ``stop`` on a warm one (``Blueprint.stop(terminate=...)``), in
-    reverse start order: requiring the Pool makes this step terminate before
-    the pool kills the tasks.
+    That path (``WorkController.terminate``, a cold stop such as SIGQUIT that
+    didn't start as a warm one) sends no ``worker_shutdown``, so without this
+    the server keeps the worker online. Celery calls a worker step's
+    ``terminate`` there and ``stop`` on a warm stop (``Blueprint.stop``); the
+    inherited ``stop`` does nothing. It says the process is ending, not
+    which tasks were killed: on Celery 5.5+ the cold-shutdown handler cancels
+    running tasks first, and each gets a RETRY ("cancelled by Celery").
+    A cold stop that escalates a warm one (SIGTERM then SIGQUIT, Ctrl+C twice)
+    or fails in Celery (gevent with SIGQUIT, celery 5.6.3) ends with
+    ``worker_shutdown`` instead. Requiring the Pool orders this step after it
+    at start, so before it on terminate.
     """
 
     requires: ClassVar[set[str]] = {"celery.worker.components:Pool"}
 
-    def __init__(self, worker: Any, **kwargs: Any) -> None:
-        """Create the step; nothing to set up."""
-        super().__init__(worker, **kwargs)
-
-    def stop(self, worker: Any) -> None:
-        """Warm stop: running tasks finish, and worker_shutdown follows."""
-        del worker
-
     def terminate(self, worker: Any) -> None:
-        """Cold stop: report that the running tasks are being terminated."""
+        """Report that this worker process is ending without worker_shutdown."""
         on_worker_terminating(worker)
 
 

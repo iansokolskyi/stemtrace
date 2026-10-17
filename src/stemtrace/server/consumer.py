@@ -250,13 +250,15 @@ class EventConsumer:
                 event.pid,
                 len(event.registered_tasks),
             )
-        elif event.event_type == WorkerEventType.WORKER_SHUTDOWN:
+        elif event.event_type in (
+            WorkerEventType.WORKER_SHUTDOWN,
+            # A cold stop: the process ends without a worker_shutdown.
+            WorkerEventType.WORKER_TERMINATING,
+        ):
             self._worker_registry.mark_shutdown(event.hostname, event.pid)
-            logger.info("Worker shutdown: %s:%d", event.hostname, event.pid)
-        elif event.event_type == WorkerEventType.WORKER_TERMINATING:
-            # A cold shutdown: the process ends without a worker_shutdown.
-            self._worker_registry.mark_shutdown(event.hostname, event.pid)
-            logger.info("Worker terminating: %s:%d", event.hostname, event.pid)
+            logger.info(
+                "Worker %s: %s:%d", event.event_type.value, event.hostname, event.pid
+            )
 
 
 class AsyncEventConsumer:

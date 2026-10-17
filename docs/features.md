@@ -69,12 +69,22 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
-- A worker stopped cold (e.g. SIGQUIT) terminates its running tasks, and Celery sends no
-  `worker_shutdown`. The worker publishes a `worker_terminating` event instead, and the server
-  marks it offline the same way. With the threads pool, Celery 5.6.3 can't terminate running
-  tasks: a cold stop then waits for them like a warm one and sends `worker_shutdown`. A worker
-  killed with SIGKILL sends neither event. An older server drops `worker_terminating` with a
-  warning, so upgrade the server first.
+- A worker stopped cold (SIGQUIT) on the prefork pool ends without Celery's `worker_shutdown`.
+  It publishes a `worker_terminating` event instead, and the server marks it offline the same
+  way. On Celery 5.5+ a cold stop cancels the running tasks first, and each shows a RETRY
+  "cancelled by Celery". Other cases (checked with Celery 5.6.3):
+  - SIGQUIT during a warm stop (SIGTERM, then SIGQUIT; or Ctrl+C twice) cancels the running
+    tasks the same way but ends with `worker_shutdown`.
+  - threads pool: Celery can't cancel running tasks, so a cold stop waits for them like a warm
+    one and ends with `worker_shutdown` (with no task running, it sends `worker_terminating`).
+  - gevent pool: Celery's cold-shutdown handler fails (`BlockingSwitchOutError`) after
+    cancelling the tasks, and the worker ends with `worker_shutdown`.
+  - solo pool: SIGQUIT fails the running task (`NotImplementedError`) and the worker keeps
+    running.
+  - eventlet: not checked.
+
+  A worker killed with SIGKILL sends neither event. An older server drops `worker_terminating`
+  with a warning, so upgrade the server first.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and

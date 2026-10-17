@@ -433,7 +433,8 @@ class TestWorkerTerminatingStep:
         assert app.steps["worker"] == set()
 
     def test_step_requires_pool_so_it_terminates_before_the_pool(self) -> None:
-        """Celery stops steps in reverse start order."""
+        """Celery starts a step after the steps it requires and stops steps in
+        reverse start order."""
         assert "celery.worker.components:Pool" in WorkerTerminatingStep.requires
 
     def test_terminate_publishes_worker_terminating(self) -> None:
