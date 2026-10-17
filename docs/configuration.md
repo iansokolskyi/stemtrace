@@ -295,7 +295,7 @@ stemtrace.init_app(
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
 | `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Behind a reverse proxy](deployment.md#behind-a-reverse-proxy-with-a-path-prefix)). Same as `--root-path`. | Unset. |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node names from task arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
-| `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Python 3.11+. | Unset (automatic groups only). |
+| `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. Python 3.11+. | Unset (automatic groups only). |
 
 `STEMTRACE_LOGIN_SECRET` and `FORWARDED_ALLOW_IPS` are described with the built-in login in
 [Security](security.md#built-in-login-page).
