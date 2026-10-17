@@ -365,7 +365,7 @@ def _false_lock_rate(*, buckets: int, locked_keys: int, probes: int) -> float:
 
 
 class TestFalseLocks:
-    """Measured false-lock rates (documented in the README)."""
+    """Measured false-lock rates (documented in docs/security.md)."""
 
     def test_realistic_load_has_no_measurable_false_locks(self) -> None:
         # 500 locked keys at once is far beyond normal traffic; the expected
