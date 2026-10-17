@@ -23,7 +23,6 @@
     "noUncheckedIndexedAccess": false,
 
     /* Paths */
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }
