@@ -31,6 +31,7 @@ from stemtrace.library.output_capture import (
 )
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
+    TRUNCATED_PREFIX,
     safe_serialize,
     scrub_args,
     scrub_dict,
@@ -241,11 +242,15 @@ def _scrub_and_serialize_kwargs(
         scrubbed = kwargs
 
     result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
-    # safe_serialize may return truncation message string or the dict
+    # safe_serialize returns the dict, or text: its truncation message, or the
+    # str() of a dict json can't encode (which starts with "{", never with
+    # TRUNCATED_PREFIX).
     if isinstance(result, dict):
         return result
-    # If truncated, wrap message in dict
-    return {"_truncated": result} if result is not None else scrubbed
+    if result is None:
+        return scrubbed
+    label = "_truncated" if str(result).startswith(TRUNCATED_PREFIX) else "_as_text"
+    return {label: result}
 
 
 def _scrub_and_serialize_result(result: Any) -> Any | None:

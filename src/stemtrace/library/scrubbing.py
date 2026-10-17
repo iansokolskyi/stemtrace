@@ -14,6 +14,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 FILTERED = "[Filtered]"
+# Start of the text safe_serialize returns instead of a value that is too big.
+TRUNCATED_PREFIX = "[Truncated: "
 
 # Default sensitive key patterns (case-insensitive, partial match)
 DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
@@ -184,7 +186,7 @@ def safe_serialize(
     try:
         serialized = json.dumps(scrubbed, default=str)
         if len(serialized) > max_size:
-            return f"[Truncated: {len(serialized)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(serialized)} bytes > {max_size} max]"
         # Preserve the original scrubbed shape (not the JSON string).
         return scrubbed
     except (TypeError, ValueError) as e:
@@ -192,5 +194,5 @@ def safe_serialize(
         # Fall back to string representation
         str_repr = str(scrubbed)
         if len(str_repr) > max_size:
-            return f"[Truncated: {len(str_repr)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(str_repr)} bytes > {max_size} max]"
         return str_repr

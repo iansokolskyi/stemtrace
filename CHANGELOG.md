@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `additional_sensitive_keys` (and the `sensitive_keys`/`additional_keys` arguments of the scrubbing functions) now match keys case-insensitively whatever case they are written in. A pattern with an uppercase letter, such as `{"MRN"}`, never matched any key before, so those values were published unscrubbed.
+- Keyword arguments that json can't encode are now shown as `{"_as_text": "<their text>"}` instead of `{"_truncated": ...}`; `_truncated` now only holds the `[Truncated: N bytes > M max]` message for keyword arguments that were too big.
 
 ## [0.4.0] - 2026-10-13
 
