@@ -246,22 +246,22 @@ class TaskNode(BaseModel):
 
     @property
     def exception_type(self) -> str | None:
-        """Class of the last exception the task raised (also a retried one)."""
+        """Class of the furthest-along exception the task raised (also a retried one)."""
         return self._latest(lambda event: event.exception_type)
 
     @property
     def hostname(self) -> str | None:
-        """Nodename of the worker that handled the task last."""
+        """Nodename of the worker of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.hostname)
 
     @property
     def queue(self) -> str | None:
-        """Queue the task was last sent to, if known."""
+        """Queue of the task's furthest-along event that has one, if known."""
         return self._latest(lambda event: event.queue)
 
     @property
     def routing_key(self) -> str | None:
-        """Routing key the task was last sent with."""
+        """Routing key of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.routing_key)
 
     def snapshot(self) -> "TaskNode":

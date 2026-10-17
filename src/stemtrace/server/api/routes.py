@@ -598,15 +598,21 @@ def _add_task_routes(
         ] = None,
         exception_type: Annotated[
             str | None,
-            Query(description="Filter by exact exception class (module.Class)"),
+            Query(
+                description=(
+                    "Filter by exact exception class (module.Class; just Class "
+                    "for builtins)"
+                )
+            ),
         ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
         ``name`` is a case-insensitive substring match (the search box);
         ``name_exact`` is an exact match on the full task name. ``hostname``,
-        ``queue`` and ``exception_type`` match the task's value (see
-        ``TaskNode._latest``) exactly.
+        ``queue`` and ``exception_type`` match exactly the value from the
+        task's furthest-along event that has one (a later retry beats an
+        earlier one).
         """
         from stemtrace.core.events import TaskState as TS
 

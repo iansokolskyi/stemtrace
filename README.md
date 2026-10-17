@@ -353,15 +353,15 @@ Limitations:
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
   (`billiard.exceptions.TimeLimitExceeded`), carries no `hostname`, `queue` or `routing_key`,
   like its parent and root IDs. The task keeps the values of its furthest-along earlier event
-  that has them, normally the STARTED of the run that failed. Within one retry, events are
-  ordered by time: when a lost broker connection makes Celery run the same attempt again on
+  that has them, normally the STARTED of the run that failed. Within one attempt (the same
+  retry count), events are ordered by time: when a lost broker connection makes Celery run the same attempt again on
   another worker whose clock is behind the first one's, the task can name the first worker.
 - Run eagerly (`task_always_eager`) from inside an `except` block, a task's bare
   `raise self.retry()` reports the caller's exception being handled, since it runs on the
   caller's stack.
-- `GET /api/tasks` filters on these fields by looking at every task, and at all of a task's
-  events when its last one lacks the field: on a full store of 10,000 tasks a filtered request
-  took 50 to 90 ms against about 12 ms for a name filter (2-vCPU host under load).
+- `GET /api/tasks` filters on these fields by reading every event of every task, several times
+  the cost of a name filter: on a full store of 10,000 tasks (6 events each) a filtered request
+  took 40 to 130 ms against 10 to 30 ms for a name filter, on a loaded 2-vCPU host.
 
 ### Canvas Graph Visualization
 
