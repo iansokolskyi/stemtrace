@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import TaskNode
 from stemtrace.core.groups import GroupConfig, GroupRule, ResolvedGroup, TaskAttributes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore
@@ -262,3 +263,68 @@ def test_group_filters_match_independent_reference(seed: int) -> None:
 
         assert _task_ids(client, params) == (tasks, len(tasks)), (seed, query)
         assert _graph_ids(client, params) == (roots, len(roots)), (seed, query)
+
+
+class _LockCheckingGroups(GroupConfig):
+    """GroupConfig that records whether the store lock was held on each resolve()."""
+
+    def resolve(self, task: TaskAttributes) -> ResolvedGroup:
+        _UNDER_LOCK.append(_STORE[0]._lock._is_owned())  # type: ignore[attr-defined]  # RLock internals
+        return super().resolve(task)
+
+
+_UNDER_LOCK: list[bool] = []
+_STORE: list[GraphStore] = []
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/tasks?task_group=search", "/api/graphs?tag=critical"]
+)
+def test_group_filter_resolves_names_outside_store_lock(
+    graph_store: GraphStore, path: str
+) -> None:
+    _STORE[:] = [graph_store]
+    client = _client(graph_store, _LockCheckingGroups(rules=_CONFIG.rules))
+    _UNDER_LOCK.clear()
+
+    assert client.get(path).status_code == 200
+
+    assert _UNDER_LOCK
+    assert not any(_UNDER_LOCK)
+
+
+@pytest.mark.parametrize("query", ["task_group=", "tag="])
+def test_group_filter_empty_value_matches_nothing(
+    store: GraphStore, query: str
+) -> None:
+    client = _client(store)
+
+    assert _task_ids(client, query) == (set(), 0)
+    assert _graph_ids(client, query) == (set(), 0)
+
+
+class _GetCountingDict(dict[str, TaskNode]):
+    """Node map that counts ``get`` lookups."""
+
+    gets = 0
+
+    def get(self, key: str, default: TaskNode | None = None) -> TaskNode | None:  # type: ignore[override]  # counting wrapper
+        self.gets += 1
+        return super().get(key, default)
+
+
+def test_list_graphs_group_filter_walks_each_node_once() -> None:
+    """A long chain of matching tasks: each walk up stops at a node an earlier
+    walk passed, so the lookups grow with the nodes, not nodes x depth."""
+    n = 600
+    store = GraphStore(max_nodes=10 * n)
+    for i in range(n):
+        parent = f"t{i - 1}" if i else None
+        store.add_event(_event(f"t{i}", "search.step", seconds=i, parent_id=parent))
+    lookups = _GetCountingDict(store._graph.nodes)
+    store._graph.__dict__["nodes"] = lookups  # bypass validation, which would copy it
+
+    ids, total = _graph_ids(_client(store), "task_group=search")
+
+    assert (ids, total) == ({"t0"}, 1)
+    assert lookups.gets <= 3 * n

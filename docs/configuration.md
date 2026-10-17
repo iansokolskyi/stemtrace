@@ -184,9 +184,10 @@ Every task belongs to one *task group* (a label for related tasks such as `billi
 on tasks, graph nodes and the task registry, and `GET /stemtrace/api/groups` lists the groups.
 The UI doesn't show groups yet.
 
-`GET /api/tasks` and `GET /api/graphs` filter on them: `?task_group=billing` matches the group
-name exactly (case-sensitive), and `?tag=money` matches when it is one of the task's group's tags;
-given both, a task must match both. `/api/graphs` lists the graphs with at least one matching
+`GET /stemtrace/api/tasks` and `GET /stemtrace/api/graphs` filter on them: `?task_group=billing`
+matches the group name exactly (case-sensitive), and `?tag=money` matches when it is one of the
+task's group's tags; given both, a task must match both. An empty value (`?task_group=`) matches
+nothing, like the other exact filters, so leave a parameter out to not filter on it. `/api/graphs` lists the graphs with at least one matching
 task anywhere in the graph, not only at its root, so `?task_group=billing` also finds a checkout
 workflow that charges a card along the way. `total` counts the matches, before `limit` and
 `offset`.

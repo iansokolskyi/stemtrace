@@ -13,7 +13,7 @@ from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Collection
 
     from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent
 
@@ -516,7 +516,7 @@ class GraphStore:
         hostname: str | None = None,
         queue: str | None = None,
         exception_type: str | None = None,
-        name_filter: Callable[[str], bool] | None = None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Get nodes with optional filtering, most recent first.
 
@@ -530,9 +530,9 @@ class GraphStore:
         ``hostname``, ``queue`` and ``exception_type`` match the node's
         value (see ``TaskNode._latest``) exactly; computing it reads all of
         a node's events, so these cost several times the name filters.
-        ``name_filter`` keeps the tasks whose name it accepts (the API's task
-        group and tag filters); it is called with the lock held, so it must
-        not call back into the store.
+        ``task_names`` keeps the tasks with one of these names (the API's
+        task group and tag filters resolve names to it beforehand, outside
+        the lock); pass a set for O(1) lookups.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -559,8 +559,8 @@ class GraphStore:
                 nodes = [n for n in nodes if n.queue == queue]
             if exception_type is not None:
                 nodes = [n for n in nodes if n.exception_type == exception_type]
-            if name_filter is not None:
-                nodes = [n for n in nodes if name_filter(n.name)]
+            if task_names is not None:
+                nodes = [n for n in nodes if n.name in task_names]
             if from_date is not None:
                 from_dt = _ensure_tz_aware(from_date)
                 nodes = [
@@ -607,13 +607,12 @@ class GraphStore:
         offset: int = 0,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
-        name_filter: Callable[[str], bool] | None = None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
         """Get root nodes and their direct children from one consistent snapshot.
 
-        With ``name_filter``, only graphs with a task whose name it accepts
-        (anywhere in the graph, not only the root) are listed; it is called
-        with the lock held.
+        With ``task_names``, only graphs with a task of one of these names
+        (anywhere in the graph, not only the root) are listed.
 
         Returns:
             Tuple of (filtered root nodes, map of task_id to node for the roots
@@ -625,7 +624,7 @@ class GraphStore:
                 offset=offset,
                 from_date=from_date,
                 to_date=to_date,
-                name_filter=name_filter,
+                task_names=task_names,
             )
             roots = [_snapshot(n) for n in live]
             related: dict[str, TaskNode] = {}
@@ -644,7 +643,7 @@ class GraphStore:
         offset: int,
         from_date: datetime | None,
         to_date: datetime | None,
-        name_filter: Callable[[str], bool] | None = None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Filter, sort and page live root nodes. Call with the lock held."""
         root_nodes = [
@@ -652,8 +651,8 @@ class GraphStore:
             for rid in self._graph.root_ids
             if rid in self._graph.nodes
         ]
-        if name_filter is not None:
-            matching = self._roots_with_task_locked(name_filter)
+        if task_names is not None:
+            matching = self._roots_with_task_locked(task_names)
             root_nodes = [n for n in root_nodes if n.task_id in matching]
 
         # Date filtering - use child timestamps for synthetic nodes
@@ -676,8 +675,8 @@ class GraphStore:
         total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
 
-    def _roots_with_task_locked(self, name_filter: Callable[[str], bool]) -> set[str]:
-        """IDs of the roots whose graph has a task ``name_filter`` accepts.
+    def _roots_with_task_locked(self, task_names: Collection[str]) -> set[str]:
+        """IDs of the roots whose graph has a task named one of ``task_names``.
 
         Walks up from each accepted task until a root (every node's parent
         chain ends at one) or a node an earlier walk passed, whose root is
@@ -688,7 +687,7 @@ class GraphStore:
         seen: set[str] = set()
         found: set[str] = set()
         for node in nodes.values():
-            if node.node_type != NodeType.TASK or not name_filter(node.name):
+            if node.node_type != NodeType.TASK or node.name not in task_names:
                 continue
             current = node
             while current.task_id not in seen:

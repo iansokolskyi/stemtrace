@@ -130,16 +130,20 @@ def _group_of(
     return group.name, list(group.tags)
 
 
-def _group_filter(
+def _group_task_names(
+    store: GraphStore,
     group_of: Callable[[str], ResolvedGroup],
     task_group: str | None,
     tag: str | None,
-) -> Callable[[str], bool] | None:
-    """Return a task-name predicate for the ``task_group`` and ``tag`` filters.
+) -> frozenset[str] | None:
+    """Return the stored task names that pass the ``task_group`` and ``tag`` filters.
 
     ``task_group`` matches the group's name exactly; ``tag`` matches when it
-    is one of the group's tags; given both, a task must match both. None
-    when neither is given.
+    is one of the group's tags; given both, a name must match both (an empty
+    value matches nothing, like the other exact filters). Names are resolved
+    here, outside the store lock, once each; a task whose name is first seen
+    after this snapshot is matched from the next request on. None when
+    neither filter is given.
     """
     if task_group is None and tag is None:
         return None
@@ -151,7 +155,7 @@ def _group_filter(
             return False
         return tag is None or tag in group.tags
 
-    return accepts
+    return frozenset(filter(accepts, store.get_unique_task_names()))
 
 
 def _node_to_response(
@@ -728,7 +732,7 @@ def _add_task_routes(
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
-            name_filter=_group_filter(group_of, task_group, tag),
+            task_names=_group_task_names(store, group_of, task_group, tag),
         )
         return TaskListResponse(
             tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
@@ -848,7 +852,7 @@ def _add_graph_routes(
             offset=offset,
             from_date=from_date,
             to_date=to_date,
-            name_filter=_group_filter(group_of, task_group, tag),
+            task_names=_group_task_names(store, group_of, task_group, tag),
         )
         return GraphListResponse(
             graphs=[
