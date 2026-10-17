@@ -168,7 +168,7 @@ for Docker, auth, reverse proxies and health checks.
 | [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md) | How chains, groups, chords and `task.replace()` are drawn, and the limitations |
 | [Configuration](https://github.com/iansokolskyi/stemtrace/blob/main/docs/configuration.md) | Worker and server options, task output, RECEIVED events, task groups, environment variables |
 | [Deployment](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md) | Standalone server, Docker, FastAPI embedding, reverse proxies, health endpoint |
-| [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md) | Sensitive data scrubbing, built-in login and its throttling, custom auth |
+| [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md) | Sensitive data scrubbing, built-in login and its throttling, API key for scripts and agents, custom auth |
 | [Brokers](https://github.com/iansokolskyi/stemtrace/blob/main/docs/brokers.md) | How workers publish to Redis and RabbitMQ, outages, limitations |
 | [Event retention](https://github.com/iansokolskyi/stemtrace/blob/main/docs/retention.md) | What survives a server restart, durable history |
 | [Architecture](https://github.com/iansokolskyi/stemtrace/blob/main/docs/architecture.md) | How the library and the server fit together |

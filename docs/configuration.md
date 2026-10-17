@@ -152,6 +152,7 @@ stemtrace server \
     --port 8000 \
     --node-alias-from-arguments operator_type \
     --groups groups.toml \
+    --api-key "$STEMTRACE_API_KEY" \
     --root-path /monitoring \
     --reload  # For development
 ```
@@ -159,7 +160,8 @@ stemtrace server \
 `--root-path` is for a reverse proxy that serves stemtrace under a path prefix; see
 [Deployment: behind a reverse proxy](deployment.md#behind-a-reverse-proxy-with-a-path-prefix).
 The login options (`--login-username`, `--login-password`, `--login-secret`) are in
-[Security](security.md#protecting-the-standalone-server).
+[Security](security.md#protecting-the-standalone-server), and `--api-key` in
+[Security: API key](security.md#api-key-for-scripts-and-coding-agents).
 
 ### Node names from task arguments
 
@@ -258,6 +260,7 @@ extension = stemtrace.init_app(
     embedded_consumer=True,     # Run consumer in FastAPI process
     serve_ui=True,              # Serve React dashboard
     auth_dependency=None,       # Optional auth (see below)
+    api_key=None,               # Bearer key for scripts/agents; see Security: API key
     node_alias_from_arguments=None,  # e.g. "operator_type" or "0"; see Node Names from Task Arguments
     groups=None,                # Task group rules or a TOML path; see Task groups
 )
@@ -294,6 +297,7 @@ stemtrace.init_app(
 | `STEMTRACE_BROKER_URL` | Celery broker URL (used for on-demand worker/registry inspection). Also used as the default for `STEMTRACE_TRANSPORT_URL`. | `redis://localhost:6379/0` |
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
 | `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Behind a reverse proxy](deployment.md#behind-a-reverse-proxy-with-a-path-prefix)). Same as `--root-path`. | Unset. |
+| `STEMTRACE_API_KEY` | Server only: require `Authorization: Bearer <key>` on the JSON API and WebSocket (see [Security: API key](security.md#api-key-for-scripts-and-coding-agents)). Same as `--api-key` / `init_app(api_key=...)`. At least 16 characters. | Unset (no key). |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node names from task arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 | `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. Python 3.11+. | Unset (automatic groups only). |
 
