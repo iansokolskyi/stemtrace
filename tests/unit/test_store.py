@@ -2252,3 +2252,31 @@ class TestWorkerSeenByTaskEvents:
             shutdown_at,
         )
         assert worker.last_seen == _minutes_ago(newest)
+
+    def test_event_from_clock_ahead_counts_as_now(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A worker clock 10 minutes ahead must not keep a stopped worker
+        online for 10 more minutes."""
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(1)
+        )
+        registry.mark_seen("celery@w1", _NOW + timedelta(minutes=10), now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.last_seen == _NOW
+        registry.remove_stale_workers(now=_NOW + timedelta(minutes=4))
+        assert worker.status == WorkerStatus.OFFLINE
+
+    def test_naive_event_time_is_utc(self, registry: WorkerRegistry) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        naive = _minutes_ago(1).replace(tzinfo=None)
+
+        registry.mark_seen("celery@w1", naive, now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.last_seen == _minutes_ago(1)

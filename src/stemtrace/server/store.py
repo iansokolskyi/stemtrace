@@ -272,9 +272,11 @@ class WorkerRegistry:
         live entry, the pid registered last (a nodename has one live process).
         ``timestamp`` is the event's (the worker's clock), as for worker_ready,
         so a server reading back an old stream doesn't make a dead worker look
-        alive; ``last_seen`` never moves back. The worker comes back online only
-        if that time is within the stale window, and never after it reported
-        worker_shutdown (a task's last events can arrive after it).
+        alive; a time ahead of the server's clock counts as now (a worker clock
+        running ahead would otherwise keep it online after it stopped), a naive
+        one as UTC, and ``last_seen`` never moves back. The worker comes back
+        online only if that time is within the stale window, and never after it
+        reported worker_shutdown (a task's last events can arrive after it).
 
         Args:
             hostname: Worker nodename from the task event.
@@ -286,10 +288,11 @@ class WorkerRegistry:
             worker = self._workers.get(live_id) if live_id else None
             if worker is None:
                 return
-            if timestamp > worker.last_seen:
-                worker.last_seen = timestamp
             current = now or datetime.now(timezone.utc)
-            recent = timestamp >= current - timedelta(
+            seen_at = min(_ensure_tz_aware(timestamp), current)
+            if seen_at > worker.last_seen:
+                worker.last_seen = seen_at
+            recent = seen_at >= current - timedelta(
                 minutes=WORKER_STALE_TIMEOUT_MINUTES
             )
             if recent and not worker.shutdown_reported:

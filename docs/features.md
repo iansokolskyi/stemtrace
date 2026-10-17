@@ -69,6 +69,15 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- A worker is shown offline once 3 minutes pass without a sign of life from it: its
+  `worker_ready`, an event from one of its tasks, or an inspect reply (the Workers page asks
+  when it loads). The check runs as events arrive, so on a server that receives no events at
+  all a stopped worker stays online until the next event or inspect. Limitations: a task that
+  runs longer than 3 minutes without other events from its worker lets the worker show offline
+  until its next event (stemtrace has no worker heartbeat; a solo worker can't answer inspect
+  meanwhile either), and so does a worker clock more than 3 minutes behind the server's. Event
+  times ahead of the server's clock count as now. Workers older than 0.4.1 send no worker name
+  on task events, so only inspect keeps them online.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and
