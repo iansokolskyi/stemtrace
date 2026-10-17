@@ -130,6 +130,30 @@ def _group_of(
     return group.name, list(group.tags)
 
 
+def _group_filter(
+    group_of: Callable[[str], ResolvedGroup],
+    task_group: str | None,
+    tag: str | None,
+) -> Callable[[str], bool] | None:
+    """Return a task-name predicate for the ``task_group`` and ``tag`` filters.
+
+    ``task_group`` matches the group's name exactly; ``tag`` matches when it
+    is one of the group's tags; given both, a task must match both. None
+    when neither is given.
+    """
+    if task_group is None and tag is None:
+        return None
+
+    def accepts(task_name: str) -> bool:
+        """Whether tasks named ``task_name`` pass both filters."""
+        group = group_of(task_name)
+        if task_group is not None and group.name != task_group:
+            return False
+        return tag is None or tag in group.tags
+
+    return accepts
+
+
 def _node_to_response(
     node: TaskNode,
     *,
@@ -667,6 +691,14 @@ def _add_task_routes(
                 )
             ),
         ] = None,
+        task_group: Annotated[
+            str | None,
+            Query(description="Filter by exact task group name"),
+        ] = None,
+        tag: Annotated[
+            str | None,
+            Query(description="Filter by a tag of the task's group"),
+        ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -674,7 +706,8 @@ def _add_task_routes(
         ``name_exact`` is an exact match on the full task name. ``hostname``,
         ``queue`` and ``exception_type`` match exactly the value from the
         task's furthest-along event that has one (a later retry beats an
-        earlier one).
+        earlier one). ``task_group`` matches the task's group name exactly and
+        ``tag`` one of its group's tags.
         """
         from stemtrace.core.events import TaskState as TS
 
@@ -683,6 +716,7 @@ def _add_task_routes(
             with contextlib.suppress(ValueError):
                 task_state = TS(state)
 
+        group_of = _group_lookup(groups)
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -694,8 +728,8 @@ def _add_task_routes(
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
+            name_filter=_group_filter(group_of, task_group, tag),
         )
-        group_of = _group_lookup(groups)
         return TaskListResponse(
             tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
             total=total,
@@ -784,6 +818,7 @@ def _add_graph_routes(
 
     @router.get("/graphs", response_model=GraphListResponse)
     async def list_graphs(
+        *,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
         from_date: Annotated[
@@ -792,16 +827,29 @@ def _add_graph_routes(
         to_date: Annotated[
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
+        task_group: Annotated[
+            str | None,
+            Query(description="Filter by exact task group name"),
+        ] = None,
+        tag: Annotated[
+            str | None,
+            Query(description="Filter by a tag of the task's group"),
+        ] = None,
     ) -> GraphListResponse:
-        """List task execution graphs (root tasks) with pagination and date filtering."""
+        """List task execution graphs (root tasks) with pagination and filtering.
+
+        ``task_group`` and ``tag`` list the graphs with at least one task that
+        matches (anywhere in the graph, not only its root).
+        """
+        group_of = _group_lookup(groups)
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=from_date,
             to_date=to_date,
+            name_filter=_group_filter(group_of, task_group, tag),
         )
-        group_of = _group_lookup(groups)
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
