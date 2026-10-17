@@ -166,7 +166,7 @@ for Docker, auth, reverse proxies and health checks.
 | [Adopting stemtrace](https://github.com/iansokolskyi/stemtrace/blob/main/docs/adopting.md) | What changes in workers, senders and the broker; running next to Flower |
 | [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md) | What the dashboard shows, with screenshots; workers and registry |
 | [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md) | How chains, groups, chords and `task.replace()` are drawn, and the limitations |
-| [Configuration](https://github.com/iansokolskyi/stemtrace/blob/main/docs/configuration.md) | Worker and server options, task output, RECEIVED events, environment variables |
+| [Configuration](https://github.com/iansokolskyi/stemtrace/blob/main/docs/configuration.md) | Worker and server options, task output, RECEIVED events, task groups, environment variables |
 | [Deployment](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md) | Standalone server, Docker, FastAPI embedding, reverse proxies, health endpoint |
 | [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md) | Sensitive data scrubbing, built-in login and its throttling, custom auth |
 | [Brokers](https://github.com/iansokolskyi/stemtrace/blob/main/docs/brokers.md) | How workers publish to Redis and RabbitMQ, outages, limitations |
