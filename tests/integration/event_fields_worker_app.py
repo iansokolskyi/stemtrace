@@ -58,6 +58,16 @@ def fails() -> None:
     raise PartnerAPIError("partner answered 502 for token=secret-token")
 
 
+@app.task(name="ef.retries_in_except", bind=True, max_retries=1, default_retry_delay=0)
+def retries_in_except(self: Task) -> None:
+    """Retry once from the except block that handles the error, then succeed."""
+    try:
+        if self.request.retries == 0:
+            raise ConnectionError("partner refused the connection")
+    except ConnectionError:
+        raise self.retry()  # noqa: B904 (the usual Celery idiom; retry() raises)
+
+
 @app.task(name="ef.hard_limit", time_limit=1)
 def hard_limit() -> None:
     """Outlive the hard time limit: the main process reports the failure."""

@@ -289,13 +289,26 @@ def _exception_type(exc: BaseException | None) -> str | None:
 def _retry_cause(reason: Any) -> BaseException | None:
     """The exception a retry was for.
 
-    Celery sends task_retry with ``reason=`` the ``Retry`` that
-    ``task.retry(exc=...)`` raised (celery 5.6.3 app/trace.py
-    ``TraceInfo.handle_retry``); its ``exc`` is the exception that caused it.
+    Celery sends task_retry with ``reason=`` the ``Retry`` that ``task.retry()``
+    raised (celery 5.6.3 app/trace.py ``TraceInfo.handle_retry``). With
+    ``retry(exc=E)``, ``Retry.exc`` is E. The usual ``except E: raise
+    self.retry()`` passes no ``exc``: ``Task.retry`` raises its ``Retry`` while
+    E is being handled (app/task.py, ``raise ret``), so Python chains E as the
+    Retry's context; an explicit cause (``raise Retry() from E``) comes first,
+    as in a traceback. A retry with neither (a polling retry) is the ``Retry``.
     """
-    if isinstance(reason, Retry) and isinstance(reason.exc, BaseException):
-        return reason.exc
-    return reason if isinstance(reason, BaseException) else None
+    if not isinstance(reason, BaseException):
+        return None
+    cause: BaseException = reason
+    if isinstance(reason, Retry):
+        if isinstance(reason.exc, BaseException):
+            return reason.exc
+        chained = reason.__cause__ or (
+            None if reason.__suppress_context__ else reason.__context__
+        )
+        if isinstance(chained, BaseException):
+            return chained
+    return cause
 
 
 def _destination(exchange: Any, routing_key: Any) -> tuple[str | None, str | None]:

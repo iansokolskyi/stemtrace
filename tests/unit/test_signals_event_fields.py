@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from celery import Celery
+from celery import Celery, Task
 from celery.app.task import Context
 from celery.exceptions import Retry
 from celery.signals import task_failure, task_retry
@@ -223,6 +223,50 @@ class TestExceptionType:
             reason=Retry("Retry in 5s", exc=PartnerAPIError("502")),
             einfo=None,
         )
+
+        assert _only_event().exception_type == f"{__name__}.PartnerAPIError"
+
+    def test_retry_raised_inside_except_names_the_handled_exception(self) -> None:
+        # `except E: raise self.retry()` passes no exc: celery 5.6.3 app/task.py
+        # Task.retry raises Retry(exc=None) while E is handled, so E is only
+        # chained as the Retry's __context__.
+        app = Celery("retry-tests", broker="memory://")
+
+        @app.task(name="app.flaky", bind=True, max_retries=1, default_retry_delay=0)
+        def flaky(self: Task) -> None:
+            """Retry once from inside an except block."""
+            try:
+                raise ConnectionError("refused")
+            except ConnectionError:
+                if self.request.retries == 0:
+                    # retry() raises its Retry itself; no `from` clause ever applies.
+                    raise self.retry()  # noqa: B904
+
+        flaky.apply()
+
+        assert [
+            (e.state, e.exception_type)
+            for e in MemoryTransport.events
+            if e.state in (TaskState.RETRY, TaskState.SUCCESS)
+        ] == [(TaskState.RETRY, "ConnectionError"), (TaskState.SUCCESS, None)]
+
+    def test_retry_with_suppressed_context_is_celery_retry(self) -> None:
+        try:
+            raise ConnectionError("refused")
+        except ConnectionError:
+            retry = Retry()
+            retry.__suppress_context__ = True
+            retry.__context__ = ConnectionError("refused")
+        request = _request()
+        _on_task_retry(sender=_task(request), request=request, reason=retry)
+
+        assert _only_event().exception_type == "celery.exceptions.Retry"
+
+    def test_retry_with_explicit_cause_names_it(self) -> None:
+        retry = Retry()
+        retry.__cause__ = PartnerAPIError("502")
+        request = _request()
+        _on_task_retry(sender=_task(request), request=request, reason=retry)
 
         assert _only_event().exception_type == f"{__name__}.PartnerAPIError"
 

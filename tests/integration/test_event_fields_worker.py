@@ -142,6 +142,7 @@ TASKS = [
     "ef.topic",
     "ef.fails",
     "ef.retries_once",
+    "ef.retries_in_except",
     "ef.hard_limit",
 ]
 
@@ -299,6 +300,12 @@ def test_retry_carries_cause_and_node_keeps_it(run: Run) -> None:
         run.nodename,
         run.names.default_queue,
     )
+
+
+def test_retry_inside_except_carries_the_handled_exception(run: Run) -> None:
+    retry = run.event("ef.retries_in_except", TaskState.RETRY)
+
+    assert retry.exception_type == "ConnectionError"
 
 
 def test_failure_from_main_process_has_type_but_no_hostname(run: Run) -> None:
