@@ -341,6 +341,32 @@ class _IPerm(IntFlag):
     TOKEN = 8
 
 
+class _Combo(Flag):
+    """A multi-bit named member: Python 3.11+ leaves it out of iteration."""
+
+    A = 1
+    B = 2
+    TOKEN_PAIR = 3
+    C = 4
+
+
+class _Alias(Flag):
+    """An alias is another name for a member's bits."""
+
+    READ = 1
+    TOKEN = 1
+
+
+class _Nameless(Enum):
+    """An Enum may override name; a None name carries nothing."""
+
+    A = "x"
+
+    @property
+    def name(self) -> None:  # type: ignore[override]  # the case under test
+        return None
+
+
 class _Mode(Flag):
     """A zero-valued member is in no Flag value, whatever its name."""
 
@@ -363,6 +389,8 @@ UNNAMED_KEYS = [
     _IPerm(0),
     _IPerm(4),
     _Mode.READ,
+    _Combo.A | _Combo.C,
+    _Nameless.A,
 ]
 UNNAMED_KEY_IDS = [
     "int",
@@ -379,6 +407,8 @@ UNNAMED_KEY_IDS = [
     "int_flag_empty",
     "int_flag_unknown_bits",
     "flag_with_zero_member",
+    "flag_without_multi_bit_member",
+    "enum_name_none",
 ]
 NAMED_KEYS = [
     b"password",
@@ -396,6 +426,8 @@ NAMED_KEYS = [
     _Perm.READ | _Perm.SECRET,
     _IPerm.READ | _IPerm.TOKEN,
     _IPerm(4) | _IPerm.TOKEN,
+    _Combo.TOKEN_PAIR | _Combo.C,
+    _Alias.READ,
 ]
 NAMED_KEY_IDS = [
     "bytes",
@@ -412,6 +444,8 @@ NAMED_KEY_IDS = [
     "flag_composite",
     "int_flag_composite",
     "int_flag_unknown_bits",
+    "flag_multi_bit_member",
+    "flag_alias",
 ]
 ALL_KEYS = [(key, False) for key in UNNAMED_KEYS] + [(key, True) for key in NAMED_KEYS]
 ALL_KEY_IDS = [f"unnamed_{i}" for i in UNNAMED_KEY_IDS] + [

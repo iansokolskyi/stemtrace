@@ -63,8 +63,9 @@ def _key_names(key: object) -> list[str]:
     carries the names of its parts, and an Enum member its own name (if it has
     one) plus its value's names (checked first: str- and int-mixin members are
     str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
-    carries the names of the members whose bits it has: a composite has no
-    name on Python 3.10 (``READ|SECRET`` on 3.11+), and its value is an int.
+    carries the names of all members (aliases and multi-bit members included)
+    whose bits it has: a composite has no name on Python 3.10 (``READ|SECRET``
+    on 3.11+), and its value is an int.
     Other keys (an int, None, any other object) carry none. ``str(key)`` is
     never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
     raise.
@@ -72,12 +73,13 @@ def _key_names(key: object) -> list[str]:
     match key:
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
+            # __members__, not iteration: 3.11+ iterates single-bit members
+            # only, leaving out multi-bit members and aliases. Its keys are
+            # the names: an alias's member object carries the canonical name.
             members = [
-                member.name.lower()
-                for member in type(key)
-                if isinstance(member.name, str)
-                and member.value
-                and key.value & member.value == member.value
+                name.lower()
+                for name, member in type(key).__members__.items()
+                if member.value and key.value & member.value == member.value
             ]
             return [*own, *members]
         case Enum():
