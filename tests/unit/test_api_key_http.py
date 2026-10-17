@@ -518,3 +518,43 @@ def _assert_ws_denied_url(client: TestClient, url: str) -> None:
     with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(url):
         pytest.fail("the WebSocket handshake was accepted")
     assert exc_info.value.code == 1008
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/stemtrace/api/tasks/",
+        "/stemtrace/api//tasks",
+        "/stemtrace/api/HEALTH/live",
+        "/stemtrace/api/health/live/",
+        "/stemtrace/apix",
+    ],
+)
+@pytest.mark.parametrize("headers", [WRONG, BEARER])
+def test_form_and_key_bearer_on_non_api_route_is_404_not_ui(
+    path: str, headers: dict[str, str]
+) -> None:
+    """A deferred Bearer request that no API route checked never gets the UI shell."""
+    app = FastAPI()
+
+    stemtrace.init_app(
+        app,
+        broker_url="memory://",
+        embedded_consumer=False,
+        api_key=KEY,
+        **_form_kwargs(),
+    )
+
+    @app.get("/stemtrace/{rest:path}")
+    async def catch_all(rest: str) -> HTMLResponse:  # stands in for the SPA
+        return HTMLResponse("<html>ui shell</html>")
+
+    with TestClient(app) as client:
+        resp = client.get(path, headers=headers, follow_redirects=False)
+
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Not Found"}
+
+
+def test_cli_typer_hides_locals_in_tracebacks() -> None:
+    assert cli.app.pretty_exceptions_show_locals is False
