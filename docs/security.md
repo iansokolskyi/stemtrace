@@ -24,17 +24,21 @@ Values that aren't dicts, lists or tuples, whether positional arguments or retur
 the password in `login.delay("alice", "hunter2")`), exception messages and tracebacks are shown
 as they are.
 
-Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`); give
-`additional_sensitive_keys` in lowercase. Bytes keys (such as redis-py's `hgetall()` without
-`decode_responses`) are decoded as UTF-8 and matched the same way. A tuple or frozenset key
-matches if any of its parts does, an Enum member by its name or its value, and a Flag value by
-the members it contains (`Perm.READ | Perm.SECRET` matches `secret`). Enum matching includes
+Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`). Bytes
+keys (such as redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and matched
+the same way. A tuple or frozenset key matches if any of its parts does, an Enum member by its
+name or its value, and a Flag value by the members it contains (`Perm.READ | Perm.SECRET` matches
+`secret`). Enum matching includes
 `IntEnum` and `StrEnum` members, so `HTTPStatus.UNAUTHORIZED` is filtered like any key containing
 `auth`. Other keys (ints, `None`, other objects) never match, but dicts inside their values are
 still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a
 cyclic structure, appears as `[Not captured: <error type>]`.
 
-Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, or turn scrubbing off with
+Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, written in any case: both are
+compared with keys after `str.lower()`. An `additional_sensitive_keys` entry matches any key that
+contains it (`MRN` matches `mrn` and `patient_Mrn`); a `safe_keys` entry exempts only a key, or a
+part of a tuple or frozenset key, equal to it (`MRN` exempts `mrn` and `("MRN", "x")`, not
+`patient_Mrn`). Or turn scrubbing off with
 `scrub_sensitive_data=False` (see [Worker options](configuration.md#worker-options)). Task output
 (`capture_output`) is free text and is not scrubbed; see
 [Task output](configuration.md#task-output-print-and-logging).
