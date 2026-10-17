@@ -4,7 +4,7 @@ import bisect
 import hashlib
 from collections import Counter
 from collections.abc import Callable, Collection
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -147,6 +147,17 @@ def _event_key(event: TaskEvent) -> _EventKey:
     )
 
 
+_NO_TIME = timedelta(0)
+
+
+def _ms(delta: timedelta) -> int:
+    """Whole milliseconds of a non-negative span (negative spans count as 0).
+
+    Truncated like the API's ``duration_ms``.
+    """
+    return max(0, int(delta.total_seconds() * 1000))
+
+
 def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     """Total order over a task's events; the maximum decides the node's state.
 
@@ -263,6 +274,85 @@ class TaskNode(BaseModel):
     def routing_key(self) -> str | None:
         """Routing key of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.routing_key)
+
+    @property
+    def queue_wait_ms(self) -> int | None:
+        """Milliseconds from sending the task to its first run starting.
+
+        From the earliest first-attempt PENDING or RECEIVED to the earliest
+        first-attempt STARTED; None if either is missing (no stemtrace in the
+        sending process and RECEIVED off, or not started yet). A retry's wait
+        isn't counted: it includes the retry's countdown. The sender stamps
+        PENDING after publishing, so it can follow STARTED even with exact
+        clocks; that counts as 0, as does a sender clock ahead of the worker's.
+        """
+        sent = [event.timestamp for event in self.events if _is_pre_start(event)]
+        started = [
+            event.timestamp
+            for event in self.events
+            if event.state == TaskState.STARTED and event.retries == 0
+        ]
+        if not sent or not started:
+            return None
+        return _ms(min(started) - min(sent))
+
+    @property
+    def runtime_ms(self) -> int | None:
+        """Milliseconds the task's last run took, from its STARTED to the end.
+
+        None until the task finished, and when the last run's STARTED is
+        missing (see ``_runs``).
+        """
+        runs = self._runs()
+        if runs is None:
+            return None
+        started, ended = runs[-1]
+        return _ms(ended.timestamp - started.timestamp)
+
+    @property
+    def total_runtime_ms(self) -> int | None:
+        """Milliseconds all of the task's runs took together (see ``_runs``).
+
+        None exactly when ``runtime_ms`` is.
+        """
+        runs = self._runs()
+        if runs is None:
+            return None
+        spans = (
+            max(ended.timestamp - started.timestamp, _NO_TIME)
+            for started, ended in runs
+        )
+        return _ms(sum(spans, _NO_TIME))
+
+    def _runs(self) -> list[tuple[TaskEvent, TaskEvent]] | None:
+        """Each run's STARTED with the RETRY or final event that ended it.
+
+        Events are taken in ``_precedence`` order (the order that decides the
+        state, so worker clocks can't swap attempts): each STARTED pairs with
+        the next RETRY, the last with the final event. A run whose end was
+        missed is left out. None unless the task finished and its last run's
+        STARTED is known: that STARTED must be from the final event's attempt
+        or later (a FAILURE Celery sends from the worker's main process has
+        ``retries=0`` whatever the attempt).
+        """
+        final = max(self.events, key=_precedence, default=None)
+        if final is None or final.state not in _TERMINAL_STATES:
+            return None
+        ordered = sorted(
+            (e for e in self.events if e.state in (TaskState.STARTED, TaskState.RETRY)),
+            key=_precedence,
+        )
+        runs: list[tuple[TaskEvent, TaskEvent]] = []
+        started: TaskEvent | None = None
+        for event in [*ordered, final]:
+            if event.state == TaskState.STARTED:
+                started = event
+            elif started is not None:
+                runs.append((started, event))
+                started = None
+        if not runs or runs[-1][1] is not final or final.retries > runs[-1][0].retries:
+            return None
+        return runs
 
     def snapshot(self) -> "TaskNode":
         """Return a copy whose ``events`` and ``children`` lists are its own.
