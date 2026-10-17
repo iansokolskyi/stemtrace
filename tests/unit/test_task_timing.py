@@ -171,11 +171,36 @@ class TestTiming:
 
         assert _timing(node) == (1000, 2000, 2000)
 
-    def test_terminal_before_started_is_zero(self) -> None:
-        # Redelivered within one attempt to a worker whose clock is behind.
+    @pytest.mark.parametrize(
+        ("behind", "expected"),
+        [
+            (0, (10000, 2000, 3000)),
+            (0.5, (10000, 2000, 3000)),
+            (2, (10000, None, None)),
+            (5, (7000, None, None)),
+        ],
+    )
+    def test_redelivery_to_a_worker_whose_clock_is_behind(
+        self, behind: float, expected: tuple[int | None, ...]
+    ) -> None:
+        # Worker A runs attempt 0 and loses the broker (cancel RETRY); worker B,
+        # its clock `behind` seconds slow, runs it again. Once B's STARTED is
+        # stamped before A's RETRY, B's run sorts first and the final event
+        # ends no run: both fields are empty, and the wait can shrink.
+        node = _node(
+            _event(P, 0),
+            _event(S, 10),
+            _event(RT, 11),
+            _event(S, 12 - behind),
+            _event(OK, 14 - behind),
+        )
+
+        assert _timing(node) == expected
+
+    def test_clock_stepped_back_mid_run_counts_as_zero(self) -> None:
+        # One worker's clock stepped back (NTP) between STARTED and SUCCESS.
         node = _node(_event(S, 10), _event(RT, 11), _event(S, 12), _event(OK, 9))
 
-        # That run counts as 0 in the total too; the first run still counts.
         assert (node.runtime_ms, node.total_runtime_ms) == (0, 1000)
 
     def test_group_node_has_no_timing(self) -> None:
