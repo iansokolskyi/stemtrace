@@ -537,6 +537,8 @@ def _add_health_routes(
     @router.get(
         "/health/live",
         response_model=LivenessResponse,
+        # The API key gate exempts this route by name (api_key.PUBLIC_ROUTE_NAMES).
+        name="stemtrace_health_live",
     )
     async def health_live() -> LivenessResponse:
         """Process liveness probe for container health checks.

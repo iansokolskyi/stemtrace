@@ -226,6 +226,7 @@ class TestInit:
                 auth_dependency: object = None,
                 form_auth_config: object = None,
                 node_alias_from_arguments: str | None = None,
+                api_key: str | None = None,
             ) -> None:
                 captured["broker_url"] = broker_url
                 captured["transport_url"] = transport_url
@@ -238,6 +239,7 @@ class TestInit:
                     auth_dependency,
                     form_auth_config,
                     node_alias_from_arguments,
+                    api_key,
                 )
 
             def init_app(self, _app: FastAPI, *, prefix: str | None = None) -> None:

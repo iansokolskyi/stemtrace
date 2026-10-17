@@ -35,6 +35,7 @@ from stemtrace.server.fastapi import (
     require_api_key,
     require_basic_auth,
 )
+from stemtrace.server.fastapi.api_key import configured_api_key
 from stemtrace.server.fastapi.form_auth import FormAuthConfig, resolve_session_secret
 from stemtrace.server.fastapi.form_auth_middleware import create_form_auth_middleware
 from stemtrace.server.fastapi.login_routes import create_login_router
@@ -204,6 +205,7 @@ def init_app(
     login_secret: str | None = None,
     login_ttl_seconds: int = 86400,
     node_alias_from_arguments: str | None = None,
+    api_key: str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -233,12 +235,19 @@ def init_app(
             to show task names. Surrounding whitespace is stripped. If None or
             blank, uses the STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var (blank
             means unset).
+        api_key: Require ``Authorization: Bearer <key>`` on the JSON API (not
+            the liveness probe) and the WebSocket, for scripts and coding
+            agents. With the form login, a session cookie also passes; with
+            ``auth_dependency``, both are needed. At least 16 visible ASCII
+            characters. If None or blank, uses the STEMTRACE_API_KEY env var
+            (blank means unset).
 
     Returns:
         The initialized StemtraceExtension instance.
 
     Raises:
-        ConfigurationError: If no broker URL can be determined.
+        ConfigurationError: If no broker URL can be determined, or the API key
+            is too short or has invalid characters.
     """
     if broker_url is None:
         broker_url = os.getenv("STEMTRACE_BROKER_URL")
@@ -257,6 +266,8 @@ def init_app(
         node_alias = (
             os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or ""
         ).strip() or None
+
+    effective_api_key = configured_api_key(api_key)
 
     mount_prefix = f"/{prefix.strip('/')}"
 
@@ -279,12 +290,8 @@ def init_app(
             secret_is_generated=secret_is_generated,
         )
 
-        _install_stemtrace_form_auth(
-            fastapi_app,
-            mount_prefix=mount_prefix,
-            form_auth_config=form_auth_config,
-        )
-
+    # Built before the login routes so they can share its failed-attempt
+    # throttle; constructing it doesn't touch the app.
     extension = StemtraceExtension(
         broker_url=broker_url,
         transport_url=transport_url,
@@ -296,7 +303,15 @@ def init_app(
         auth_dependency=auth_dependency,
         form_auth_config=form_auth_config,
         node_alias_from_arguments=node_alias,
+        api_key=effective_api_key,
     )
+    if form_auth_config is not None:
+        _install_stemtrace_form_auth(
+            fastapi_app,
+            mount_prefix=mount_prefix,
+            form_auth_config=form_auth_config,
+            extension=extension,
+        )
     extension.init_app(fastapi_app, prefix=prefix)
 
     return extension
@@ -307,6 +322,7 @@ def _install_stemtrace_form_auth(
     *,
     mount_prefix: str,
     form_auth_config: FormAuthConfig,
+    extension: StemtraceExtension,
 ) -> None:
     """Install form-login routes and HTTP middleware for stemtrace mount.
 
@@ -316,6 +332,7 @@ def _install_stemtrace_form_auth(
     login_router = create_login_router(
         form_auth_config,
         default_next_path=f"{mount_prefix}/",
+        throttle=extension.auth_throttle,
     )
     app.include_router(login_router, prefix=mount_prefix)
 
@@ -328,6 +345,7 @@ def _install_stemtrace_form_auth(
             assets_prefix=f"{mount_prefix}/assets",
             protected_prefix=mount_prefix,
             public_paths=(f"{mount_prefix}/api/health/live",),
+            api_key_configured=extension.auth_throttle is not None,
         )
     )
 

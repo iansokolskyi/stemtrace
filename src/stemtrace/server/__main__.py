@@ -5,6 +5,8 @@ from typing import Annotated
 
 import typer
 
+from stemtrace.core.exceptions import ConfigurationError
+
 app = typer.Typer(
     name="stemtrace",
     help="Celery task flow visualizer",
@@ -104,11 +106,27 @@ def server(
             ),
         ),
     ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key",
+            envvar="STEMTRACE_API_KEY",
+            show_default=False,
+            help=(
+                "Require 'Authorization: Bearer <key>' on the JSON API and "
+                "WebSocket (for scripts and coding agents). With --login-username, "
+                "a browser session also passes. At least 16 visible ASCII "
+                "characters; e.g. `openssl rand -hex 32`. Prefer the env var: "
+                "flags show up in process lists."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
     from fastapi import FastAPI
 
+    from stemtrace.server.fastapi.api_key import configured_api_key
     from stemtrace.server.fastapi.extension import StemtraceExtension
     from stemtrace.server.fastapi.form_auth import (
         FormAuthConfig,
@@ -147,6 +165,14 @@ def server(
     if node_alias is not None:
         typer.echo(f"Node alias: {node_alias}")
 
+    # Blank means unset, as for the node alias. Never echo the key itself.
+    try:
+        effective_api_key = configured_api_key(api_key)
+    except ConfigurationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--api-key'") from exc
+    if effective_api_key is not None:
+        typer.echo("API key: set (Bearer auth on the API and WebSocket)")
+
     form_auth_config: FormAuthConfig | None = None
     if (login_username is None) != (login_password is None):
         raise typer.BadParameter(
@@ -172,6 +198,7 @@ def server(
         serve_ui=False,
         form_auth_config=form_auth_config,
         node_alias_from_arguments=node_alias,
+        api_key=effective_api_key,
     )
     fastapi_app = FastAPI(
         title="stemtrace",
@@ -180,7 +207,11 @@ def server(
 
     if form_auth_config is not None:
         # Login routes must be registered before the UI SPA catch-all.
-        login_router = create_login_router(form_auth_config, default_next_path="/")
+        login_router = create_login_router(
+            form_auth_config,
+            default_next_path="/",
+            throttle=extension.auth_throttle,
+        )
         fastapi_app.include_router(login_router)
 
         fastapi_app.middleware("http")(
@@ -191,6 +222,7 @@ def server(
                 api_prefix="/stemtrace/api",
                 assets_prefix="/assets",
                 public_paths=("/stemtrace/api/health/live",),
+                api_key_configured=effective_api_key is not None,
             )
         )
 

@@ -13,6 +13,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.responses import Response
 
+from stemtrace.server.fastapi.api_key import bearer_token
 from stemtrace.server.fastapi.form_auth import (
     LOGIN_REASON_SESSION_MISMATCH,
     SESSION_SECRET_MISMATCH_REASON,
@@ -75,6 +76,7 @@ def _unauthenticated_response(
     login_path: str,
     api_prefix: str,
     secret_mismatch: bool,
+    api_key_configured: bool,
 ) -> Response:
     """Answer a request without a valid session: JSON 401 for API, else login.
 
@@ -88,7 +90,8 @@ def _unauthenticated_response(
         body = {"detail": "Authentication required"}
         if secret_mismatch:
             body["reason"] = SESSION_SECRET_MISMATCH_REASON
-        return JSONResponse(body, status_code=401)
+        headers = {"WWW-Authenticate": "Bearer"} if api_key_configured else None
+        return JSONResponse(body, status_code=401, headers=headers)
 
     next_target = browser_path(request.scope, path)
     if request.url.query:
@@ -111,6 +114,7 @@ def create_form_auth_middleware(
     assets_prefix: str,
     protected_prefix: str | None = None,
     public_paths: tuple[str, ...] = (),
+    api_key_configured: bool = False,
 ) -> FormAuthMiddleware:
     """Create an HTTP middleware that requires a valid session cookie.
 
@@ -136,6 +140,10 @@ def create_form_auth_middleware(
       404, as they do with a session.
     - API paths get a JSON 401. If the cookie was signed by another process's
       generated secret, the body carries ``reason: "session_secret_mismatch"``.
+    - With ``api_key_configured``, API requests that carry Bearer credentials
+      skip the cookie check: the API key dependency on the API router checks
+      the key (and answers 401/429 itself). Without a key configured, a Bearer
+      header proves nothing and the cookie is still required.
     - Everything else (UI routes) redirects to the login page with ``next``
       (and ``reason=session_mismatch`` for the same case).
 
@@ -151,6 +159,8 @@ def create_form_auth_middleware(
             protects every path.
         public_paths: Exact paths served without a session. They must not
             expose any data.
+        api_key_configured: An API key is configured, and the API router
+            checks it (see ``api_key.api_key_dependency``).
 
     Returns:
         The middleware callable.
@@ -182,7 +192,14 @@ def create_form_auth_middleware(
             return await call_next(request)
         if _is_ambiguous_path(path, raw_path):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        if path in open_paths or path.startswith(assets_dir):
+        # With a key configured, Bearer API requests go to the API key
+        # dependency, which checks the key and answers 401/429 itself.
+        defer_to_api_key = (
+            api_key_configured
+            and path.startswith(api_prefix)
+            and bearer_token(request.headers.get("authorization")) is not None
+        )
+        if path in open_paths or path.startswith(assets_dir) or defer_to_api_key:
             return await call_next(request)
         if not path.startswith(api_prefix) and is_misplaced_asset_path(path):
             # Not a page (API paths may have an "assets" segment, e.g. a task
@@ -202,6 +219,7 @@ def create_form_auth_middleware(
             login_path=login_path,
             api_prefix=api_prefix,
             secret_mismatch=mismatch,
+            api_key_configured=api_key_configured,
         )
 
     return form_auth_middleware
