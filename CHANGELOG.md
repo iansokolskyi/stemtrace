@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- UI: updated `react` and `react-dom` 19.2.3 → 19.3.0 (with `scheduler` 0.27.0 → 0.28.0), `@xyflow/react` 12.10.0 → 12.12.0 (with `@xyflow/system` 0.0.74 → 0.0.83) and `date-fns` 4.1.0 → 4.4.0 in the bundled frontend. None of these fix a known advisory. Development: the frontend now type-checks with TypeScript 7.0 (was 5.9) and runs its E2E tests with Playwright 1.63.
+- Docs: the README is now a short overview (what stemtrace helps you debug, what it adds to a production system, when Flower or other tools fit better, quick start), and the details moved to pages under [`docs/`](https://github.com/iansokolskyi/stemtrace/tree/main/docs): configuration, deployment, security, brokers, event retention, graphs and features. A new page covers adopting stemtrace in an existing project.
+
 ### Fixed
 - A task whose arguments or result hold a dict with a key that isn't a string (an int, `None`, a tuple, bytes) no longer loses its events. Scrubbing raised `AttributeError` on the key, so the PENDING event (`.delay({1: "a"})`), the STARTED event (pickle workers; json turns the keys into strings) and the SUCCESS event (such a return value) were dropped, and Celery logged an error for each. Bytes keys are now matched against the sensitive keys like strings (decoded as UTF-8), tuple and frozenset keys by their parts, and Enum members by their name or value; int, `None` and other keys never match, and dicts inside their values are still scrubbed. Task data stemtrace can't capture (a value whose `str()` raises, a cyclic structure) now shows as `[Not captured: <error type>]` and the event is still published, and keyword arguments with non-string keys (`send_task` doesn't reject them) are shown with the key as a string.
 
