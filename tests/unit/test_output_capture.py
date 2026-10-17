@@ -815,7 +815,11 @@ class TestTeeUserVisibleWrites:
         console = logging.StreamHandler(io.StringIO())
         broken = _quiet_logger("tests.broken", console, TaskOutputHandler())
         try:
-            start_capture("t1", max_bytes=10_000)
+            # The report ends with logging's "Call stack:", every frame from the log
+            # call up to pytest's entry point, with file paths under the checkout:
+            # about 7.7 KB at a 75-character checkout path, over 10 KB past ~150. A
+            # cap the report can't reach keeps the test independent of both.
+            start_capture("t1", max_bytes=1_000_000)
             broken.info("%d", "abc")
             out = stop_capture("t1")
         finally:
@@ -825,6 +829,7 @@ class TestTeeUserVisibleWrites:
             "--- Logging error ---\nTraceback (most recent call last):"
         )
         assert "TypeError" in out
+        assert out.endswith("Message: '%d'\nArguments: ('abc',)")
         assert "--- Logging error ---" in sys.stderr.getvalue()
 
     def test_prints_during_message_formatting_are_captured(
