@@ -1123,7 +1123,10 @@ class TaskGraph(BaseModel):
         roots, waiting for it like for any missing parent; a removed
         GROUP/CHORD releases its members to their own parents (or the roots)
         but keeps their membership, so a later member event can recreate it
-        (a CHORD with the callback its headers named).
+        (a CHORD with the callback its headers named). Headers naming
+        different callbacks, or two chords naming one, aren't Celery shapes:
+        the last name wins, and removing the task that gave it doesn't bring
+        back an earlier one.
 
         Args:
             task_id: ID of the node to remove.
@@ -1357,9 +1360,7 @@ class TaskGraph(BaseModel):
         group_id = group_node.group_id
         if group_id is None or group_node.task_id != _group_node_id(group_id):
             return  # a chord's group-body node
-        tally = self._groups.get(group_id)
-        if tally is None:
-            return
+        tally = self._groups[group_id]
         parent = tally.parent()
         if parent == tally.read_parent:
             return

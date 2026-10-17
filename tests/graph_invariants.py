@@ -132,8 +132,9 @@ def _check_named_callbacks(graph: TaskGraph) -> None:
         node = graph.nodes.get(_group_node_id(group_id))
         if node is not None and node.node_type == NodeType.CHORD:
             assert node.chord_callback_id == tally.named_callback, group_id
-    # Each named callback is one chord's, and that chord's headers named it
-    # (also while the CHORD node is removed): no stale entries.
+    # Each named callback is one chord's current name (also while the CHORD
+    # node is removed): no stale entries. Which name a chord keeps when its
+    # headers (or two chords) name different callbacks isn't checked here.
     for callback_id, group_id in graph._chord_by_callback.items():
         tally = graph._groups.get(group_id)
         assert tally is not None, (callback_id, group_id, "named by no group")

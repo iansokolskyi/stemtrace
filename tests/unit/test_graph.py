@@ -3354,6 +3354,34 @@ class TestDerivedFactsFollowTheirInputs:
             assert graph._unlock_of == {"u": "g"}
             assert graph.nodes["u"].parent_id == "group:g"
 
+    def test_add_event_recheck_rename_from_chord_unlock_drops_body_in_any_order(
+        self,
+    ) -> None:
+        """A rename found by re-checking a task, not by one of its own events.
+
+        Once d names u as its root, u's PENDING (reporting d, below u) reads as
+        a replacement's, so u is renamed while its reported parent stays d.
+        """
+        graphs = _every_order(
+            _ev("h", TaskState.STARTED, group_id="g", chord_callback_id="cb"),
+            _ev("cb", TaskState.STARTED, parent_id="u"),
+            _ev(
+                "u",
+                TaskState.PENDING,
+                name="celery.chord_unlock",
+                parent_id="d",
+                root_id="u",
+            ),
+            _ev("u", TaskState.STARTED, name="tests.other", parent_id="d"),
+            _ev("d", TaskState.STARTED, root_id="u"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["u"].name == "tests.other"
+            assert graph.nodes["u"].reported_parent_id == "d"
+            assert graph.nodes["group:g"].chord_id is None
+            assert graph._unlock_of == {}
+
     def test_add_event_rename_from_chord_unlock_drops_body_in_any_order(self) -> None:
         graphs = _every_order(
             _ev("h", TaskState.STARTED, group_id="g", chord_callback_id="cb"),
