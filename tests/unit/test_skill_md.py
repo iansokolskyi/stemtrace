@@ -81,8 +81,12 @@ def test_skill_examples_use_existing_endpoints() -> None:
 def test_skill_prose_names_only_existing_endpoints() -> None:
     patterns = [_route_regex(r) for r in _routes()]
     mentioned = {
-        re.sub(r"\{[^}]+\}", "X", p).rstrip("/")
-        for p in re.findall(r"/api/([a-z_/{}]+)", _skill_text())
+        re.sub(r"\{[^}]+\}", "X", p).rstrip("/.,;:")
+        # Up to whitespace, a quote, a backtick or a query string, so a
+        # hyphenated or capitalized name (``tasks-recent``) is checked whole.
+        for p in re.findall(r"/api/([^\s`'\"?)]+)", _skill_text())
+        # Placeholders in the helper's own description: $path, PATH.
+        if not p.startswith("$") and not p.isupper()
     }
 
     assert {"health", "health/live", "graphs/X"} <= mentioned

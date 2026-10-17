@@ -584,3 +584,22 @@ def test_auth_dependency_and_key_websocket_and_liveness() -> None:
         assert client.get("/stemtrace/api/health/live", headers=dep).status_code == 200
         # A browser with only the host's auth can't use the dashboard's data.
         assert client.get("/stemtrace/api/tasks", headers=dep).status_code == 401
+
+
+def test_cli_login_failures_count_toward_key_lockout(
+    run_cli: Callable[..., tuple[int, str, FastAPI | None]],
+) -> None:
+    code, output, app = run_cli(
+        "--api-key", KEY, "--login-username", "admin", "--login-password", "secret"
+    )
+
+    assert code == 0, output
+    assert app is not None
+    with TestClient(app) as client:
+        for _ in range(LOGIN_IP_MAX_FAILURES):
+            client.post(
+                "/login",
+                data={"username": "admin", "password": "nope", "next": "/"},
+                follow_redirects=False,
+            )
+        assert client.get("/stemtrace/api/tasks", headers=BEARER).status_code == 429
