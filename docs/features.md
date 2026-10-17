@@ -126,9 +126,10 @@ Limitations:
 Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page
 through every task. A task counts at the time of its last event (the final event once it
 finished) and under its current state, so a task that failed and then succeeded on retry counts
-as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`) before now, or from
-`from_date` (pass one or the other); every response says which window it covered. A window
-ending now also takes tasks stamped later by a worker whose clock is ahead.
+as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now,
+or from `from_date` (pass one or the other; a date or time without a timezone is UTC, and a
+start after now is a `422`). Every response says which window it covered. A window ending now
+also takes tasks stamped later by a worker whose clock is ahead.
 
 - `GET /api/overview?within=1h` (default `1h`): finished runs, failures, runs per minute and the
   failure rate (FAILURE over finished runs; 0 with none), each with `baseline`, the same value for
@@ -136,9 +137,12 @@ ending now also takes tasks stamped later by a worker whose clock is ahead.
   `workers` counts online and known workers from worker events, without asking the workers.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket
-  size since the Unix epoch, so they don't move between requests. Without `within` or
-  `from_date` it covers every task the server holds. `group_by=task_group` adds the same
-  counts per [task group](configuration.md#task-groups). At most 1,440 buckets; more is a `422`.
+  size since the Unix epoch, so they don't move between requests; the first bucket starts on
+  the edge at or before the window's start, and the response's `window.start` is that edge.
+  Without `within` or `from_date` it covers every task the server holds. Without `bucket` it
+  uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
+  that needs more is a `422`. `group_by=task_group` adds the same counts per
+  [task group](configuration.md#task-groups).
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
