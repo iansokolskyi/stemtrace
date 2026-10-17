@@ -69,6 +69,11 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- A worker stopped cold (e.g. SIGQUIT) terminates its running tasks and Celery sends no `worker_shutdown`. The worker publishes a
+  `worker_terminating` event instead, and the server marks it offline the same way. With the
+  threads pool, Celery 5.6.3 can't terminate running tasks: a cold stop then waits for them
+  like a warm one and sends `worker_shutdown`. A worker killed with SIGKILL sends neither event.
+  An older server drops `worker_terminating` with a warning, so upgrade the server first.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and

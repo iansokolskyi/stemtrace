@@ -25,6 +25,9 @@ class WorkerEventType(str, Enum):
 
     WORKER_READY = "worker_ready"
     WORKER_SHUTDOWN = "worker_shutdown"
+    # Cold shutdown: the worker is terminating its running tasks (Celery
+    # sends no worker_shutdown for it).
+    WORKER_TERMINATING = "worker_terminating"
 
 
 class RegisteredTaskDefinition(BaseModel):

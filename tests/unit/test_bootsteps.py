@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -11,14 +12,16 @@ from unittest.mock import MagicMock
 import pytest
 from celery import Celery
 
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.bootsteps import (
     ReceivedEventStep,
+    WorkerTerminatingStep,
     _set_publisher,
     register_bootsteps,
 )
 from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.signals import connect_signals, disconnect_signals
+from stemtrace.transports.memory import MemoryTransport
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -353,10 +356,12 @@ class TestRegisterBootsteps:
         assert app.steps["consumer"] == set()
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
-    def test_without_publish_and_publish_received_off_registers_nothing(self) -> None:
+    def test_without_publish_and_publish_received_off_registers_no_received_step(
+        self,
+    ) -> None:
         """An initialized worker that didn't opt in gets no RECEIVED step."""
         app = MagicMock()
-        app.steps = {"consumer": set()}
+        app.steps = {"consumer": set(), "worker": set()}
         set_config(StemtraceConfig(transport_url="memory://"))
 
         register_bootsteps(app)
@@ -396,3 +401,60 @@ class TestRegisterBootsteps:
         assert [(e.task_id, e.name, e.state) for e in transport.events] == [
             ("task-1", "app.add", TaskState.RECEIVED)
         ]
+
+
+class TestWorkerTerminatingStep:
+    """A cold shutdown terminates running tasks and sends no worker_shutdown."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_transport(self) -> Iterator[None]:
+        MemoryTransport.clear()
+        yield
+        disconnect_signals()
+        MemoryTransport.clear()
+
+    def test_register_bootsteps_adds_step_once_initialized(self) -> None:
+        """Registered with publish_received off too: it costs nothing until a
+        cold shutdown."""
+        app = Celery("terminating_registered", broker="memory://")
+        set_config(StemtraceConfig(transport_url="memory://"))
+
+        register_bootsteps(app)
+
+        assert WorkerTerminatingStep in app.steps["worker"]
+        assert ReceivedEventStep not in app.steps["consumer"]
+
+    def test_register_bootsteps_before_init_worker_adds_nothing(self) -> None:
+        app = MagicMock()
+        app.steps = {"consumer": set(), "worker": set()}
+
+        register_bootsteps(app)
+
+        assert app.steps["worker"] == set()
+
+    def test_step_requires_pool_so_it_terminates_before_the_pool(self) -> None:
+        """Celery stops steps in reverse start order."""
+        assert "celery.worker.components:Pool" in WorkerTerminatingStep.requires
+
+    def test_terminate_publishes_worker_terminating(self) -> None:
+        transport = MemoryTransport()
+        connect_signals(transport)
+        worker = SimpleNamespace(hostname="celery@w1")
+
+        WorkerTerminatingStep(worker).terminate(worker)
+
+        (event,) = MemoryTransport.events
+        assert isinstance(event, WorkerEvent)
+        assert event.event_type == WorkerEventType.WORKER_TERMINATING
+        assert event.hostname == "celery@w1"
+        assert event.pid == os.getpid()
+
+    def test_stop_publishes_nothing(self) -> None:
+        """A warm stop waits for running tasks; worker_shutdown follows."""
+        transport = MemoryTransport()
+        connect_signals(transport)
+        worker = SimpleNamespace(hostname="celery@w1")
+
+        WorkerTerminatingStep(worker).stop(worker)
+
+        assert MemoryTransport.events == []

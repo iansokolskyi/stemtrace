@@ -152,3 +152,10 @@ def soft_limited() -> str:
         output_capture._record_being_emitted = original
     print("the soft time limit was swallowed")
     return "finished"
+
+
+@app.task(name="output_test.sleepy")
+def sleepy(seconds: float) -> str:
+    """Run for ``seconds``, long enough to stop the worker meanwhile."""
+    time.sleep(seconds)
+    return "slept"

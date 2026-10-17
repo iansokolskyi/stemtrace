@@ -992,6 +992,42 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
         logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)
 
 
+def on_worker_terminating(sender: Any = None) -> None:
+    """Publish WORKER_TERMINATING: a cold shutdown is terminating running tasks.
+
+    Called from ``WorkerTerminatingStep.terminate`` (see ``bootsteps``), in
+    the worker's main process and outside Celery's signal handler: the
+    handler only sets ``should_terminate``, and the consumer loop then raises
+    ``WorkerTerminate`` and stops the worker blueprint (celery 5.2.2 to 5.6.3
+    ``WorkController.start`` / ``terminate`` / ``_shutdown(warm=False)``).
+    Fire-and-forget, like ``on_worker_shutdown``.
+    """
+    try:
+        hostname, pid = _get_hostname_and_pid(sender)
+
+        from stemtrace.core.events import WorkerEvent, WorkerEventType
+
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_TERMINATING,
+            hostname=hostname,
+            pid=pid,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if _transport is not None:
+            _transport.publish(event)
+            logger.info(
+                "Worker terminating event sent to transport: %s:%d", hostname, pid
+            )
+        else:
+            logger.warning(
+                "No transport configured, worker_terminating event not published"
+            )
+    except Exception as e:  # fire-and-forget: the cold shutdown must go on
+        logger.warning(
+            "Failed to publish worker_terminating event: %s", e, exc_info=True
+        )
+
+
 def on_worker_process_shutdown(**_: Any) -> None:
     """Handle worker_process_shutdown: close this pool process's publisher connection.
 

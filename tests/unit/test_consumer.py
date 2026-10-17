@@ -376,6 +376,43 @@ class TestWorkerEventHandling:
         assert workers[0].pid == 12345
         assert workers[0].registered_tasks == ["tasks.add", "tasks.multiply"]
 
+    def test_worker_terminating_marks_offline_like_shutdown(
+        self, store: GraphStore
+    ) -> None:
+        """A cold shutdown (worker_terminating) ends the process like a graceful one."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker("celery@w1", 12345, ["tasks.add"])
+        later = datetime.now(timezone.utc) + timedelta(seconds=1)
+        fake = FakeTransport(
+            [
+                WorkerEvent(
+                    event_type=WorkerEventType.WORKER_TERMINATING,
+                    hostname="celery@w1",
+                    pid=12345,
+                    timestamp=later,
+                )
+            ]
+        )
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer(
+                "memory://", store, worker_registry=worker_registry
+            )
+            consumer.start()
+            _wait_until(
+                lambda: (
+                    (w := worker_registry.get_worker("celery@w1", 12345)) is not None
+                    and w.status == WorkerStatus.OFFLINE
+                )
+            )
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        worker = worker_registry.get_worker("celery@w1", 12345)
+        assert worker is not None
+        assert worker.status == WorkerStatus.OFFLINE
+        assert worker.shutdown_reported is True
+
     def test_historical_shutdown_marks_worker_offline(self, store: GraphStore) -> None:
         """Historical WORKER_SHUTDOWN after WORKER_READY marks worker offline.
 
