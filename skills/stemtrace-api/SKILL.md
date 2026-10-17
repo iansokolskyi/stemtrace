@@ -16,12 +16,14 @@ use these.
 # stemtrace server: http://HOST:8000/stemtrace ; init_app(app): your app's URL + the prefix
 # (default /stemtrace)
 export STEMTRACE_URL="http://localhost:8000/stemtrace"
-export STEMTRACE_API_KEY="..."   # the key the server was started with, if any
+# The key the server was started with, if any. Not STEMTRACE_API_KEY: in that name it would also
+# turn the key on for a stemtrace server or app you start from this shell.
+export ST_API_KEY="..."
 
 st() {  # st PATH [curl args...]: GET $STEMTRACE_URL/api/PATH as JSON
   local path="$1"; shift
   curl -sS --fail-with-body -G \
-    ${STEMTRACE_API_KEY:+-H "Authorization: Bearer $STEMTRACE_API_KEY"} \
+    ${ST_API_KEY:+-H "Authorization: Bearer $ST_API_KEY"} \
     "$STEMTRACE_URL/api/$path" "$@"
 }
 
@@ -32,7 +34,7 @@ Auth: when the server runs with an API key (`STEMTRACE_API_KEY` / `--api-key`), 
 `Authorization: Bearer <key>`. Without it you get `401` with `WWW-Authenticate: Bearer`. A wrong
 key five times from one IP gives `429` with `Retry-After` (seconds): wait, don't retry in a loop.
 A `401` from a server without a key means it uses a browser login or a custom auth dependency:
-ask the user for credentials. `GET /api/health/live` never needs auth.
+ask the user for credentials. `GET /api/health/live` never needs the API key.
 
 ## What failed in the last hour, and why
 

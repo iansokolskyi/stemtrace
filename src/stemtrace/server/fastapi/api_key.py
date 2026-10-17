@@ -5,9 +5,10 @@ One key, set with ``init_app(api_key=...)``, ``StemtraceExtension(api_key=...)``
 agents read the API without the browser login.
 
 With the built-in form login, a request passes with a valid session cookie *or*
-a valid key. With a custom ``auth_dependency``, it needs the key *and* whatever
-the dependency checks: FastAPI resolves every router dependency, so one can't
-waive another.
+a valid key. With a custom ``auth_dependency``, a JSON API request needs the key
+*and* whatever the dependency checks: FastAPI resolves every router dependency,
+so one can't waive another. The dependency doesn't cover the WebSocket, which
+needs only the key.
 
 Failed key attempts are throttled per client IP by the login's
 :class:`~stemtrace.server.fastapi.login_throttle.LoginThrottle`, sharing its

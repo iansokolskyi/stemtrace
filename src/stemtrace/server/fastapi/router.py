@@ -39,7 +39,8 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     ``api_key`` requires ``Authorization: Bearer <key>`` on the JSON API
     (except the liveness probe) and the WebSocket; with ``form_auth_config``,
     a valid session cookie is accepted instead. With ``auth_dependency`` too,
-    a request needs both. ``auth_throttle`` counts failed keys per client IP
+    a JSON API request needs both; the WebSocket (not covered by
+    ``auth_dependency``) needs the key. ``auth_throttle`` counts failed keys per client IP
     (a new one if None; pass the login's to share its counts).
 
     Raises:

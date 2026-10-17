@@ -92,8 +92,9 @@ class StemtraceExtension:
                 arguments. Digit string for args[index], string for kwargs[key].
             api_key: Require ``Authorization: Bearer <key>`` on the JSON API
                 (not the liveness probe) and the WebSocket. With form login, a
-                valid session cookie also passes; with ``auth_dependency``, both
-                are needed. At least 16 visible ASCII characters. Unlike
+                valid session cookie also passes; with ``auth_dependency``, the
+                JSON API needs both (the WebSocket, which the dependency doesn't
+                cover, needs the key). At least 16 visible ASCII characters. Unlike
                 ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
 
         Raises:

@@ -65,11 +65,18 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   a key, the UI shell loads but its data calls get `401`, so enable the login page for browsers.
 - **With the [login page](#built-in-login-page)** (`--login-username`/`--login-password`), a request passes with a
   session cookie *or* the key. A Bearer header on a UI page is ignored (you still get the login
-  page). With a custom `auth_dependency`, a request needs the key *and* whatever the dependency
-  checks, so the dependency mustn't use the `Authorization` header itself (`require_basic_auth`
-  does; `require_api_key`, which reads `X-API-Key`, doesn't). `require_api_key` is a separate,
-  older helper for embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key));
-  the key described here is the one built into the server.
+  page). Nothing in front of stemtrace (e.g. an auth proxy that forwards its own token) may add
+  an `Authorization: Bearer` header: stemtrace treats it as a wrong key, even next to a valid
+  session, and wrong keys lock out the proxy's IP, login included.
+- **With a custom `auth_dependency`**, a JSON API request needs the key *and* whatever the
+  dependency checks (FastAPI runs every router dependency; one can't waive another), so the
+  dependency mustn't use the `Authorization` header itself (`require_basic_auth` does;
+  `require_api_key`, which reads `X-API-Key`, doesn't). The dependency doesn't apply to the
+  WebSocket or the liveness probe, as without a key: the WebSocket needs only the key. Browsers
+  never send the key, so with a key the dashboard stops working for users of the custom auth;
+  enable the login page for them. `require_api_key` is a separate, older helper for embedded
+  apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key described
+  here is the one built into the server.
 - **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
   redirect. A wrong key is refused even if a valid session cookie comes with it.
 - **Throttling.** Wrong keys count per client IP in the login's failed-attempt throttle, so
@@ -79,7 +86,9 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   Counts are per process.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
-  (unpadded); the server accepts with `stemtrace` and never echoes the key. The key is never
+  (unpadded); the server accepts with `stemtrace` and never echoes the key. A key offered as a
+  subprotocol without `stemtrace` next to it is refused, since a browser would drop a
+  connection accepted without a subprotocol it offered. The key is never
   accepted as a query parameter, because uvicorn's access log prints query strings.
 - **The key** must be at least 16 visible ASCII characters (`openssl rand -hex 32` makes a good
   one). Surrounding whitespace is dropped, and a blank value means no key. stemtrace never logs
