@@ -78,6 +78,17 @@ def test_skill_examples_use_existing_endpoints() -> None:
     assert unknown == set()
 
 
+def test_skill_prose_names_only_existing_endpoints() -> None:
+    patterns = [_route_regex(r) for r in _routes()]
+    mentioned = {
+        re.sub(r"\{[^}]+\}", "X", p).rstrip("/")
+        for p in re.findall(r"/api/([a-z_/{}]+)", _skill_text())
+    }
+
+    assert {"health", "health/live", "graphs/X"} <= mentioned
+    assert {p for p in mentioned if not any(rx.match(p) for rx in patterns)} == set()
+
+
 def test_skill_query_parameters_exist() -> None:
     accepted = {
         param.alias or param.name

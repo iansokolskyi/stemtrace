@@ -200,10 +200,8 @@ def test_key_only_websocket(key_only: TestClient) -> None:
     ) as ws:
         # The key's own subprotocol is never echoed back.
         assert ws.accepted_subprotocol == "stemtrace"
-    with key_only.websocket_connect(
-        "/stemtrace/ws", subprotocols=_ws_subprotocols(KEY)[1:]
-    ) as ws:
-        assert ws.accepted_subprotocol is None
+    # The key's subprotocol alone: refused (a browser would drop the accept).
+    _assert_ws_denied(key_only, subprotocols=_ws_subprotocols(KEY)[1:])
 
 
 def test_key_never_logged(
@@ -558,3 +556,31 @@ def test_form_and_key_bearer_on_non_api_route_is_404_not_ui(
 
 def test_cli_typer_hides_locals_in_tracebacks() -> None:
     assert cli.app.pretty_exceptions_show_locals is False
+
+
+@pytest.mark.parametrize("headers", [BEARER, WRONG])
+def test_form_and_key_liveness_with_any_bearer_is_200(
+    form_and_key: TestClient, headers: dict[str, str]
+) -> None:
+    """An agent's helper sends its key everywhere; the probe must still answer."""
+    resp = form_and_key.get("/stemtrace/api/health/live", headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_auth_dependency_and_key_websocket_and_liveness() -> None:
+    """The dependency covers the JSON API only: WS needs the key, liveness the dependency."""
+    app = _app(
+        api_key=KEY, auth_dependency=stemtrace.require_api_key("other-secret-value")
+    )
+    dep = {"X-API-Key": "other-secret-value"}
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/stemtrace/ws", headers=BEARER):
+            pass
+        _assert_ws_denied(client, headers=dep)
+        assert client.get("/stemtrace/api/health/live").status_code == 401
+        assert client.get("/stemtrace/api/health/live", headers=dep).status_code == 200
+        # A browser with only the host's auth can't use the dashboard's data.
+        assert client.get("/stemtrace/api/tasks", headers=dep).status_code == 401
