@@ -39,17 +39,22 @@ ask the user for credentials. `GET /api/health/live` never needs auth.
 ```bash
 SINCE=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)   # macOS: date -u -v-1H +%Y-%m-%dT%H:%M:%SZ
 
-# Failed tasks, newest first: id, name, when, last exception line
+# Failed tasks, newest first: id, name, when, worker, exception class, message
 st tasks --data-urlencode "state=FAILURE" --data-urlencode "from_date=$SINCE" \
   --data-urlencode "limit=100" |
   jq -r '.total as $t | "\($t) failed", (.tasks[] | [.task_id, .name, .last_updated,
+    (.hostname // "-"), (.exception_type // "-"),
     ([.events[] | select(.state == "FAILURE") | .exception] | last // "-")] | @tsv)'
 
-# Count failures by exception
+# Count failures by exception class and task
 st tasks --data-urlencode "state=FAILURE" --data-urlencode "from_date=$SINCE" \
   --data-urlencode "limit=500" |
-  jq -r '[.tasks[] | [.events[] | select(.state == "FAILURE") | .exception] | last
-    | (. // "?") | split("\n")[0]] | group_by(.) | map("\(length)\t\(.[0])") | .[]'
+  jq -r '[.tasks[] | "\(.exception_type // "?")\t\(.name)"] | group_by(.)
+    | map("\(length)\t\(.[0])") | sort_by(-(split("\t")[0] | tonumber)) | .[]'
+
+# Every failure of one exception class
+st tasks --data-urlencode "state=FAILURE" --data-urlencode "exception_type=myapp.errors.PartnerAPIError" |
+  jq -r '.tasks[] | [.task_id, .name, .last_updated] | @tsv'
 ```
 
 Then the full story of one task (traceback, arguments, retries, captured output):
@@ -106,7 +111,12 @@ Registry `status` is `active` (ran and registered), `never_run` or `not_register
 - `state` is the task's **current** state: a task that failed and then succeeded on retry is
   `SUCCESS`; one waiting to retry is `RETRY`.
 - `name` is a case-insensitive substring (`name=charge` matches `billing.charge_card`);
-  `name_exact` is the whole name, case-sensitive.
+  `name_exact` is the whole name, case-sensitive. `hostname` (the worker's nodename, as the
+  workers endpoint lists it), `queue` and `exception_type` match exactly.
+- `exception_type` is the class only (`ValueError`, `myapp.errors.PartnerAPIError`), never the
+  message; the message is in the events' `exception`. A task's `exception_type` is the last
+  exception it raised, also when a retry then succeeded, so add `state=FAILURE` for failures.
+  It is missing on events from workers older than the server.
 - `from_date` keeps tasks **updated** at or after it; `to_date` keeps tasks **first seen** at or
   before it, and a date-only or midnight `to_date` means the end of that day. Use ISO 8601 in
   UTC with `Z`. URL-encode it (`--data-urlencode`): a raw `+01:00` arrives as a space
