@@ -52,8 +52,9 @@ def _authorize(
     browsers (which can't set WebSocket headers), from a
     ``stemtrace.bearer.<base64url>`` subprotocol; the connection is then
     accepted with the ``stemtrace`` subprotocol, which the client must offer
-    next to the key's (the key's own is never echoed). A wrong key is refused even with a valid session cookie.
-    Without a key, a valid session cookie is needed when form login is on.
+    next to the key's (the key's own is never echoed). A wrong key is refused
+    even with a valid session cookie. Without a key, a valid session cookie is
+    needed when form login is on.
     """
     if api_key_guard is not None:
         offered = list(websocket.scope.get("subprotocols") or [])
