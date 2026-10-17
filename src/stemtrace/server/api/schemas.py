@@ -74,7 +74,8 @@ class TaskNodeResponse(BaseModel):
     # None for synthetic GROUP/CHORD nodes.
     task_group: str | None = None
     tags: list[str] = Field(default_factory=list)
-    events: list[TaskEventResponse] = Field(default_factory=list)
+    # None when a list was asked for with compact=1.
+    events: list[TaskEventResponse] | None = Field(default_factory=list)
     first_seen: datetime | None = None
     last_updated: datetime | None = None
     duration_ms: int | None = None
@@ -161,6 +162,9 @@ class HealthResponse(BaseModel):
     consumer_connected: bool | None = None
     websocket_connections: int = 0
     node_count: int = 0
+    # Kind of the Celery broker (redis, rabbitmq, memory), from broker_url's
+    # scheme only; None when unknown.
+    broker: str | None = None
 
 
 class LivenessResponse(BaseModel):
@@ -220,6 +224,76 @@ class TaskGroupListResponse(BaseModel):
 
     groups: list[TaskGroupResponse]
     total: int
+
+
+# Summary schemas (overview, time series, failure groups)
+
+
+class TimeWindowResponse(BaseModel):
+    """The time range an aggregate covers: ``[start, end)``.
+
+    For the latest window, ``end`` is the server's "now" and runs stamped
+    later (a worker clock ahead of the server's) still count in it.
+    """
+
+    start: datetime
+    end: datetime
+
+
+class KpiResponse(BaseModel):
+    """A value for the window and the same value for the window before it."""
+
+    value: float
+    baseline: float
+
+
+class WorkerCountsResponse(BaseModel):
+    """Workers the server knows of, from worker events (no inspect round trip)."""
+
+    online: int
+    total: int
+
+
+class OverviewResponse(BaseModel):
+    """KPIs over a window, each with the previous window of equal length."""
+
+    window: TimeWindowResponse
+    baseline_window: TimeWindowResponse
+    runs: KpiResponse
+    failures: KpiResponse
+    runs_per_minute: KpiResponse
+    failure_rate: KpiResponse
+    workers: WorkerCountsResponse
+
+
+class TimeSeriesResponse(BaseModel):
+    """Runs by current state per bucket; states with no run in range are left out."""
+
+    window: TimeWindowResponse
+    bucket_seconds: int
+    starts: list[datetime]
+    counts: dict[TaskState, list[int]]
+    by_task_group: dict[str, dict[TaskState, list[int]]] | None = None
+
+
+class FailureGroupResponse(BaseModel):
+    """FAILURE runs that raised the same exception class."""
+
+    exception_type: str | None
+    count: int
+    first_seen: datetime
+    last_seen: datetime
+    task_names: list[str]
+    sample_task_ids: list[str]
+
+
+class FailureGroupListResponse(BaseModel):
+    """The window's failures, grouped by exception class."""
+
+    window: TimeWindowResponse
+    group_by: str
+    total: int
+    groups: list[FailureGroupResponse]
 
 
 # Worker Registry schemas
