@@ -11,6 +11,9 @@ app = typer.Typer(
     name="stemtrace",
     help="Celery task flow visualizer",
     no_args_is_help=True,
+    # typer 0.13-0.20 print a crashed command's locals by default, which would
+    # include --api-key, --login-password and --login-secret.
+    pretty_exceptions_show_locals=False,
 )
 
 
