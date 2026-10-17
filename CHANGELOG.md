@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task groups: every task belongs to one group, returned as `task_group` (with the group's `tags`) on the API's task, task detail, graph node and task registry responses, and listed by the new `GET /api/groups` (name, source `auto`/`code`, tags, color, task names seen). Automatic groups come from the task name's first module segment, skipping generic ones (`tasks.search.reindex` and `search.tasks.reindex` are both `search`; `add`, `tasks.add` and `celery.chord_unlock` are `ungrouped`). Code-defined groups, matched by glob on the task name with the first match winning, come from `init_app(groups=[GroupRule(...)])` / `StemtraceExtension(groups=...)`, or a TOML file given by `stemtrace server --groups`, `STEMTRACE_GROUPS` or `init_app(groups="file.toml")`; invalid rules fail at startup. TOML files need Python 3.11+. The UI doesn't show groups yet. See the README.
+
 ## [0.4.0] - 2026-10-13
 
 **Highlights:**
