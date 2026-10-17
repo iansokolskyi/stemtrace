@@ -1,6 +1,6 @@
 """Tests for sensitive data scrubbing."""
 
-from enum import Enum, IntEnum
+from enum import Enum, Flag, IntEnum, IntFlag
 
 import pytest
 
@@ -325,6 +325,21 @@ class _Slot(IntEnum):
     OTHER = 2
 
 
+class _Perm(Flag):
+    """Flag pseudo-members (empty, and on 3.10 composite) have no name."""
+
+    READ = 1
+    WRITE = 2
+    SECRET = 4
+
+
+class _IPerm(IntFlag):
+    """An IntFlag value with bits outside its members has no name."""
+
+    READ = 1
+    WRITE = 2
+
+
 UNNAMED_KEYS = [
     1,
     None,
@@ -335,6 +350,10 @@ UNNAMED_KEYS = [
     _StrIsPassword(),
     _Cred.COLOR,
     _Slot.OTHER,
+    _Perm(0),
+    _Perm.READ | _Perm.WRITE,
+    _IPerm(0),
+    _IPerm(4),
 ]
 UNNAMED_KEY_IDS = [
     "int",
@@ -346,6 +365,10 @@ UNNAMED_KEY_IDS = [
     "object",
     "enum",
     "int_enum",
+    "flag_empty",
+    "flag_composite",
+    "int_flag_empty",
+    "int_flag_unknown_bits",
 ]
 NAMED_KEYS = [
     b"password",
@@ -358,6 +381,7 @@ NAMED_KEYS = [
     _Cred.LOOKUP,
     _Slot.TOKEN,
     _StrCred.SECRET,
+    _Perm.SECRET,
 ]
 NAMED_KEY_IDS = [
     "bytes",
@@ -370,6 +394,7 @@ NAMED_KEY_IDS = [
     "enum_value",
     "int_enum",
     "str_enum",
+    "flag_member",
 ]
 ALL_KEYS = [(key, False) for key in UNNAMED_KEYS] + [(key, True) for key in NAMED_KEYS]
 ALL_KEY_IDS = [f"unnamed_{i}" for i in UNNAMED_KEY_IDS] + [

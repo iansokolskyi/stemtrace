@@ -228,8 +228,10 @@ Keys match by substring, whatever the key's case (`USER_PASSWORD` matches
 `password`); give `additional_sensitive_keys` in lowercase. Bytes keys (such as
 redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and
 matched the same way. A tuple or frozenset key matches if any of its parts
-does, and an Enum member by its name or its value. Other keys (ints, `None`,
-other objects) never match, but dicts inside their values are still scrubbed.
+does, and an Enum member by its name or its value: that includes `IntEnum` and
+`StrEnum` members, so `HTTPStatus.UNAUTHORIZED` is filtered like any key
+containing `auth`. Other keys (ints, `None`, other objects) never match, but
+dicts inside their values are still scrubbed.
 Task data stemtrace can't capture, such as a value whose `str()` raises or a
 cyclic structure, appears as `[Not captured: <error type>]`.
 

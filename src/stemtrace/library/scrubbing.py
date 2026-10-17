@@ -60,15 +60,19 @@ def _key_names(key: object) -> list[str]:
     A task's dicts can have any hashable key. A str is a name, and so is bytes
     (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
     as UTF-8 with replacement so it never raises. A tuple or frozenset key
-    carries the names of its parts, and an Enum member its own name plus its
-    value's names (checked first: str- and int-mixin members are str or int).
+    carries the names of its parts, and an Enum member its own name (if it has
+    one) plus its value's names (checked first: str- and int-mixin members are
+    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``).
     Other keys (an int, None, any other object) carry none. ``str(key)`` is
     never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
     raise.
     """
     match key:
         case Enum():
-            return [key.name.lower(), *_key_names(key.value)]
+            # Flag pseudo-members (Flag(0), unknown IntFlag bits, composites
+            # on Python 3.10) have name None.
+            name = [key.name.lower()] if isinstance(key.name, str) else []
+            return [*name, *_key_names(key.value)]
         case str():
             return [key.lower()]
         case bytes():
