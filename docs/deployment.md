@@ -139,6 +139,14 @@ needs `FORWARDED_ALLOW_IPS` to see client IPs; see the same section.
 
 Note: `stemtrace server` includes an embedded consumer today (single-process). A multi-process deployment mode is planned.
 
+The store lives in the memory of the process that runs the consumer. Every `stemtrace server`
+process, and with the default `embedded_consumer=True` every process of an app that calls
+`init_app`, starts its own consumer and keeps its own store. Behind a load balancer, requests
+answered by different processes can therefore show different data. On RabbitMQ the processes
+on one host also share one queue (`<prefix>.events.<hostname>`), so each of them receives only
+some of the events. Serve the dashboard from one process: one `stemtrace server`, or an app run
+with a single worker process.
+
 Embedded consumer modes:
 
 | Mode | Use Case | Setup |
@@ -146,8 +154,8 @@ Embedded consumer modes:
 | Embedded | Development, simple apps | Default: consumer runs in FastAPI process |
 | External | Production, high scale | Planned |
 
-With the built-in login and more than one process (`uvicorn --workers N`, gunicorn, replicas),
-set the same `STEMTRACE_LOGIN_SECRET` everywhere; see
+With the built-in login and more than one process or replica, set the same
+`STEMTRACE_LOGIN_SECRET` everywhere; see
 [Built-in login page](security.md#built-in-login-page).
 
 ## Health endpoint

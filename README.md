@@ -45,8 +45,8 @@ each dashboard view with screenshots.
 What it adds to your system:
 
 - **On workers:** events are published from Celery's task signals. Events that can't be
-  published are dropped, not buffered. Every network step of a publish has a 2s timeout, and
-  three failures in a row make the worker skip publishing for a cooldown that grows from 1s to
+  published are dropped, not buffered. Each network step of a publish has a 2s timeout (name
+  lookups under uWSGI are the exception; see Brokers), and three failures in a row make the worker skip publishing for a cooldown that grows from 1s to
   30s. So during an outage each worker process makes at most three bounded attempts and then one
   per cooldown. Logging is bounded: at most four warnings a minute. On RabbitMQ, an event costs
   about 0.3 ms on the process's connection.
@@ -54,8 +54,8 @@ What it adds to your system:
   details and limitations for each broker.
 - **On your broker:** one Redis stream, or a RabbitMQ fanout exchange with a queue per server
   host, named with the `stemtrace` prefix by default.
-- **The dashboard** is read-only: it never modifies your task queue. Common secrets in task
-  arguments (passwords, API keys, tokens) appear as `[Filtered]`. It has a built-in login page
+- **The dashboard** is read-only: it never modifies your task queue. Values under argument and
+  dict keys named like secrets (`password`, `api_key`, `token`, …) appear as `[Filtered]`. It has a built-in login page
   with sign-in throttling, or takes your own FastAPI auth dependency, and a health endpoint
   for your monitoring.
   See [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md).
@@ -66,9 +66,11 @@ What to know before you rely on it:
   with Redis it replays the events still in the stream; with RabbitMQ, events it already
   consumed are gone. See
   [Event retention](https://github.com/iansokolskyi/stemtrace/blob/main/docs/retention.md).
-- **The server is a single process** with the event consumer inside it. A multi-process mode is
-  planned.
-- **Task output is not scrubbed.** That's why capturing it is opt-in.
+- **The dashboard keeps its state in one process**, with the event consumer inside it. A
+  multi-process mode is planned. Don't embed it in an app that runs several worker processes;
+  see [Running several processes](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md#running-several-processes).
+- **Scrubbing goes by key name only.** Positional arguments, exception messages, tracebacks and
+  task output are shown as they are. That's why capturing output is opt-in.
 - **Limitations are documented next to each feature**, for example graph edge cases with
   `task.replace()` and older Celery versions in
   [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md).

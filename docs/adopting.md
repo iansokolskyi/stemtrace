@@ -35,8 +35,10 @@ stemtrace.init_worker(app)
 Putting it next to the app definition means every process that imports the app runs it, on
 both sides:
 
-- **Workers** publish STARTED, RETRY and SUCCESS/FAILURE events from Celery's task signals
-  (and RECEIVED, if you turn on [`publish_received`](configuration.md#received-events-opt-in)).
+- **Workers** publish STARTED, RETRY, SUCCESS/FAILURE and REVOKED events from Celery's task
+  signals (and RECEIVED, if you turn on
+  [`publish_received`](configuration.md#received-events-opt-in)), plus an event when a worker
+  starts and when it shuts down.
 - **Senders** publish the PENDING event when a task message is published (Celery's
   `after_task_publish` signal). It carries the parent, root and group IDs, so a task is placed
   in its graph as soon as it is sent. A process that sends tasks without `init_worker` sends no
@@ -64,7 +66,9 @@ dropped rather than buffered; [Brokers](brokers.md) has the details for each bro
 ### 4. Run the server
 
 Run `stemtrace server` (or mount it with `init_app`) against the same broker; see
-[Deployment](deployment.md). `stemtrace server` reads events under the default prefix,
+[Deployment](deployment.md). The dashboard keeps its state in one process, so if you mount it
+in a web app that runs several worker processes, read
+[Running several processes](deployment.md#running-several-processes) first. `stemtrace server` reads events under the default prefix,
 `stemtrace`. If you pass another `prefix` to `init_worker`, mount the dashboard with
 `init_app(..., prefix=...)` set to the same value: there it is both the mount path and the event
 prefix.
@@ -83,9 +87,11 @@ When you upgrade stemtrace later, read the **Upgrading** note in the
 
 You can start the server first, before any worker runs `init_worker`:
 
-- **Workers** and **Registry** pages: when one of them loads, the server asks the workers on its
-  broker URL with Celery inspect (`stats` and `registered`, or `ping` when `stats` gets no
-  reply), waiting at most 0.5 s, and at most once every 2 seconds per server process. Every
+- **Workers** and **Registry** pages: when the UI requests their data, the server asks the
+  workers on its broker URL with Celery inspect, at most once every 2 seconds per server process.
+  It sends `stats` and `registered` one after the other (`ping` too when `stats` gets no reply),
+  waiting 0.5 s per request for replies, and the page waits for them: at least 1 s, and longer
+  when the broker can't be reached. Every
   worker that answers is listed, instrumented or not, with the tasks it has registered. Those
   tasks show **Never Run** until stemtrace receives an event for one of them.
 - **Tasks** and **graphs** stay empty until instrumented processes publish events.
@@ -101,12 +107,13 @@ You can keep Flower while you try stemtrace; they read different data:
   its own events, from Celery's signals, to the stream or exchange described
   [above](#3-know-what-it-writes-to-your-broker). It works the same whether Celery events are on or off.
 - Both ask workers for their state with Celery inspect. stemtrace only sends the `stats`,
-  `registered` and `ping` requests described above, and only while its Workers or Registry
-  pages are being loaded.
+  `registered` and `ping` requests described above, when the UI requests Workers or Registry
+  data: as those pages load and, while the UI's live connection is down, every 30 seconds.
 - stemtrace is read-only: it has no equivalent of Flower's actions on workers and tasks.
 
 ## Removing stemtrace
 
-Remove the `init_worker` call and redeploy. What stemtrace created on the broker stays until you
-delete it: the Redis stream `<prefix>:events`, or the RabbitMQ exchange `<prefix>.events`.
+Remove the `init_worker` call and redeploy. What stemtrace's event transport created on the
+broker stays until you delete it: the Redis stream `<prefix>:events`, or the RabbitMQ exchange
+`<prefix>.events`.
 RabbitMQ deletes a server's queue on its own once it has been unused for `ttl` plus a minute.
