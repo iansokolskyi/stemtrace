@@ -4,22 +4,25 @@ import inspect
 import logging
 import threading
 import traceback as tb_module
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from celery.signals import (
+    after_task_publish,
     task_failure,
     task_postrun,
     task_prerun,
     task_retry,
     task_revoked,
-    task_sent,
+    worker_process_shutdown,
     worker_ready,
     worker_shutdown,
 )
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
-from stemtrace.core.ports import EventTransport
+from stemtrace.core.exceptions import is_task_interrupt
+from stemtrace.core.ports import ClosableTransport, EventTransport
 from stemtrace.library.config import get_config
 from stemtrace.library.output_capture import (
     install_capture,
@@ -40,7 +43,44 @@ logger = logging.getLogger(__name__)
 
 _transport: EventTransport | None = None
 # Track task IDs that have received PENDING to avoid duplicates from retries
-_pending_emitted: set[str] = set()
+# Task IDs this process already sent a PENDING for (a task republished
+# with the same ID, e.g. a retry re-queue, is announced once). A process that
+# only sends tasks (a web app) never runs them, so nothing removes their IDs:
+# the set keeps the most recent _PENDING_DEDUP_SIZE IDs only.
+_PENDING_DEDUP_SIZE = 10_000
+
+
+class _RecentIds:
+    """Insertion-ordered set of IDs that forgets the oldest past a limit."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self._ids: OrderedDict[str, None] = OrderedDict()
+
+    def __contains__(self, task_id: object) -> bool:
+        """Whether the ID is remembered."""
+        return task_id in self._ids
+
+    def __len__(self) -> int:
+        """How many IDs are remembered."""
+        return len(self._ids)
+
+    def add(self, task_id: str) -> None:
+        """Remember an ID, forgetting the oldest beyond the limit."""
+        self._ids[task_id] = None
+        while len(self._ids) > _PENDING_DEDUP_SIZE:
+            self._ids.popitem(last=False)
+
+    def discard(self, task_id: str) -> None:
+        """Forget an ID if remembered."""
+        self._ids.pop(task_id, None)
+
+    def clear(self) -> None:
+        """Forget every ID."""
+        self._ids.clear()
+
+
+_pending_emitted = _RecentIds()
 _pending_emitted_lock = threading.RLock()
 
 # Guard against overly-large docstrings bloating broker events.
@@ -84,14 +124,25 @@ def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
 
 
 def _publish_event(event: TaskEvent) -> None:
-    """Publish event via transport. Fire-and-forget: logs errors, never raises."""
+    """Publish event via transport. Fire-and-forget: logs errors, never raises.
+
+    The exception is Celery's own control flow (see ``is_task_interrupt``),
+    which propagates.
+    """
     if _transport is None:
         logger.warning("stemtrace not initialized, event dropped: %s", event.task_id)
         return
 
     try:
         _transport.publish(event)
-    except Exception:
+    except Exception as exc:
+        if is_task_interrupt(exc):
+            # Celery's control flow (a soft time limit raised into the task
+            # while it published) is not a publish failure. Celery's own signal
+            # dispatcher, which calls this handler, logs and swallows what a
+            # receiver raises, so this keeps stemtrace from swallowing it, not
+            # Celery.
+            raise
         logger.warning(
             "Failed to publish event for task %s", event.task_id, exc_info=True
         )
@@ -422,52 +473,94 @@ def _on_task_revoked(
     )
 
 
-def _on_task_sent(
+def _published_message(
+    body: Any, headers: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The fields of a published task message, from either protocol.
+
+    Protocol 2 (Celery's default) keeps the metadata in the headers and the
+    arguments in a ``(args, kwargs, embed)`` body; protocol 1 keeps it all in
+    a dict body (and has no parent or root IDs).
+    """
+    if headers and headers.get("id"):
+        args, kwargs = (body[0], body[1]) if isinstance(body, tuple) else ((), {})
+        return {
+            "id": headers["id"],
+            "task": headers.get("task"),
+            "retries": headers.get("retries") or 0,
+            "group": headers.get("group"),
+            "parent_id": headers.get("parent_id"),
+            "root_id": headers.get("root_id"),
+            "args": args,
+            "kwargs": kwargs,
+        }
+    if isinstance(body, dict) and body.get("id"):
+        return {
+            "id": body["id"],
+            "task": body.get("task"),
+            "retries": body.get("retries") or 0,
+            "group": body.get("taskset"),
+            "parent_id": None,
+            "root_id": None,
+            "args": body.get("args") or (),
+            "kwargs": body.get("kwargs") or {},
+        }
+    return None
+
+
+def _retries(value: Any) -> int:
+    """A message's retry count; 0 if it isn't a number (non-Celery producers)."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _on_after_task_publish(
     *,
     sender: str | None = None,
-    task_id: str | None = None,
-    task: str | None = None,
-    args: tuple[Any, ...] | None = None,
-    kwargs: dict[str, Any] | None = None,
+    body: Any = None,
     headers: dict[str, Any] | None = None,
     **_: Any,
 ) -> None:
-    """Handle task_sent signal - fires when .delay() or .apply_async() is called.
+    """Emit the sender's PENDING event once a task message is published.
 
-    Note: This fires on the SENDER side (where the task is queued), not on the worker.
-    It captures the PENDING state before a worker picks up the task.
+    Fires on the sending side (``.delay()``, ``.apply_async()``, canvas
+    dispatch), from the message headers, which carry the parent, root and
+    group IDs. (The deprecated ``task_sent`` signal gets none of these and
+    isn't used.) Eager ``apply()`` publishes nothing, so it emits no PENDING.
 
-    For retries, we skip emitting PENDING since the task is already tracked
-    and will get RETRY + STARTED events.
+    A retry is republished with ``retries > 0``: no PENDING, the task is
+    already tracked and gets RETRY + STARTED events. Fire-and-forget: a
+    malformed message is ignored.
     """
-    if task_id is None:
+    try:
+        message = _published_message(body, headers)
+    except (IndexError, KeyError, TypeError):  # not a task message we know
         return
-
-    # Skip PENDING for retries - check headers first, then our tracking set
-    if headers and headers.get("retries", 0) > 0:
+    if message is None or _retries(message["retries"]) > 0:
         return
+    task_id = str(message["id"])
 
-    # Skip if we've already emitted PENDING for this task (handles retry re-queues)
-    # Use lock to make check-then-add atomic and prevent duplicates from concurrent threads
+    # Check-then-add under the lock: concurrent publishes of one task (or a
+    # retry re-queue) announce it once.
     with _pending_emitted_lock:
         if task_id in _pending_emitted:
             return
         _pending_emitted.add(task_id)
 
-    task_name = task or sender or "unknown"
-
-    # Extract group_id from headers if available
-    group_id = headers.get("group") if headers else None
-
+    args, kwargs = message["args"], message["kwargs"]
     _publish_event(
         TaskEvent(
             task_id=task_id,
-            name=task_name,
+            name=message["task"] or sender or "unknown",
             state=TaskState.PENDING,
             timestamp=datetime.now(timezone.utc),
-            group_id=group_id,
-            args=_scrub_and_serialize_args(args) if args else None,
-            kwargs=_scrub_and_serialize_kwargs(kwargs) if kwargs else None,
+            parent_id=message["parent_id"],
+            root_id=message["root_id"],
+            group_id=message["group"],
+            args=_scrub_and_serialize_args(tuple(args)) if args else None,
+            kwargs=_scrub_and_serialize_kwargs(dict(kwargs)) if kwargs else None,
         )
     )
 
@@ -477,7 +570,7 @@ def connect_signals(transport: EventTransport) -> None:
     global _transport
     _transport = transport
 
-    task_sent.connect(_on_task_sent)
+    after_task_publish.connect(_on_after_task_publish)
     task_prerun.connect(_on_task_prerun)
     task_postrun.connect(_on_task_postrun)
     task_failure.connect(_on_task_failure)
@@ -487,6 +580,7 @@ def connect_signals(transport: EventTransport) -> None:
     # Worker lifecycle signals
     worker_ready.connect(on_worker_ready)
     worker_shutdown.connect(on_worker_shutdown)
+    worker_process_shutdown.connect(on_worker_process_shutdown)
 
     logger.info("stemtrace signal handlers connected")
 
@@ -496,7 +590,7 @@ def disconnect_signals() -> None:
     global _transport
     _transport = None
 
-    task_sent.disconnect(_on_task_sent)
+    after_task_publish.disconnect(_on_after_task_publish)
     task_prerun.disconnect(_on_task_prerun)
     task_postrun.disconnect(_on_task_postrun)
     task_failure.disconnect(_on_task_failure)
@@ -506,6 +600,7 @@ def disconnect_signals() -> None:
     # Worker lifecycle signals
     worker_ready.disconnect(on_worker_ready)
     worker_shutdown.disconnect(on_worker_shutdown)
+    worker_process_shutdown.disconnect(on_worker_process_shutdown)
 
     # Clear tracking state
     _pending_emitted.clear()
@@ -716,3 +811,18 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 
     except Exception as e:
         logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)
+
+
+def on_worker_process_shutdown(**_: Any) -> None:
+    """Handle worker_process_shutdown: close this pool process's publisher connection.
+
+    Celery sends it in a prefork child just before it exits; the child skips
+    Python's exit hooks, so without this its broker connection would be
+    dropped abruptly instead of closed.
+    """
+    transport: object = _transport  # EventTransport has no close(); it is optional
+    if isinstance(transport, ClosableTransport):
+        try:
+            transport.close()
+        except Exception:
+            logger.debug("Failed to close the transport on shutdown", exc_info=True)

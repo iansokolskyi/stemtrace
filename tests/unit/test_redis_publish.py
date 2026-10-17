@@ -12,6 +12,12 @@ from typing import Any
 import pytest
 import redis
 import redis.connection
+from celery.exceptions import (
+    SoftTimeLimitExceeded,
+    Terminated,
+    TimeLimitExceeded,
+    WorkerLostError,
+)
 from redis.exceptions import AuthenticationError, BusyLoadingError, ResponseError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -110,6 +116,53 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
         for r in caplog.records
         if r.name == LOGGER_NAME and r.levelno == logging.WARNING
     ]
+
+
+class TestRedisPublishTaskInterrupts:
+    """Celery's control flow raised into the task mid-publish is the task's."""
+
+    @pytest.mark.parametrize(
+        "interrupt",
+        [SoftTimeLimitExceeded, TimeLimitExceeded, Terminated, WorkerLostError],
+    )
+    def test_publish_task_interrupt_propagates_without_charging_breaker(
+        self, interrupt: type[Exception], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport, publisher, _ = _make(
+            [(0.0, interrupt("limit")) for _ in range(PUBLISH_FAILURES_TO_OPEN + 1)]
+        )
+
+        for _ in range(PUBLISH_FAILURES_TO_OPEN + 1):
+            with pytest.raises(interrupt):
+                transport.publish(_event())
+        transport.publish(_event("after"))
+
+        # Every interrupt reached the task, none opened the breaker, and the
+        # next event still goes out.
+        assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN + 2
+        assert transport._publish_breaker.is_open is False
+        assert transport._publish_breaker.dropped == 0
+        assert _warnings(caplog) == []
+
+    def test_publish_task_interrupt_in_probe_frees_the_probe_slot(self) -> None:
+        transport, publisher, clock = _make(
+            [(0.0, REFUSED)] * PUBLISH_FAILURES_TO_OPEN
+            + [(0.0, SoftTimeLimitExceeded("limit"))]
+        )
+        for _ in range(PUBLISH_FAILURES_TO_OPEN):
+            transport.publish(_event())
+        assert transport._publish_breaker.is_open is True
+        clock.now += RECONNECT_INITIAL_BACKOFF
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            transport.publish(_event("probe"))
+        transport.publish(_event("second probe"))
+
+        # The interrupted probe says nothing about Redis: the cooldown did not
+        # grow, and the next event is the new probe (it reached Redis and
+        # closed the breaker) rather than being dropped.
+        assert len(publisher.calls) == PUBLISH_FAILURES_TO_OPEN + 2
+        assert transport._publish_breaker.is_open is False
 
 
 class TestRedisPublishBreaker:

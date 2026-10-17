@@ -4,7 +4,7 @@
 
 **Zero-infrastructure Celery task flow visualizer**
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.3.10-darklime)](https://pypi.org/project/stemtrace)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.4.0-darklime)](https://pypi.org/project/stemtrace)
 [![Python](https://img.shields.io/pypi/pyversions/stemtrace.svg)](https://pypi.org/project/stemtrace/)
 [![CI](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/iansokolskyi/stemtrace/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/iansokolskyi/stemtrace/graph/badge.svg)](https://codecov.io/gh/iansokolskyi/stemtrace)
@@ -203,6 +203,9 @@ stemtrace.init_worker(
     # Task output (disabled by default, see "Task Output" below)
     capture_output=False,                      # Capture what each attempt prints/logs
     max_output_size=16384,                     # Max bytes kept per attempt (the end is kept)
+
+    # RECEIVED events (disabled by default, see "Received Events" below)
+    publish_received=False,                    # Publish RECEIVED when a worker takes a message
 )
 
 # Introspection (after init)
@@ -290,6 +293,29 @@ first): the output of a retried attempt is on its `RETRY` event, the final one o
   apply. That's why it's off by default: only enable it if your tasks don't print
   or log secrets.
 
+#### Received Events (opt-in)
+
+By default a task's events are PENDING (sent), STARTED and SUCCESS/FAILURE. Turn on
+`publish_received` on the worker to also publish a RECEIVED event when the worker takes the
+task message, so the UI shows when a task reached a worker before it started, e.g. while it
+waits for its ETA or for a free pool slot:
+
+```python
+stemtrace.init_worker(app, publish_received=True)
+```
+
+It is off by default because it adds one synchronous publish per task message to the worker's
+consumer loop. Under prefork that loop is the worker's main process, so every task waits for it:
+on RabbitMQ it costs about 0.7 ms per message, about 22% of the throughput of no-op tasks
+(measured with prefork and RabbitMQ connection reuse). Redis was not measured.
+
+- It is published for each delivery of a task's first attempt. A retry's message adds none (its
+  RETRY event covers it). A message redelivered after a lost worker (`acks_late` with
+  `reject_on_worker_lost`) adds a second one, and both are listed ahead of the task's STARTED
+  events: the main process publishes RECEIVED and the pool child publishes STARTED, with clocks
+  that can differ, so first-attempt RECEIVED events are always listed first.
+- Verified with real workers on the prefork, threads, solo, gevent and eventlet pools.
+
 ### Canvas Graph Visualization
 
 `stemtrace` automatically detects and visualizes Celery canvas constructs:
@@ -316,11 +342,20 @@ batch_processor
 │  ├── add(20, 20) │──┼──► aggregate_results
 │  └── add(30, 30) │──┘
 └──────────────────┘
+
+# Group of chains: each chain is a row inside the group
+┌─ GROUP ─────────────────────────┐
+│  fetch(1) ──► parse(1)          │
+│  fetch(2) ──► parse(2)          │
+└─────────────────────────────────┘
 ```
 
 - **Synthetic containers** — GROUP/CHORD nodes are always created when 2+ tasks share a `group_id`
 - **Parent linking** — When spawned from a parent task, the container becomes a child of that parent
-- **Chord callbacks** — Rendered outside the container with edges from each header task
+- **Chord callbacks** — Rendered outside the container with edges from each header task (verified with Celery 5.6; on Celery 5.2 a chord whose body is a chain, or `chain(group(...), task)`, carries no chord callback ID and shows as a group, with the chain hanging off the header that finished last, inside the group). The callback is the task the chord's body starts with (for a chain body, the rest of the chain follows it). It is only drawn on evidence from the events: the callback the headers name, or the chord's group ID that Celery stamps on a chain body's last task, traced back to a header (or Celery's `chord_unlock` task). A chord whose body never ran (e.g. a header failed) shows no callback, and a header's own subtasks are never mistaken for it
+- **Replaced tasks** — `task.replace()` makes Celery reuse the replaced task's ID for the replacement's last task, so one graph node stands for both. It stays where the original task was sent: its name and parent come from its own events, not the replacement's (which report a task below it as parent, its child or, for a longer chain, a task further down; or, when the replacement is a single task, the task itself), whatever the hosts' clocks say; the replacement's other tasks hang from it, and a callback that reuses the ID can't also be drawn after a chord. The same holds when one of the replacement's tasks is replaced in turn (a nested `replace()`, up to 16 levels deep), and for a task that keeps replacing itself (recursive pagination: every page's tasks hang from one node). A server that starts after the replaced task ran only sees the replacement's events: the node shows the replacement's name. A replaced workflow root stays the root, with the replacement's other tasks under it. A replaced task inside a workflow loses its link to its parent and forms a graph of its own with the replacement's tasks. After a two-task replacement, it and the replacement's first task name each other as parent, and the one with the larger task ID is on top; after a longer replacement chain they name each other in a loop, and which of them is on top depends on the order events arrive in
+- **Chains in groups** — For `group(chain(a1, b1), chain(a2, b2))` Celery only marks `b1` and `b2` as group members. A member's parent task whose only child is that member, and which belongs to no group and isn't a chord callback, is drawn inside the group as part of the member's chain (and so on up the chain), so the whole workflow is one graph. A parent with other children (e.g. one that started the group, or spawned other tasks) is never pulled in. Chains are drawn once every member has reported its parent. A chord whose body is a group (`chord([a, b], group(c, d))`) draws that group after the chord
+- **Limitation: shared chord tasks** — Celery workflows don't produce events in which two chords share one `celery.chord_unlock` task or one task that starts a group body. If such events arrive anyway (hand-crafted or malformed), the graph stays consistent, but which chord draws the shared task, and whether a chord's body shows as empty, can depend on the order the events arrive in.
 - **Timing** — Each node displays start time and duration directly in the graph
 - **Aggregate state** — Container shows running/success/failure based on member states
 
@@ -433,37 +468,96 @@ again once events are re-consumed.
     waits for its reply.
   - Logging is bounded as for RabbitMQ below: at most four warnings a minute, each with the
     number of events dropped since the previous one.
+  - Limitation: any `socket_timeout` under 0.5s in the broker URL (the server's consumer reads
+    with half of it as the XREAD block window) adds up to about 0.25s of latency to a new event:
+    an idle read that returns sooner than that (`MIN_IDLE_READ_SECONDS`) is followed by a wait
+    for the rest, instead of looping at once. With redis-py's default timeouts nothing changes.
+  - Limitation: a Celery soft time limit that lands while a task signal (`task_prerun`,
+    `task_postrun`, ...) is publishing is not delivered to the task. stemtrace lets the
+    exception propagate and doesn't count it as a Redis failure, but Celery's `Signal.send`
+    catches what a receiver raises, so the task keeps running and Celery logs an ERROR,
+    `Signal handler ... raised: SoftTimeLimitExceeded()`. A limit that lands while the task
+    itself prints or logs with `capture_output` on is delivered.
 - **RabbitMQ (fanout + per-consumer queue)**:
   - Events already consumed/acked by the server are **gone**.
   - Events published while the server is down are only visible after restart if the server’s
     durable per-consumer queue still exists and the messages are still within TTL.
-  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Each
-    publish tries every host of the broker URL once (2s connect timeout per address, 2s per read
-    or write after that). A single failure, quick or timed out, loses only its own event; three
-    failures in a row make the worker skip publishing for a cooldown that grows from 1s to 30s
-    and resets on the next successful publish, so during an outage each worker process makes
-    at most three bounded attempts (plus any its other threads already had in flight) and then
-    one per cooldown. Host names are resolved as for Redis: waiting at most the 2s connect
-    timeout, cached for 30s, refreshed in the background and right after a failed connect.
-    TLS behavior is unchanged: as with py-amqp alone, `amqps://` checks the certificate's host
-    name only when the `ssl` options set `server_hostname`.
-  - During a RabbitMQ memory or disk alarm, the broker accepts connections but stops reading
-    from publishers, so a publish is sent but never confirmed. The worker counts such events as
-    "sent but unconfirmed" (RabbitMQ may still deliver them once the alarm clears); three in a
-    row open the breaker, and once an unconfirmed retry follows it retries only every 30s. Each
-    attempt leaves one blocked connection on the broker until the alarm clears, so expect up to
-    about 5 connections per worker process in the first minute of an alarm and about 2 per
-    minute after that, all released when the alarm ends. Each retry also logs `Received method (10, 60) during closing channel 0`
-    from py-amqp's `amqp` logger (not stemtrace's): that's RabbitMQ's "connection blocked"
-    notice arriving while the connection closes.
+  - Each worker process publishes on one RabbitMQ connection that it opens with its first event and
+    keeps: an event costs about 0.3 ms instead of about 9 ms for a connection of its own. Prefork
+    children open their own after the fork and never use the master's (Python's fork hooks, plus a
+    process-ID check for forks that skip them, such as uWSGI's). Threads, gevent and eventlet pools
+    share their process's connection and publish one event at a time (gevent and eventlet need
+    `threading` patched, as Celery's pools do). RabbitMQ lists these connections as
+    `stemtrace publisher <host> pid <pid>`. The connection negotiates no AMQP heartbeat, also when
+    the broker URL says `?heartbeat=N`: nothing runs between events to send one. It is closed when
+    the interpreter exits and when a prefork child exits (waiting at most half a second for the
+    broker's reply); a process killed or ended with `os._exit()` leaves it to the operating system,
+    and RabbitMQ logs a warning about the dropped TCP connection.
+  - The server's consumer connection does use `?heartbeat=N` from the broker URL: its read loop
+    sends the heartbeats and waits at most a quarter of the interval for frames (at most 1s), so
+    an idle consumer is not dropped by the broker, and a broker that stops sending heartbeats is
+    treated like a dropped connection (reconnect with backoff), also when the broker is frozen with
+    its TCP connection up (`docker pause`): a failed consumer connection is dropped without the
+    AMQP close handshake, which would wait forever for a frozen broker.
+  - Events that can't be published to RabbitMQ are dropped, not buffered on the worker. Events
+    publish one at a time on the process's connection, and **an event never waits more than 2s
+    in total (one IO timeout) for another to finish: it is dropped instead**, which doesn't
+    count as a failure. The event that has to connect takes longer. It tries every host of the
+    broker URL once, and each step waits at most 2s: resolving the name, the TCP connect (2s in
+    all for the addresses of a name: a refused address costs microseconds and never excludes a
+    live one, and after a black-holed one the next attempt starts with the next address), the TLS
+    handshake, each of the three AMQP handshake replies and, after a failure over TLS, the
+    closing exchange; then opening the channel, declaring the exchange and writing the event.
+    That is at most about 20s with one URL host, and 14s more for each further host, though a
+    healthy broker takes milliseconds. A slow broker whose every step stays within 2s keeps
+    publishing and doesn't open the breaker (events that arrive while a slow connect is in
+    progress are dropped). If the thread that took the connection never gives it back (a signal
+    handler raised at the wrong moment), a thread that finds the lock held by itself starts over
+    with a new connection at once; an event from another thread does after its wait (2s) if the
+    holder never recorded the lock, and otherwise only once the holder has had the longest an
+    attempt can take (about 20s with one host): until then events that find it taken are dropped
+    after their wait. Starting over logs the warning `RabbitMQ publisher connection was not
+    released by its last user; starting over with a new connection`. A single failure, quick or
+    timed out, loses only its own event and drops the connection; the next event connects again.
+    Three failures in a row make the worker skip publishing for a cooldown that grows from 1s to
+    30s and resets on the next successful publish, so during an outage each worker process makes
+    at most three bounded attempts and then one per cooldown. Host names are resolved as for
+    Redis: waiting at most the 2s connect timeout, cached for 30s, refreshed in the background and
+    right after a failed connect. TLS behavior is unchanged: as with py-amqp alone, `amqps://`
+    checks the certificate's host name only when the `ssl` options set `server_hostname`.
+  - A connection that RabbitMQ closed while it was idle (a broker restart, `rabbitmqctl
+    close_connection`, the management UI) is noticed before the next event, which goes out on a new
+    connection; that doesn't count as a failure unless connecting fails. The connection is only
+    read when it has something to say, and a frame that arrives in pieces (a frozen broker, or one
+    that trickles in a byte at a time) costs the event at most about 0.1s in total (two reads of at
+    most 50 ms) and is finished later, so it never spins or stalls the other greenlets. Limitations: an event
+    written at the moment the broker closes the connection, or within about a second after the
+    network drops without closing it (py-amqp 5.3 sets `TCP_USER_TIMEOUT` to 1s), can be lost
+    without an error; and after the exchange is deleted, the next event is lost (RabbitMQ closes the
+    channel because of it) and the one after it re-declares the exchange on a new connection.
+  - During a RabbitMQ memory or disk alarm, RabbitMQ blocks a publisher's connection once the first
+    event published during the alarm arrives, and sends Connection.Blocked. The worker reads that
+    before its next event and drops events without sending them until RabbitMQ sends
+    Connection.Unblocked; three drops in a row open the breaker, and its retries only read the
+    connection, so an alarm adds no connections and no "sent but unconfirmed" events (RabbitMQ
+    delivers the event that triggered the block when the alarm ends).
   - Logging is bounded: at most four warnings a minute however the broker behaves (failures,
     an outage starting, an outage ending, and a summary). Each reports the number of events
     dropped, and sent but unconfirmed, since the previous one, and losses are reported within
     about 1.5 minutes even when the broker flaps.
-  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open
-    the breaker. Each publish opens its own connection, so it waits for several round trips
-    (connect, handshake, channel, publish, close): a broker that takes about 1s per reply costs
-    each event several seconds.
+  - Limitation: a broker that still answers within the 2s timeouts, but slowly, doesn't open the
+    breaker. An event on an open connection only waits for a write, but each new connection waits
+    for several round trips (connect, handshake, channel, exchange declare): a broker that takes
+    about 1s per reply costs the event that has to connect several seconds. While the broker is
+    paused or unreachable without the connection closing (`docker pause`), written events are
+    buffered by the operating system and delivered when it answers again; the worker sees a failure
+    only once the buffers are full or the connection drops.
+  - Limitation: a Celery soft time limit that lands while a task signal (`task_prerun`,
+    `task_postrun`, ...) is publishing is not delivered to the task. stemtrace lets the
+    exception propagate and doesn't count it as a RabbitMQ failure, but Celery's `Signal.send`
+    catches what a receiver raises, so the task keeps running and Celery logs an ERROR,
+    `Signal handler ... raised: SoftTimeLimitExceeded()`. A limit that lands while the task
+    itself prints or logs with `capture_output` on is delivered.
   - A failover broker URL (`amqp://h1//;amqp://h2//`) must list nodes of the same RabbitMQ
     cluster: workers keep publishing to whichever host last worked, so the server must be able to
     consume those events from any of them. Entries resolve as in kombu: a bare host (`;h2`)
@@ -474,6 +568,16 @@ again once events are re-consumed.
     kombu.
 - **Workers + Registry tabs**: stemtrace uses **Celery inspect** on demand to populate workers
   and registered tasks, so those pages work even if the server missed `worker_ready` events.
+  - A Celery nodename (`name@host`) has at most one live process, so a worker is shown online
+    only for its newest pid: when a node restarts, its older pids go offline, including one that
+    was killed without a `worker_shutdown` event. A ping reply carries no pid, so it can only
+    bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
+    inspect reply disagree, whichever is newer wins: events that arrive while the server waits
+    for a reply beat that reply.
+  - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
+    with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
+    told apart: Celery keeps only the last reply per nodename, so they flip between online and
+    offline on every refresh. Give each worker a unique nodename.
 - **If you need durable history across restarts**: point stemtrace events at Redis even if your
   Celery broker is RabbitMQ (set `transport_url` in `stemtrace.init_worker(...)` and set
   `STEMTRACE_TRANSPORT_URL` for the server / embedded setup).
@@ -645,6 +749,22 @@ extension = stemtrace.init_app(
 )
 ```
 
+#### FastAPI Telemetry
+
+FastAPI 0.142 and later trace requests natively when an OpenTelemetry SDK is configured in your process. Embedded, stemtrace's routes are part of your app, so each request the dashboard makes to `/stemtrace/api/...` and each `/stemtrace/ws` connection (one span for as long as the browser stays connected) gets a span. To keep them out of your traces, exclude the prefix:
+
+```python
+app = FastAPI(
+    lifespan=my_lifespan,
+    telemetry={
+        "exclude": lambda scope: scope.get("path", "") == "/stemtrace"
+        or scope.get("path", "").startswith("/stemtrace/")
+    },
+)
+```
+
+Use your own `prefix` if you changed it. `telemetry={"tracing": False}` turns tracing off for the whole app.
+
 #### With Custom Authentication
 
 ```python
@@ -780,7 +900,7 @@ What is detected depends on the transport:
 ### What's Working Now
 
 - ✅ **Task flow graphs** — Visualize chains, groups, and chords as DAGs
-- ✅ **Full lifecycle tracking** — PENDING → RECEIVED → STARTED → SUCCESS/FAILURE
+- ✅ **Full lifecycle tracking** — PENDING → STARTED → SUCCESS/FAILURE, with RECEIVED when `publish_received=True` is set on the worker
 - ✅ **Canvas awareness** — Automatic GROUP/CHORD node visualization
 - ✅ **Arguments & results** — View inputs, outputs, and exceptions
 - ✅ **Task output** — What each attempt printed and logged (opt-in)
@@ -791,13 +911,9 @@ What is detected depends on the transport:
 - ✅ **Workers page** — Monitor online/offline workers and their registered tasks
 - ✅ **Task registry** — Browse discovered + registered tasks with clear status badges
 
-### Coming Soon
+### What's Next
 
-- 🔜 **Anomaly detection** — Spot stuck, orphaned, or failed tasks
-- 🔜 **Dashboard with stats** — Success rates, durations, failure trends
-- 🔜 **OpenTelemetry export** — Send traces to Jaeger, Tempo, Datadog
-- 🔜 **Webhook notifications** — Push events to your systems
-- 🔜 **Data export** — Download execution history as JSON
+Planned work and ideas are tracked in [GitHub issues](https://github.com/iansokolskyi/stemtrace/issues). Open one, or comment on an existing one, to say what you'd use.
 
 ## 🤝 Contributing
 

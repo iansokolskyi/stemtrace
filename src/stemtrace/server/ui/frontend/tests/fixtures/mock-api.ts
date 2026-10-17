@@ -22,6 +22,7 @@ import {
   DEFAULT_REGISTRY,
   DEFAULT_TASKS,
   DEFAULT_WORKERS,
+  type MockRegisteredTask,
   type MockTask,
   type MockWorker,
 } from './mock-data'
@@ -50,6 +51,9 @@ export interface MockApiContext {
 
   /** Get root tasks (for graphs list) */
   getRootTasks: () => MockTask[]
+
+  /** Replace the task registry (the entries of GET /tasks/registry) */
+  setRegistry: (registry: MockRegisteredTask[]) => void
 
   /** Replace all workers */
   setWorkers: (workers: MockWorker[]) => void
@@ -113,6 +117,7 @@ export async function setupMockApi(
   // Mutable task store
   let tasks: MockTask[] = useDefaults ? [...DEFAULT_TASKS] : []
   let workers: MockWorker[] = useDefaults ? [...DEFAULT_WORKERS] : []
+  let registry: MockRegisteredTask[] = useDefaults ? [...DEFAULT_REGISTRY] : []
 
   const context: MockApiContext = {
     get tasks() {
@@ -138,6 +143,7 @@ export async function setupMockApi(
     resetToDefaults() {
       tasks = [...DEFAULT_TASKS]
       workers = [...DEFAULT_WORKERS]
+      registry = [...DEFAULT_REGISTRY]
     },
 
     getTask(taskId: string) {
@@ -147,6 +153,10 @@ export async function setupMockApi(
     getRootTasks() {
       // Root tasks are those where task_id === root_id
       return tasks.filter((t) => t.task_id === t.root_id)
+    },
+
+    setRegistry(newRegistry: MockRegisteredTask[]) {
+      registry = [...newRegistry]
     },
 
     setWorkers(newWorkers: MockWorker[]) {
@@ -213,8 +223,8 @@ export async function setupMockApi(
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        tasks: DEFAULT_REGISTRY,
-        total: DEFAULT_REGISTRY.length,
+        tasks: registry,
+        total: registry.length,
       }),
     })
   })
@@ -284,12 +294,15 @@ export async function setupMockApi(
       return
     }
 
+    // Like the real API, list the task's children as nodes
+    const children = tasks.filter((t) => task.children.includes(t.task_id))
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         task: serializeTask(task),
-        children: [],
+        children: children.map(serializeTask),
       }),
     })
   })
@@ -304,6 +317,7 @@ export async function setupMockApi(
     const url = new URL(route.request().url())
     const state = url.searchParams.get('state')
     const name = url.searchParams.get('name')
+    const nameExact = url.searchParams.get('name_exact')
     const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const offset = Number.parseInt(url.searchParams.get('offset') || '0', 10)
 
@@ -313,7 +327,10 @@ export async function setupMockApi(
       filtered = filtered.filter((t) => t.state === state)
     }
     if (name) {
-      filtered = filtered.filter((t) => t.name.includes(name))
+      filtered = filtered.filter((t) => t.name.toLowerCase().includes(name.toLowerCase()))
+    }
+    if (nameExact) {
+      filtered = filtered.filter((t) => t.name === nameExact)
     }
 
     const paginated = filtered.slice(offset, offset + limit)

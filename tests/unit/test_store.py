@@ -10,6 +10,7 @@ from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.conftest import InterleavingLock
+from tests.graph_invariants import assert_graph_invariants
 
 _T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -262,6 +263,31 @@ class TestGraphStoreGetNodes:
         store.add_event(make_event.create("task-1", name="MyApp.Tasks.Process"))
         nodes, _ = store.get_nodes(name_contains="myapp")
         assert len(nodes) == 1
+
+    def test_get_nodes_name_exact_matches_whole_name_case_sensitively(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+        store.add_event(make_event.create("task-3", name="x.app.add"))
+        store.add_event(make_event.create("task-4", name="app.Add"))
+
+        nodes, total = store.get_nodes(name_exact="app.add")
+
+        assert [n.task_id for n in nodes] == ["task-1"]
+        assert total == 1
+
+    def test_get_nodes_name_exact_with_name_contains_requires_both(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("task-1", name="app.add"))
+        store.add_event(make_event.create("task-2", name="app.add_numbers"))
+
+        nodes, _ = store.get_nodes(name_exact="app.add", name_contains="numbers")
+        assert nodes == []
+
+        nodes, _ = store.get_nodes(name_exact="app.add", name_contains="ADD")
+        assert [n.task_id for n in nodes] == ["task-1"]
 
     def test_get_nodes_sorted_by_timestamp_desc(
         self, store: GraphStore, make_event: type
@@ -1241,11 +1267,12 @@ class TestWorkerRegistry:
         assert worker.last_seen == ts2
         assert worker.status == WorkerStatus.ONLINE
 
-    def test_mark_online_noops_when_worker_missing(
+    def test_mark_node_alive_noops_when_node_unknown(
         self, registry: WorkerRegistry
     ) -> None:
-        """mark_online should return cleanly if the worker isn't registered."""
-        registry.mark_online("missing.example.com", 12345)
+        """mark_node_alive should return cleanly if the node isn't registered."""
+        registry.mark_node_alive("missing.example.com")
+        registry.mark_node_alive("missing.example.com", 12345)
         assert registry.get_all_workers() == []
 
     def test_get_nonexistent_worker(self, registry: WorkerRegistry) -> None:
@@ -1335,26 +1362,172 @@ class TestWorkerRegistry:
         assert worker is not None
         assert worker.status == WorkerStatus.OFFLINE
 
-    def test_mark_online_updates_status_and_last_seen(
+    def test_mark_node_alive_updates_status_and_last_seen(
         self, registry: WorkerRegistry
     ) -> None:
-        """Marking an existing worker as online updates status and last_seen."""
+        """A node that answered a ping comes back online with a fresh last_seen."""
         registry.register_worker(
             hostname="worker-1.example.com",
             pid=12345,
             tasks=["myapp.tasks.send"],
         )
-        registry.mark_shutdown("worker-1.example.com", 12345)
+        registry.mark_offline("worker-1.example.com", 12345)
 
         before = registry.get_worker("worker-1.example.com", 12345)
         assert before is not None
         before_last_seen = before.last_seen
 
-        registry.mark_online("worker-1.example.com", 12345)
+        registry.mark_node_alive("worker-1.example.com")
         after = registry.get_worker("worker-1.example.com", 12345)
         assert after is not None
         assert after.status == WorkerStatus.ONLINE
         assert after.last_seen >= before_last_seen
+
+    def test_mark_shutdown_sets_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """worker_shutdown is recorded; mark_offline (a missed reply) is not."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.register_worker("w2@devbox", 2, [])
+
+        registry.mark_shutdown("w1@devbox", 1)
+        registry.mark_offline("w2@devbox", 2)
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        w2 = registry.get_worker("w2@devbox", 2)
+        assert w1 is not None
+        assert w2 is not None
+        assert (w1.status, w1.shutdown_reported) == (WorkerStatus.OFFLINE, True)
+        assert (w2.status, w2.shutdown_reported) == (WorkerStatus.OFFLINE, False)
+
+    def test_mark_shutdown_and_mark_offline_noop_when_worker_missing(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Events and inspect results for unknown workers create nothing."""
+        registry.mark_shutdown("missing@devbox", 1)
+        registry.mark_offline("missing@devbox", 1)
+        assert registry.get_all_workers() == []
+
+    def test_register_worker_clears_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A new worker_ready for a reused pid makes the entry live again."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+
+        registry.register_worker("w1@devbox", 1, [])
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        assert w1 is not None
+        assert (w1.status, w1.shutdown_reported) == (WorkerStatus.ONLINE, False)
+
+    def test_mark_node_alive_without_pid_skips_shutdown_reported_entry(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A pid-less reply can't undo a worker_shutdown event."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+
+        registry.mark_node_alive("w1@devbox")
+
+        w1 = registry.get_worker("w1@devbox", 1)
+        assert w1 is not None
+        assert w1.status == WorkerStatus.OFFLINE
+
+    def test_mark_node_alive_with_pid_revives_and_retires_others(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A reply naming the pid is authoritative for that node only."""
+        registry.register_worker("w1@devbox", 1, [])
+        registry.mark_shutdown("w1@devbox", 1)
+        registry.register_worker("w1@devbox", 2, [])
+        registry.register_worker("w2@devbox", 3, [])
+
+        registry.mark_node_alive("w1@devbox", 1)
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {
+            ("w1@devbox", 1): WorkerStatus.ONLINE,
+            ("w1@devbox", 2): WorkerStatus.OFFLINE,
+            ("w2@devbox", 3): WorkerStatus.ONLINE,
+        }
+
+    def test_removed_stale_newest_worker_is_not_revived_by_ping(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Once the newest entry is cleaned up, its node has nothing to revive."""
+        registry.register_worker(
+            "w1@devbox",
+            1,
+            [],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=60),
+        )
+        registry.remove_stale_workers(
+            stale_timeout_minutes=3, cleanup_timeout_minutes=30
+        )
+
+        registry.mark_node_alive("w1@devbox")
+
+        assert registry.get_all_workers() == []
+
+    def test_removed_stale_older_worker_keeps_newest_revivable_by_ping(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Cleaning up an older pid leaves the node's newest pid as the one to revive."""
+        registry.register_worker(
+            "w1@devbox",
+            1,
+            [],
+            event_timestamp=datetime.now(timezone.utc) - timedelta(minutes=60),
+        )
+        registry.register_worker("w1@devbox", 2, [])
+        registry.remove_stale_workers(
+            stale_timeout_minutes=3, cleanup_timeout_minutes=30
+        )
+        registry.mark_offline("w1@devbox", 2)
+
+        registry.mark_node_alive("w1@devbox")
+
+        workers = [(w.hostname, w.pid, w.status) for w in registry.get_all_workers()]
+        assert workers == [("w1@devbox", 2, WorkerStatus.ONLINE)]
+
+    def test_register_worker_retires_the_nodes_other_pids(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """worker_ready(B) means A is gone, even if A never sent worker_shutdown."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w2@devbox", 300, ["a"])
+
+        registry.register_worker("w1@devbox", 200, ["a"])
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {
+            ("w1@devbox", 100): WorkerStatus.OFFLINE,
+            ("w1@devbox", 200): WorkerStatus.ONLINE,
+            ("w2@devbox", 300): WorkerStatus.ONLINE,
+        }
+
+    def test_register_worker_retired_pid_is_not_marked_shutdown_reported(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Only a worker_shutdown event is final; a retired pid can be revived."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w1@devbox", 200, ["a"])
+
+        old = registry.get_worker("w1@devbox", 100)
+
+        assert old is not None
+        assert old.shutdown_reported is False
+
+    def test_register_worker_same_pid_again_stays_online(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """Re-registering the live pid (worker_ready replay) retires nothing."""
+        registry.register_worker("w1@devbox", 100, ["a"])
+        registry.register_worker("w1@devbox", 100, ["a", "b"])
+
+        statuses = {(w.hostname, w.pid): w.status for w in registry.get_all_workers()}
+        assert statuses == {("w1@devbox", 100): WorkerStatus.ONLINE}
 
     def test_get_registered_tasks_after_shutdown(
         self, registry: WorkerRegistry
@@ -1649,7 +1822,7 @@ class TestGraphStoreRootNodesSyntheticDateFiltering:
                 group_id=group_id,
                 children=["missing-child"],
             )
-            store._graph.root_ids.append(group_node_id)
+            store._graph._roots[group_node_id] = None
 
         roots, total = store.get_root_nodes()
         assert total == 1
@@ -1746,11 +1919,11 @@ class TestGraphStoreEvictionParentCleanup:
         assert "child" not in parent_node.children
 
     def test_eviction_does_not_require_child_in_parent_children(self) -> None:
-        """Eviction should handle nodes with parent_id that were never linked as children."""
+        """A child that arrived before its parent is linked, then evicted cleanly."""
         store = GraphStore(max_nodes=3)
         base = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
-        # Child arrives first referencing a missing parent => no backlinking occurs.
+        # Child arrives first; it is linked once its parent arrives.
         store.add_event(
             TaskEvent(
                 task_id="child",
@@ -1771,7 +1944,7 @@ class TestGraphStoreEvictionParentCleanup:
 
         parent_node = store.get_node("parent")
         assert parent_node is not None
-        assert "child" not in parent_node.children
+        assert parent_node.children == ["child"]
 
         store.add_event(
             TaskEvent(
@@ -1791,3 +1964,108 @@ class TestGraphStoreEvictionParentCleanup:
         )
 
         assert store.get_node("child") is None
+        parent_node = store.get_node("parent")
+        assert parent_node is not None
+        assert parent_node.children == []
+
+    def test_eviction_of_parent_lists_its_children_as_roots(self) -> None:
+        store = GraphStore(max_nodes=3)
+        base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        store.add_event(
+            TaskEvent(
+                task_id="parent", name="p", state=TaskState.SUCCESS, timestamp=base
+            )
+        )
+        for i in (1, 2):
+            store.add_event(
+                TaskEvent(
+                    task_id=f"child-{i}",
+                    name="c",
+                    state=TaskState.SUCCESS,
+                    timestamp=base + timedelta(seconds=i),
+                    parent_id="parent",
+                )
+            )
+        store.add_event(  # 4 nodes -> 2: the parent and child-1 go
+            TaskEvent(
+                task_id="other",
+                name="o",
+                state=TaskState.SUCCESS,
+                timestamp=base + timedelta(seconds=3),
+            )
+        )
+
+        roots, total = store.get_root_nodes()
+        assert sorted(r.task_id for r in roots) == ["child-2", "other"]
+        assert total == 2
+        child = store.get_node("child-2")
+        assert child is not None
+        assert child.parent_id is None
+
+
+class TestGraphStoreEvictionGroupLinks:
+    @staticmethod
+    def _event(
+        task_id: str, seconds: int, state: TaskState = TaskState.SUCCESS, **kw: str
+    ) -> TaskEvent:
+        return TaskEvent(
+            task_id=task_id,
+            name="tests.task",
+            state=state,
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc)
+            + timedelta(seconds=seconds),
+            **kw,
+        )
+
+    def test_add_event_after_eviction_never_links_group_under_itself(
+        self,
+    ) -> None:
+        store = GraphStore(max_nodes=20)
+        store.add_event(self._event("m1", 1, group_id="g"))
+        store.add_event(self._event("m2", 100, group_id="g"))
+        store.add_event(self._event("m3", 100, group_id="g"))
+        for i in range(17):
+            store.add_event(self._event(f"x{i}", 10 + i))  # 21 nodes -> 18
+
+        store.add_event(self._event("m2", 101, TaskState.FAILURE, group_id="g"))
+
+        group = store._graph.nodes["group:g"]
+        assert group.parent_id is None
+        assert group.children == ["m2", "m3"]
+        assert "group:g" in store._graph.root_ids
+        assert group.state == TaskState.FAILURE
+        assert_graph_invariants(store._graph)
+
+    def test_eviction_keeps_group_while_its_newest_member_lives(self) -> None:
+        store = GraphStore(max_nodes=20)
+        store.add_event(self._event("m1", 1, group_id="g"))
+        store.add_event(self._event("m2", 100, group_id="g"))
+        store.add_event(self._event("m3", 101, group_id="g"))
+        for i in range(17):
+            store.add_event(self._event(f"x{i}", 10 + i))
+
+        # 21 nodes -> down to 18: the three oldest tasks go, the group stays.
+        assert store.get_node("m1") is None
+        assert store.get_node("x0") is None
+        assert store.get_node("x1") is None
+        group = store.get_node("group:g")
+        assert group is not None
+        assert group.children == ["m2", "m3"]
+        assert store._graph.nodes["m2"].parent_id == "group:g"
+        assert_graph_invariants(store._graph)
+
+    def test_eviction_of_chord_callback_drops_it_from_chord_children(self) -> None:
+        store = GraphStore(max_nodes=5)
+        store.add_event(self._event("P", 50))
+        store.add_event(self._event("cb", 1, parent_id="P"))
+        store.add_event(
+            self._event("h1", 60, group_id="g", chord_callback_id="cb", parent_id="P")
+        )
+        store.add_event(self._event("x", 70))
+        store.add_event(self._event("y", 80))  # 6 nodes -> 4: cb, then P go
+
+        assert store.get_node("cb") is None
+        chord = store.get_node("group:g")
+        assert chord is not None
+        assert chord.children == ["h1"]
+        assert_graph_invariants(store._graph)

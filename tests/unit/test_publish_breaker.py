@@ -729,6 +729,173 @@ class TestPublishBreakerInFlightAttempts:
         assert sum(ticket is not None for ticket in results) == 1
 
 
+class TestPublishBreakerShouldAttempt:
+    """should_attempt() tells a caller that waited whether its attempt is still wanted."""
+
+    def test_should_attempt_while_closed_is_true(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        assert breaker.should_attempt(_take(breaker)) is True
+
+    def test_should_attempt_after_breaker_opened_is_false_for_in_flight_attempt(
+        self,
+    ) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=1)
+        in_flight = _take(breaker)
+
+        _attempt_fails(breaker)
+
+        assert breaker.is_open is True
+        assert breaker.should_attempt(in_flight) is False
+
+    def test_should_attempt_for_probe_is_true_until_outcome_is_recorded(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        probe = _take(breaker)
+
+        assert breaker.should_attempt(probe) is True
+        assert breaker.should_attempt(in_flight) is False
+
+    def test_should_attempt_after_closing_again_is_true_for_old_attempt(self) -> None:
+        # The broker answered the probe: an event that waited meanwhile is
+        # no longer pointless to send.
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _attempt_succeeds(breaker)  # the probe: the breaker closes
+
+        assert breaker.is_open is False
+        assert breaker.should_attempt(in_flight) is True
+
+
+class TestPublishBreakerRecordDropped:
+    def test_record_dropped_counts_event_without_changing_state(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        for _ in range(10):
+            breaker.record_dropped(_take(breaker))
+
+        assert breaker.dropped == 10
+        assert breaker.is_open is False
+        # Ten drops are not ten failures: three real ones are still needed.
+        _attempt_fails(breaker)
+        _attempt_fails(breaker)
+        assert breaker.is_open is False
+
+    def test_record_dropped_is_reported_with_the_next_log_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=1)
+        breaker.record_dropped(_take(breaker))
+        breaker.record_dropped(_take(breaker))
+
+        _attempt_fails(breaker)
+
+        assert "3 event(s) dropped" in caplog.text
+
+    def test_record_dropped_for_probe_frees_the_probe_slot(self) -> None:
+        # A probe that never reached the broker (it couldn't get the shared
+        # connection) must not keep the next probe waiting for probe_timeout.
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        probe = _take(breaker)
+        assert breaker.allow() is None  # one probe at a time
+
+        breaker.record_dropped(probe)
+
+        assert breaker.is_open is True
+        assert breaker.allow() is not None  # the slot is free again
+
+    def test_record_dropped_for_other_attempt_keeps_the_probe_slot(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _take(breaker)  # the probe
+
+        breaker.record_dropped(in_flight)
+
+        assert breaker.allow() is None
+
+
+class TestPublishBreakerRecordInterrupted:
+    def test_record_interrupted_is_neither_a_failure_nor_a_drop(self) -> None:
+        breaker = _make_breaker(FakeClock(), failures_to_open=3)
+
+        for _ in range(10):
+            breaker.record_interrupted(_take(breaker))
+
+        assert breaker.dropped == 0
+        assert breaker.is_open is False
+        # Ten interruptions are not ten failures: three real ones are still needed.
+        _attempt_fails(breaker)
+        _attempt_fails(breaker)
+        assert breaker.is_open is False
+        _attempt_fails(breaker)
+        assert breaker.is_open is True
+
+    def test_record_interrupted_for_probe_frees_the_probe_slot(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        _attempt_fails(breaker)
+        cooldown = breaker.cooldown
+        clock.advance(1.0)
+        probe = _take(breaker)
+        assert breaker.allow() is None  # one probe at a time
+
+        breaker.record_interrupted(probe)
+
+        assert breaker.is_open is True
+        assert breaker.cooldown == cooldown
+        assert breaker.allow() is not None  # the slot is free again
+
+    def test_record_interrupted_for_other_attempt_keeps_the_probe_slot(self) -> None:
+        clock = FakeClock()
+        breaker = _make_breaker(clock)
+        in_flight = _take(breaker)
+        _attempt_fails(breaker)
+        clock.advance(1.0)
+        _take(breaker)  # the probe
+
+        breaker.record_interrupted(in_flight)
+
+        assert breaker.allow() is None
+
+
+class TestPublishBreakerAllowRace:
+    def test_allow_when_breaker_closed_between_fast_path_and_lock_returns_current_ticket(
+        self,
+    ) -> None:
+        breaker = _make_breaker(FakeClock())
+        _attempt_fails(breaker)
+        assert breaker.is_open is True
+
+        class ClosesBreakerBeforeTheLock:
+            """Another thread closes the breaker as this one reaches the lock."""
+
+            def __init__(self) -> None:
+                self._lock = threading.Lock()
+
+            def __enter__(self) -> None:
+                breaker._open_until = None
+                self._lock.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                self._lock.release()
+
+        breaker._lock = ClosesBreakerBeforeTheLock()  # type: ignore[assignment]
+
+        assert breaker.allow() == breaker._epoch
+
+
 class TestPublishBreakerFork:
     """A forked child starts with a closed breaker and a fresh lock."""
 

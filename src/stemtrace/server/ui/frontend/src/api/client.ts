@@ -174,6 +174,7 @@ export interface TaskNode {
   group_id: string | null
   chord_id: string | null
   parent_id: string | null
+  reported_parent_id: string | null
   children: string[]
   events: TaskEvent[]
   first_seen: string | null
@@ -201,6 +202,7 @@ export interface GraphNode {
   group_id: string | null
   chord_id: string | null
   parent_id: string | null
+  reported_parent_id: string | null
   children: string[]
   duration_ms: number | null
   first_seen: string | null
@@ -246,7 +248,10 @@ export interface FetchTasksParams {
   limit?: number
   offset?: number
   state?: string
+  /** Substring of the task name (the search box). */
   name?: string
+  /** The whole task name (a task's "View runs"). */
+  name_exact?: string
   from_date?: string
   to_date?: string
 }
@@ -265,6 +270,7 @@ export async function fetchTasks(params?: FetchTasksParams): Promise<TaskListRes
   if (params?.offset) searchParams.set('offset', params.offset.toString())
   if (params?.state) searchParams.set('state', params.state)
   if (params?.name) searchParams.set('name', params.name)
+  if (params?.name_exact) searchParams.set('name_exact', params.name_exact)
   if (params?.from_date) searchParams.set('from_date', params.from_date)
   if (params?.to_date) searchParams.set('to_date', params.to_date)
 

@@ -38,6 +38,8 @@ import threading
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
+from stemtrace.core.exceptions import is_task_interrupt
+
 if TYPE_CHECKING:
     from types import FrameType
 
@@ -300,12 +302,16 @@ class TaskOutputHandler(logging.Handler):
         """Append the record to the active buffer. Never raises."""
         try:
             self._capture(record)
-        except Exception:
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                raise  # a soft time limit hit mid-capture: the task's to see
             # Logged under "stemtrace", which this handler ignores: no recursion.
             logger.debug("Failed to capture log record", exc_info=True)
         try:
             self._forward_to_last_resort(record)
-        except Exception:
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                raise  # a soft time limit hit mid-capture: the task's to see
             logger.debug("Failed to forward log record to lastResort", exc_info=True)
 
     def _capture(self, record: logging.LogRecord) -> None:
@@ -370,12 +376,17 @@ class TeeStream:
         try:
             record = _record_being_emitted()
             skip = record is not None and _tee_should_skip(record)
-        except Exception:  # noqa: BLE001  fails open: a lookup bug must not break the task's write
+        # Fails open: a lookup bug must not break the task's write.
+        except Exception as exc:
+            if is_task_interrupt(exc):
+                raise  # a soft time limit hit mid-capture: the task's to see
             skip = False
         if not skip:
             try:
                 buffer.append(text)
-            except Exception:
+            except Exception as exc:
+                if is_task_interrupt(exc):
+                    raise  # a soft time limit hit mid-capture: the task's to see
                 logger.debug("Failed to capture stream write", exc_info=True)
         return written
 

@@ -50,8 +50,8 @@ class TestWorkersRefresh:
         """refresh=true marks workers online when Celery reports them active."""
         store = GraphStore()
         worker_registry = WorkerRegistry()
-        worker_registry.register_worker("worker-1", 12345, ["tasks.add"])
-        worker_registry.mark_shutdown("worker-1", 12345)  # offline before refresh
+        worker_registry.register_worker("celery@worker-1", 12345, ["tasks.add"])
+        worker_registry.mark_offline("celery@worker-1", 12345)  # offline before refresh
 
         started_at = datetime.now(timezone.utc)
         fake = _FakeInspect(
@@ -77,7 +77,7 @@ class TestWorkersRefresh:
         assert data["total"] == 1
 
         worker = data["workers"][0]
-        assert worker["hostname"] == "worker-1"
+        assert worker["hostname"] == "celery@worker-1"
         assert worker["status"] == "online"
         # last_seen should be updated to "now-ish"
         # Python 3.10 fromisoformat() does not accept the "Z" suffix

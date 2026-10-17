@@ -1,26 +1,21 @@
-"""Tests for RabbitMQTransport.publish() failing fast during broker outages.
+"""Tests for RabbitMQTransport.publish(): reuse, failing fast, failover, breaker.
 
-A fake kombu module stands in for the broker. Its Connection models the parts
-of kombu's connect path the transport relies on: a ``;``-separated URL becomes
-``alt`` (one entry per host), ``maybe_switch_next()`` moves to the next
-host, and ``ensure_connection`` walks the hosts round-robin from the current
-one like kombu's ``retry_over_time`` does (raising once ``retries`` reaches
-``max_retries`` *before* calling the errback, sleeping for the interval only
-after a full round of hosts has failed). Errors kombu doesn't treat as
-recoverable (such as an authentication failure) are raised at once.
+``tests/fake_kombu.py`` stands in for kombu and py-amqp (see its docstring for
+the real behavior it models and where that was read).
 """
 
-import contextlib
 import logging
-import socket
-import sys
 import threading
-import types
-from collections.abc import Callable
+from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import Any, ClassVar
 
 import pytest
+from celery.exceptions import (
+    SoftTimeLimitExceeded,
+    Terminated,
+    TimeLimitExceeded,
+    WorkerLostError,
+)
 from kombu import Connection as KombuConnection
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
@@ -30,206 +25,13 @@ from stemtrace.transports.rabbitmq import (
     PUBLISH_IO_TIMEOUT,
     RabbitMQTransport,
 )
+from stemtrace.transports.rabbitmq_publisher import connection_name
+from tests import fake_kombu
+from tests.fake_kombu import FakeBroker, FakeClock
 
 LOGGER_NAME = "stemtrace.transports.rabbitmq"
 H1 = "amqp://guest:guest@h1:5672//"
 H2 = "amqp://guest:guest@h2:5672//"
-
-
-class FakeClock:
-    """Monotonic clock the test advances by hand."""
-
-    def __init__(self, now: float = 1000.0) -> None:
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class FakeBroker:
-    """State shared by the fake kombu module: which hosts are down, what arrived."""
-
-    def __init__(self, clock: FakeClock) -> None:
-        self.clock = clock
-        self.down: set[str] = set()
-        # Hosts that refuse the login (not a recoverable error for kombu).
-        self.auth_refused: set[str] = set()
-        self.publish_error: Exception | None = None
-        # Hosts where publish_error applies (None: every host).
-        self.publish_error_hosts: set[str] | None = None
-        # Seconds Producer.publish takes (advances the fake clock).
-        self.publish_delay = 0.0
-        # Raised by the AMQP close handshake, e.g. socket.timeout while a
-        # blocked broker (memory/disk alarm) never sends Close-Ok.
-        self.close_error: Exception | None = None
-        # When set, Producer.publish waits here first (concurrent attempts).
-        self.publish_gate: threading.Barrier | None = None
-        self.connections: list[Any] = []
-        self.published: list[tuple[str, Any, dict[str, Any]]] = []
-
-
-class _FakeAmqpTransport:
-    def __init__(self) -> None:
-        self.sock, self.peer = socket.socketpair()
-
-
-class _FakeAmqpConnection:
-    """py-amqp Connection: close() waits for Close-Ok, collect() doesn't."""
-
-    def __init__(self, broker: FakeBroker) -> None:
-        self.broker = broker
-        self.transport = _FakeAmqpTransport()
-        self.calls: list[str] = []
-        self._open = True
-
-    def close(self) -> None:
-        if not self._open:
-            return  # py-amqp: already closed
-        self.calls.append("close")
-        if self.broker.close_error is not None:
-            # py-amqp collects the connection, then re-raises.
-            self._open = False
-            raise self.broker.close_error
-        self._open = False
-
-    def collect(self) -> None:
-        self.calls.append("collect")
-        self._open = False
-
-
-class _FakeChannel:
-    def __init__(self, connection: "_FakeConnection") -> None:
-        self.connection = connection
-
-
-class _FakeConnection:
-    """kombu Connection; _install_fake_kombu_for_publish binds ``broker``."""
-
-    broker: ClassVar[FakeBroker]
-    retry_limit: ClassVar[int] = 50
-
-    def __init__(self, url: str, **kwargs: Any) -> None:
-        self.url = url
-        self.kwargs = kwargs
-        self.alt = url.split(";") if ";" in url else []
-        self.switches = 0
-        self._index = 0
-        self.ensure_calls: list[dict[str, Any]] = []
-        self.attempted: list[str] = []
-        self.sleeps: list[float] = []
-        self.host: str | None = None
-        self.closed = False
-        self.sock_timeout_at_channel: float | None = None
-        self.connection = _FakeAmqpConnection(self.broker)
-        self.broker.connections.append(self)
-
-    def __enter__(self) -> "_FakeConnection":
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        del exc_type, exc, tb
-        self.closed = True
-        # kombu's release() closes the AMQP connection and swallows
-        # socket errors (including a Close-Ok timeout).
-        with contextlib.suppress(OSError):
-            self.connection.close()
-        self.connection.transport.sock.close()
-        self.connection.transport.peer.close()
-
-    def maybe_switch_next(self) -> None:
-        self.switches += 1
-        if self.alt:
-            self._index = (self._index + 1) % len(self.alt)
-
-    def ensure_connection(
-        self,
-        *,
-        errback: Callable[[Exception, float], None] | None = None,
-        max_retries: int | None = None,
-        interval_start: float = 2,
-        interval_step: float = 2,
-        interval_max: float = 30,
-        reraise_as_library_errors: bool = True,
-    ) -> "_FakeConnection":
-        self.ensure_calls.append(
-            {
-                "errback": errback,
-                "max_retries": max_retries,
-                "interval_start": interval_start,
-                "interval_step": interval_step,
-                "interval_max": interval_max,
-                "reraise_as_library_errors": reraise_as_library_errors,
-            }
-        )
-        del interval_step, interval_max
-        hosts = self.alt or [self.url]
-        retries = 0
-        while True:
-            host = hosts[(self._index + retries) % len(hosts)]
-            self.attempted.append(host)
-            if host in self.broker.auth_refused:
-                raise PermissionError(f"ACCESS_REFUSED on {host}")
-            if host not in self.broker.down:
-                self.host = host
-                return self
-            exc = ConnectionRefusedError(f"{host} refused")
-            if max_retries is not None and retries >= max_retries:
-                raise exc
-            if retries >= self.retry_limit:
-                raise RuntimeError("runaway connect loop")
-            completes_round = (retries + 1) % len(hosts) == 0
-            interval = interval_start if completes_round else 0
-            if errback is not None:
-                errback(exc, interval)
-            if interval:
-                self.sleeps.append(interval)
-            retries += 1
-
-    def channel(self) -> _FakeChannel:
-        if self.host is None:
-            raise AssertionError("channel() before ensure_connection()")
-        self.sock_timeout_at_channel = self.connection.transport.sock.gettimeout()
-        return _FakeChannel(self)
-
-
-class _FakeExchange:
-    def __init__(self, name: str, *, type: str, durable: bool) -> None:
-        self.name = name
-        self.type = type
-        self.durable = durable
-
-
-class _FakeProducer:
-    def __init__(self, channel: _FakeChannel) -> None:
-        self.channel = channel
-
-    def publish(self, body: Any, **kwargs: Any) -> None:
-        broker = self.channel.connection.broker
-        if broker.publish_gate is not None:
-            broker.publish_gate.wait(timeout=5.0)
-        broker.clock.advance(broker.publish_delay)
-        host = self.channel.connection.host
-        if broker.publish_error is not None and (
-            broker.publish_error_hosts is None or host in broker.publish_error_hosts
-        ):
-            raise broker.publish_error
-        broker.published.append((host, body, kwargs))
-
-
-def _install_fake_kombu_for_publish(
-    monkeypatch: pytest.MonkeyPatch, broker: FakeBroker
-) -> None:
-    """Install a fake kombu publish stack into sys.modules (no broker required)."""
-    fake_kombu = types.ModuleType("kombu")
-    # The transport builds Connection(url, **kwargs) itself, so bind the
-    # broker on a per-test subclass rather than passing it in.
-    fake_kombu.Connection = type("Connection", (_FakeConnection,), {"broker": broker})
-    fake_kombu.Exchange = _FakeExchange
-    fake_kombu.Producer = _FakeProducer
-    monkeypatch.setitem(sys.modules, "kombu", fake_kombu)
 
 
 @pytest.fixture
@@ -238,10 +40,11 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-def broker(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> FakeBroker:
+def broker(monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> Iterator[FakeBroker]:
     fake = FakeBroker(clock)
-    _install_fake_kombu_for_publish(monkeypatch, fake)
-    return fake
+    fake_kombu.install(monkeypatch, fake)
+    yield fake
+    fake.release_sockets()
 
 
 def _event(task_id: str = "t-1") -> TaskEvent:
@@ -274,7 +77,14 @@ class TestRabbitMQPublishFailFast:
         assert len(broker.connections) == 1
         conn = broker.connections[0]
         assert conn.url == H1
-        assert conn.kwargs == {"connect_timeout": CONNECT_TIMEOUT}
+        # The heartbeat is forced off: nothing sends heartbeats between publishes.
+        assert conn.kwargs == {
+            "connect_timeout": CONNECT_TIMEOUT,
+            "transport_options": {
+                "heartbeat": 0,
+                "client_properties": {"connection_name": connection_name()},
+            },
+        }
         assert len(conn.ensure_calls) == 1
         call = conn.ensure_calls[0]
         assert call["max_retries"] == 0
@@ -282,7 +92,8 @@ class TestRabbitMQPublishFailFast:
         assert call["interval_step"] == 0
         assert call["interval_max"] == 0
         assert call["reraise_as_library_errors"] is False
-        assert conn.closed is True
+        # The connection stays open for the next publish.
+        assert conn.connection.calls == []
         assert len(broker.published) == 1
         host, body, kwargs = broker.published[0]
         assert host == H1
@@ -324,52 +135,25 @@ class TestRabbitMQPublishFailFast:
         assert warnings[0].exc_info is not None
 
 
-class TestRabbitMQPublishClose:
-    """The connection close is part of the attempt."""
+class TestRabbitMQPublishConnectionReuse:
+    """One connection per process serves every publish."""
 
-    def test_publish_success_closes_with_handshake_not_abruptly(
+    def test_publish_many_events_reuses_one_connection_and_declares_once(
         self, broker: FakeBroker, clock: FakeClock
     ) -> None:
         transport = _transport(H1, clock)
 
-        transport.publish(_event())
-
-        assert broker.connections[0].connection.calls == ["close"]
-
-    def test_publish_close_timeout_counts_as_failure_and_opens_breaker(
-        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        # A broker under a memory/disk alarm stops reading after the publish,
-        # so Close-Ok never arrives.
-        broker.close_error = TimeoutError("timed out")
-        transport = _transport(H1, clock)
-
-        transport.publish(_event("t-blocked"))
-        for i in range(20):
+        for i in range(50):
             transport.publish(_event(f"t-{i}"))
 
-        # Like any failure, it takes three in a row to open the breaker.
-        assert len(broker.connections) == PUBLISH_FAILURES_TO_OPEN
-        warnings = _records(caplog, logging.WARNING)
-        assert [w.getMessage() for w in warnings] == [
-            "Failed to publish event t-blocked to RabbitMQ; publishing continues "
-            "(0 event(s) dropped, 1 sent but unconfirmed since the last report)",
-            "Failed to publish event t-1 to RabbitMQ; dropping events for 1.0s "
-            "before trying again (0 event(s) dropped, 2 sent but unconfirmed "
-            "since the last report)",
+        assert len(broker.connections) == 1
+        conn = broker.connections[0]
+        assert len(conn.ensure_calls) == 1
+        assert conn.connection.calls == []
+        assert conn.declare_calls == 1
+        assert [body["task_id"] for _, body, _ in broker.published] == [
+            f"t-{i}" for i in range(50)
         ]
-        # The probe is unconfirmed too: the broker is blocking publishers, so
-        # it's retried only every 30s (each probe leaves a blocked connection
-        # on the broker until the alarm clears).
-        clock.advance(1.0)
-        transport.publish(_event("t-probe-1"))
-        assert len(broker.connections) == 4
-        clock.advance(29.9)
-        transport.publish(_event("t-skipped"))
-        assert len(broker.connections) == 4
-        clock.advance(0.1)
-        transport.publish(_event("t-probe-2"))
-        assert len(broker.connections) == 5
 
     def test_publish_failure_after_connect_drops_socket_without_close_wait(
         self, broker: FakeBroker, clock: FakeClock
@@ -381,6 +165,23 @@ class TestRabbitMQPublishClose:
 
         # No close handshake that would wait out another timeout.
         assert broker.connections[0].connection.calls == ["collect"]
+
+    def test_publish_after_failure_connects_again_on_next_attempt(
+        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-0"))
+        broker.publish_error = None
+
+        transport.publish(_event("t-1"))
+        transport.publish(_event("t-2"))
+
+        assert len(broker.connections) == 2
+        assert broker.connections[0].connection.calls == ["collect"]
+        assert broker.connections[1].connection.calls == []
+        assert [body["task_id"] for _, body, _ in broker.published] == ["t-1", "t-2"]
+        assert len(_records(caplog, logging.WARNING)) == 1
 
     def test_publish_dropped_event_logs_debug_line(
         self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
@@ -397,6 +198,21 @@ class TestRabbitMQPublishClose:
         assert debug == [
             "RabbitMQ publishing paused after failures; dropped event t-dropped"
         ]
+
+
+class TestRabbitMQTransportClose:
+    def test_close_closes_publisher_connection_and_next_publish_reconnects(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("t-1"))
+
+        transport.close()
+        transport.publish(_event("t-2"))
+
+        assert broker.connections[0].connection.calls == ["close", "collect"]
+        assert len(broker.connections) == 2
+        assert [body["task_id"] for _, body, _ in broker.published] == ["t-1", "t-2"]
 
 
 class TestRabbitMQPublishFailover:
@@ -436,12 +252,25 @@ class TestRabbitMQPublishFailover:
         assert broker.published == []
         assert len(_records(caplog, logging.WARNING)) == 1
 
-    def test_publish_after_failover_starts_with_last_working_host(
+    def test_publish_after_failover_keeps_publishing_on_the_working_host(
         self, broker: FakeBroker, clock: FakeClock
     ) -> None:
         broker.down = {H1}
         transport = _transport(f"{H1};{H2}", clock)
         transport.publish(_event("t-1"))
+
+        transport.publish(_event("t-2"))
+
+        assert len(broker.connections) == 1
+        assert [host for host, _, _ in broker.published] == [H2, H2]
+
+    def test_publish_reconnect_after_failover_starts_with_last_working_host(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.down = {H1}
+        transport = _transport(f"{H1};{H2}", clock)
+        transport.publish(_event("t-1"))
+        broker.close_idle_connections()
 
         transport.publish(_event("t-2"))
 
@@ -459,8 +288,10 @@ class TestRabbitMQPublishFailover:
         transport = _transport(f"{H1};{H2}", clock)
         transport.publish(_event("t-1"))
         broker.down = {H2}
+        broker.close_idle_connections()
 
         transport.publish(_event("t-2"))
+        broker.close_idle_connections()
         transport.publish(_event("t-3"))
 
         assert broker.connections[1].attempted == [H2, H1]
@@ -513,11 +344,11 @@ class TestRabbitMQPublishFailoverResolution:
     def test_publish_connection_resolves_each_entry_like_kombu_failover(
         self, url: str, expected: list[tuple[str, int, str | None, str | None, str]]
     ) -> None:
-        transport = RabbitMQTransport(url, prefix="test", ttl=60)
+        publisher = RabbitMQTransport(url, prefix="test", ttl=60)._publisher
 
         resolved = []
         for first in range(len(expected)):
-            conn = transport._publish_connection(KombuConnection, first)
+            conn = publisher._connection(KombuConnection, first)
             resolved.append(
                 (
                     conn.hostname,
@@ -528,6 +359,7 @@ class TestRabbitMQPublishFailoverResolution:
                 )
             )
             assert conn.connect_timeout == CONNECT_TIMEOUT
+            assert conn.transport_options["heartbeat"] == 0
 
         assert resolved == expected
 
@@ -542,6 +374,7 @@ class TestRabbitMQPublishFailoverResolution:
         # on another host.
         broker.down = set()
         broker.auth_refused = {H2}
+        broker.close_idle_connections()
 
         transport.publish(_event("t-2"))
         transport.publish(_event("t-3"))
@@ -552,6 +385,81 @@ class TestRabbitMQPublishFailoverResolution:
         assert [(host, body["task_id"]) for host, body, _ in broker.published] == [
             (H2, "t-1"),
             (H1, "t-3"),
+        ]
+
+
+class TestRabbitMQPublishTaskInterrupts:
+    """Celery's control flow raised into the task mid-publish is the task's."""
+
+    @pytest.mark.parametrize(
+        "interrupt",
+        [SoftTimeLimitExceeded, TimeLimitExceeded, Terminated, WorkerLostError],
+    )
+    def test_publish_task_interrupt_propagates_without_charging_breaker(
+        self,
+        interrupt: type[Exception],
+        broker: FakeBroker,
+        clock: FakeClock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        broker.publish_error = interrupt("limit")
+        transport = _transport(H1, clock)
+
+        for _ in range(PUBLISH_FAILURES_TO_OPEN + 1):
+            with pytest.raises(interrupt):
+                transport.publish(_event())
+        broker.publish_error = None
+        transport.publish(_event("after"))
+
+        assert transport._publish_breaker.is_open is False
+        assert transport._publish_breaker.dropped == 0
+        assert _records(caplog, logging.WARNING) == []
+        assert [body["task_id"] for _, body, _ in broker.published] == ["after"]
+
+    def test_publish_task_interrupt_in_probe_frees_the_probe_slot(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        broker.publish_error = TimeoutError("timed out")
+        transport = _transport(H1, clock)
+        for _ in range(PUBLISH_FAILURES_TO_OPEN):
+            transport.publish(_event())
+        assert transport._publish_breaker.is_open is True
+        clock.advance(transport._publish_breaker.cooldown)
+        broker.publish_error = SoftTimeLimitExceeded("limit")
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            transport.publish(_event("probe"))
+        broker.publish_error = None
+        transport.publish(_event("second probe"))
+
+        # The interrupted probe says nothing about the broker: the next event
+        # is the new probe and closes the breaker, instead of being dropped.
+        assert transport._publish_breaker.is_open is False
+        assert [body["task_id"] for _, body, _ in broker.published] == ["second probe"]
+
+    def test_publish_task_interrupt_while_reading_pending_frames_propagates(
+        self, broker: FakeBroker, clock: FakeClock
+    ) -> None:
+        transport = _transport(H1, clock)
+        transport.publish(_event("before"))
+        # The soft limit lands in the pre-publish read of the broker's frames.
+        broker.connections[0].connection.deliver(
+            "channel_error", SoftTimeLimitExceeded("limit")
+        )
+
+        with pytest.raises(SoftTimeLimitExceeded):
+            transport.publish(_event("interrupted"))
+
+        # Not mistaken for a lost connection (which would reconnect and send
+        # the event anyway); the half-read connection is dropped.
+        assert [body["task_id"] for _, body, _ in broker.published] == ["before"]
+        assert broker.connections[0].connection.calls == ["collect"]
+        assert len(broker.connections) == 1
+        transport.publish(_event("after"))
+        assert len(broker.connections) == 2
+        assert [body["task_id"] for _, body, _ in broker.published] == [
+            "before",
+            "after",
         ]
 
 
@@ -610,7 +518,8 @@ class TestRabbitMQPublishBreaker:
         transport.publish(_event("t-probe-2"))
         transport.publish(_event("t-after"))
 
-        assert len(broker.connections) == 6
+        # The probe's connection is kept for the event after it.
+        assert len(broker.connections) == 5
         assert [body["task_id"] for _, body, _ in broker.published] == [
             "t-probe-2",
             "t-after",
@@ -638,7 +547,7 @@ class TestRabbitMQPublishBreaker:
         for i in range(5):
             transport.publish(_event(f"t-{i}"))
 
-        assert len(broker.connections) == 5
+        assert len(broker.connections) == 1
         assert len(broker.published) == 5
 
     def test_publish_sporadic_fast_error_drops_only_that_event(
@@ -652,7 +561,7 @@ class TestRabbitMQPublishBreaker:
         transport.publish(_event("t-1"))
 
         assert len(broker.connections) == 2
-        assert broker.connections[0].closed is True
+        assert broker.connections[0].connection.calls == ["collect"]
         assert [body["task_id"] for _, body, _ in broker.published] == ["t-1"]
         assert len(_records(caplog, logging.WARNING)) == 1
 
@@ -673,13 +582,30 @@ class TestRabbitMQPublishBreaker:
         ]
 
     def test_publish_concurrent_failures_open_breaker_once_for_initial_cooldown(
-        self, broker: FakeBroker, clock: FakeClock, caplog: pytest.LogCaptureFixture
+        self,
+        broker: FakeBroker,
+        clock: FakeClock,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Eight task threads are mid-publish when the broker stops answering.
-        broker.publish_gate = threading.Barrier(8)
+        # Eight task threads are in flight (past the breaker) when the broker
+        # stops answering. They share one connection, so they publish one at
+        # a time: the third failure opens the breaker, and the five still
+        # waiting skip their attempt instead of each waiting out a timeout.
         broker.publish_error = TimeoutError("timed out")
         broker.publish_delay = PUBLISH_IO_TIMEOUT
         transport = _transport(H1, clock)
+        in_flight = threading.Barrier(8)
+        allow = transport._publish_breaker.allow
+
+        def allow_then_wait_for_the_others() -> int | None:
+            ticket = allow()
+            in_flight.wait(timeout=5.0)
+            return ticket
+
+        monkeypatch.setattr(
+            transport._publish_breaker, "allow", allow_then_wait_for_the_others
+        )
         threads = [
             threading.Thread(target=transport.publish, args=(_event(f"t-{i}"),))
             for i in range(8)
@@ -688,10 +614,11 @@ class TestRabbitMQPublishBreaker:
             thread.start()
         for thread in threads:
             thread.join(timeout=5.0)
-        broker.publish_gate = None
         broker.publish_error = None
         broker.publish_delay = 0.0
 
+        assert [thread.is_alive() for thread in threads] == [False] * 8
+        assert len(broker.connections) == PUBLISH_FAILURES_TO_OPEN
         warnings = _records(caplog, logging.WARNING)
         # The first failure's line, then the third opens the breaker; the
         # other five were in flight and don't change the state.
@@ -699,9 +626,10 @@ class TestRabbitMQPublishBreaker:
         assert "dropping events for 1.0s" in warnings[1].getMessage()
         # The cooldown wasn't escalated: one second later a probe goes out
         # and, with the broker healthy again, publishing resumes.
+        monkeypatch.setattr(transport._publish_breaker, "allow", allow)
         clock.advance(1.0)
         transport.publish(_event("t-probe"))
-        assert len(broker.connections) == 9
+        assert len(broker.connections) == PUBLISH_FAILURES_TO_OPEN + 1
         assert [body["task_id"] for _, body, _ in broker.published] == ["t-probe"]
 
     def test_publish_long_outage_logs_bounded_lines(

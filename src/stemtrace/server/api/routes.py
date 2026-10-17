@@ -7,7 +7,10 @@ import contextlib
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+
+# FastAPI evaluates the Query annotations below at runtime, so datetime must be
+# a real import, not a type-checking one.
+from datetime import datetime  # noqa: TC003
 from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
@@ -50,15 +53,6 @@ def _monotonic() -> float:
     global stdlib `time.monotonic()` used by Starlette/AnyIO internals.
     """
     return time.monotonic()
-
-
-def _hostname_from_worker_key(worker_key: str) -> str:
-    """Extract hostname from Celery worker key.
-
-    Celery typically prefixes worker keys with `celery@`, but some brokers or
-    setups may return plain hostnames.
-    """
-    return worker_key.split("@", 1)[1] if "@" in worker_key else worker_key
 
 
 def _pid_from_stats_payload(payload: object) -> int | None:
@@ -129,6 +123,7 @@ def _node_to_response(
         group_id=node.group_id,
         chord_id=node.chord_id,
         parent_id=node.parent_id,
+        reported_parent_id=node.reported_parent_id,
         children=node.children,
         events=[_event_to_response(e, include_output) for e in node.events],
         first_seen=first_seen,
@@ -228,6 +223,7 @@ def _node_to_graph_response(
         group_id=node.group_id,
         chord_id=node.chord_id,
         parent_id=node.parent_id,
+        reported_parent_id=node.reported_parent_id,
         children=children,
         duration_ms=duration_ms,
         first_seen=first_seen,
@@ -282,11 +278,19 @@ def _refresh_worker_registry_from_inspect(
 
     The refresh is intentionally best-effort and must never raise.
 
+    Inspect replies are keyed by Celery nodename (``name@host``), the same
+    name worker events carry, so the keys are used as-is. Shortening them to
+    the host listed every worker twice and couldn't tell ``celery multi``
+    nodes on one host apart.
+
     Args:
         worker_registry: Worker registry to populate/update.
         inspector: Celery inspector to query.
     """
-    # Attempt to discover workers and their registered tasks.
+    # The replies describe the workers as of now, but the consumer keeps
+    # applying worker events while inspect waits (up to 0.5 s per call).
+    seen = worker_registry.event_generations()
+
     # We need PID to register a worker. `stats()` typically includes it.
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
@@ -305,43 +309,21 @@ def _refresh_worker_registry_from_inspect(
             active = inspector.ping()
         if not active:
             return
-        active_hostnames = {
-            _hostname_from_worker_key(worker_key) for worker_key in active
-        }
-
-        for worker in worker_registry.get_all_workers():
-            if worker.hostname in active_hostnames:
-                worker_registry.mark_online(worker.hostname, worker.pid)
+        worker_registry.apply_ping_reply(active)
         return
 
-    # Treat stats responders as active workers and update online/offline state.
-    active_hostnames = {_hostname_from_worker_key(worker_key) for worker_key in stats}
-
-    # If we got a non-empty stats response, mark known workers offline if they
-    # didn't respond. This makes the Workers view accurate even without events.
-    for worker in worker_registry.get_all_workers():
-        if worker.hostname not in active_hostnames:
-            worker_registry.mark_shutdown(worker.hostname, worker.pid)
-
-    now = datetime.now(timezone.utc)
-
-    # Prefer canonical worker keys from stats (they include the pid).
-    for worker_key, payload in stats.items():
-        hostname = _hostname_from_worker_key(worker_key)
+    # If we got a non-empty stats response, workers that didn't answer go
+    # offline (an unanswered inspect doesn't prove the process closed, so a
+    # later ping may revive them), and each node's one live process is the pid
+    # stats names: its older pids retire (a worker killed without
+    # worker_shutdown, then restarted). A node that answers without a pid is
+    # treated like a ping reply.
+    replies: dict[str, tuple[int | None, list[str] | None]] = {}
+    for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
-        if pid is None:
-            continue
-
-        tasks = _tasks_for_worker_key(registered, worker_key)
-        if tasks is None:
-            tasks = worker_registry.get_registered_tasks(hostname, pid)
-        worker_registry.register_worker(
-            hostname=hostname,
-            pid=pid,
-            tasks=tasks,
-            task_definitions=None,
-            event_timestamp=now,
-        )
+        tasks = _tasks_for_worker_key(registered, nodename) if pid else None
+        replies[nodename] = (pid, tasks)
+    worker_registry.apply_stats_reply(seen, replies)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
@@ -589,6 +571,10 @@ def _add_task_routes(
         name: Annotated[
             str | None, Query(description="Filter by name substring")
         ] = None,
+        name_exact: Annotated[
+            str | None,
+            Query(description="Filter by exact task name (case-sensitive)"),
+        ] = None,
         from_date: Annotated[
             datetime | None, Query(description="Filter by start date (ISO format)")
         ] = None,
@@ -596,7 +582,11 @@ def _add_task_routes(
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
     ) -> TaskListResponse:
-        """List tasks with optional filtering by state, name, and date range."""
+        """List tasks with optional filtering by state, name, and date range.
+
+        ``name`` is a case-insensitive substring match (the search box);
+        ``name_exact`` is an exact match on the full task name.
+        """
         from stemtrace.core.events import TaskState as TS
 
         task_state: TaskState | None = None
@@ -609,6 +599,7 @@ def _add_task_routes(
             offset=offset,
             state=task_state,
             name_contains=name,
+            name_exact=name_exact,
             from_date=from_date,
             to_date=to_date,
         )

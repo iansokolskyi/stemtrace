@@ -56,6 +56,10 @@ function detailAffectedBy(taskId: string, detail: unknown, event: TaskEvent): bo
 const RECONNECT_BASE_DELAY = 3000
 const RECONNECT_MAX_DELAY = 60000
 
+// A round of refetches that has not finished after this long stops holding up
+// the next one (a request that never answers must not freeze live updates).
+const REFETCH_ROUND_MAX_MS = 15000
+
 interface WebSocketProviderProps {
   children: ReactNode
 }
@@ -68,6 +72,47 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const pendingEventsRef = useRef<TaskEvent[]>([])
+  const refetchingRef = useRef(false)
+
+  // Refetch what the events since the last round touched, one round at a time.
+  // Invalidating on every event cancels the fetch already in flight (TanStack
+  // Query's default), so when events arrive faster than the API answers every
+  // fetch is cancelled and nothing updates until the burst ends. Here events
+  // that arrive during a round wait for it to finish and share the next one.
+  const refetchForEvents = useCallback(async () => {
+    if (refetchingRef.current) return
+    refetchingRef.current = true
+    try {
+      while (pendingEventsRef.current.length > 0) {
+        const events = pendingEventsRef.current.splice(0)
+        // Invalidate both regular and infinite queries. ['tasks', params] is
+        // a list; ['tasks', taskId] is a task detail (with its captured
+        // output), refetched only when an event concerns that page.
+        const round = Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ['tasks'],
+            predicate: (query) => {
+              const key = query.queryKey[1]
+              if (typeof key !== 'string') return true
+              return events.some((event) => detailAffectedBy(key, query.state.data, event))
+            },
+          }),
+          queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] }),
+          queryClient.invalidateQueries({ queryKey: ['graphs'] }),
+          queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] }),
+        ])
+        let timer: number | undefined
+        const tooLong = new Promise((resolve) => {
+          timer = window.setTimeout(resolve, REFETCH_ROUND_MAX_MS)
+        })
+        await Promise.race([round, tooLong])
+        window.clearTimeout(timer)
+      }
+    } finally {
+      refetchingRef.current = false
+    }
+  }, [queryClient])
 
   const connect = useCallback(() => {
     // Don't reconnect if already connected or connecting
@@ -113,21 +158,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           setLastEvent(data)
           setEvents((prev) => [data, ...prev].slice(0, 100)) // Keep last 100
 
-          // Invalidate queries to refresh data
-          // Invalidate both regular and infinite queries. ['tasks', params] is
-          // a list; ['tasks', taskId] is a task detail (with its captured
-          // output), refetched only when the event concerns that page.
-          queryClient.invalidateQueries({
-            queryKey: ['tasks'],
-            predicate: (query) => {
-              const key = query.queryKey[1]
-              if (typeof key !== 'string') return true
-              return detailAffectedBy(key, query.state.data, data)
-            },
-          })
-          queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] })
-          queryClient.invalidateQueries({ queryKey: ['graphs'] })
-          queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
+          pendingEventsRef.current.push(data)
+          void refetchForEvents()
         } catch (e) {
           console.error('[WebSocket] Failed to parse message:', e)
         }
@@ -148,7 +180,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       console.error('[WebSocket] Failed to connect:', e)
       scheduleReconnect()
     }
-  }, [queryClient])
+  }, [refetchForEvents])
 
   useEffect(() => {
     connect()

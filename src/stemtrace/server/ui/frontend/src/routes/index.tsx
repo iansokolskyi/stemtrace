@@ -7,6 +7,7 @@ import { TaskTimeline } from '@/components/TaskTimeline'
 interface SearchParams {
   state?: string
   name?: string
+  name_exact?: string
   from_date?: string
   to_date?: string
   view?: 'list' | 'timeline'
@@ -17,6 +18,7 @@ export const Route = createFileRoute('/')({
   validateSearch: (search: Record<string, unknown>): SearchParams => ({
     state: typeof search.state === 'string' ? search.state : undefined,
     name: typeof search.name === 'string' ? search.name : undefined,
+    name_exact: typeof search.name_exact === 'string' ? search.name_exact : undefined,
     from_date: typeof search.from_date === 'string' ? search.from_date : undefined,
     to_date: typeof search.to_date === 'string' ? search.to_date : undefined,
     view: search.view === 'list' || search.view === 'timeline' ? search.view : undefined,
@@ -27,12 +29,13 @@ type ViewMode = 'list' | 'timeline'
 
 function TasksPage() {
   const navigate = useNavigate()
-  const { state, name, from_date, to_date, view } = Route.useSearch()
+  const { state, name, name_exact, from_date, to_date, view } = Route.useSearch()
 
   const [viewMode, setViewMode] = useState<ViewMode>(view ?? 'list')
   const filters = {
     state,
     name: name ?? '',
+    name_exact,
     from_date,
     to_date,
   }
@@ -40,6 +43,7 @@ function TasksPage() {
   const setFilters = (newFilters: {
     state?: string
     name: string
+    name_exact?: string
     from_date?: string
     to_date?: string
   }) => {
@@ -48,6 +52,7 @@ function TasksPage() {
       search: {
         state: newFilters.state,
         name: newFilters.name || undefined,
+        name_exact: newFilters.name_exact,
         from_date: newFilters.from_date,
         to_date: newFilters.to_date,
         view: viewMode,
@@ -63,6 +68,7 @@ function TasksPage() {
       search: {
         state,
         name: name || undefined,
+        name_exact,
         from_date,
         to_date,
         view: mode,

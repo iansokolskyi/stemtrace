@@ -1,13 +1,16 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
+import { useMemo } from 'react'
 import type { TaskNode } from '@/api/client'
 import { useTasks } from '@/api/queries'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { formatDuration, stateColors, TERMINAL_STATES, TimelineBar } from './TimelineBar'
 
 interface TaskTimelineProps {
   filters: {
     state: string | undefined
     name: string
+    name_exact?: string
     from_date?: string
     to_date?: string
   }
@@ -17,9 +20,19 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
   const { data, isLoading, error } = useTasks({
     state: filters.state,
     name: filters.name || undefined,
+    name_exact: filters.name_exact,
     from_date: filters.from_date,
     to_date: filters.to_date,
   })
+
+  // The names of the rows drawn below (those with timing data)
+  const shortNames = useMemo(
+    () =>
+      shortestUniqueSuffixes(
+        (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated).map((t) => t.name),
+      ),
+    [data],
+  )
 
   if (isLoading) {
     return <TimelineSkeleton />
@@ -61,7 +74,13 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
 
       <div className="space-y-2">
         {tasks.map((task) => (
-          <TaskTimelineRow key={task.task_id} task={task} minTime={minTime} range={range} />
+          <TaskTimelineRow
+            key={task.task_id}
+            task={task}
+            label={shortNames.get(task.name) ?? task.name}
+            minTime={minTime}
+            range={range}
+          />
         ))}
       </div>
 
@@ -81,11 +100,13 @@ export function TaskTimeline({ filters }: TaskTimelineProps) {
 
 interface TaskTimelineRowProps {
   task: TaskNode
+  /** The task's name as far as it takes to tell it from the others shown. */
+  label: string
   minTime: number
   range: number
 }
 
-function TaskTimelineRow({ task, minTime, range }: TaskTimelineRowProps) {
+function TaskTimelineRow({ task, label, minTime, range }: TaskTimelineRowProps) {
   const taskStart = task.first_seen ? new Date(task.first_seen).getTime() : minTime
   const taskStartPct = ((taskStart - minTime) / range) * 100
   const wouldOverflow = taskStartPct > 85
@@ -97,8 +118,9 @@ function TaskTimelineRow({ task, minTime, range }: TaskTimelineRowProps) {
         params={{ taskId: task.task_id }}
         className="w-44 truncate text-sm text-slate-300 hover:text-emerald-400 transition-colors"
         title={task.name}
+        aria-label={task.name}
       >
-        {task.name.split('.').pop()}
+        {label}
       </Link>
 
       <div className="flex-1 relative h-6">
