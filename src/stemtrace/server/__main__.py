@@ -1,11 +1,14 @@
 """CLI entry point for stemtrace server."""
 
 import os
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from stemtrace.core.exceptions import ConfigurationError
+
+if TYPE_CHECKING:
+    from stemtrace.core.groups import GroupConfig
 
 app = typer.Typer(
     name="stemtrace",
@@ -15,6 +18,39 @@ app = typer.Typer(
     # include --api-key, --login-password and --login-secret.
     pretty_exceptions_show_locals=False,
 )
+
+
+def _group_config_option(groups: str | None) -> "GroupConfig":
+    """Load ``--groups`` / ``STEMTRACE_GROUPS``; a bad file is a usage error.
+
+    Blank means unset, as for the node alias: an explicit empty flag falls
+    back to the env var.
+    """
+    from stemtrace.server.groups import configured_groups
+
+    try:
+        group_config = configured_groups(groups)
+    except ConfigurationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--groups'") from exc
+    if group_config.rules:
+        typer.echo(f"Task groups: {len(group_config.rules)} code-defined")
+    return group_config
+
+
+def _api_key_option(api_key: str | None) -> str | None:
+    """Validate ``--api-key`` / ``STEMTRACE_API_KEY``; never echo the key itself.
+
+    Blank means unset, as for the node alias.
+    """
+    from stemtrace.server.fastapi.api_key import configured_api_key
+
+    try:
+        key = configured_api_key(api_key)
+    except ConfigurationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--api-key'") from exc
+    if key is not None:
+        typer.echo("API key: set (Bearer auth on the API and WebSocket)")
+    return key
 
 
 @app.command()
@@ -109,6 +145,18 @@ def server(
             ),
         ),
     ] = None,
+    groups: Annotated[
+        str | None,
+        typer.Option(
+            "--groups",
+            envvar="STEMTRACE_GROUPS",
+            help=(
+                "TOML file of code-defined task groups ([[groups]] tables with "
+                "name, match, tags, color). Needs Python 3.11+. Tasks no rule "
+                "matches get their automatic group."
+            ),
+        ),
+    ] = None,
     api_key: Annotated[
         str | None,
         typer.Option(
@@ -129,7 +177,6 @@ def server(
     import uvicorn
     from fastapi import FastAPI
 
-    from stemtrace.server.fastapi.api_key import configured_api_key
     from stemtrace.server.fastapi.extension import StemtraceExtension
     from stemtrace.server.fastapi.form_auth import (
         FormAuthConfig,
@@ -168,13 +215,8 @@ def server(
     if node_alias is not None:
         typer.echo(f"Node alias: {node_alias}")
 
-    # Blank means unset, as for the node alias. Never echo the key itself.
-    try:
-        effective_api_key = configured_api_key(api_key)
-    except ConfigurationError as exc:
-        raise typer.BadParameter(str(exc), param_hint="'--api-key'") from exc
-    if effective_api_key is not None:
-        typer.echo("API key: set (Bearer auth on the API and WebSocket)")
+    group_config = _group_config_option(groups)
+    effective_api_key = _api_key_option(api_key)
 
     form_auth_config: FormAuthConfig | None = None
     if (login_username is None) != (login_password is None):
@@ -201,6 +243,7 @@ def server(
         serve_ui=False,
         form_auth_config=form_auth_config,
         node_alias_from_arguments=node_alias,
+        groups=group_config,
         api_key=effective_api_key,
     )
     fastapi_app = FastAPI(

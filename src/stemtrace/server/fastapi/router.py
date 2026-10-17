@@ -20,6 +20,7 @@ from stemtrace.server.websocket import WebSocketManager
 if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
+    from stemtrace.server.groups import GroupsInput
 
 
 def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): positional callers must keep working
@@ -31,21 +32,27 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     auth_dependency: Any = None,
     form_auth_config: FormAuthConfig | None = None,
     node_alias_from_arguments: str | None = None,
+    groups: GroupsInput = None,
     api_key: str | None = None,
     auth_throttle: LoginThrottle | None = None,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension.
 
+    ``groups`` takes code-defined task groups as ``StemtraceExtension`` does
+    (a list of GroupRule or dicts, or a TOML file path); None gives automatic
+    groups only.
+
     ``api_key`` requires ``Authorization: Bearer <key>`` on the JSON API
     (except the liveness probe) and the WebSocket; with ``form_auth_config``,
     a valid session cookie is accepted instead. With ``auth_dependency`` too,
     a JSON API request needs both; the WebSocket (not covered by
-    ``auth_dependency``) needs the key. ``auth_throttle`` counts failed keys per client IP
-    (a new one if None; pass the login's to share its counts).
+    ``auth_dependency``) needs the key. ``auth_throttle`` counts failed keys
+    per client IP (a new one if None; pass the login's to share its counts).
 
     Raises:
-        ConfigurationError: If ``api_key`` is shorter than 16 characters or
-            has characters other than visible ASCII.
+        ConfigurationError: Here, not on the first request, if ``groups`` is
+            invalid or its file can't be loaded, or ``api_key`` is shorter
+            than 16 characters or has characters other than visible ASCII.
     """
     if store is None:
         store = GraphStore()
@@ -65,6 +72,7 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         worker_registry=worker_registry,
         broker_url=broker_url,
         node_alias_from_arguments=node_alias_from_arguments,
+        groups=groups,
     )
     ws_router = create_websocket_router(
         ws_manager, form_auth_config=form_auth_config, api_key_guard=guard

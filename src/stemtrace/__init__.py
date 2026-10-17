@@ -24,6 +24,7 @@ from stemtrace._version import __version__
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.core.graph import TaskGraph, TaskNode
+from stemtrace.core.groups import GroupRule
 from stemtrace.core.ports import EventTransport
 from stemtrace.library.bootsteps import register_bootsteps
 from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
@@ -39,6 +40,7 @@ from stemtrace.server.fastapi.api_key import configured_api_key
 from stemtrace.server.fastapi.form_auth import FormAuthConfig, resolve_session_secret
 from stemtrace.server.fastapi.form_auth_middleware import create_form_auth_middleware
 from stemtrace.server.fastapi.login_routes import create_login_router
+from stemtrace.server.groups import GroupsInput, configured_groups
 from stemtrace.transports import get_transport as _get_transport
 
 if TYPE_CHECKING:
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ConfigurationError",
+    "GroupRule",
     "StemtraceConfig",
     "StemtraceExtension",
     "TaskEvent",
@@ -205,6 +208,7 @@ def init_app(
     login_secret: str | None = None,
     login_ttl_seconds: int = 86400,
     node_alias_from_arguments: str | None = None,
+    groups: GroupsInput = None,
     api_key: str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
@@ -235,6 +239,12 @@ def init_app(
             to show task names. Surrounding whitespace is stripped. If None or
             blank, uses the STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS env var (blank
             means unset).
+        groups: Code-defined task groups: a list of ``GroupRule`` (or dicts
+            with the same fields: name, match, tags, color) or a path to a TOML
+            file. The first rule whose ``match`` globs match a task name wins;
+            other tasks get their automatic group (from the task name). If
+            None or blank, uses the STEMTRACE_GROUPS env var (a TOML file
+            path; blank means unset). TOML files need Python 3.11+.
         api_key: Require ``Authorization: Bearer <key>`` on the JSON API (not
             the liveness probe) and the WebSocket, for scripts and coding
             agents. With the form login, a session cookie also passes; with
@@ -247,8 +257,9 @@ def init_app(
         The initialized StemtraceExtension instance.
 
     Raises:
-        ConfigurationError: If no broker URL can be determined, or the API key
-            is too short or has invalid characters.
+        ConfigurationError: If no broker URL can be determined, the groups
+            are invalid or their file can't be loaded, or the API key is too
+            short or has invalid characters.
     """
     if broker_url is None:
         broker_url = os.getenv("STEMTRACE_BROKER_URL")
@@ -268,6 +279,8 @@ def init_app(
             os.getenv("STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS") or ""
         ).strip() or None
 
+    # Validated before anything is installed on the app.
+    group_config = configured_groups(groups)
     effective_api_key = configured_api_key(api_key)
 
     mount_prefix = f"/{prefix.strip('/')}"
@@ -304,6 +317,7 @@ def init_app(
         auth_dependency=auth_dependency,
         form_auth_config=form_auth_config,
         node_alias_from_arguments=node_alias,
+        groups=group_config,
         api_key=effective_api_key,
     )
     if form_auth_config is not None:
