@@ -665,8 +665,9 @@ def _add_task_routes(
             from_date=from_date,
             to_date=to_date,
         )
+        group_of = _group_lookup(groups)
         return TaskListResponse(
-            tasks=[_node_to_response(n, group_of=_group_lookup(groups)) for n in nodes],
+            tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
             total=total,
             limit=limit,
             offset=offset,

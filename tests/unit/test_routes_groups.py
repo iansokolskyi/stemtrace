@@ -323,7 +323,21 @@ class _CountingGroups(GroupConfig):
 _RESOLVED: list[str] = []
 
 
-def test_graph_resolves_each_task_name_once_per_request(store: GraphStore) -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/tasks?limit=500",
+        "/api/tasks/root",
+        "/api/tasks/root/children",
+        "/api/graphs",
+        "/api/graphs/root",
+        "/api/tasks/registry?refresh=false",
+        "/api/groups",
+    ],
+)
+def test_each_route_resolves_each_task_name_once_per_request(
+    store: GraphStore, path: str
+) -> None:
     store.add_event(_event("root", "billing.start"))
     for i in range(30):
         name = "search.a" if i % 2 else "billing.charge"
@@ -333,9 +347,10 @@ def test_graph_resolves_each_task_name_once_per_request(store: GraphStore) -> No
     client = _client(store, _CountingGroups(rules=_CONFIG.rules))
     _RESOLVED.clear()
 
-    client.get("/api/graphs/root")
+    assert client.get(path).status_code == 200
 
-    assert sorted(_RESOLVED) == ["billing.charge", "billing.start", "search.a"]
+    assert len(_RESOLVED) == len(set(_RESOLVED))
+    assert set(_RESOLVED) <= {"billing.charge", "billing.start", "search.a"}
 
 
 def test_create_router_with_rule_list_serves_them(store: GraphStore) -> None:
