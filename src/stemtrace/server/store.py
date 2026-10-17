@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from stemtrace.core.events import TaskState
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
+from stemtrace.server.stats import RunRecord
 
 if TYPE_CHECKING:
     from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent
@@ -118,9 +120,9 @@ def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Collection, Iterable, Mapping
 
-    from stemtrace.core.events import TaskEvent, TaskState
+    from stemtrace.core.events import TaskEvent
 
 
 class WorkerRegistry:
@@ -477,6 +479,10 @@ class GraphStore:
         self._lock = threading.RLock()
         self._max_nodes = max_nodes
         self._listeners: list[Callable[[TaskEvent], None]] = []
+        # One immutable record per TASK node, kept in step with the graph
+        # under the same lock, so summaries never walk the live graph: an
+        # event only changes its own node's name, state and events.
+        self._runs: dict[str, RunRecord] = {}
 
     def add_event(self, event: TaskEvent) -> None:
         """Add event to graph and notify listeners.
@@ -489,11 +495,30 @@ class GraphStore:
             stored = self._graph.add_event(event)
             if stored is None:
                 return
+            self._index_run(stored.task_id)
             self._maybe_evict()
 
         for listener in self._listeners:
             with contextlib.suppress(Exception):
                 listener(stored)
+
+    def _index_run(self, task_id: str) -> None:
+        """Refresh one task's run record. Call with the lock held."""
+        node = self._graph.get_node(task_id)
+        record = RunRecord.from_node(node) if node is not None else None
+        if record is None:
+            self._runs.pop(task_id, None)
+        else:
+            self._runs[task_id] = record
+
+    def run_records(self) -> list[RunRecord]:
+        """Every task run's record, for aggregates computed outside the lock.
+
+        Holds the lock only to copy the references (at most ``max_nodes``);
+        records are immutable, so callers can read them freely.
+        """
+        with self._lock:
+            return list(self._runs.values())
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get a snapshot of a node by ID, or None if not found."""
@@ -506,7 +531,7 @@ class GraphStore:
         *,
         limit: int = 100,
         offset: int = 0,
-        state: TaskState | None = None,
+        state: TaskState | Collection[TaskState] | None = None,
         name_contains: str | None = None,
         name_exact: str | None = None,
         from_date: datetime | None = None,
@@ -541,7 +566,8 @@ class GraphStore:
             ]
 
             if state is not None:
-                nodes = [n for n in nodes if n.state == state]
+                wanted = {state} if isinstance(state, TaskState) else set(state)
+                nodes = [n for n in nodes if n.state in wanted]
             if name_contains is not None:
                 name_lower = name_contains.lower()
                 nodes = [n for n in nodes if name_lower in n.name.lower()]
@@ -797,3 +823,4 @@ class GraphStore:
         to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)
         for node in nodes_by_age[:to_remove]:
             self._graph.remove_node(node.task_id)
+            self._runs.pop(node.task_id, None)
