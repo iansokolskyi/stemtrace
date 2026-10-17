@@ -241,16 +241,8 @@ class TaskNode(BaseModel):
         state, not ``events``' timestamp order: with worker clocks skewed, an
         earlier attempt's events can carry later timestamps.
         """
-        index = self._index
-        if index is not None and len(index.keys) == len(self.events):
-            # The state-deciding event is the furthest along of all: when it
-            # has the value, no other event can beat it (no scan, O(1)).
-            decided = index.state_event
-            found = value(decided) if decided is not None else None
-            if found is not None:
-                return found
-        candidates = [event for event in self.events if value(event) is not None]
-        return value(max(candidates, key=_precedence)) if candidates else None
+        found = [event for event in self.events if value(event) is not None]
+        return value(max(found, key=_precedence)) if found else None
 
     @property
     def exception_type(self) -> str | None:
