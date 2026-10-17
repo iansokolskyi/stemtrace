@@ -235,12 +235,14 @@ class TaskNode(BaseModel):
         return self.events[-1].timestamp if self.events else None
 
     def _latest(self, value: Callable[[TaskEvent], str | None]) -> str | None:
-        """The value from the latest event in lifecycle order that has one."""
-        for event in reversed(self.events):
-            found = value(event)
-            if found is not None:
-                return found
-        return None
+        """The value from the furthest-along event that has one.
+
+        "Furthest along" is ``_precedence``, the order that decides the node's
+        state, not ``events``' timestamp order: with worker clocks skewed, an
+        earlier attempt's events can carry later timestamps.
+        """
+        found = [event for event in self.events if value(event) is not None]
+        return value(max(found, key=_precedence)) if found else None
 
     @property
     def exception_type(self) -> str | None:
