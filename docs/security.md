@@ -71,8 +71,9 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
 - **With a custom `auth_dependency`**, a JSON API request needs the key *and* whatever the
   dependency checks (FastAPI runs every router dependency; one can't waive another), so the
   dependency mustn't use the `Authorization` header itself (`require_basic_auth` does;
-  `require_api_key`, which reads `X-API-Key`, doesn't). The dependency doesn't apply to the
-  WebSocket or the liveness probe, as without a key: the WebSocket needs only the key. Browsers
+  `require_api_key`, which reads `X-API-Key`, doesn't). The dependency doesn't cover the
+  WebSocket, as without a key, so the WebSocket needs only the key; the liveness probe needs the
+  dependency's credentials but not the key. Browsers
   never send the key, so with a key the dashboard stops working for users of the custom auth;
   enable the login page for them. `require_api_key` is a separate, older helper for embedded
   apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key described
@@ -86,9 +87,9 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   Counts are per process.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
-  (unpadded); the server accepts with `stemtrace` and never echoes the key. A key offered as a
-  subprotocol without `stemtrace` next to it is refused, since a browser would drop a
-  connection accepted without a subprotocol it offered. The key is never
+  (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes
+  only as a subprotocol, without `stemtrace` next to it, the connection is refused, since a
+  browser would drop one accepted without a subprotocol it offered. The key is never
   accepted as a query parameter, because uvicorn's access log prints query strings.
 - **The key** must be at least 16 visible ASCII characters (`openssl rand -hex 32` makes a good
   one). Surrounding whitespace is dropped, and a blank value means no key. stemtrace never logs
