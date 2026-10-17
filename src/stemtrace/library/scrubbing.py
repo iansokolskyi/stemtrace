@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from enum import Enum
+from enum import Enum, Flag
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -62,15 +62,26 @@ def _key_names(key: object) -> list[str]:
     as UTF-8 with replacement so it never raises. A tuple or frozenset key
     carries the names of its parts, and an Enum member its own name (if it has
     one) plus its value's names (checked first: str- and int-mixin members are
-    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``).
+    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
+    carries the names of the members whose bits it has: a composite has no
+    name on Python 3.10 (``READ|SECRET`` on 3.11+), and its value is an int.
     Other keys (an int, None, any other object) carry none. ``str(key)`` is
     never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
     raise.
     """
     match key:
+        case Flag():
+            own = [key.name.lower()] if isinstance(key.name, str) else []
+            members = [
+                member.name.lower()
+                for member in type(key)
+                if isinstance(member.name, str)
+                and member.value
+                and key.value & member.value == member.value
+            ]
+            return [*own, *members]
         case Enum():
-            # Flag pseudo-members (Flag(0), unknown IntFlag bits, composites
-            # on Python 3.10) have name None.
+            # A custom Enum can override name; don't call str methods on None.
             name = [key.name.lower()] if isinstance(key.name, str) else []
             return [*name, *_key_names(key.value)]
         case str():

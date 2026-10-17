@@ -338,6 +338,14 @@ class _IPerm(IntFlag):
 
     READ = 1
     WRITE = 2
+    TOKEN = 8
+
+
+class _Mode(Flag):
+    """A zero-valued member is in no Flag value, whatever its name."""
+
+    NO_TOKEN = 0
+    READ = 1
 
 
 UNNAMED_KEYS = [
@@ -354,6 +362,7 @@ UNNAMED_KEYS = [
     _Perm.READ | _Perm.WRITE,
     _IPerm(0),
     _IPerm(4),
+    _Mode.READ,
 ]
 UNNAMED_KEY_IDS = [
     "int",
@@ -369,6 +378,7 @@ UNNAMED_KEY_IDS = [
     "flag_composite",
     "int_flag_empty",
     "int_flag_unknown_bits",
+    "flag_with_zero_member",
 ]
 NAMED_KEYS = [
     b"password",
@@ -382,6 +392,10 @@ NAMED_KEYS = [
     _Slot.TOKEN,
     _StrCred.SECRET,
     _Perm.SECRET,
+    # Composites have no name on Python 3.10: matched by their members.
+    _Perm.READ | _Perm.SECRET,
+    _IPerm.READ | _IPerm.TOKEN,
+    _IPerm(4) | _IPerm.TOKEN,
 ]
 NAMED_KEY_IDS = [
     "bytes",
@@ -395,6 +409,9 @@ NAMED_KEY_IDS = [
     "int_enum",
     "str_enum",
     "flag_member",
+    "flag_composite",
+    "int_flag_composite",
+    "int_flag_unknown_bits",
 ]
 ALL_KEYS = [(key, False) for key in UNNAMED_KEYS] + [(key, True) for key in NAMED_KEYS]
 ALL_KEY_IDS = [f"unnamed_{i}" for i in UNNAMED_KEY_IDS] + [
