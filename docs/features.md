@@ -21,6 +21,7 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 **Worker Monitoring & Registry**
 - **Workers page**: See which workers are online/offline and what tasks they have registered
 - **Registry status badges**: Quickly spot tasks that are active, never run, or not registered by any current worker
+- **Task groups**: Every task belongs to a group, taken from its name or from your rules, with tags; in the API for now ([Task groups](configuration.md#task-groups))
 
 **Production Ready**
 - **Zero Infrastructure**: Uses your existing broker (Redis or RabbitMQ), no database needed

@@ -12,11 +12,14 @@ from fastapi.testclient import TestClient
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.core.groups import GroupConfig
 from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import TaskEventResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.conftest import InterleavingLock
+
+_AUTO_GROUP_OF = routes._group_lookup(GroupConfig())
 
 
 @pytest.fixture
@@ -1992,7 +1995,9 @@ class TestGraphNodeTimingResponse:
         )
 
         resp = routes._node_to_graph_response(
-            group_node, all_nodes={"child-1": child1, "child-2": child2}
+            group_node,
+            all_nodes={"child-1": child1, "child-2": child2},
+            group_of=_AUTO_GROUP_OF,
         )
         assert resp.first_seen == t1
         assert resp.last_updated == t2
@@ -2046,7 +2051,9 @@ class TestGraphNodeTimingResponse:
         )
 
         all_nodes = {"task-a": task_a, "task-b": task_b, "group:chord-1": chord_node}
-        resp = routes._node_to_graph_response(parent, all_nodes=all_nodes)
+        resp = routes._node_to_graph_response(
+            parent, all_nodes=all_nodes, group_of=_AUTO_GROUP_OF
+        )
 
         assert resp.children == ["task-a", "task-b", "group:chord-1"]
 
@@ -2130,7 +2137,9 @@ class TestResolveNodeAlias:
     def test_graph_response_uses_alias(self) -> None:
         """_node_to_graph_response passes alias key through."""
         node = self._make_node(kwargs={"operator_type": "sync_table"})
-        resp = routes._node_to_graph_response(node, node_alias_key="operator_type")
+        resp = routes._node_to_graph_response(
+            node, node_alias_key="operator_type", group_of=_AUTO_GROUP_OF
+        )
         assert resp.name == "sync_table"
 
     def test_alias_skips_leading_events_without_arguments(self) -> None:
@@ -2188,7 +2197,7 @@ class TestResolveNodeAlias:
     def test_graph_response_without_alias_uses_task_name(self) -> None:
         """_node_to_graph_response without alias key uses task name."""
         node = self._make_node(kwargs={"operator_type": "sync_table"})
-        resp = routes._node_to_graph_response(node)
+        resp = routes._node_to_graph_response(node, group_of=_AUTO_GROUP_OF)
         assert resp.name == "myapp.tasks.process"
 
 
@@ -2215,6 +2224,7 @@ class TestApiRouteTable:
             ("/api/tasks/{task_id}/children", ["GET"]),
             ("/api/graphs", ["GET"]),
             ("/api/graphs/{root_id}", ["GET"]),
+            ("/api/groups", ["GET"]),
             ("/api/workers", ["GET"]),
             ("/api/workers/{hostname}", ["GET"]),
         ]
