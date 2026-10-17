@@ -234,6 +234,34 @@ class TaskNode(BaseModel):
         """
         return self.events[-1].timestamp if self.events else None
 
+    def _latest(self, value: Callable[[TaskEvent], str | None]) -> str | None:
+        """The value from the latest event in lifecycle order that has one."""
+        for event in reversed(self.events):
+            found = value(event)
+            if found is not None:
+                return found
+        return None
+
+    @property
+    def exception_type(self) -> str | None:
+        """Class of the last exception the task raised (also a retried one)."""
+        return self._latest(lambda event: event.exception_type)
+
+    @property
+    def hostname(self) -> str | None:
+        """Nodename of the worker that handled the task last."""
+        return self._latest(lambda event: event.hostname)
+
+    @property
+    def queue(self) -> str | None:
+        """Queue the task was last sent to, if known."""
+        return self._latest(lambda event: event.queue)
+
+    @property
+    def routing_key(self) -> str | None:
+        """Routing key the task was last sent with."""
+        return self._latest(lambda event: event.routing_key)
+
     def snapshot(self) -> "TaskNode":
         """Return a copy whose ``events`` and ``children`` lists are its own.
 

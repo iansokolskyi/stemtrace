@@ -15,11 +15,16 @@ from celery import bootsteps
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.config import get_config
 
-# Sibling-module imports within stemtrace.library: the chord-id parsing and the
-# transport publisher are shared with the signal handlers, so RECEIVED can't
-# drift from STARTED. They stay underscore-private because they aren't part of
-# the public API, which this package boundary doesn't change.
-from stemtrace.library.signals import _extract_chord_info
+# Sibling-module imports within stemtrace.library: the chord-id, nodename and
+# destination parsing and the transport publisher are shared with the signal
+# handlers, so RECEIVED can't drift from STARTED. They stay underscore-private
+# because they aren't part of the public API, which this package boundary
+# doesn't change.
+from stemtrace.library.signals import (
+    _delivered_destination,
+    _extract_chord_info,
+    _nodename,
+)
 from stemtrace.library.signals import _publish_event as _publish_via_transport
 
 if TYPE_CHECKING:
@@ -58,10 +63,12 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         """Initialize the bootstep."""
         super().__init__(consumer, **kwargs)
         self._original_strategy: dict[str, Any] = {}
+        self._hostname: str | None = None
 
     def start(self, consumer: Consumer) -> None:
         """Wrap task strategies to emit RECEIVED events."""
         logger.debug("ReceivedEventStep: wrapping task strategies")
+        self._hostname = _nodename(consumer)
 
         # Wrap each task's strategy to emit RECEIVED before execution
         for name, strategy in list(consumer.strategies.items()):
@@ -159,6 +166,9 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         # A chord header's message carries the chord callback signature (a dict
         # once deserialized); read its ids the way STARTED reads request.chord.
         chord_id, chord_callback_id = _extract_chord_info(chord)
+        queue, routing_key = _delivered_destination(
+            getattr(message, "delivery_info", None)
+        )
         _publish_event(
             TaskEvent(
                 task_id=task_id,
@@ -170,6 +180,9 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 group_id=group_id,
                 chord_id=chord_id,
                 chord_callback_id=chord_callback_id,
+                hostname=self._hostname,
+                queue=queue,
+                routing_key=routing_key,
             )
         )
         logger.debug("Emitted RECEIVED for task %s", task_id)
