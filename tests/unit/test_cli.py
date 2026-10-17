@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import uvicorn
 from fastapi import APIRouter
@@ -13,6 +15,9 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.ui import static
 
 _ENV_VAR = "STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS"
+# Typer colors its output when CI forces a terminal (GITHUB_ACTIONS), which
+# splits option names with ANSI codes.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _fake_static_router(
@@ -169,3 +174,24 @@ def test_server_without_node_alias_does_not_echo_it(
     assert "Node alias" not in output
     assert "Broker: memory://" in output
     assert captured_alias == [None]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["--help"], "server"),
+        (["server", "--help"], "--broker-url"),
+        (["consume", "--help"], "--transport-url"),
+    ],
+)
+def test_help_renders_on_every_command(args: list[str], expected: str) -> None:
+    """``--help`` works with the installed typer and click.
+
+    typer < 0.16 calls click's ``Parameter.make_metavar()`` without the ``ctx``
+    argument click 8.2 made required, so ``--help`` raised TypeError; the
+    lowest-dependencies CI job runs this against the declared typer floor.
+    """
+    result = CliRunner().invoke(cli.app, args, env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    assert expected in _ANSI.sub("", result.output)

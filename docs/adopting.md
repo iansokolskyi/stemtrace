@@ -22,7 +22,7 @@ your lock file before you start:
 
 - Python 3.10 or later
 - `celery>=5.2.2`, `kombu>=5.2.2`, `pydantic>=2.4.0` (Pydantic 1 is not supported)
-- `redis>=4.1.0`, `fastapi>=0.112.1`, `starlette>=0.38.6`, `typer>=0.13.0`,
+- `redis>=4.1.0`, `fastapi>=0.112.1`, `starlette>=0.38.6`, `typer>=0.16.0`,
   `uvicorn[standard]>=0.20.0`, `httpx>=0.24.0`
 
 ### 2. Call `init_worker` in the module that defines your Celery app
