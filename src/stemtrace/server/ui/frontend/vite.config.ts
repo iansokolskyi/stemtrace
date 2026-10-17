@@ -27,4 +27,10 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
+  experimental: {
+    // The server rewrites /assets/ URLs only in index.html (server/ui/static.py), so URLs
+    // inside CSS (the bundled fonts) must be relative to the stylesheet to work under a
+    // mount prefix such as /stemtrace or --root-path.
+    renderBuiltUrl: (_filename, { hostType }) => (hostType === 'css' ? { relative: true } : undefined),
+  },
 })

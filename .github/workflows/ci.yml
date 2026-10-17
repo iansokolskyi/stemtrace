@@ -229,6 +229,12 @@ jobs:
       - name: Type check with TypeScript
         run: npm run typecheck
 
+      - name: Build
+        run: npm run build
+
+      - name: Check the bundle (prefix-safe asset URLs, no font CDN)
+        run: node scripts/check-dist.mjs
+
   build:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
