@@ -364,3 +364,76 @@ def test_summaries_aggregate_outside_the_store_lock(
     client.get("/api/failures")
 
     assert held == [False, False, False, False]
+
+
+# --- review round 1 regressions -----------------------------------------------
+
+
+@pytest.mark.parametrize("from_date", ["2026-10-18", "2026-10-18T00:00:00"])
+def test_naive_from_date_is_utc_on_summaries(store: GraphStore, from_date: str) -> None:
+    """The shipped UI sends date-only values; they mean UTC, as on /api/tasks."""
+    store.add_event(_event("f", TaskState.FAILURE, 30, exception_type="E"))
+    client = _client(store)
+
+    failures = client.get(f"/api/failures?from_date={from_date}")
+    series = client.get(f"/api/stats/timeseries?bucket=1h&from_date={from_date}")
+
+    assert failures.status_code == 200
+    assert failures.json()["window"]["start"] == "2026-10-18T00:00:00Z"
+    assert failures.json()["total"] == 1
+    assert series.status_code == 200
+    assert series.json()["starts"][0] == "2026-10-18T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/stats/timeseries?from_date=2099-01-01T00:00:00Z",
+        "/api/failures?from_date=2099-01-01T00:00:00Z",
+    ],
+)
+def test_future_from_date_is_422(store: GraphStore, url: str) -> None:
+    resp = _client(store).get(url)
+
+    assert resp.status_code == 422
+    assert "after now" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/overview?within=99999999d",
+        "/api/failures?within=99999999d",
+        "/api/tasks?within=9999999999d",
+        "/api/graphs?within=9999999999d",
+        "/api/stats/timeseries?bucket=9999999999d",
+        "/api/stats/timeseries?within=3651d&bucket=7d",
+    ],
+)
+def test_oversized_durations_are_422(store: GraphStore, url: str) -> None:
+    resp = _client(store).get(url)
+
+    assert resp.status_code == 422
+    assert "at most 3650d" in resp.json()["detail"]
+
+
+def test_default_timeseries_fits_any_retained_span(store: GraphStore) -> None:
+    store.add_event(_event("stuck", TaskState.STARTED, 6 * 24 * 60))  # 6 days ago
+    store.add_event(_event("new", TaskState.SUCCESS, 1))
+
+    body = _client(store).get("/api/stats/timeseries").json()
+
+    assert body["bucket_seconds"] == 900  # 5m would need 1729 buckets
+    assert len(body["starts"]) <= 1440
+    assert sum(sum(series) for series in body["counts"].values()) == 2
+
+
+def test_timeseries_window_starts_at_the_first_bucket_edge(store: GraphStore) -> None:
+    store.add_event(_event("a", TaskState.SUCCESS, 57))  # 11:03, before 11:07
+
+    body = _client(store).get("/api/stats/timeseries?within=53m&bucket=1h").json()
+
+    # now - 53m = 11:07; the 1h bucket starts at 11:00 and counts from there
+    assert body["window"]["start"] == "2026-10-18T11:00:00Z"
+    assert body["starts"][0] == body["window"]["start"]
+    assert body["counts"] == {"SUCCESS": [1, 0]}

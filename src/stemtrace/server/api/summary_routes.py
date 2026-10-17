@@ -28,6 +28,7 @@ from stemtrace.server.api.schemas import (
 from stemtrace.server.groups import group_lookup
 from stemtrace.server.stats import (
     Window,
+    auto_bucket,
     failure_groups,
     parse_duration,
     time_series,
@@ -62,6 +63,8 @@ def _recent_window(
 ) -> Window:
     """The window ending now: from ``within``, ``from_date``, or ``oldest`` (all retained)."""
     start = params.start_from(within, from_date, now)
+    if start is not None and start > now:
+        raise _unprocessable("from_date is after now")
     return Window(start if start is not None else oldest, now, open_end=True)
 
 
@@ -118,8 +121,14 @@ def add_summary_routes(
     )
     async def stats_timeseries(
         bucket: Annotated[
-            str, Query(description="Bucket size: 30s, 15m, 6h or 7d")
-        ] = "5m",
+            str | None,
+            Query(
+                description=(
+                    "Bucket size: 30s, 15m, 6h or 7d. Default: the smallest of "
+                    "1m, 5m, 15m, 1h, 6h, 1d, 7d that fits in 1440 buckets"
+                )
+            ),
+        ] = None,
         within: Annotated[str | None, Query(description=_WITHIN_HELP)] = None,
         from_date: Annotated[
             datetime | None, Query(description="Start (ISO format) instead of within")
@@ -136,14 +145,18 @@ def add_summary_routes(
         """
         if group_by not in (None, "task_group"):
             raise _unprocessable("group_by must be task_group")
-        try:
-            size = parse_duration(bucket)
-        except ValueError as exc:
-            raise _unprocessable(f"bucket: {exc}") from exc
         now = params.utcnow()
         records = store.run_records()
         oldest = min((r.last_updated for r in records), default=now)
         window = _recent_window(within, from_date, now, min(oldest, now))
+        try:
+            size = (
+                parse_duration(bucket)
+                if bucket is not None
+                else auto_bucket(window.start, now)
+            )
+        except ValueError as exc:
+            raise _unprocessable(f"bucket: {exc}") from exc
         key_of: Callable[[RunRecord], str] | None = None
         if group_by == "task_group":
             group_of = group_lookup(groups)
@@ -158,8 +171,9 @@ def add_summary_routes(
             )
         except ValueError as exc:
             raise _unprocessable(str(exc)) from exc
+        # Buckets start on edges, so the series covers from the first edge.
         return TimeSeriesResponse(
-            window=_window_response(window),
+            window=TimeWindowResponse(start=series.starts[0], end=now),
             bucket_seconds=int(size.total_seconds()),
             starts=series.starts,
             counts=_by_state_name(series.counts),

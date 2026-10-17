@@ -10,6 +10,7 @@ from stemtrace.server.stats import (
     MAX_BUCKETS,
     RunRecord,
     Window,
+    auto_bucket,
     bucket_starts,
     failure_groups,
     parse_duration,
@@ -241,3 +242,37 @@ def test_failure_groups_keep_the_latest_samples() -> None:
     assert group.sample_task_ids == tuple(
         f"t{i}" for i in range(FAILURE_SAMPLES + 2, 2, -1)
     )
+
+
+def test_parse_duration_caps_at_ten_years() -> None:
+    assert parse_duration("3650d") == timedelta(days=3650)
+    with pytest.raises(ValueError, match="at most 3650d"):
+        parse_duration("3651d")
+    with pytest.raises(ValueError, match="at most 3650d"):
+        parse_duration("9999999999d")
+
+
+@pytest.mark.parametrize(
+    ("span", "bucket"),
+    [
+        (timedelta(0), timedelta(minutes=1)),
+        (timedelta(hours=23), timedelta(minutes=1)),
+        (timedelta(days=2), timedelta(minutes=5)),
+        (timedelta(days=6), timedelta(minutes=15)),
+        (timedelta(days=30), timedelta(hours=1)),
+        (timedelta(days=3650), timedelta(days=7)),
+    ],
+)
+def test_auto_bucket_picks_the_smallest_that_fits(
+    span: timedelta, bucket: timedelta
+) -> None:
+    start = T0 - span
+    chosen = auto_bucket(start, T0)
+
+    assert chosen == bucket
+    assert len(bucket_starts(start, T0, chosen)) <= MAX_BUCKETS
+
+
+def test_bucket_starts_reject_a_start_after_the_end() -> None:
+    with pytest.raises(ValueError, match="after now"):
+        bucket_starts(T0 + timedelta(seconds=1), T0, timedelta(minutes=5))

@@ -32,7 +32,7 @@ class WorkerInfo(BaseModel):
     shutdown_reported: bool = False
 
 
-def _ensure_tz_aware(dt: datetime) -> datetime:
+def ensure_tz_aware(dt: datetime) -> datetime:
     """Ensure datetime is timezone-aware (assume UTC if naive)."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -480,8 +480,9 @@ class GraphStore:
         self._max_nodes = max_nodes
         self._listeners: list[Callable[[TaskEvent], None]] = []
         # One immutable record per TASK node, kept in step with the graph
-        # under the same lock, so summaries never walk the live graph: an
-        # event only changes its own node's name, state and events.
+        # under the same lock, so summaries never walk the live graph. An
+        # event changes its own node's state and events; names can also
+        # change on other nodes, which the graph reports (take_renamed).
         self._runs: dict[str, RunRecord] = {}
 
     def add_event(self, event: TaskEvent) -> None:
@@ -497,6 +498,10 @@ class GraphStore:
                 return
             self._index_run(stored.task_id)
             self._maybe_evict()
+            # A task.replace() reuse can rename other tasks (here or while
+            # evicting); refresh those records too.
+            for task_id in self._graph.take_renamed():
+                self._index_run(task_id)
 
         for listener in self._listeners:
             with contextlib.suppress(Exception):
@@ -580,7 +585,7 @@ class GraphStore:
             if exception_type is not None:
                 nodes = [n for n in nodes if n.exception_type == exception_type]
             if from_date is not None:
-                from_dt = _ensure_tz_aware(from_date)
+                from_dt = ensure_tz_aware(from_date)
                 nodes = [
                     n
                     for n in nodes
@@ -663,7 +668,7 @@ class GraphStore:
 
         # Date filtering - use child timestamps for synthetic nodes
         if from_date is not None:
-            from_dt = _ensure_tz_aware(from_date)
+            from_dt = ensure_tz_aware(from_date)
             root_nodes = [
                 n for n in root_nodes if _get_node_timestamp(n, self._graph) >= from_dt
             ]

@@ -1,8 +1,15 @@
 """Tests for the store's run index (``GraphStore.run_records``)."""
 
+import json
+import random
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.stats import RunRecord
 from stemtrace.server.store import GraphStore
 
@@ -105,3 +112,114 @@ def test_run_records_returns_a_copy() -> None:
     records.clear()
 
     assert len(store.run_records()) == 1
+
+
+_CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
+    (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
+)
+
+
+def _assert_index_matches_graph(store: GraphStore) -> None:
+    """Every record equals one built from the live node now."""
+    with store._lock:
+        expected = {
+            node.task_id: RunRecord.from_node(node)
+            for node in store._graph.nodes.values()
+            if node.node_type == NodeType.TASK
+        }
+    assert _records(store) == expected
+
+
+def test_record_follows_a_rename_from_another_tasks_event() -> None:
+    """``task.replace()`` reuse: the graph re-picks ``u``'s name on ``d``'s event."""
+    store = GraphStore()
+    store.add_event(
+        TaskEvent(
+            task_id="u",
+            name="billing.first",
+            state=TaskState.PENDING,
+            timestamp=T0,
+            parent_id="d",
+            root_id="u",
+        )
+    )
+    store.add_event(
+        TaskEvent(
+            task_id="u",
+            name="search.second",
+            state=TaskState.FAILURE,
+            timestamp=T0 + timedelta(seconds=1),
+            parent_id="d",
+            root_id="u",
+            exception_type="x.Boom",
+        )
+    )
+    store.add_event(
+        TaskEvent(
+            task_id="d",
+            name="flows.d",
+            state=TaskState.STARTED,
+            timestamp=T0 + timedelta(seconds=2),
+            root_id="u",
+        )
+    )
+
+    assert _records(store)["u"].name == store.get_node("u").name  # type: ignore[union-attr]
+    _assert_index_matches_graph(store)
+
+
+@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("max_nodes", [10_000, 3])
+def test_index_matches_the_graph_on_real_captures(flow: str, max_nodes: int) -> None:
+    """Recorded and shuffled orders, with and without eviction (renames included)."""
+    events = [TaskEvent.model_validate(e) for e in _CAPTURES[flow]]
+    for seed in range(4):
+        order = list(events)
+        if seed:
+            random.Random(seed).shuffle(order)
+        store = GraphStore(max_nodes=max_nodes)
+        for event in order:
+            store.add_event(event)
+            _assert_index_matches_graph(store)
+
+
+def test_retry_events_never_read_the_exception_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading it scans every event: on each event under the lock, ingest went quadratic."""
+    reads: list[str] = []
+    real = TaskNode.exception_type
+
+    def counting(node: TaskNode) -> str | None:
+        reads.append(node.task_id)
+        return real.fget(node)  # type: ignore[attr-defined, no-any-return]  # a property
+
+    monkeypatch.setattr(TaskNode, "exception_type", property(counting))
+    store = GraphStore()
+    for i in range(200):
+        state = TaskState.STARTED if i % 2 == 0 else TaskState.RETRY
+        store.add_event(
+            TaskEvent(
+                task_id="t",
+                name="app.poll",
+                state=state,
+                retries=i // 2,
+                timestamp=T0 + timedelta(seconds=i),
+                exception_type="E",
+            )
+        )
+    assert reads == []
+
+    store.add_event(
+        TaskEvent(
+            task_id="t",
+            name="app.poll",
+            state=TaskState.FAILURE,
+            retries=100,
+            timestamp=T0 + timedelta(seconds=300),
+            exception_type="Final",
+        )
+    )
+
+    assert reads == ["t"]
+    assert _records(store)["t"].exception_type == "Final"

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from stemtrace.core.events import TaskState
 from stemtrace.server.stats import parse_duration
+from stemtrace.server.store import ensure_tz_aware
 
 _STATES_BY_NAME = {state.value.upper(): state for state in TaskState}
 
@@ -61,11 +62,14 @@ def start_from(
 ) -> datetime | None:
     """The start of a time filter: ``now - within``, or ``from_date``.
 
+    A ``from_date`` without a timezone (``2026-10-18``) is UTC, as on the
+    task list.
+
     Raises:
         HTTPException: 422 if both are given, or ``within`` is malformed.
     """
     if within is None:
-        return from_date
+        return ensure_tz_aware(from_date) if from_date is not None else None
     if from_date is not None:
         raise HTTPException(
             status_code=422,

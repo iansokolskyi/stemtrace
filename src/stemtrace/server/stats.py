@@ -36,6 +36,14 @@ MAX_BUCKETS: Final[int] = 1440
 #: Most sample task IDs listed per failure group.
 FAILURE_SAMPLES: Final[int] = 5
 
+#: Longest accepted window or bucket (10 years): keeps date arithmetic in range.
+MAX_DURATION: Final[timedelta] = timedelta(days=3650)
+
+#: Bucket sizes tried, smallest first, when a time series doesn't name one.
+AUTO_BUCKETS: Final[tuple[timedelta, ...]] = tuple(
+    timedelta(seconds=s) for s in (60, 300, 900, 3600, 21600, 86400, 604800)
+)
+
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd])\s*$")
 _UNIT_SECONDS: Final[dict[str, int]] = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
@@ -51,6 +59,7 @@ class RunRecord:
     name: str
     state: TaskState
     last_updated: datetime
+    # The exception class of a FAILURE run; None for other states.
     exception_type: str | None = None
 
     @classmethod
@@ -63,7 +72,12 @@ class RunRecord:
             name=node.name,
             state=node.state,
             last_updated=node.last_updated,
-            exception_type=node.exception_type,
+            # Only failure groups read it. Reading it scans all of the node's
+            # events, and this runs under the store lock on every event, so a
+            # task retrying thousands of times would make ingest quadratic.
+            exception_type=node.exception_type
+            if node.state == TaskState.FAILURE
+            else None,
         )
 
 
@@ -72,14 +86,17 @@ def parse_duration(text: str) -> timedelta:
 
     Raises:
         ValueError: Unless it is a positive whole number with one of the
-            units s, m, h, d.
+            units s, m, h, d, and at most ``MAX_DURATION``.
     """
     match = _DURATION.match(text)
     if match is None or int(match.group(1)) <= 0:
         raise ValueError(
             f"expected a positive duration like 30s, 15m, 6h or 7d, got {text!r}"
         )
-    return timedelta(seconds=int(match.group(1)) * _UNIT_SECONDS[match.group(2)])
+    seconds = int(match.group(1)) * _UNIT_SECONDS[match.group(2)]
+    if seconds > MAX_DURATION.total_seconds():
+        raise ValueError(f"at most {MAX_DURATION.days}d, got {text!r}")
+    return timedelta(seconds=seconds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +165,15 @@ class TimeSeries:
     by_key: dict[str, dict[TaskState, list[int]]] = field(default_factory=dict)
 
 
+def auto_bucket(start: datetime, end: datetime) -> timedelta:
+    """The smallest of ``AUTO_BUCKETS`` that covers ``[start, end]`` in ``MAX_BUCKETS``."""
+    span = max(end.timestamp() - start.timestamp(), 0.0)
+    return next(
+        (b for b in AUTO_BUCKETS if span // b.total_seconds() + 2 <= MAX_BUCKETS),
+        AUTO_BUCKETS[-1],
+    )
+
+
 def bucket_starts(start: datetime, end: datetime, bucket: timedelta) -> list[datetime]:
     """Bucket start times covering ``[start, end]``, aligned to multiples of ``bucket``.
 
@@ -155,8 +181,11 @@ def bucket_starts(start: datetime, end: datetime, bucket: timedelta) -> list[dat
     the same edges.
 
     Raises:
-        ValueError: If more than ``MAX_BUCKETS`` buckets would be needed.
+        ValueError: If ``start`` is after ``end``, or more than ``MAX_BUCKETS``
+            buckets would be needed.
     """
+    if start > end:
+        raise ValueError("the window starts after now")
     size = bucket.total_seconds()
     first = int(start.timestamp() // size)
     last = int(end.timestamp() // size)
