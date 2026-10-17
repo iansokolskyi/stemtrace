@@ -145,6 +145,21 @@ class TestTaskNodeFields:
         node = graph.nodes["task-1"]
         assert (node.state, node.hostname) == (TaskState.FAILURE, "celery@w1")
 
+    def test_redelivery_under_skew_can_name_the_first_worker(self) -> None:
+        # The documented limitation: within one attempt events are ordered by
+        # time, so with w1's clock behind w0's, w0's cancel RETRY outranks
+        # w1's STARTED and the main-process FAILURE has no worker fields.
+        graph = TaskGraph()
+        for event in (
+            _event(TaskState.STARTED, 3, hostname="celery@w0"),
+            _event(TaskState.RETRY, 5, hostname="celery@w0"),
+            _event(TaskState.STARTED, 4, hostname="celery@w1"),
+            _event(TaskState.FAILURE, 6, exception_type="TimeLimitExceeded"),
+        ):
+            graph.add_event(event)
+
+        assert graph.nodes["task-1"].hostname == "celery@w0"
+
     def test_null_on_last_event_keeps_earlier_value(self) -> None:
         # A FAILURE sent from the worker's main process carries no hostname.
         graph = TaskGraph()
