@@ -5,6 +5,8 @@ from typing import Annotated
 
 import typer
 
+from stemtrace.core.exceptions import ConfigurationError
+
 app = typer.Typer(
     name="stemtrace",
     help="Celery task flow visualizer",
@@ -104,6 +106,18 @@ def server(
             ),
         ),
     ] = None,
+    groups: Annotated[
+        str | None,
+        typer.Option(
+            "--groups",
+            envvar="STEMTRACE_GROUPS",
+            help=(
+                "TOML file of code-defined task groups ([[groups]] tables with "
+                "name, match, tags, color). Needs Python 3.11+. Tasks no rule "
+                "matches get their automatic group."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
@@ -118,6 +132,7 @@ def server(
         create_form_auth_middleware,
     )
     from stemtrace.server.fastapi.login_routes import create_login_router
+    from stemtrace.server.groups import configured_groups
     from stemtrace.server.ui.static import (
         get_static_router_with_base,
         is_usable_mount_prefix,
@@ -147,6 +162,15 @@ def server(
     if node_alias is not None:
         typer.echo(f"Node alias: {node_alias}")
 
+    # Blank means unset, as for the node alias: an explicit empty flag falls
+    # back to the env var.
+    try:
+        group_config = configured_groups(groups)
+    except ConfigurationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--groups'") from exc
+    if group_config.rules:
+        typer.echo(f"Task groups: {len(group_config.rules)} code-defined")
+
     form_auth_config: FormAuthConfig | None = None
     if (login_username is None) != (login_password is None):
         raise typer.BadParameter(
@@ -172,6 +196,7 @@ def server(
         serve_ui=False,
         form_auth_config=form_auth_config,
         node_alias_from_arguments=node_alias,
+        groups=group_config,
     )
     fastapi_app = FastAPI(
         title="stemtrace",

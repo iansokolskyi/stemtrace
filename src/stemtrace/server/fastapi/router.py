@@ -14,6 +14,7 @@ from stemtrace.server.websocket import WebSocketManager
 if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
+    from stemtrace.server.groups import GroupsInput
 
 
 def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): positional callers must keep working
@@ -25,8 +26,15 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     auth_dependency: Any = None,
     form_auth_config: FormAuthConfig | None = None,
     node_alias_from_arguments: str | None = None,
+    groups: GroupsInput = None,
 ) -> APIRouter:
-    """Create API router. For embedded consumer, use StemtraceExtension."""
+    """Create API router. For embedded consumer, use StemtraceExtension.
+
+    ``groups`` takes code-defined task groups as ``StemtraceExtension`` does
+    (a list of GroupRule or dicts, or a TOML file path); None gives automatic
+    groups only. Invalid groups raise ``ConfigurationError`` here, not on the
+    first request.
+    """
     if store is None:
         store = GraphStore()
     if ws_manager is None:
@@ -42,6 +50,7 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         worker_registry=worker_registry,
         broker_url=broker_url,
         node_alias_from_arguments=node_alias_from_arguments,
+        groups=groups,
     )
     ws_router = create_websocket_router(ws_manager, form_auth_config=form_auth_config)
 
