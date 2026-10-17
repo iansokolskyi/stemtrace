@@ -167,25 +167,44 @@ def test_record_follows_a_rename_on_another_tasks_event() -> None:
         ("nested_replace_last@worker_process", 14),
     ],
 )
-def test_record_follows_a_rename_caused_by_eviction(flow: str, seed: int) -> None:
+def test_record_follows_a_rename_caused_by_eviction(
+    flow: str, seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Removing a node while evicting can rename a surviving task."""
     store = GraphStore(max_nodes=2)
+    evicting = False
+    renamed_while_evicting: list[str] = []
+    rename, evict = TaskGraph._renamed, store._maybe_evict
+
+    def spying_rename(graph: TaskGraph, node: TaskNode, old_name: str) -> None:
+        if evicting:
+            renamed_while_evicting.append(node.task_id)
+        rename(graph, node, old_name)
+
+    def spying_evict() -> None:
+        nonlocal evicting
+        evicting = True
+        try:
+            evict()
+        finally:
+            evicting = False
+
+    monkeypatch.setattr(TaskGraph, "_renamed", spying_rename)
+    monkeypatch.setattr(store, "_maybe_evict", spying_evict)
     for event in _shuffled(flow, seed):
         store.add_event(event)
         _assert_index_matches_graph(store)
+
+    assert renamed_while_evicting  # the premise: an eviction renamed a task
 
 
 @pytest.mark.parametrize("flow", sorted(_CAPTURES))
 @pytest.mark.parametrize("max_nodes", [10_000, 3])
 def test_index_matches_the_graph_on_real_captures(flow: str, max_nodes: int) -> None:
     """Recorded and shuffled orders, with and without eviction (renames included)."""
-    events = [TaskEvent.model_validate(e) for e in _CAPTURES[flow]]
     for seed in range(4):
-        order = list(events)
-        if seed:
-            random.Random(seed).shuffle(order)
         store = GraphStore(max_nodes=max_nodes)
-        for event in order:
+        for event in _shuffled(flow, seed):
             store.add_event(event)
             _assert_index_matches_graph(store)
 

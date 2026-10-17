@@ -459,8 +459,8 @@ def test_timeseries_window_starts_at_the_first_bucket_edge(store: GraphStore) ->
 @pytest.mark.parametrize(
     ("url", "earliest_start"),
     [
-        # now - 3650d = 2016-10-20 12:00, rounded down to a 7d bucket edge
-        ("/api/stats/timeseries", "2016-10-13"),
+        # now - 3650d = 2016-10-20 12:00, rounded down to its 7d bucket edge
+        ("/api/stats/timeseries", "2016-10-20T00:00:00Z"),
         # rounded down to a 3650d edge (epoch multiples)
         (
             "/api/stats/timeseries?from_date=0001-01-02T00:00:00Z&bucket=3650d",
@@ -479,5 +479,13 @@ def test_windows_start_at_most_ten_years_back(
     resp = _client(store).get(url)
 
     assert resp.status_code == 200, resp.json()
-    assert resp.json()["window"]["start"] >= earliest_start
-    assert resp.json()["window"]["start"] < "2016-10-21"
+    start = resp.json()["window"]["start"]
+    assert start.startswith(earliest_start)
+
+
+def test_overview_rejects_from_date(store: GraphStore) -> None:
+    """Rejected, not ignored: a script must not get the default hour silently."""
+    resp = _client(store).get("/api/overview?from_date=2026-10-18T11:59:00Z")
+
+    assert resp.status_code == 422
+    assert "within only" in resp.json()["detail"]
