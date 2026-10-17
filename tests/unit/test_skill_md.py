@@ -37,7 +37,9 @@ def _routes() -> list[APIRoute]:
 
 
 def _route_regex(route: APIRoute) -> re.Pattern[str]:
-    pattern = re.sub(r"\{[^}]+\}", r"[^/]+", route.path.removeprefix("/api/"))
+    # A parameter slot only takes a placeholder (``{id}``, ``$VAR``, both
+    # normalized to X), so a literal like ``tasks/summary`` isn't a task id.
+    pattern = re.sub(r"\{[^}]+\}", "X", route.path.removeprefix("/api/"))
     return re.compile(f"^{pattern}$")
 
 
@@ -81,12 +83,12 @@ def test_skill_examples_use_existing_endpoints() -> None:
 def test_skill_prose_names_only_existing_endpoints() -> None:
     patterns = [_route_regex(r) for r in _routes()]
     mentioned = {
-        re.sub(r"\{[^}]+\}", "X", p).rstrip("/.,;:")
+        re.sub(r"\{[^}]+\}|\$[A-Z_]+", "X", p).rstrip("/.,;:")
         # Up to whitespace, a quote, a backtick or a query string, so a
         # hyphenated or capitalized name (``tasks-recent``) is checked whole.
         for p in re.findall(r"/api/([^\s`'\"?)]+)", _skill_text())
-        # Placeholders in the helper's own description: $path, PATH.
-        if not p.startswith("$") and not p.isupper()
+        # The helper's own placeholders (``/api/PATH``, ``/api/$path``).
+        if p not in {"PATH", "$path"}
     }
 
     assert {"health", "health/live", "graphs/X"} <= mentioned
