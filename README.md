@@ -225,10 +225,12 @@ By default, stemtrace scrubs common sensitive keys from task arguments:
 Scrubbed values appear as `[Filtered]` in the UI.
 
 Keys match case-insensitively and by substring (`user_password` matches
-`password`). Only string keys are matched: a value under an int, tuple or bytes
-key (e.g. `{b"password": ...}`, which pickle keeps) isn't filtered, though dicts
-inside it still are. Task data stemtrace can't capture, such as a value whose
-`str()` raises or a cyclic structure, appears as `[Not captured: <error type>]`.
+`password`). Bytes keys (such as redis-py's `hgetall()` without
+`decode_responses`) are decoded as UTF-8 and matched the same way, and a tuple
+key matches if any of its string or bytes parts does. Int and `None` keys never
+match, but dicts inside their values are still scrubbed. Task data stemtrace
+can't capture, such as a value whose `str()` raises or a cyclic structure,
+appears as `[Not captured: <error type>]`.
 
 #### Task Output (print and logging)
 

@@ -53,6 +53,27 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _key_names(key: object) -> list[str]:
+    """The names a dict key carries, lowercased.
+
+    A task's dicts can have any hashable key. A str is a name, and so is bytes
+    (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
+    as UTF-8 with replacement so it never raises. A tuple or frozenset key
+    carries the names of its parts. Other keys (an int, None) carry none.
+    ``str(key)`` is never used: it is a repr for bytes and tuples, and a key's
+    ``__str__`` can raise.
+    """
+    match key:
+        case str():
+            return [key.lower()]
+        case bytes():
+            return [key.decode("utf-8", "replace").lower()]
+        case tuple() | frozenset():
+            return [name for part in key for name in _key_names(part)]
+        case _:
+            return []
+
+
 def _is_sensitive_key(
     key: object,
     sensitive_keys: frozenset[str],
@@ -64,10 +85,10 @@ def _is_sensitive_key(
     - 'user_password' matches 'password'
     - 'API_KEY' matches 'api_key'
 
-    Only string keys are names. A task's dicts can have any hashable key (an
-    int, None, a tuple, bytes); those are never sensitive, and their values are
-    still scrubbed. ``str(key)`` isn't matched: for a tuple or bytes it is a
-    repr (``"b'password'"``), and a key's ``__str__`` can raise.
+    A key that isn't a str is matched by the names it carries (see
+    ``_key_names``): ``b"password"`` and ``("user", "api_key")`` are
+    sensitive, ``1`` and ``None`` never are. The values under keys that aren't
+    sensitive are still scrubbed.
 
     Args:
         key: The dict key to check.
@@ -75,16 +96,13 @@ def _is_sensitive_key(
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
-        True if the key should be scrubbed.
+        True if any name the key carries is sensitive and not a safe key.
     """
-    if not isinstance(key, str):
-        return False
-
-    if safe_keys and key.lower() in {k.lower() for k in safe_keys}:
-        return False
-
-    key_lower = key.lower()
-    return any(pattern in key_lower for pattern in sensitive_keys)
+    safe = {k.lower() for k in safe_keys} if safe_keys else set()
+    return any(
+        name not in safe and any(pattern in name for pattern in sensitive_keys)
+        for name in _key_names(key)
+    )
 
 
 def scrub_dict(

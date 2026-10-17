@@ -835,6 +835,11 @@ class TestRealPublish:
         def echo(data: Any, **_: Any) -> dict[Any, Any]:
             return {1: data, "password": "x"}
 
+        @app.task(name="tests.redis_hash")
+        def redis_hash() -> dict[Any, Any]:
+            # What redis-py's hgetall() returns without decode_responses.
+            return {b"password": "hunter2", ("api_key",): "sk-1", "token": "t0k"}
+
         return app
 
     def test_send_task_pending_carries_parent_and_root(self, app: Celery) -> None:
@@ -933,6 +938,19 @@ class TestRealPublish:
         assert started.args == [{1: "a"}]
         assert started.kwargs == {"opts": {None: "b"}}
         assert success.result == {1: {1: "a"}, "password": FILTERED}
+
+    def test_result_with_bytes_and_tuple_keys_is_scrubbed_by_name(
+        self, app: Celery
+    ) -> None:
+        # A return value reaches task_postrun unserialized with any serializer.
+        app.tasks["tests.redis_hash"].apply()
+
+        success = MemoryTransport.events[-1]
+        assert success.state == TaskState.SUCCESS
+        # json.dumps rejects the keys, so safe_serialize falls back to str().
+        assert success.result == str(
+            {b"password": FILTERED, ("api_key",): FILTERED, "token": FILTERED}
+        )
 
     def test_eager_apply_publishes_no_pending(self, app: Celery) -> None:
         app.tasks["tests.add"].apply(args=(1, 2))
