@@ -26,7 +26,7 @@ import pytest
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.store import GraphStore
-from tests.graph_invariants import assert_graph_invariants
+from tests.graph_invariants import assert_graph_invariants, graph_state
 
 _CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
     (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
@@ -619,6 +619,71 @@ def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
                 continue  # a cycle is still open: where it breaks depends on order
             assert _graph_shape(graph) == _graph_shape(rebuilt), (flow, removed)
             assert sorted(graph.root_ids) == sorted(rebuilt.root_ids), (flow, removed)
+
+
+def _remove_mid_stream(
+    order: list[TaskEvent], cut: int, victim: str
+) -> tuple[TaskGraph, list[TaskEvent]]:
+    """Replay ``order[:cut]``, remove ``victim``, then replay the rest.
+
+    Returns the graph and the events it still holds: all but the victim's
+    events from before the cut (a synthetic node has none).
+    """
+    graph = TaskGraph()
+    for event in order[:cut]:
+        graph.add_event(event)
+    graph.remove_node(victim)
+    assert_graph_invariants(graph)
+    for event in order[cut:]:
+        graph.add_event(event)
+    assert_graph_invariants(graph)
+    kept = [e for e in order[:cut] if e.task_id != victim] + order[cut:]
+    return graph, kept
+
+
+def _replay_events(events: list[TaskEvent]) -> TaskGraph:
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    return graph
+
+
+@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+def test_remove_node_mid_stream_then_continue_matches_rebuild(flow: str) -> None:
+    """Removing any node partway through a real capture, then receiving the
+    rest of its events, leaves the graph that the events it kept build.
+
+    That covers a task's later events arriving after it was evicted, and a
+    GROUP/CHORD node recreated by a later member event: it must know what
+    its members' events already said (the callback its headers named). A
+    synthetic node that no later event recreates is compared only if a
+    rebuild has none either (``remove_node`` keeps it away until then).
+    Arrival order and one shuffle; every cut, or 15 spread over a longer
+    capture.
+    """
+    task_ids = {e["task_id"] for e in _CAPTURES[flow]}
+    compared = Counter[str]()
+    for order in _orders(_CAPTURES[flow])[:2]:
+        events = [TaskEvent.model_validate(e) for e in order]
+        full = _replay_events(events)
+        full_state = graph_state(full)
+        for cut in sorted({len(events) * i // 15 for i in range(1, 15)} - {0}):
+            for victim in sorted(_replay_events(events[:cut]).nodes):
+                graph, kept = _remove_mid_stream(events, cut, victim)
+                if victim in task_ids:
+                    rebuilt = _replay_events(kept)
+                    rebuilt_state = graph_state(rebuilt)
+                elif victim in graph.nodes or victim not in full.nodes:
+                    rebuilt, rebuilt_state = full, full_state  # nothing dropped
+                else:
+                    continue  # not recreated: no member event came after it
+                if graph._cycle_broken or rebuilt._cycle_broken:
+                    continue  # a cycle is still open: where it breaks depends on order
+                assert graph_state(graph) == rebuilt_state, (flow, cut, victim)
+                compared[_T if victim in task_ids else _G] += 1
+    assert compared[_T] > 0, flow
+    if any(e.get("group_id") for e in _CAPTURES[flow]):
+        assert compared[_G] > 0, flow
 
 
 def _only_node(graph: TaskGraph, node_type: NodeType, suffix: str = "") -> TaskNode:

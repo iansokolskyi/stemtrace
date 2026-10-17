@@ -11,7 +11,7 @@ import pytest
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import TaskGraph
 from stemtrace.server.store import GraphStore
-from tests.graph_invariants import assert_graph_invariants
+from tests.graph_invariants import assert_graph_invariants, graph_state
 
 _T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _TASK_IDS = [f"t{i}" for i in range(10)]
@@ -148,9 +148,7 @@ def _random_events(
     chord's own included). With ``odd_names``, some tasks are named
     ``celery.chord_unlock`` (the parent of a chord callback, shared between
     chords) and some events report another name for their task ID, as a
-    reused ID (``task.replace()``) does. Removal then differs from a rebuild
-    for some inputs (a known gap, outside what these checks cover), so the
-    remove-vs-rebuild test turns it off.
+    reused ID (``task.replace()``) does.
     """
     rng = random.Random(seed)
     group_of = {t: rng.choice([*_GROUP_IDS, None, None]) for t in _TASK_IDS}
@@ -254,48 +252,85 @@ def test_store_eviction_random_sequence_keeps_graph_invariants(
         assert store.node_count <= max_nodes
 
 
-def _shape(graph: TaskGraph) -> dict[str, tuple[str | None, list[str], str | None]]:
-    return {
-        node_id: (node.parent_id, sorted(node.children), node.chord_id)
-        for node_id, node in graph.nodes.items()
-    }
-
-
 @pytest.mark.parametrize("seed", range(150))
-def test_remove_node_matches_rebuild_from_remaining_events(seed: int) -> None:
-    """Removing tasks leaves the graph a rebuild from the other tasks'
-    events would give (placement, children, chord callbacks, roots).
+def test_remove_node_mid_stream_matches_rebuild_from_remaining_events(
+    seed: int,
+) -> None:
+    """Removing nodes partway through, then receiving the remaining events,
+    leaves the graph a rebuild from the events the graph kept would give.
 
-    The plan is Celery-shaped (see ``_make_celery_shaped``). A step that
-    ends with a cycle still open only checks invariants (where it breaks
-    depends on which link came first); with this plan none does.
+    The plan is Celery-shaped (see ``_make_celery_shaped``), with
+    ``celery.chord_unlock`` tasks and IDs that report two names (as
+    ``task.replace()`` reuses them). Victims are tasks, whose earlier events
+    go with them, and GROUP/CHORD nodes, which keep their members: one is
+    compared once a later member event recreated it, or if a rebuild has
+    none either. A step that ends with a cycle still open only checks
+    invariants (where it breaks depends on which link came first).
     """
     rng = random.Random(20_000 + seed)
-    events = _random_events(seed, 60, acyclic=True, odd_names=False)
+    events = _random_events(seed, 60, acyclic=True)
+    cuts = sorted(rng.sample(range(1, len(events) + 1), 3))
     graph = TaskGraph()
-    for event in events:
-        graph.add_event(event)
-    removed: set[str] = set()
-    for _ in range(3):
-        tasks = sorted(
-            n for n, node in graph.nodes.items() if not n.startswith("group:")
-        )
-        if not tasks:
-            break
-        victim = rng.choice(tasks)
-        removed.add(victim)
+    kept: list[TaskEvent] = []
+    position = 0
+    for cut in cuts:
+        for event in events[position:cut]:
+            graph.add_event(event)
+            kept.append(event)
+        position = cut
+        if not graph.nodes:
+            continue
+        victim = rng.choice(sorted(graph.nodes))
         graph.remove_node(victim)
         assert_graph_invariants(graph)
+        kept = [e for e in kept if e.task_id != victim]
+    for event in events[position:]:
+        graph.add_event(event)
+        kept.append(event)
+    assert_graph_invariants(graph)
 
-        rebuilt = TaskGraph()
-        for event in events:
-            if event.task_id not in removed:
-                rebuilt.add_event(event)
-        assert_graph_invariants(rebuilt)
-        if graph._cycle_broken or rebuilt._cycle_broken:
-            # A cycle is still open (through groups, chain links and chord
-            # bodies): where it breaks depends on which link came first, so
-            # only the invariants are comparable.
+    rebuilt = TaskGraph()
+    for event in kept:
+        rebuilt.add_event(event)
+    assert_graph_invariants(rebuilt)
+    missing = set(rebuilt.nodes) - set(graph.nodes)
+    if missing or graph._cycle_broken or rebuilt._cycle_broken:
+        # A removed GROUP/CHORD no later event recreated, or a cycle still
+        # open: only the invariants are comparable.
+        assert all(m.startswith("group:") for m in missing), missing
+        return
+    assert graph_state(graph) == graph_state(rebuilt), (seed, cuts)
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_remove_one_task_then_continue_matches_rebuild(seed: int) -> None:
+    """Removing one task (after all events, then at three random points),
+    then receiving the rest of the events, leaves what the events the graph
+    kept build (200 plans). These plans reach a task that a reused ID renames
+    to or from ``celery.chord_unlock`` after a chord read its name.
+    """
+    rng = random.Random(seed)
+    events = _random_events(seed, 60, acyclic=True)
+    for attempt in range(4):
+        cut = len(events) if attempt == 0 else rng.randint(1, len(events))
+        prefix = TaskGraph()
+        for event in events[:cut]:
+            prefix.add_event(event)
+        tasks = sorted(n for n in prefix.nodes if not n.startswith("group:"))
+        if not tasks:
             continue
-        assert _shape(graph) == _shape(rebuilt), (seed, removed)
-        assert sorted(graph.root_ids) == sorted(rebuilt.root_ids)
+        victim = rng.choice(tasks)
+        prefix.remove_node(victim)
+        assert_graph_invariants(prefix)
+        for event in events[cut:]:
+            prefix.add_event(event)
+        assert_graph_invariants(prefix)
+        rebuilt = TaskGraph()
+        for event in events[:cut]:
+            if event.task_id != victim:
+                rebuilt.add_event(event)
+        for event in events[cut:]:
+            rebuilt.add_event(event)
+        if prefix._cycle_broken or rebuilt._cycle_broken:
+            continue  # a cycle is still open: where it breaks depends on order
+        assert graph_state(prefix) == graph_state(rebuilt), (seed, cut, victim)
