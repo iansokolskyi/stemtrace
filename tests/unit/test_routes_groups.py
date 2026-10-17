@@ -323,22 +323,29 @@ class _CountingGroups(GroupConfig):
 _RESOLVED: list[str] = []
 
 
+_ALL_NAMES = {"billing.start", "billing.charge", "search.a"}
+
+
 @pytest.mark.parametrize(
-    "path",
+    ("path", "expected"),
     [
-        "/api/tasks?limit=500",
-        "/api/tasks/root",
-        "/api/tasks/root/children",
-        "/api/graphs",
-        "/api/graphs/root",
-        "/api/tasks/registry?refresh=false",
-        "/api/groups",
+        ("/api/tasks?limit=500", _ALL_NAMES),
+        ("/api/tasks/root", _ALL_NAMES),
+        ("/api/tasks/root/children", {"billing.charge", "search.a"}),
+        # two roots share a name: resolved once
+        ("/api/graphs", {"billing.start"}),
+        ("/api/graphs/root", _ALL_NAMES),
+        # registry and /api/groups iterate unique names, so each resolves once
+        # by construction
+        ("/api/tasks/registry?refresh=false", _ALL_NAMES),
+        ("/api/groups", _ALL_NAMES),
     ],
 )
 def test_each_route_resolves_each_task_name_once_per_request(
-    store: GraphStore, path: str
+    store: GraphStore, path: str, expected: set[str]
 ) -> None:
     store.add_event(_event("root", "billing.start"))
+    store.add_event(_event("root2", "billing.start", seconds=100))
     for i in range(30):
         name = "search.a" if i % 2 else "billing.charge"
         store.add_event(
@@ -349,8 +356,7 @@ def test_each_route_resolves_each_task_name_once_per_request(
 
     assert client.get(path).status_code == 200
 
-    assert len(_RESOLVED) == len(set(_RESOLVED))
-    assert set(_RESOLVED) <= {"billing.charge", "billing.start", "search.a"}
+    assert sorted(_RESOLVED) == sorted(expected)
 
 
 def test_create_router_with_rule_list_serves_them(store: GraphStore) -> None:
