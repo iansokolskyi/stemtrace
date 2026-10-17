@@ -283,3 +283,94 @@ class TestDefaultSensitiveKeys:
         data = {key: "sensitive_value"}
         result = scrub_dict(data)
         assert result[key] == FILTERED
+
+
+# Dict keys that aren't strings: Celery's after_task_publish gets the body before
+# it is serialized, the pickle serializer keeps them on the worker, and a task
+# result is never serialized before task_postrun. b"password" checks that a key
+# is matched by name only, never by its str() form ("b'password'").
+NON_STRING_KEYS = [1, None, (1, 2), b"password"]
+NON_STRING_KEY_IDS = ["int", "none", "tuple", "bytes"]
+
+
+def _with_non_string_key(key: object, secret: object) -> dict[object, object]:
+    """A dict with a non-string key next to a sensitive one."""
+    return {key: {"password": secret, "v": 1}, "password": secret}
+
+
+def _wrapped(where: str, value: object) -> object:
+    """Put a value where a task's data can hold a dict."""
+    match where:
+        case "top":
+            return value
+        case "in_list":
+            return [value]
+        case "in_tuple":
+            return (value,)
+        case _:
+            return {"outer": value}
+
+
+WRAPPERS = ["top", "in_list", "in_tuple", "in_dict"]
+
+
+class TestNonStringKeys:
+    """Dicts with non-string keys are scrubbed without raising."""
+
+    @pytest.mark.parametrize("safe_keys", [None, frozenset({"public_key"})])
+    @pytest.mark.parametrize("key", NON_STRING_KEYS, ids=NON_STRING_KEY_IDS)
+    def test_is_sensitive_key_with_non_string_key_returns_false(
+        self, key: object, safe_keys: frozenset[str] | None
+    ) -> None:
+        assert _is_sensitive_key(key, DEFAULT_SENSITIVE_KEYS, safe_keys) is False
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize("key", NON_STRING_KEYS, ids=NON_STRING_KEY_IDS)
+    def test_scrub_args_with_non_string_key_keeps_key_and_scrubs_siblings(
+        self, key: object, where: str
+    ) -> None:
+        args = (_wrapped(where, _with_non_string_key(key, "x")),)
+
+        assert scrub_args(args) == [
+            _wrapped(where, _with_non_string_key(key, FILTERED))
+        ]
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize("key", NON_STRING_KEYS, ids=NON_STRING_KEY_IDS)
+    def test_scrub_dict_with_non_string_key_keeps_key_and_scrubs_siblings(
+        self, key: object, where: str
+    ) -> None:
+        kwargs = {"data": _wrapped(where, _with_non_string_key(key, "x"))}
+
+        assert scrub_dict(kwargs, safe_keys=frozenset({"public_key"})) == {
+            "data": _wrapped(where, _with_non_string_key(key, FILTERED))
+        }
+
+    @pytest.mark.parametrize("key", NON_STRING_KEYS, ids=NON_STRING_KEY_IDS)
+    def test_scrub_dict_with_top_level_non_string_key_keeps_key(
+        self, key: object
+    ) -> None:
+        assert scrub_dict(_with_non_string_key(key, "x")) == _with_non_string_key(
+            key, FILTERED
+        )
+
+    @pytest.mark.parametrize("where", WRAPPERS)
+    @pytest.mark.parametrize("key", NON_STRING_KEYS, ids=NON_STRING_KEY_IDS)
+    def test_safe_serialize_with_non_string_key_scrubs_result(
+        self, key: object, where: str
+    ) -> None:
+        expected = _wrapped(where, _with_non_string_key(key, FILTERED))
+
+        result = safe_serialize(_wrapped(where, _with_non_string_key(key, "x")))
+
+        # json.dumps takes int and None keys; tuple and bytes keys make it
+        # raise TypeError, and safe_serialize falls back to str().
+        assert result == (expected if key in (1, None) else str(expected))
+
+    def test_safe_serialize_with_scrubbing_off_and_non_string_key_keeps_values(
+        self,
+    ) -> None:
+        # The signal handlers pass an empty pattern set when scrubbing is off.
+        value = [{1: "a", "password": "x"}]
+
+        assert safe_serialize(value, sensitive_keys=frozenset()) == value

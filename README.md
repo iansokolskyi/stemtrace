@@ -224,6 +224,12 @@ By default, stemtrace scrubs common sensitive keys from task arguments:
 
 Scrubbed values appear as `[Filtered]` in the UI.
 
+Keys match case-insensitively and by substring (`user_password` matches
+`password`). Only string keys are matched: a value under an int, tuple or bytes
+key (e.g. `{b"password": ...}`, which pickle keeps) isn't filtered, though dicts
+inside it still are. Task data stemtrace can't capture, such as a value whose
+`str()` raises or a cyclic structure, appears as `[Not captured: <error type>]`.
+
 #### Task Output (print and logging)
 
 Turn on `capture_output` on the worker to see what each task attempt printed and

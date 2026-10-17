@@ -5,8 +5,9 @@ import logging
 import threading
 import traceback as tb_module
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from celery.signals import (
     after_task_publish,
@@ -207,16 +208,58 @@ def _finish_output_capture(task_id: str) -> str | None:
         return None
 
 
-def _scrub_and_serialize_args(
-    args: tuple[Any, ...],
-) -> list[Any] | None:
-    """Scrub and serialize positional arguments."""
+_Captured = TypeVar("_Captured")
+
+
+def _capture_or_placeholder(
+    capture: Callable[[Any], _Captured],
+    value: Any,
+    placeholder: Callable[[str], _Captured],
+) -> _Captured:
+    """Capture a task's args, kwargs or result; a placeholder if that raises.
+
+    A capture walks and serializes whatever a task was sent with or returned,
+    so any exception can come out of it (a ``__str__`` that raises, the
+    RecursionError of a cyclic structure, args that aren't a sequence from a
+    non-Celery producer). It runs while a handler builds its event, before
+    ``_publish_event``'s guard, so this is that step's fire-and-forget
+    boundary: the event is published with ``[Not captured: <error type>]``.
+    Celery's own control flow (``is_task_interrupt``) propagates, as it does
+    from ``_publish_event``.
+    """
+    try:
+        return capture(value)
+    except Exception as exc:
+        if is_task_interrupt(exc):
+            raise
+        logger.debug("%s failed", capture.__name__, exc_info=True)
+        return placeholder(f"[Not captured: {type(exc).__name__}]")
+
+
+def _scrub_and_serialize_args(args: Any) -> list[Any] | None:
+    """Scrub and serialize positional arguments (any sequence); never raises."""
+    return _capture_or_placeholder(_capture_args, args, lambda message: [message])
+
+
+def _scrub_and_serialize_kwargs(kwargs: Any) -> dict[str, Any] | None:
+    """Scrub and serialize keyword arguments (any mapping); never raises."""
+    return _capture_or_placeholder(
+        _capture_kwargs, kwargs, lambda message: {"_not_captured": message}
+    )
+
+
+def _scrub_and_serialize_result(result: Any) -> Any | None:
+    """Scrub and serialize a task's return value; never raises."""
+    return _capture_or_placeholder(_capture_result, result, lambda message: message)
+
+
+def _capture_args(args: Any) -> list[Any] | None:
     sensitive, safe, max_size, scrub_enabled, capture_args, _ = _get_scrub_config()
     if not capture_args:
         return None
 
     if scrub_enabled:
-        scrubbed = scrub_args(args, sensitive, safe_keys=safe)
+        scrubbed = scrub_args(tuple(args), sensitive, safe_keys=safe)
     else:
         scrubbed = list(args)
 
@@ -227,29 +270,28 @@ def _scrub_and_serialize_args(
     return [result] if result is not None else scrubbed
 
 
-def _scrub_and_serialize_kwargs(
-    kwargs: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Scrub and serialize keyword arguments."""
+def _capture_kwargs(kwargs: Any) -> dict[str, Any] | None:
     sensitive, safe, max_size, scrub_enabled, capture_args, _ = _get_scrub_config()
     if not capture_args:
         return None
 
     if scrub_enabled:
-        scrubbed = scrub_dict(kwargs, sensitive, safe_keys=safe)
+        scrubbed = scrub_dict(dict(kwargs), sensitive, safe_keys=safe)
     else:
-        scrubbed = kwargs
+        scrubbed = dict(kwargs)
 
     result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
     # safe_serialize may return truncation message string or the dict
     if isinstance(result, dict):
-        return result
+        # TaskEvent.kwargs has str keys. celery 5.6.3 send_task() doesn't check
+        # keyword types (Task.apply_async does), so {1: ...} can get here; the
+        # json transports would turn the key into "1" anyway.
+        return {str(key): value for key, value in result.items()}
     # If truncated, wrap message in dict
     return {"_truncated": result} if result is not None else scrubbed
 
 
-def _scrub_and_serialize_result(result: Any) -> Any | None:
-    """Scrub and serialize task result."""
+def _capture_result(result: Any) -> Any | None:
     sensitive, safe, max_size, _, _, capture_result = _get_scrub_config()
     if not capture_result:
         return None
@@ -559,8 +601,8 @@ def _on_after_task_publish(
             parent_id=message["parent_id"],
             root_id=message["root_id"],
             group_id=message["group"],
-            args=_scrub_and_serialize_args(tuple(args)) if args else None,
-            kwargs=_scrub_and_serialize_kwargs(dict(kwargs)) if kwargs else None,
+            args=_scrub_and_serialize_args(args) if args else None,
+            kwargs=_scrub_and_serialize_kwargs(kwargs) if kwargs else None,
         )
     )
 

@@ -54,7 +54,7 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
 
 
 def _is_sensitive_key(
-    key: str,
+    key: object,
     sensitive_keys: frozenset[str],
     safe_keys: frozenset[str] | None = None,
 ) -> bool:
@@ -64,14 +64,22 @@ def _is_sensitive_key(
     - 'user_password' matches 'password'
     - 'API_KEY' matches 'api_key'
 
+    Only string keys are names. A task's dicts can have any hashable key (an
+    int, None, a tuple, bytes); those are never sensitive, and their values are
+    still scrubbed. ``str(key)`` isn't matched: for a tuple or bytes it is a
+    repr (``"b'password'"``), and a key's ``__str__`` can raise.
+
     Args:
-        key: The key name to check.
+        key: The dict key to check.
         sensitive_keys: Set of sensitive key patterns.
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
         True if the key should be scrubbed.
     """
+    if not isinstance(key, str):
+        return False
+
     if safe_keys and key.lower() in {k.lower() for k in safe_keys}:
         return False
 
@@ -80,11 +88,11 @@ def _is_sensitive_key(
 
 
 def scrub_dict(
-    data: dict[str, Any],
+    data: dict[Any, Any],
     sensitive_keys: frozenset[str] = DEFAULT_SENSITIVE_KEYS,
     additional_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[Any, Any]:
     """Recursively scrub sensitive keys from a dictionary.
 
     Args:
@@ -104,7 +112,7 @@ def scrub_dict(
         sensitive_keys | additional_keys if additional_keys else sensitive_keys
     )
 
-    result: dict[str, Any] = {}
+    result: dict[Any, Any] = {}
     for key, value in data.items():
         if _is_sensitive_key(key, all_sensitive, safe_keys):
             result[key] = FILTERED
