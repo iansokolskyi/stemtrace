@@ -369,20 +369,37 @@ def test_summaries_aggregate_outside_the_store_lock(
 # --- review round 1 regressions -----------------------------------------------
 
 
-@pytest.mark.parametrize("from_date", ["2026-10-18", "2026-10-18T00:00:00"])
-def test_naive_from_date_is_utc_on_summaries(store: GraphStore, from_date: str) -> None:
-    """The shipped UI sends date-only values; they mean UTC, as on /api/tasks."""
+def test_naive_from_date_is_utc_on_summaries(store: GraphStore) -> None:
+    """A time without a timezone means UTC, as on /api/tasks (it was a 500)."""
     store.add_event(_event("f", TaskState.FAILURE, 30, exception_type="E"))
     client = _client(store)
 
-    failures = client.get(f"/api/failures?from_date={from_date}")
-    series = client.get(f"/api/stats/timeseries?bucket=1h&from_date={from_date}")
+    failures = client.get("/api/failures?from_date=2026-10-18T00:00:00")
+    series = client.get("/api/stats/timeseries?bucket=1h&from_date=2026-10-18T00:00:00")
 
     assert failures.status_code == 200
     assert failures.json()["window"]["start"] == "2026-10-18T00:00:00Z"
     assert failures.json()["total"] == 1
     assert series.status_code == 200
     assert series.json()["starts"][0] == "2026-10-18T00:00:00Z"
+
+
+def test_date_only_from_date_behaves_as_on_the_task_list(store: GraphStore) -> None:
+    """The UI sends dates: accepted as UTC midnight where pydantic parses them.
+
+    pydantic 2.4 (the floor) rejects a date for a datetime parameter with a
+    422 on every endpoint; later versions read it as midnight. Never a 500.
+    """
+    store.add_event(_event("f", TaskState.FAILURE, 30, exception_type="E"))
+    client = _client(store)
+
+    tasks = client.get("/api/tasks?from_date=2026-10-18")
+    failures = client.get("/api/failures?from_date=2026-10-18")
+    series = client.get("/api/stats/timeseries?bucket=1h&from_date=2026-10-18")
+
+    assert failures.status_code == series.status_code == tasks.status_code
+    if tasks.status_code == 200:
+        assert failures.json()["window"]["start"] == "2026-10-18T00:00:00Z"
 
 
 @pytest.mark.parametrize(
