@@ -106,14 +106,13 @@ def _ws_subprotocols(key: str) -> list[str]:
 
 
 def _assert_ws_denied(client: TestClient, **kwargs: object) -> None:
-    accepted = False
-    with (  # noqa: PT012
+    """The handshake is refused before accept (close code 1008)."""
+    with (
         pytest.raises(WebSocketDisconnect) as exc_info,
-        client.websocket_connect("/stemtrace/ws", **kwargs) as ws,  # type: ignore[arg-type]  # headers/subprotocols
+        client.websocket_connect("/stemtrace/ws", **kwargs),  # type: ignore[arg-type]  # headers/subprotocols
     ):
-        accepted = True
-        ws.receive_text()
-    assert accepted is False
+        # Fail at once instead of waiting for a message that never comes.
+        pytest.fail("the WebSocket handshake was accepted")
     assert exc_info.value.code == 1008
 
 
