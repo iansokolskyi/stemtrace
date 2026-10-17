@@ -62,7 +62,7 @@ def _unprocessable(detail: str) -> HTTPException:
 def _recent_window(
     within: str | None, from_date: datetime | None, now: datetime, oldest: datetime
 ) -> Window:
-    """The window ending now: from ``within``, ``from_date``, or ``oldest`` (all retained).
+    """The window ending now: from ``within``, ``from_date``, or ``oldest`` (the oldest run).
 
     It starts at most ``MAX_DURATION`` before now (a worker clock decades
     behind would otherwise need more than ``MAX_BUCKETS`` of the largest
@@ -86,10 +86,21 @@ def add_summary_routes(
     groups: GroupConfig,
 ) -> None:
     """Register ``/overview``, ``/stats/timeseries`` and ``/failures``."""
+    _add_overview_route(router, store=store, worker_registry=worker_registry)
+    _add_timeseries_route(router, store=store, groups=groups)
+    _add_failures_route(router, store=store)
 
+
+def _add_overview_route(
+    router: APIRouter, *, store: GraphStore, worker_registry: WorkerRegistry | None
+) -> None:
     @router.get("/overview", response_model=OverviewResponse)
     async def overview(
         within: Annotated[str, Query(description=_WITHIN_HELP)] = "1h",
+        from_date: Annotated[
+            datetime | None,
+            Query(description="Not supported here (a 422): use within"),
+        ] = None,
     ) -> OverviewResponse:
         """KPIs over the last ``within``, each with the window of equal length before it.
 
@@ -98,6 +109,10 @@ def add_summary_routes(
         (0 when none finished). Workers are counted from worker events as the
         server last saw them, without asking the workers.
         """
+        if from_date is not None:
+            # Rejected rather than ignored, so a script never gets the
+            # default hour while thinking it set a start.
+            raise _unprocessable("overview takes within only, not from_date")
         now = params.utcnow()
         window = Window(now - params.parse_within(within), now, open_end=True)
         baseline = window.previous()
@@ -124,6 +139,10 @@ def add_summary_routes(
             ),
         )
 
+
+def _add_timeseries_route(
+    router: APIRouter, *, store: GraphStore, groups: GroupConfig
+) -> None:
     @router.get(
         "/stats/timeseries",
         response_model=TimeSeriesResponse,
@@ -148,7 +167,10 @@ def add_summary_routes(
             str | None, Query(description="Also split by task_group")
         ] = None,
     ) -> TimeSeriesResponse:
-        """Runs by current state per bucket, from ``within`` (or all retained runs) to now.
+        """Runs by current state per bucket, from ``within`` or ``from_date`` to now.
+
+        Without either, from the oldest run the server holds, but at most 3650
+        days back (the start is then rounded down to a bucket edge).
 
         Each run counts in the bucket of its last event. Bucket edges are
         multiples of the bucket size since the Unix epoch; the last bucket
@@ -195,6 +217,8 @@ def add_summary_routes(
             else None,
         )
 
+
+def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
     @router.get("/failures", response_model=FailureGroupListResponse)
     async def failures(
         group_by: Annotated[
@@ -210,6 +234,8 @@ def add_summary_routes(
         Each group lists its count, first and last failure, task names and up
         to 5 of the latest task IDs. Runs without an exception class (events
         from older workers) form one group with ``exception_type`` null.
+        Without ``within`` or ``from_date``, from the oldest run the server
+        holds, but at most 3650 days back.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")

@@ -129,8 +129,10 @@ finished) and under its current state, so a task that failed and then succeeded 
 as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now,
 or, on the time series and failures, from `from_date` (pass one or the other). A time without
 a timezone is UTC. A date alone (`2026-10-18`) means its UTC midnight on current pydantic
-(checked with 2.13); pydantic 2.4, the oldest supported, rejects it, as on the task list. A start after now is a `422`,
-and a window starts at most 3,650 days back, whatever `from_date` or the oldest task says.
+(checked with 2.13); pydantic 2.4, the oldest supported, rejects it, as on the task list. A
+start after now is a `422`. A window reaches at most 3,650 days back, whatever `from_date` or
+the oldest task says (a time series then starts at the bucket edge at or before that, and the
+overview's baseline is the window before it).
 Every response says which window it covered. A window ending now also takes tasks stamped
 later by a worker whose clock is ahead.
 
@@ -142,7 +144,7 @@ later by a worker whose clock is ahead.
   state (states with no run in range are left out). Bucket edges are multiples of the bucket
   size since the Unix epoch, so they don't move between requests; the first bucket starts on
   the edge at or before the window's start, and the response's `window.start` is that edge.
-  Without `within` or `from_date` it covers every task the server holds. Without `bucket` it
+  Without `within` or `from_date` it covers the last 3,650 days. Without `bucket` it
   uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
   that needs more is a `422`. `group_by=task_group` adds the same counts per
   [task group](configuration.md#task-groups).
