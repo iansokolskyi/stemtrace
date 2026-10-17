@@ -34,15 +34,19 @@ stemtrace is designed as two decoupled components:
 - Hooks into Celery signals
 - Captures task lifecycle events
 - Sends normalized events to the broker
-- **Fire-and-forget writes**: a failed send doesn't raise into the task, and the event is
-  dropped, not buffered. (A Celery soft time limit that arrives during a send still reaches
-  Celery; see the limitations in [Brokers](brokers.md).) Events are sent synchronously on the
-  thread that triggers them: the task's thread for its lifecycle events, the sending thread for
-  PENDING, and the worker's consumer loop for RECEIVED. So that thread waits for each send;
-  timeouts and a circuit breaker bound the wait (name lookups under uWSGI excepted).
+- **Fire-and-forget writes**: a failed send doesn't raise into the task, and stemtrace doesn't
+  retry or buffer the event: it is lost, or delivered without confirmation (see
+  [Brokers](brokers.md)). Each event is sent synchronously on the thread that triggers it, which
+  waits for the send. That is usually the task's own thread. PENDING is sent on the thread that
+  sent the task. RECEIVED, REVOKED, worker start and shutdown, and failures or retries the worker
+  itself reports (a lost child process, a hard time limit, a cancelled task) are sent by the
+  worker's own code (its consumer loop, startup and shutdown), which under prefork runs in the
+  main process, not in the pool children. Timeouts and a circuit breaker
+  bound each wait, except name lookups under uWSGI.
+- A Celery soft time limit that lands during a send is lost: Celery logs an error and the task
+  keeps running. See the limitations in [Brokers](brokers.md).
 
-How publishing behaves when the broker is slow or down, and what each send costs, is in
-[Brokers](brokers.md).
+How long a send can wait when the broker is slow or down is in [Brokers](brokers.md).
 
 ## Server (`stemtrace server`)
 
