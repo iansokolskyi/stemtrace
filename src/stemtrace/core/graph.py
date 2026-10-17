@@ -305,7 +305,8 @@ class TaskNode(BaseModel):
         """Milliseconds the task's last run took, from its STARTED to the end.
 
         None until the task finished, and when the last run's STARTED is
-        missing (see ``_runs``).
+        missing (see ``_runs``). For both run fields, ``run_times()`` reads
+        the events once.
         """
         return self.run_times()[0]
 
@@ -334,10 +335,12 @@ class TaskNode(BaseModel):
         missed, or that ended in a terminal event that isn't the final one
         (``self.retry(throw=False)``), is left out. None unless the task
         finished and its last run's STARTED is from the final event's attempt.
-        The exception is a FAILURE with ``retries=0``: Celery sends one from the
-        worker's main process (hard time limit, lost worker) whatever the
-        attempt (celery 5.6.3 worker/request.py ``Request.on_failure``); a
-        REVOKED there carries the request's real count (``_announce_revoked``).
+        The exception is a FAILURE with ``retries=0``: Celery reports a hard
+        time limit or lost worker from the worker's main process
+        (celery 5.6.3 worker/request.py ``Request.on_failure``), where the
+        task's request is an empty default (app/task.py ``Task._get_request``),
+        whatever the attempt. A REVOKED there carries the request's real count
+        (``_announce_revoked``).
         """
         final = max(self.events, key=_precedence, default=None)
         if final is None or final.state not in _TERMINAL_STATES:
