@@ -2,6 +2,7 @@
 
 import pytest
 
+from stemtrace.library import scrubbing
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     FILTERED,
@@ -331,3 +332,42 @@ class TestPatternCase:
         )
 
         assert result == {"MRN_PUBLIC": 1, "mrn": FILTERED}
+
+
+class TestPatternsLoweredOncePerCall:
+    """Each entry point lowercases its patterns once, however deep the data."""
+
+    @pytest.fixture
+    def lowercase_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        calls: list[int] = []
+        real = scrubbing._lowercase_patterns
+
+        def counting(
+            sensitive_keys: frozenset[str], additional_keys: frozenset[str] | None
+        ) -> frozenset[str]:
+            calls.append(1)
+            return real(sensitive_keys, additional_keys)
+
+        monkeypatch.setattr(scrubbing, "_lowercase_patterns", counting)
+        return calls
+
+    def test_scrub_dict_with_nested_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        scrub_dict({"a": {"b": {"c": 1}}, "d": [{"e": 1}, {"f": 2}]})
+
+        assert len(lowercase_calls) == 1
+
+    def test_scrub_args_with_many_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        scrub_args(([{"a": i} for i in range(50)],))
+
+        assert len(lowercase_calls) == 1
+
+    def test_safe_serialize_with_many_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        safe_serialize([{"a": {"b": i}} for i in range(50)])
+
+        assert len(lowercase_calls) == 1

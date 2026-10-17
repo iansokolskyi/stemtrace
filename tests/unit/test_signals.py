@@ -1160,6 +1160,21 @@ class TestSignalsScrubbingAndCaptureBranches:
         assert event.kwargs is not None
         assert "_truncated" in event.kwargs
 
+    @pytest.mark.parametrize("kwargs", [None, ["a", 1]], ids=["none", "list"])
+    def test_task_prerun_with_scrubbing_off_and_non_dict_kwargs_publishes(
+        self, mock_task: MagicMock, kwargs: Any
+    ) -> None:
+        # Celery always sends a dict; a non-Celery producer may not.
+        set_config(
+            StemtraceConfig(transport_url="memory://", scrub_sensitive_data=False)
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs=kwargs)
+
+        [event] = MemoryTransport.events
+        assert event.kwargs is None
+
     def test_task_prerun_with_uppercase_additional_sensitive_key_filters(
         self, mock_task: MagicMock
     ) -> None:

@@ -249,6 +249,10 @@ def _scrub_and_serialize_kwargs(
     # TRUNCATED_PREFIX).
     if isinstance(result, dict):
         return result
+    if not isinstance(result, str):
+        # Kwargs that weren't a dict (only from a non-Celery producer, with
+        # scrubbing off): nothing to show.
+        return None
     label = "_truncated" if result.startswith(TRUNCATED_PREFIX) else "_as_text"
     return {label: result}
 

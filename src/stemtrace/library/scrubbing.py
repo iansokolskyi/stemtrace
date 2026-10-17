@@ -115,14 +115,23 @@ def scrub_dict(
         >>> scrub_dict({"password": "secret123", "name": "Alice"})
         {'password': '[Filtered]', 'name': 'Alice'}
     """
-    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
+    return _scrub_dict(
+        data, _lowercase_patterns(sensitive_keys, additional_keys), safe_keys
+    )
 
+
+def _scrub_dict(
+    data: dict[str, Any],
+    patterns: frozenset[str],
+    safe_keys: frozenset[str] | None,
+) -> dict[str, Any]:
+    """Scrub a dictionary with patterns already lowercased by the entry point."""
     result: dict[str, Any] = {}
     for key, value in data.items():
-        if _is_sensitive_key(key, all_sensitive, safe_keys):
+        if _is_sensitive_key(key, patterns, safe_keys):
             result[key] = FILTERED
         else:
-            result[key] = _scrub_value(value, all_sensitive, safe_keys)
+            result[key] = _scrub_value(value, patterns, safe_keys)
 
     return result
 
@@ -134,7 +143,7 @@ def _scrub_value(
 ) -> Any:
     """Recursively scrub a value (handles nested dicts and lists)."""
     if isinstance(value, dict):
-        return scrub_dict(value, sensitive_keys, safe_keys=safe_keys)
+        return _scrub_dict(value, sensitive_keys, safe_keys)
     if isinstance(value, list):
         return [_scrub_value(item, sensitive_keys, safe_keys) for item in value]
     if isinstance(value, tuple):
