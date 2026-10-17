@@ -511,6 +511,9 @@ class GraphStore:
         name_exact: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        hostname: str | None = None,
+        queue: str | None = None,
+        exception_type: str | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Get nodes with optional filtering, most recent first.
 
@@ -521,6 +524,9 @@ class GraphStore:
         name; ``name_exact`` matches the whole name, case-sensitively like
         Celery's task registry (``app.add`` does not match ``app.add_numbers``
         or ``app.Add``). Both can be given; a node must pass each.
+        ``hostname``, ``queue`` and ``exception_type`` match the node's
+        value (see ``TaskNode._latest``) exactly; computing it reads all of
+        a node's events, so these cost several times the name filters.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -541,6 +547,12 @@ class GraphStore:
                 nodes = [n for n in nodes if name_lower in n.name.lower()]
             if name_exact is not None:
                 nodes = [n for n in nodes if n.name == name_exact]
+            if hostname is not None:
+                nodes = [n for n in nodes if n.hostname == hostname]
+            if queue is not None:
+                nodes = [n for n in nodes if n.queue == queue]
+            if exception_type is not None:
+                nodes = [n for n in nodes if n.exception_type == exception_type]
             if from_date is not None:
                 from_dt = _ensure_tz_aware(from_date)
                 nodes = [
