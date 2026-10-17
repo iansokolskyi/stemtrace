@@ -22,9 +22,11 @@ from pathlib import Path
 
 import pytest
 import redis
+from celery import Celery
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from stemtrace.core.events import TaskState
 from stemtrace.server.consumer import EventConsumer
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -151,6 +153,7 @@ def test_multi_nodes_listed_once_each_under_nodename(nodes: MultiNodes) -> None:
         )
 
         response = TestClient(app).get("/api/workers?refresh=true")
+        task_id = _run_task(nodes, store)
     finally:
         consumer.stop()
 
@@ -159,6 +162,23 @@ def test_multi_nodes_listed_once_each_under_nodename(nodes: MultiNodes) -> None:
     assert sorted(w["hostname"] for w in workers) == sorted(nodes.nodenames)
     assert {w["status"] for w in workers} == {"online"}
     assert all("output_test.noisy" in w["registered_tasks"] for w in workers)
+    # A task's hostname names the node that ran it as the Workers page does.
+    task = store.get_node(task_id)
+    assert task is not None
+    assert task.hostname in {w["hostname"] for w in workers}
+
+
+def _run_task(nodes: MultiNodes, store: GraphStore) -> str:
+    """Send a task to the nodes' queue; wait for it to succeed and return its id."""
+    sender = Celery("multi_test_sender", broker=REDIS_URL)
+    task_id = str(sender.send_task("output_test.noisy", queue=nodes.queue).id)
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        node = store.get_node(task_id)
+        if node is not None and node.state == TaskState.SUCCESS:
+            return task_id
+        time.sleep(0.2)
+    raise AssertionError(f"task {task_id} did not succeed within timeout")
 
 
 def _refresh_and_list(

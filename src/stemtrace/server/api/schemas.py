@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from stemtrace.core.events import TaskState
 from stemtrace.core.graph import NodeType
+from stemtrace.core.groups import GroupSource
 
 
 class WorkerStatus(str, Enum):
@@ -47,6 +48,10 @@ class TaskEventResponse(BaseModel):
     exception: str | None = None
     traceback: str | None = None
     output: str | None = None
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class TaskNodeResponse(BaseModel):
@@ -65,10 +70,20 @@ class TaskNodeResponse(BaseModel):
     # The parent the task's events reported (None for GROUP/CHORD nodes).
     reported_parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
+    # Task group (see core/groups.py), not Celery's group(): that's group_id.
+    # None for synthetic GROUP/CHORD nodes.
+    task_group: str | None = None
+    tags: list[str] = Field(default_factory=list)
     events: list[TaskEventResponse] = Field(default_factory=list)
     first_seen: datetime | None = None
     last_updated: datetime | None = None
     duration_ms: int | None = None
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -101,9 +116,19 @@ class GraphNodeResponse(BaseModel):
     # The parent the task's events reported (None for GROUP/CHORD nodes).
     reported_parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
+    # Task group (see core/groups.py), not Celery's group(): that's group_id.
+    # None for synthetic GROUP/CHORD nodes.
+    task_group: str | None = None
+    tags: list[str] = Field(default_factory=list)
     duration_ms: int | None = None
     first_seen: datetime | None = None
     last_updated: datetime | None = None
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class GraphResponse(BaseModel):
@@ -166,12 +191,34 @@ class RegisteredTaskResponse(BaseModel):
     registered_by: list[str] = Field(default_factory=list)
     last_run: datetime | None = None
     status: TaskStatus = TaskStatus.ACTIVE
+    task_group: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class TaskRegistryResponse(BaseModel):
     """List of all registered tasks."""
 
     tasks: list[RegisteredTaskResponse]
+    total: int
+
+
+# Task group schemas
+
+
+class TaskGroupResponse(BaseModel):
+    """A task group and the task names the server has seen in it."""
+
+    name: str
+    source: GroupSource
+    tags: list[str] = Field(default_factory=list)
+    color: str | None = None
+    task_names: list[str] = Field(default_factory=list)
+
+
+class TaskGroupListResponse(BaseModel):
+    """All task groups: code-defined ones (even with no tasks yet) and automatic ones."""
+
+    groups: list[TaskGroupResponse]
     total: int
 
 

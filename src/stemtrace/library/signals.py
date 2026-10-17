@@ -6,8 +6,9 @@ import threading
 import traceback as tb_module
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
+from celery.exceptions import Retry
 from celery.signals import (
     after_task_publish,
     task_failure,
@@ -19,6 +20,7 @@ from celery.signals import (
     worker_ready,
     worker_shutdown,
 )
+from celery.utils.serialization import UnpickleableExceptionWrapper
 
 from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
 from stemtrace.core.exceptions import is_task_interrupt
@@ -271,6 +273,115 @@ def _format_exception(exc: BaseException | None, einfo: Any = None) -> str | Non
     return None
 
 
+def _exception_type(exc: BaseException | None) -> str | None:
+    """The exception's class as ``module.QualName``, just ``QualName`` for builtins.
+
+    Only the class: unlike the message, it can't contain task arguments.
+    Celery replaces an exception it can't pickle with an
+    ``UnpickleableExceptionWrapper`` that records the original class (celery
+    5.6.3 utils/serialization.py ``get_pickleable_exception``, used for
+    ``Retry.exc``); that class is reported.
+    """
+    if exc is None:
+        return None
+    if isinstance(exc, UnpickleableExceptionWrapper):
+        module, name = exc.exc_module, exc.exc_cls_name
+    else:
+        module, name = type(exc).__module__, type(exc).__qualname__
+    return name if module in (None, "builtins") else f"{module}.{name}"
+
+
+def _retry_cause(reason: Any) -> BaseException | None:
+    """The exception a retry was for.
+
+    Celery sends task_retry with ``reason=`` the ``Retry`` that ``task.retry()``
+    raised (celery 5.6.3 app/trace.py ``TraceInfo.handle_retry``). With
+    ``retry(exc=E)``, ``Retry.exc`` is E. The usual ``except E: raise
+    self.retry()`` passes no ``exc``: ``Task.retry`` raises its ``Retry`` while
+    E is being handled (app/task.py, ``raise ret``), so Python chains E as the
+    Retry's context; an explicit cause (``raise Retry() from E``) comes first,
+    as in a traceback. A retry with neither (a polling retry) is the ``Retry``.
+    """
+    if not isinstance(reason, BaseException):
+        return None
+    # Kept typed: narrowing to celery's untyped Retry makes ``reason`` Any.
+    cause: BaseException = reason
+    if isinstance(reason, Retry):
+        if isinstance(reason.exc, BaseException):
+            return reason.exc
+        chained = reason.__cause__ or (
+            None if reason.__suppress_context__ else reason.__context__
+        )
+        if isinstance(chained, BaseException):
+            return chained
+    return cause
+
+
+def _destination(exchange: Any, routing_key: Any) -> tuple[str | None, str | None]:
+    """The queue and routing key of a task message, from how it was published.
+
+    Unless a route names both an exchange and a routing key, or a non-direct
+    exchange, Celery publishes to the default exchange ``''`` with the
+    queue's name as the routing key (celery 5.6.3 and 5.2.2 app/amqp.py
+    ``send_task_message``, "convert to anon-exchange"), and the broker
+    delivers it to the queue of that name (kombu 5.6.1
+    transport/virtual/base.py ``Channel.basic_publish``; AMQP's default
+    exchange). Through a named exchange the queue isn't known: the exchange
+    may route the message to any number of queues.
+
+    Args:
+        exchange: Exchange name, or a ``kombu.Exchange`` (Celery falls back
+            to its default ``Exchange`` object for non-direct exchanges).
+        routing_key: Routing key the message was published with.
+
+    Returns:
+        Tuple of (queue, routing_key), each None when not known.
+    """
+    key = routing_key if isinstance(routing_key, str) and routing_key else None
+    exchange_name = getattr(exchange, "name", exchange)
+    return (key if exchange_name == "" else None), key
+
+
+def _delivered_destination(delivery_info: Any) -> tuple[str | None, str | None]:
+    """Queue and routing key from a delivered message's ``delivery_info``.
+
+    The broker reports the exchange and routing key the message was published
+    with: kombu 5.6.1 transport/virtual/base.py
+    ``Channel._inplace_augment_message`` (Redis) and amqp 5.3.1 channel.py
+    ``Channel._on_basic_deliver`` (RabbitMQ). See ``_destination``.
+    """
+    if not isinstance(delivery_info, dict):
+        return None, None
+    return _destination(delivery_info.get("exchange"), delivery_info.get("routing_key"))
+
+
+class _WorkerFields(TypedDict):
+    """Where a worker-side event's task ran and came from."""
+
+    hostname: str | None
+    queue: str | None
+    routing_key: str | None
+
+
+def _worker_fields(request: Any) -> _WorkerFields:
+    """Hostname, queue and routing key of a worker's task request.
+
+    ``request`` is ``task.request`` or the worker's ``Request``: celery 5.6.3
+    worker/request.py ``Request.__init__`` gives both the consumer's
+    ``hostname`` and the broker's ``exchange`` and ``routing_key`` in
+    ``delivery_info``. An eager ``apply()`` ran in the caller's process, not
+    on a worker (``Task.apply`` sets ``hostname`` to the bare
+    ``gethostname()``), so it gets no hostname.
+    """
+    queue, routing_key = _delivered_destination(getattr(request, "delivery_info", None))
+    is_eager = getattr(request, "is_eager", False) is True
+    return _WorkerFields(
+        hostname=None if is_eager else _nodename(request),
+        queue=queue,
+        routing_key=routing_key,
+    )
+
+
 def _format_traceback(einfo: Any = None) -> str | None:
     """Format traceback from exception info."""
     if einfo is None:
@@ -315,6 +426,7 @@ def _on_task_prerun(
             retries=task.request.retries or 0,
             args=_scrub_and_serialize_args(args),
             kwargs=_scrub_and_serialize_kwargs(kwargs),
+            **_worker_fields(task.request),
         )
     )
     # Started after publishing so the publish itself is never part of the output.
@@ -363,6 +475,7 @@ def _on_task_postrun(
             retries=task.request.retries or 0,
             result=_scrub_and_serialize_result(retval),
             output=output,
+            **_worker_fields(task.request),
         )
     )
 
@@ -402,8 +515,10 @@ def _on_task_failure(
             chord_callback_id=chord_callback_id,
             retries=sender.request.retries or 0,
             exception=_format_exception(exception),
+            exception_type=_exception_type(exception),
             traceback=_format_traceback(einfo),
             output=output,
+            **_worker_fields(sender.request),
         )
     )
 
@@ -445,8 +560,10 @@ def _on_task_retry(
             chord_callback_id=chord_callback_id,
             retries=request.retries or 0,
             exception=exc_message,
+            exception_type=_exception_type(_retry_cause(reason)),
             traceback=_format_traceback(einfo),
             output=output,
+            **_worker_fields(request),
         )
     )
 
@@ -474,6 +591,7 @@ def _on_task_revoked(
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
             retries=getattr(request, "retries", 0) or 0,
+            **_worker_fields(request),
         )
     )
 
@@ -526,6 +644,8 @@ def _on_after_task_publish(
     sender: str | None = None,
     body: Any = None,
     headers: dict[str, Any] | None = None,
+    exchange: Any = None,
+    routing_key: Any = None,
     **_: Any,
 ) -> None:
     """Emit the sender's PENDING event once a task message is published.
@@ -555,6 +675,10 @@ def _on_after_task_publish(
         _pending_emitted.add(task_id)
 
     args, kwargs = message["args"], message["kwargs"]
+    # after_task_publish gets the exchange and routing key Celery published
+    # with, not the queue name (celery 5.6.3 and 5.2.2 app/amqp.py
+    # send_task_message).
+    queue, routing_key = _destination(exchange, routing_key)
     _publish_event(
         TaskEvent(
             task_id=task_id,
@@ -566,6 +690,8 @@ def _on_after_task_publish(
             group_id=message["group"],
             args=_scrub_and_serialize_args(tuple(args)) if args else None,
             kwargs=_scrub_and_serialize_kwargs(dict(kwargs)) if kwargs else None,
+            queue=queue,
+            routing_key=routing_key,
         )
     )
 
@@ -613,6 +739,18 @@ def disconnect_signals() -> None:
     logger.info("stemtrace signal handlers disconnected")
 
 
+def _nodename(obj: Any) -> str | None:
+    """The Celery nodename (``name@host``) of a worker, its consumer or a task request.
+
+    All three carry the same value: a task's ``request.hostname`` is its
+    consumer's ``hostname`` (celery 5.6.3 worker/strategy.py ``default``),
+    which is the worker's (worker/components.py ``Consumer.create``), the
+    nodename ``celery worker -n`` and ``celery multi`` set.
+    """
+    hostname = getattr(obj, "hostname", None)
+    return hostname if isinstance(hostname, str) and hostname else None
+
+
 def _get_hostname_and_pid(sender: Any) -> tuple[str, int]:
     """Extract hostname and PID from Celery worker instance.
 
@@ -624,8 +762,7 @@ def _get_hostname_and_pid(sender: Any) -> tuple[str, int]:
     """
     import os
 
-    # Celery exposes hostname through .hostname attribute on WorkController
-    hostname = getattr(sender, "hostname", None)
+    hostname = _nodename(sender)
     if hostname is None:
         hostname = "unknown-host"
         logger.warning("Could not determine hostname from sender")

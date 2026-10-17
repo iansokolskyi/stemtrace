@@ -151,6 +151,7 @@ stemtrace server \
     --host 0.0.0.0 \
     --port 8000 \
     --node-alias-from-arguments operator_type \
+    --groups groups.toml \
     --root-path /monitoring \
     --reload  # For development
 ```
@@ -176,6 +177,71 @@ If the argument is missing, the task name is shown. This is a **server** setting
 `capture_args=True` (the default) so the arguments are available. Passing it to
 `stemtrace.init_worker(...)` has no effect and is deprecated.
 
+### Task groups
+
+Every task belongs to one *task group* (a label for related tasks such as `billing` or
+`search`; not Celery's `group()`). The API returns it as `task_group`, with the group's `tags`,
+on tasks, graph nodes and the task registry, and `GET /stemtrace/api/groups` lists the groups.
+The UI doesn't show groups yet.
+
+**Automatic groups** come from the task name: the first module segment (`search.tasks.reindex`
+→ `search`). Generic module names (`tasks`, `app`, `apps`, `celery`, `jobs`, `worker`, `workers`,
+`src`, in any case) are skipped, so `tasks.search.reindex` and `app.billing.tasks.charge` give
+`search` and `billing`. The last segment is the task's own name and never names a group: names
+with no dots, or only generic modules (`add`, `tasks.add`, `app.tasks.add`,
+`celery.chord_unlock`), are in `ungrouped`. Empty segments (`a..b`) are ignored. Only leading
+generic segments are skipped, so when every task name starts with your project's package
+(`myproject.billing.charge`, `myproject.search.reindex`) all tasks land in one group,
+`myproject`: define groups in code for such layouts.
+
+**Code-defined groups** take precedence. Each has a `name`, `match` (glob patterns on the full
+task name, case-sensitive; `*` also matches dots), optional `tags` and an optional `color`
+(`#rgb` or `#rrggbb`). The first group whose patterns match a task wins, in the order given;
+tasks no group matches keep their automatic group. A task whose automatic group has the same
+name as a code-defined group is in that group and gets its tags.
+
+```python
+from stemtrace import GroupRule
+
+stemtrace.init_app(
+    app,
+    broker_url="redis://localhost:6379/0",
+    groups=[
+        GroupRule(name="billing", match=["billing.*", "*.charge_*"], tags=["money"]),
+        {"name": "search", "match": ["search.*", "indexer.*"], "color": "#2563eb"},
+    ],
+)
+```
+
+Or put them in a TOML file and pass its path: `stemtrace server --groups groups.toml`,
+`STEMTRACE_GROUPS=groups.toml`, or `init_app(groups="groups.toml")` (an explicit `groups=`
+wins over `STEMTRACE_GROUPS`):
+
+```toml
+[[groups]]
+name = "billing"
+match = ["billing.*", "*.charge_*"]
+tags = ["money"]
+
+[[groups]]
+name = "search"
+match = ["search.*", "indexer.*"]
+color = "#2563eb"
+```
+
+The rules are checked at startup: an unknown key (`matches`, `tag`), a missing `match`, an
+invalid color or two groups with the same name stop the server with a `ConfigurationError`
+(`stemtrace server` exits with a usage error). A `GroupRule(...)` you build yourself is checked
+when you build it and raises pydantic's `ValidationError`. `create_router(groups=...)` takes the
+same values and checks them when the router is created. TOML files need Python 3.11+ (stdlib `tomllib`);
+on Python 3.10, define the groups in code. Groups are a **server** setting, like node aliases;
+workers don't need them.
+
+`GET /stemtrace/api/groups` returns each group's `name`, `source` (`code` or `auto`), `tags`,
+`color` and `task_names`: the task names the server has seen in events or in workers'
+registered tasks, as in the task registry. Code-defined groups are listed even before any of
+their tasks has run. Groups are sorted by name, with `ungrouped` last.
+
 ## Embedded server options (`init_app`)
 
 ```python
@@ -193,6 +259,7 @@ extension = stemtrace.init_app(
     serve_ui=True,              # Serve React dashboard
     auth_dependency=None,       # Optional auth (see below)
     node_alias_from_arguments=None,  # e.g. "operator_type" or "0"; see Node Names from Task Arguments
+    groups=None,                # Task group rules or a TOML path; see Task groups
 )
 ```
 
@@ -228,6 +295,7 @@ stemtrace.init_app(
 | `STEMTRACE_TRANSPORT_URL` | Event transport URL (where stemtrace publishes/consumes events).  | Defaults to `STEMTRACE_BROKER_URL`. |
 | `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Behind a reverse proxy](deployment.md#behind-a-reverse-proxy-with-a-path-prefix)). Same as `--root-path`. | Unset. |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node names from task arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
+| `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. Python 3.11+. | Unset (automatic groups only). |
 
 `STEMTRACE_LOGIN_SECRET` and `FORWARDED_ALLOW_IPS` are described with the built-in login in
 [Security](security.md#built-in-login-page).
