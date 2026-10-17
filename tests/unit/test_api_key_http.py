@@ -491,3 +491,30 @@ def test_cli_short_api_key_is_a_usage_error(
     assert "at least 16 characters" in output
     assert "short-key" not in output.replace("'--api-key'", "")
     assert app is None
+
+
+def test_form_and_key_wrong_keys_count_toward_login_lockout(
+    form_and_key: TestClient,
+) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        form_and_key.get("/stemtrace/api/tasks", headers=WRONG)
+
+    resp = form_and_key.post(
+        "/stemtrace/login",
+        data={"username": "admin", "password": "secret", "next": "/stemtrace/"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 429
+
+
+def test_key_in_query_string_is_never_accepted(key_only: TestClient) -> None:
+    for name in ("api_key", "key", "token", "access_token"):
+        assert key_only.get(f"/stemtrace/api/tasks?{name}={KEY}").status_code == 401
+        _assert_ws_denied_url(key_only, f"/stemtrace/ws?{name}={KEY}")
+
+
+def _assert_ws_denied_url(client: TestClient, url: str) -> None:
+    with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(url):
+        pytest.fail("the WebSocket handshake was accepted")
+    assert exc_info.value.code == 1008
