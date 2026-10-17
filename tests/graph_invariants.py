@@ -126,6 +126,21 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
         assert member_id in graph._body_members[group_id], member_id
 
 
+def _check_named_callbacks(graph: TaskGraph) -> None:
+    """Named chord callbacks: the tally owns them, the node and index agree."""
+    for group_id, tally in graph._groups.items():
+        node = graph.nodes.get(_group_node_id(group_id))
+        if node is not None and node.node_type == NodeType.CHORD:
+            assert node.chord_callback_id == tally.named_callback, group_id
+    # Each named callback is one chord's, and that chord's headers named it
+    # (also while the CHORD node is removed): no stale entries.
+    for callback_id, group_id in graph._chord_by_callback.items():
+        tally = graph._groups.get(group_id)
+        assert tally is not None, (callback_id, group_id, "named by no group")
+        assert tally.headers, (callback_id, group_id, "named by no chord")
+        assert tally.named_callback == callback_id, (callback_id, group_id)
+
+
 def _check_missing_parent_indexes(graph: TaskGraph) -> None:
     """Nodes waiting for a missing parent are listed both ways and exist."""
     assert set(graph._awaited_by) <= set(graph.nodes), "waiting node is gone"
@@ -195,6 +210,40 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
     _check_reachable(graph, roots)
     _check_group_indexes(graph)
     _check_chord_indexes(graph)
+    _check_named_callbacks(graph)
     _check_missing_parent_indexes(graph)
     _check_dependency_indexes(graph)
     _check_reported_children(graph)
+
+
+def graph_state(graph: TaskGraph) -> dict[str, object]:
+    """What a graph shows and the chord roles it decided, for comparing two graphs.
+
+    Per node: name, type, place (parent and children), chord callback (drawn
+    and named), reported parent, state and group. Also the roots and the
+    chord indexes (named callbacks, drawn callbacks, chord_unlock tasks, group
+    bodies), so a stale entry in one of them counts as a difference. Lists
+    are sorted: two graphs built in different orders may list the same
+    children or roots in another order.
+    """
+    return {
+        "nodes": {
+            node_id: (
+                node.name,
+                node.node_type,
+                node.parent_id,
+                sorted(node.children),
+                node.chord_id,
+                node.chord_callback_id,
+                node.reported_parent_id,
+                node.state,
+                node.group_id,
+            )
+            for node_id, node in graph.nodes.items()
+        },
+        "roots": sorted(graph.root_ids),
+        "chord_by_callback": dict(graph._chord_by_callback),
+        "callback_of": dict(graph._callback_of),
+        "unlock_of": dict(graph._unlock_of),
+        "body_of": dict(graph._body_of),
+    }

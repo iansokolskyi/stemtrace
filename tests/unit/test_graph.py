@@ -10,7 +10,7 @@ from pydantic import ValidationError
 import stemtrace.core.graph as graph_module
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
-from tests.graph_invariants import assert_graph_invariants
+from tests.graph_invariants import assert_graph_invariants, graph_state
 
 
 class TestNodeType:
@@ -3326,3 +3326,123 @@ class TestRealParentIsKept:
         assert graph.nodes["p1"].children == ["child"]
         assert graph.nodes["p2"].children == []
         assert graph.nodes["child"].state == TaskState.SUCCESS
+
+
+def _every_order(*events: TaskEvent) -> list[TaskGraph]:
+    """The graph each order of ``events`` builds."""
+    return [_build(*order) for order in permutations(events)]
+
+
+class TestDerivedFactsFollowTheirInputs:
+    """A chord's callback, chain links and a recreated CHORD node are worked
+    out from what tasks' events say. When that changes (a task renamed by
+    ``task.replace()``'s reused ID, a group's parent vote, a removed CHORD
+    node), they follow, so event order and removals don't matter."""
+
+    def test_add_event_rename_to_chord_unlock_fires_body_in_any_order(self) -> None:
+        # u's own PENDING (lifecycle-first) names it celery.chord_unlock.
+        graphs = _every_order(
+            _ev("h", TaskState.STARTED, group_id="g", chord_callback_id="cb"),
+            _ev("cb", TaskState.STARTED, parent_id="u"),
+            _ev("u", TaskState.STARTED, name="tests.other"),
+            _ev("u", TaskState.PENDING, name="celery.chord_unlock"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["u"].name == "celery.chord_unlock"
+            assert graph.nodes["group:g"].chord_id == "cb"
+            assert graph._unlock_of == {"u": "g"}
+            assert graph.nodes["u"].parent_id == "group:g"
+
+    def test_add_event_rename_from_chord_unlock_drops_body_in_any_order(self) -> None:
+        graphs = _every_order(
+            _ev("h", TaskState.STARTED, group_id="g", chord_callback_id="cb"),
+            _ev("cb", TaskState.STARTED, parent_id="u"),
+            _ev("u", TaskState.STARTED, name="celery.chord_unlock"),
+            _ev("u", TaskState.PENDING, name="tests.other"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["u"].name == "tests.other"
+            assert graph.nodes["group:g"].chord_id is None
+            assert graph._unlock_of == {}
+            assert graph.nodes["cb"].parent_id == "u"
+
+    @pytest.mark.parametrize(
+        ("own_name", "other_name"),
+        [
+            ("celery.chord_unlock", "tests.other"),
+            ("tests.other", "celery.chord_unlock"),
+        ],
+    )
+    def test_add_event_rename_decides_chain_link_in_any_order(
+        self, own_name: str, other_name: str
+    ) -> None:
+        """l is m1's only parent, so it is a link of m1's chain in the group
+        (m2 reports another parent), unless it is a chord_unlock task."""
+        graphs = _every_order(
+            _ev("m1", TaskState.STARTED, group_id="g", parent_id="l"),
+            _ev("m2", TaskState.STARTED, group_id="g", parent_id="x"),
+            _ev("l", TaskState.STARTED, name=other_name, parent_id="p"),
+            _ev("l", TaskState.PENDING, name=own_name, parent_id="p"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["l"].name == own_name
+            if own_name == "celery.chord_unlock":
+                assert "l" not in graph._link_owner
+                assert graph.nodes["group:g"].parent_id == "l"
+            else:
+                assert graph._link_owner.get("l") == "m1"
+                assert graph.nodes["l"].parent_id == "group:g"
+
+    def test_add_event_body_group_parent_vote_decides_callback_in_any_order(
+        self,
+    ) -> None:
+        # The chord names group "body"; it is the chord's body only while its
+        # members' parent (the vote: x, two to one) is one of the headers.
+        graphs = _every_order(
+            _ev("h", TaskState.STARTED, group_id="g", chord_callback_id="body"),
+            _ev("a", TaskState.STARTED, group_id="body", parent_id="h"),
+            _ev("b", TaskState.STARTED, group_id="body", parent_id="x"),
+            _ev("c", TaskState.STARTED, group_id="body", parent_id="x"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["group:g"].chord_id is None
+            assert graph.nodes["group:body"].parent_id is None
+            assert graph._callback_of == {}
+
+    def test_remove_chord_node_then_member_event_restores_named_callback(
+        self,
+    ) -> None:
+        graph = _build(
+            _ev("h1", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+            _ev("h2", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+        )
+
+        graph.remove_node("group:g")
+        graph.add_event(_ev("cb", TaskState.STARTED, parent_id="h2", group_id="g"))
+
+        assert_graph_invariants(graph)
+        rebuilt = _build(
+            _ev("h1", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+            _ev("h2", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+            _ev("cb", TaskState.STARTED, parent_id="h2", group_id="g"),
+        )
+        assert graph.nodes["group:g"].chord_callback_id == "cb"
+        assert graph.nodes["group:g"].chord_id == "cb"
+        assert graph_state(graph) == graph_state(rebuilt)
+
+    def test_remove_chord_node_then_headers_leaves_no_named_callback(self) -> None:
+        graph = _build(
+            _ev("h1", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+            _ev("h2", TaskState.SUCCESS, group_id="g", chord_callback_id="cb"),
+        )
+
+        for node_id in ("group:g", "h1", "h2"):
+            graph.remove_node(node_id)
+            assert_graph_invariants(graph)
+
+        assert graph._chord_by_callback == {}
+        assert graph._groups == {}

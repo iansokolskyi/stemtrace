@@ -467,7 +467,9 @@ class _GroupTally:
         "direct_parents",
         "headers",
         "members",
+        "named_callback",
         "parent_votes",
+        "read_parent",
         "rootish",
         "state_counts",
         "status",
@@ -493,6 +495,14 @@ class _GroupTally:
         # Members that aren't headers: for a chord, its callback or a chain
         # body's last task, stamped with the group ID.
         self.tails: dict[str, None] = {}
+        # The callback ID the headers named (a chord's ``chord_callback_id``).
+        # Kept here, not only on the CHORD node: removing the node keeps the
+        # headers, and a recreated node must know what their events said.
+        self.named_callback: str | None = None
+        # ``parent()`` when the group node was last placed: chords that read
+        # it (as their own parent, or their body group's) re-resolve when it
+        # moves.
+        self.read_parent: str | None = None
 
     def counted(self) -> dict[str, None]:
         """The members that make up the group (headers, for a chord)."""
@@ -922,12 +932,15 @@ class TaskGraph(BaseModel):
             Whether the reported parent changed, or None for a duplicate.
         """
         was_reused = node._is_reused()
+        old_name = node.name
         if not node._record_event(event):
             return None
         node._fill_missing_ids(event)
         new_parent = node._note_reported_parent(self._replacement_check(node))
         if not was_reused and node._is_reused():
             self._recheck_mutual(node)
+        if node.name != old_name:
+            self._renamed(node, old_name)
         return new_parent
 
     def _replacement_check(self, node: TaskNode) -> Callable[[TaskEvent], bool]:
@@ -1041,12 +1054,30 @@ class TaskGraph(BaseModel):
         """Recompute a task's name and reported parent, and move it if it changed."""
         node = self.nodes[task_id]
         old_parent = node.reported_parent_id
-        if node._recompute_identity(self._replacement_check(node)):
+        old_name = node.name
+        parent_changed = node._recompute_identity(self._replacement_check(node))
+        if node.name != old_name:
+            self._renamed(node, old_name)
+        if parent_changed:
             self._reported_parent_changed(node, old_parent)
             self._place(node)
             self._retrigger(task_id, changed=True)
             if not node._is_reused():
                 self._recheck_walkers(task_id)
+
+    def _renamed(self, node: TaskNode, old_name: str) -> None:
+        """Re-run what read a task's name after its events gave it another.
+
+        Only whether it is ``celery.chord_unlock`` is read: such a task fires
+        a chord's body (the walks in ``_walk_to_body``) and is never a chain
+        link (``_can_link``). A ``task.replace()`` reuse can rename a task.
+        """
+        if (old_name == _CHORD_UNLOCK_TASK) == (node.name == _CHORD_UNLOCK_TASK):
+            return
+        self._rechain_owner_of(node.task_id)  # it may stop being a link
+        self._on_children_changed(node.task_id)  # or become one
+        # Walks that passed it resume above it: start them over.
+        self._retrigger(node.task_id, changed=True)
 
     def _recheck_mutual(self, node: TaskNode) -> None:
         """Re-pick the parents of tasks in a two-task cycle with a reused ID.
@@ -1091,7 +1122,8 @@ class TaskGraph(BaseModel):
         callback), the roots, its group and any chain. Its children become
         roots, waiting for it like for any missing parent; a removed
         GROUP/CHORD releases its members to their own parents (or the roots)
-        but keeps their membership, so a later member event can recreate it.
+        but keeps their membership, so a later member event can recreate it
+        (a CHORD with the callback its headers named).
 
         Args:
             task_id: ID of the node to remove.
@@ -1296,19 +1328,45 @@ class TaskGraph(BaseModel):
         if node.task_id in self._removing:
             return
         desired = self._desired_parent(node)
-        if desired == node.parent_id:
+        if desired != node.parent_id:
+            parent_id = self._safe_parent(node, desired)
+            if parent_id is None and desired is not None:
+                parent_id = self._break_cycle(node, desired)
+            if parent_id != node.parent_id:
+                self._move(node, parent_id)
+                if node.node_type != NodeType.TASK:
+                    # A chord whose body is this group resolves against its
+                    # place, and so does a chord's own callback (the ancestor
+                    # check).
+                    self._retrigger(node.task_id)
+                    if node.node_type == NodeType.CHORD and node.group_id is not None:
+                        self._resolve_callback(node.group_id)
+        if node.node_type != NodeType.TASK:
+            self._group_parent_read(node)
+
+    def _group_parent_read(self, group_node: TaskNode) -> None:
+        """Re-resolve the chords that read a group's parent, if it changed.
+
+        A chord's walks stop at its own parent, and a chord whose body is
+        another group checks that group's parent. The group's place doesn't
+        always follow its parent: drawn as a chord's callback, it stays under
+        the chord. What changes a group's parent votes places its node next
+        (``_rechain``, ``_leave_group``, and ``add_event`` through
+        ``_refresh_group_of`` after a member joins or the group becomes a chord).
+        """
+        group_id = group_node.group_id
+        if group_id is None or group_node.task_id != _group_node_id(group_id):
+            return  # a chord's group-body node
+        tally = self._groups.get(group_id)
+        if tally is None:
             return
-        parent_id = self._safe_parent(node, desired)
-        if parent_id is None and desired is not None:
-            parent_id = self._break_cycle(node, desired)
-        if parent_id != node.parent_id:
-            self._move(node, parent_id)
-            if node.node_type != NodeType.TASK:
-                # A chord whose body is this group resolves against its place,
-                # and so does a chord's own callback (the ancestor check).
-                self._retrigger(node.task_id)
-                if node.node_type == NodeType.CHORD and node.group_id is not None:
-                    self._resolve_callback(node.group_id)
+        parent = tally.parent()
+        if parent == tally.read_parent:
+            return
+        tally.read_parent = parent
+        self._retrigger(group_node.task_id)
+        if tally.headers:
+            self._resolve_callback(group_id)
 
     def _break_cycle(self, node: TaskNode, desired: str) -> str | None:
         """Make room for a link that would close a cycle; returns the parent.
@@ -1579,6 +1637,7 @@ class TaskGraph(BaseModel):
             state=_aggregate_group_state(tally.state_counts.keys()),
             node_type=NodeType.CHORD if is_chord else NodeType.GROUP,
             group_id=group_id,
+            chord_callback_id=tally.named_callback if is_chord else None,
         )
         self.nodes[group_node.task_id] = group_node
         group_node.parent_id = self._safe_parent(
@@ -1592,6 +1651,8 @@ class TaskGraph(BaseModel):
         self._adopt_waiting_children(group_node.task_id)
         self._place(group_node)
         self._retrigger(group_node.task_id)
+        if is_chord:
+            self._resolve_callback(group_id)
 
     def _refresh_group_of(self, node: TaskNode) -> None:
         """Re-place the synthetic node of a task's group, if there is one."""
@@ -1832,12 +1893,13 @@ class TaskGraph(BaseModel):
     ) -> None:
         """The last header is gone: the others count as plain members again."""
         self._recount(tally)
+        named = tally.named_callback
+        tally.named_callback = None
+        if named is not None and self._chord_by_callback.get(named) == group_id:
+            del self._chord_by_callback[named]
         if group_node is not None:
             self._set_callback(group_node, group_id, None)
             self._drop_body_group(group_id)
-            named = group_node.chord_callback_id
-            if named is not None and self._chord_by_callback.get(named) == group_id:
-                del self._chord_by_callback[named]
             group_node.chord_callback_id = None
             group_node.node_type = NodeType.GROUP
             group_node.name = "group"
@@ -1873,17 +1935,19 @@ class TaskGraph(BaseModel):
 
         A callback ID belongs to one chord: another chord naming it loses it.
         """
-        chord_node = self.nodes[_group_node_id(group_id)]
-        if chord_node.chord_callback_id == callback_id:
+        tally = self._groups[group_id]
+        if tally.named_callback == callback_id:
             return
-        previous = chord_node.chord_callback_id
+        previous = tally.named_callback
         if previous is not None and self._chord_by_callback.get(previous) == group_id:
             del self._chord_by_callback[previous]
         other_group = self._chord_by_callback.get(callback_id)
         self._chord_by_callback[callback_id] = group_id
-        chord_node.chord_callback_id = callback_id
+        tally.named_callback = callback_id
+        self.nodes[_group_node_id(group_id)].chord_callback_id = callback_id
         self._reset_body_walks(group_id)
         if other_group is not None and other_group != group_id:
+            self._groups[other_group].named_callback = None
             other = self.nodes.get(_group_node_id(other_group))
             if other is not None:
                 other.chord_callback_id = None
@@ -1945,7 +2009,7 @@ class TaskGraph(BaseModel):
         tally = self._groups.get(group_id)
         if chord_node is None or tally is None or not tally.headers:
             return
-        named = chord_node.chord_callback_id
+        named = tally.named_callback
         chord_parent = tally.parent()
         if self._walk_parent.get(group_id) != chord_parent:
             # Walks stop at the chord's own parent: restart if it changed.

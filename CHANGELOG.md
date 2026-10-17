@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Graphs: a chord whose node was removed (`TaskGraph.remove_node`) while its headers stayed lost its callback: when a later event of one of its tasks recreated the node, it no longer knew the callback the headers had named, so it drew none. It now draws the callback a graph built from the same events draws. Removing the last header after the node no longer leaves that callback ID recorded for the chord.
+- Graphs: a chord's callback and a group's chain links no longer depend on event order when an earlier event renames a task to or from `celery.chord_unlock` (one task ID reporting two names), or when the parent of a chord's body group changes while that group is drawn as the callback. Celery workflows don't produce these events; they showed up when comparing removals with rebuilds.
+
 ## [0.4.0] - 2026-10-13
 
 **Highlights:**
