@@ -149,6 +149,7 @@ def add_summary_routes(
             group_of = group_lookup(groups)
 
             def key_of(record: RunRecord) -> str:
+                """Split the series by the run's task group (resolved once per name)."""
                 return group_of(record.name).name
 
         try:
