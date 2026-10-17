@@ -129,6 +129,10 @@ def _node_to_response(
         first_seen=first_seen,
         last_updated=last_updated,
         duration_ms=duration_ms,
+        exception_type=node.exception_type,
+        hostname=node.hostname,
+        queue=node.queue,
+        routing_key=node.routing_key,
     )
 
 
@@ -228,6 +232,10 @@ def _node_to_graph_response(
         duration_ms=duration_ms,
         first_seen=first_seen,
         last_updated=last_updated,
+        exception_type=node.exception_type,
+        hostname=node.hostname,
+        queue=node.queue,
+        routing_key=node.routing_key,
     )
 
 
@@ -581,11 +589,24 @@ def _add_task_routes(
         to_date: Annotated[
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
+        hostname: Annotated[
+            str | None,
+            Query(description="Filter by exact worker nodename (name@host)"),
+        ] = None,
+        queue: Annotated[
+            str | None, Query(description="Filter by exact queue name")
+        ] = None,
+        exception_type: Annotated[
+            str | None,
+            Query(description="Filter by exact exception class (module.Class)"),
+        ] = None,
     ) -> TaskListResponse:
-        """List tasks with optional filtering by state, name, and date range.
+        """List tasks with optional filtering by state, name, date range and more.
 
         ``name`` is a case-insensitive substring match (the search box);
-        ``name_exact`` is an exact match on the full task name.
+        ``name_exact`` is an exact match on the full task name. ``hostname``,
+        ``queue`` and ``exception_type`` match the task's latest known value
+        exactly.
         """
         from stemtrace.core.events import TaskState as TS
 
@@ -602,6 +623,9 @@ def _add_task_routes(
             name_exact=name_exact,
             from_date=from_date,
             to_date=to_date,
+            hostname=hostname,
+            queue=queue,
+            exception_type=exception_type,
         )
         return TaskListResponse(
             tasks=[_node_to_response(n) for n in nodes],
