@@ -3573,8 +3573,9 @@ class TestDerivedFactsFollowTheirInputs:
         self,
     ) -> None:
         """While t5 is removed, its group's members still vote for it as the
-        group's parent: placing the group under it looked like a cycle, which
-        released another chord's callback on the way up."""
+        group's parent: placing the group under it looks like a cycle, which
+        releases another chord's callback on the way up. That chord takes it
+        back (a released callback re-resolves the chords that read it)."""
         events = (
             _ev("t0", TaskState.STARTED),
             _ev(
@@ -3605,3 +3606,115 @@ class TestDerivedFactsFollowTheirInputs:
         rebuilt = _build(*(e for e in events if e.task_id != "t5"))
         assert graph.nodes["group:g1"].chord_id == "t1"
         assert graph_state(graph) == graph_state(rebuilt)
+
+    def test_remove_node_chord_releasing_shared_callback_lets_other_draw_it(
+        self,
+    ) -> None:
+        """g1 (smaller group ID) keeps the callback both chords name and draws
+        it (cb reports g1's own parent). Removing g1's only header ends g1:
+        g2 refused cb while g1 drew it, and now draws it, as a rebuild does."""
+        events = (
+            _ev("t0", TaskState.STARTED, group_id="g2", chord_callback_id="cb"),
+            _ev(
+                "t1",
+                TaskState.STARTED,
+                group_id="g1",
+                parent_id="t0",
+                chord_callback_id="cb",
+            ),
+            _ev("cb", TaskState.STARTED, parent_id="t0"),
+        )
+        for order in permutations(events):
+            graph = _build(*order)
+            assert graph._callback_of == {"cb": "g1"}
+
+            graph.remove_node("t1")
+
+            assert_graph_invariants(graph)
+            rebuilt = _build(*(e for e in order if e.task_id != "t1"))
+            assert graph.nodes["group:g2"].chord_id == "cb"
+            assert graph_state(graph) == graph_state(rebuilt)
+
+    @pytest.mark.parametrize("victim", ["a", "group:g1"])
+    def test_remove_node_chord_releasing_shared_unlock_lets_other_take_it(
+        self, victim: str
+    ) -> None:
+        """Both chords' callbacks were fired by chord_unlock task u; g1 (smaller
+        group ID) holds it. When g1 ends (its header or its node removed), g2,
+        refused u until then, takes it, as a rebuild does."""
+        events = (
+            _ev("u", TaskState.STARTED, name="celery.chord_unlock"),
+            _ev("a", TaskState.STARTED, group_id="g1", chord_callback_id="c1"),
+            _ev("b", TaskState.STARTED, group_id="g2", chord_callback_id="c2"),
+            _ev("c1", TaskState.STARTED, parent_id="u"),
+            _ev("c2", TaskState.STARTED, parent_id="u"),
+        )
+        for order in permutations(events):
+            graph = _build(*order)
+            assert graph._unlock_of == {"u": "g1"}
+
+            graph.remove_node(victim)
+
+            assert_graph_invariants(graph)
+            assert graph._unlock_of == {"u": "g2"}
+            if victim == "a":
+                rebuilt = _build(*(e for e in order if e.task_id != victim))
+                assert graph_state(graph) == graph_state(rebuilt)
+
+    def test_remove_node_ending_a_loop_lets_chord_draw_its_callback(self) -> None:
+        """Chord g sits under m, below s, so drawing s (its body start, fired by
+        chord_unlock task u) after g would close a loop and is refused. With m
+        removed the loop is gone and g draws s, as a rebuild does."""
+        events = (
+            _ev("u", TaskState.STARTED, name="celery.chord_unlock"),
+            _ev("s", TaskState.STARTED, parent_id="u"),
+            _ev("m", TaskState.STARTED, parent_id="s"),
+            _ev(
+                "h",
+                TaskState.STARTED,
+                group_id="g",
+                parent_id="m",
+                chord_callback_id="n",
+            ),
+            _ev("n", TaskState.STARTED, parent_id="s"),
+        )
+        for order in permutations(events):
+            graph = _build(*order)
+            assert graph.nodes["group:g"].chord_id is None
+
+            graph.remove_node("m")
+
+            assert_graph_invariants(graph)
+            rebuilt = _build(*(e for e in order if e.task_id != "m"))
+            assert graph.nodes["group:g"].chord_id == "s"
+            assert graph_state(graph) == graph_state(rebuilt)
+
+    def test_remove_node_ending_a_loop_above_chord_lets_it_draw_its_callback(
+        self,
+    ) -> None:
+        """As above, but the loop breaks above g's parent m2, so g doesn't move:
+        the refusal recorded the loop's nodes, and removing one re-resolves g."""
+        events = (
+            _ev("u", TaskState.STARTED, name="celery.chord_unlock"),
+            _ev("s", TaskState.STARTED, parent_id="u"),
+            _ev("m", TaskState.STARTED, parent_id="s"),
+            _ev("m2", TaskState.STARTED, parent_id="m"),
+            _ev(
+                "h",
+                TaskState.STARTED,
+                group_id="g",
+                parent_id="m2",
+                chord_callback_id="n",
+            ),
+            _ev("n", TaskState.STARTED, parent_id="s"),
+        )
+        for order in permutations(events):
+            graph = _build(*order)
+
+            graph.remove_node("m")
+
+            assert_graph_invariants(graph)
+            rebuilt = _build(*(e for e in order if e.task_id != "m"))
+            assert graph.nodes["group:g"].parent_id == "m2"
+            assert graph.nodes["group:g"].chord_id == "s"
+            assert graph_state(graph) == graph_state(rebuilt)

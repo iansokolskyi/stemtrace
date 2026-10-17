@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Graphs: a callback that two chords' headers name (Celery workflows don't do this) now belongs to the chord with the smaller group ID, and a chord whose headers name different callbacks is named for the one most of them name (ties: the smallest ID). It used to be the last one named, so the graph depended on event order and a removal couldn't restore an earlier name.
+
 ### Fixed
 - Graphs: a chord whose node was removed (`TaskGraph.remove_node`) while its headers stayed lost its callback: when a later event of one of its tasks recreated the node, it no longer knew the callback the headers had named, so it drew none. It now draws the callback a graph built from the same events draws. Removing the last header after the node no longer leaves that callback ID recorded for the chord.
 - Graphs: a chord's callback and a group's chain links no longer depend on event order when an earlier event renames a task to or from `celery.chord_unlock` (one task ID reporting two names), or when the parent of a chord's body group changes while that group is drawn as the callback. Celery workflows don't produce these events; they showed up when comparing removals with rebuilds.
+- Graphs: a chord that couldn't draw a callback or use a `celery.chord_unlock` task because another chord held it, or because drawing it would have closed a loop, now draws it once that other chord lets it go or the loop is gone (e.g. after the other chord's header or a task on the loop is removed or evicted). Removing a task no longer drops another chord's callback while the removed task's group is placed, and a chord with no usable named callback starts its body with the smallest of its stamped tasks instead of the first to arrive.
 
 ## [0.4.0] - 2026-10-13
 
