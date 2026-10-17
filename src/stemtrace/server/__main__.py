@@ -111,8 +111,10 @@ def server(
         typer.Option(
             "--groups",
             envvar="STEMTRACE_GROUPS",
+            # Typer renders help as Rich markup, where "[groups]" is a style
+            # tag; "\\[" keeps each bracket literal.
             help=(
-                "TOML file of code-defined task groups ([[groups]] tables with "
+                "TOML file of code-defined task groups (\\[\\[groups]] tables with "
                 "name, match, tags, color). Needs Python 3.11+. Tasks no rule "
                 "matches get their automatic group."
             ),

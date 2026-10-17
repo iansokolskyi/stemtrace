@@ -7,8 +7,10 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+import typer
 import uvicorn
 from fastapi import APIRouter
+from rich.text import Text
 from typer.testing import CliRunner
 
 from stemtrace.core.groups import GroupConfig
@@ -145,3 +147,17 @@ def test_server_with_missing_groups_file_exits_with_usage_error(
     assert "Cannot read task groups file" in output
     assert "missing.toml" in output
     assert captured_groups == []
+
+
+def test_groups_help_keeps_toml_table_syntax_under_rich_markup() -> None:
+    """Rich markup must not swallow ``[[groups]]`` as a style tag.
+
+    Typer's default "rich" markup mode renders option help with
+    ``rich.text.Text.from_markup`` (typer 0.13.0 and 0.27.3,
+    ``rich_utils._make_rich_text``). Rendered here directly rather than via
+    ``--help``, which crashes on the typer 0.13 floor with click >= 8.2.
+    """
+    server = typer.main.get_command(cli.app).commands["server"]  # type: ignore[attr-defined]  # a click Group
+    groups_help = next(p.help for p in server.params if p.name == "groups")
+
+    assert "([[groups]] tables with" in Text.from_markup(groups_help).plain
