@@ -47,7 +47,9 @@ class _GroupsFile(BaseModel):
 def _describe(error: ValidationError) -> str:
     """One line per problem, e.g. ``groups.0.color: String should match pattern``."""
     return "; ".join(
-        f"{'.'.join(str(part) for part in e['loc']) or 'value'}: {e['msg']}"
+        f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}"
+        if e["loc"]
+        else e["msg"]
         for e in error.errors()
     )
 

@@ -284,7 +284,9 @@ def test_resolve_rule_named_ungrouped_claims_ungrouped_tasks() -> None:
 
 
 def test_group_config_with_duplicate_rule_names_raises() -> None:
-    with pytest.raises(ValidationError, match="duplicate group name 'billing'"):
+    with pytest.raises(
+        ValidationError, match=r"duplicate group name 'billing' \(entries 0 and 1\)"
+    ):
         GroupConfig(
             rules=[
                 GroupRule(name="billing", match=["billing.*"]),
@@ -310,12 +312,22 @@ def test_members_buckets_names_sorted_with_ungrouped_last() -> None:
     )
 
     members = config.members(
-        ["search.reindex", "add", "billing.charge", "tasks.search.index", "add"]
+        [
+            "web.render",
+            "search.reindex",
+            "add",
+            "billing.charge",
+            "tasks.search.index",
+            "add",
+            "zeta.x",
+        ]
     )
 
     assert [(m.group.name, m.group.source, m.task_names) for m in members] == [
         ("money", GroupSource.CODE, ("billing.charge",)),
         ("search", GroupSource.AUTO, ("search.reindex", "tasks.search.index")),
+        ("web", GroupSource.AUTO, ("web.render",)),
+        ("zeta", GroupSource.AUTO, ("zeta.x",)),
         (UNGROUPED, GroupSource.AUTO, ("add",)),
     ]
     assert members[0].group.tags == ("pci",)

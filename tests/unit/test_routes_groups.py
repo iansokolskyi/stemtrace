@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.exceptions import ConfigurationError
-from stemtrace.core.groups import GroupConfig, GroupRule
+from stemtrace.core.groups import GroupConfig, GroupRule, ResolvedGroup, TaskAttributes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
@@ -206,6 +206,8 @@ def test_list_groups_lists_code_auto_and_ungrouped(store: GraphStore) -> None:
     store.add_event(_event("t3", "tasks.search.index", seconds=3))
     store.add_event(_event("t4", "celery.chord_unlock", seconds=4))
     store.add_event(_event("t5", "search.reindex", seconds=5))
+    # sorts after "ungrouped" by name, so it proves ungrouped is put last
+    store.add_event(_event("t6", "web.render", seconds=6))
 
     body = (
         _client(store, _CONFIG, worker_registry=worker_registry)
@@ -237,6 +239,13 @@ def test_list_groups_lists_code_auto_and_ungrouped(store: GraphStore) -> None:
                 "task_names": ["search.reindex", "tasks.search.index"],
             },
             {
+                "name": "web",
+                "source": "auto",
+                "tags": [],
+                "color": None,
+                "task_names": ["web.render"],
+            },
+            {
                 "name": "ungrouped",
                 "source": "auto",
                 "tags": [],
@@ -244,7 +253,7 @@ def test_list_groups_lists_code_auto_and_ungrouped(store: GraphStore) -> None:
                 "task_names": ["celery.chord_unlock"],
             },
         ],
-        "total": 4,
+        "total": 5,
     }
 
 
@@ -301,3 +310,46 @@ def test_extension_without_groups_is_automatic_only() -> None:
 def test_extension_with_invalid_groups_raises() -> None:
     with pytest.raises(ConfigurationError, match=r"rules\.0\.match: Field required"):
         StemtraceExtension("memory://", embedded_consumer=False, groups=[{"name": "x"}])
+
+
+class _CountingGroups(GroupConfig):
+    """GroupConfig that counts resolve() calls."""
+
+    def resolve(self, task: TaskAttributes) -> ResolvedGroup:
+        _RESOLVED.append(task.name)
+        return super().resolve(task)
+
+
+_RESOLVED: list[str] = []
+
+
+def test_graph_resolves_each_task_name_once_per_request(store: GraphStore) -> None:
+    store.add_event(_event("root", "billing.start"))
+    for i in range(30):
+        name = "search.a" if i % 2 else "billing.charge"
+        store.add_event(
+            _event(f"c{i}", name, seconds=i + 1, parent_id="root", root_id="root")
+        )
+    client = _client(store, _CountingGroups(rules=_CONFIG.rules))
+    _RESOLVED.clear()
+
+    client.get("/api/graphs/root")
+
+    assert sorted(_RESOLVED) == ["billing.charge", "billing.start", "search.a"]
+
+
+def test_create_router_with_rule_list_serves_them(store: GraphStore) -> None:
+    store.add_event(_event("t1", "billing.charge"))
+    app = FastAPI()
+    app.include_router(
+        create_router(store=store, groups=[{"name": "money", "match": ["billing.*"]}])
+    )
+
+    task = TestClient(app).get("/api/tasks").json()["tasks"][0]
+
+    assert task["task_group"] == "money"
+
+
+def test_create_api_router_with_invalid_groups_raises(store: GraphStore) -> None:
+    with pytest.raises(ConfigurationError, match="Invalid task groups"):
+        create_api_router(store, groups=[{"name": "money"}])

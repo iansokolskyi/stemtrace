@@ -157,11 +157,14 @@ class GroupConfig(BaseModel):
 
     @model_validator(mode="after")
     def _unique_names(self) -> "GroupConfig":
-        seen: set[str] = set()
-        for rule in self.rules:
-            if rule.name in seen:
-                raise ValueError(f"duplicate group name {rule.name!r}")
-            seen.add(rule.name)
+        first_index: dict[str, int] = {}
+        for index, rule in enumerate(self.rules):
+            if rule.name in first_index:
+                raise ValueError(
+                    f"duplicate group name {rule.name!r} "
+                    f"(entries {first_index[rule.name]} and {index})"
+                )
+            first_index[rule.name] = index
         return self
 
     def resolve(self, task: TaskAttributes) -> ResolvedGroup:
