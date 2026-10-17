@@ -51,8 +51,8 @@ def _authorize(
     With a key configured, the key comes from the Authorization header or, for
     browsers (which can't set WebSocket headers), from a
     ``stemtrace.bearer.<base64url>`` subprotocol; the connection is then
-    accepted with the ``stemtrace`` subprotocol if the client offered it, never
-    echoing the key. A wrong key is refused even with a valid session cookie.
+    accepted with the ``stemtrace`` subprotocol, which the client must offer
+    next to the key's (the key's own is never echoed). A wrong key is refused even with a valid session cookie.
     Without a key, a valid session cookie is needed when form login is on.
     """
     if api_key_guard is not None:
@@ -60,6 +60,10 @@ def _authorize(
         token = bearer_token(websocket.headers.get("authorization"))
         if token is None:
             token = bearer_from_subprotocols(offered)
+            if token is not None and WS_SUBPROTOCOL not in offered:
+                # A browser drops a connection accepted without a subprotocol
+                # it offered, and echoing the key's own one would leak it.
+                return False, None
         client_ip = websocket.client.host if websocket.client else None
         result = api_key_guard.check(token, client_ip)
         subprotocol = WS_SUBPROTOCOL if WS_SUBPROTOCOL in offered else None
