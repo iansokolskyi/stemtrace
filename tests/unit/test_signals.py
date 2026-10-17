@@ -23,6 +23,7 @@ from celery.signals import (
 import stemtrace.library.signals as signals_module
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.library.config import StemtraceConfig, set_config
+from stemtrace.library.scrubbing import FILTERED
 from stemtrace.library.signals import (
     _MAX_DOCSTRING_CHARS,
     _extract_chord_info,
@@ -1159,6 +1160,54 @@ class TestSignalsScrubbingAndCaptureBranches:
         assert event.kwargs is not None
         assert "_truncated" in event.kwargs
 
+    def test_task_prerun_with_uppercase_additional_sensitive_key_filters(
+        self, mock_task: MagicMock
+    ) -> None:
+        set_config(
+            StemtraceConfig(
+                transport_url="memory://", additional_sensitive_keys=frozenset({"MRN"})
+            )
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=({"mrn": 1},),
+            kwargs={"patient_MRN": 2, "name": "alice"},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.args == [{"mrn": FILTERED}]
+        assert event.kwargs == {"patient_MRN": FILTERED, "name": "alice"}
+
+    @pytest.mark.parametrize(
+        ("max_data_size", "label"),
+        [(10240, "_as_text"), (10, "_truncated")],
+        ids=["fits", "too_big"],
+    )
+    def test_task_prerun_labels_kwargs_text_fallback_by_what_happened(
+        self, mock_task: MagicMock, max_data_size: int, label: str
+    ) -> None:
+        # json.dumps(default=str) can't encode the value, so safe_serialize
+        # falls back to str() of the kwargs, truncated only if it's too big.
+        set_config(
+            StemtraceConfig(transport_url="memory://", max_data_size=max_data_size)
+        )
+        connect_signals(MemoryTransport())
+        kwargs = {"k": _StrRaisesValueError()}
+
+        _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs=kwargs)
+
+        [event] = MemoryTransport.events
+        text = str(kwargs)
+        expected = (
+            text
+            if label == "_as_text"
+            else f"[Truncated: {len(text)} bytes > {max_data_size} max]"
+        )
+        assert event.kwargs == {label: expected}
+
     def test_task_postrun_omits_result_when_capture_result_disabled(self) -> None:
         """When capture_result=False, SUCCESS events should have result=None."""
         set_config(StemtraceConfig(transport_url="memory://", capture_result=False))
@@ -1359,6 +1408,16 @@ class TestWorkerLifecycleEdgeCases:
 
         on_worker_shutdown(sender=sender, sig=15)
         assert "Failed to publish worker_shutdown event" in caplog.text
+
+
+class _StrRaisesValueError:
+    """A value json.dumps(default=str) rejects; its repr still works."""
+
+    def __str__(self) -> str:
+        raise ValueError("no str")
+
+    def __repr__(self) -> str:
+        return "<_StrRaisesValueError>"
 
 
 def _receiver_errors(responses: list[tuple[Any, Any]]) -> list[Any]:

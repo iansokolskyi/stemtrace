@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Graphs: a chord whose node was removed (`TaskGraph.remove_node`) while its headers stayed lost its callback: when a later event of one of its tasks recreated the node, it no longer knew the callback the headers had named, so it drew none. It now draws the callback a graph built from the same events draws. Removing the last header after the node no longer leaves that callback ID recorded for the chord.
 - Graphs: a chord's callback and a group's chain links no longer depend on event order when an earlier event renames a task to or from `celery.chord_unlock` (one task ID reporting two names), or when the parent of a chord's body group changes while that group is drawn as the callback. Celery workflows don't produce these events; they showed up when comparing removals with rebuilds.
+- `additional_sensitive_keys` (and the `sensitive_keys`/`additional_keys` arguments of the scrubbing functions) are now lowercased before matching, like the keys (`str.lower()`). A pattern with an uppercase letter, such as `{"MRN"}`, never matched any key before, so those values were published unscrubbed.
+- Keyword arguments that json can't encode are now shown as `{"_as_text": "<their text>"}` instead of `{"_truncated": ...}`; `_truncated` now only holds the `[Truncated: N bytes > M max]` message for keyword arguments that were too big.
 
 ## [0.4.0] - 2026-10-13
 
