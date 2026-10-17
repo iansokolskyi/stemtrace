@@ -3,9 +3,11 @@
 import inspect
 import logging
 import threading
+import time
 import traceback as tb_module
 from collections import OrderedDict
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
 
@@ -23,7 +25,12 @@ from celery.signals import (
 )
 from celery.utils.serialization import UnpickleableExceptionWrapper
 
-from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
+from stemtrace.core.events import (
+    RegisteredTaskDefinition,
+    TaskEvent,
+    TaskState,
+    WorkerEvent,
+)
 from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.core.ports import ClosableTransport, EventTransport
 from stemtrace.library.config import get_config
@@ -127,18 +134,76 @@ def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
     return group_id, callback_id
 
 
+# Set while this thread (greenlet, under gevent/eventlet) publishes an event.
+# Celery 5.6.3's cold shutdown publishes from its SIGQUIT handler
+# (apps/worker.py on_cold_shutdown -> Consumer.cancel_active_requests ->
+# Request._announce_cancelled sends task_retry), and a Python signal handler
+# runs on the main thread in that thread's current context: if the main thread
+# was mid-publish, holding a lock on the publish path (the breaker's, the DNS
+# resolver's), publishing again would wait for that lock forever. A
+# ContextVar, not a thread-local: greenlet (>=0.4.17, used by gevent and
+# eventlet) gives each greenlet its own context.
+_publishing: ContextVar[bool] = ContextVar("stemtrace_publishing", default=False)
+
+# Events dropped that way since the last log line, and when it was written.
+# Updated inside signal handlers, so without a lock (a lock here could hang
+# the same way); a race can only miscount the log line.
+_REENTRY_LOG_INTERVAL_S = 60.0
+_reentry_dropped = 0
+_reentry_logged_at: float | None = None
+_monotonic = time.monotonic
+
+
+def _publish_once(transport: EventTransport, event: TaskEvent | WorkerEvent) -> bool:
+    """Publish unless this thread is already publishing; return whether it did.
+
+    Re-entry only happens from a signal handler that interrupted a publish
+    (see ``_publishing``): the event is dropped, never waited for. What the
+    transport raises propagates.
+    """
+    if _publishing.get():
+        _note_reentrant_drop(event)
+        return False
+    token = _publishing.set(True)
+    try:
+        transport.publish(event)
+    finally:
+        _publishing.reset(token)
+    return True
+
+
+def _note_reentrant_drop(event: TaskEvent | WorkerEvent) -> None:
+    """Count an event dropped on re-entry; log at most once per interval (debug)."""
+    global _reentry_dropped, _reentry_logged_at
+    _reentry_dropped += 1
+    now = _monotonic()
+    last = _reentry_logged_at
+    if last is not None and now - last < _REENTRY_LOG_INTERVAL_S:
+        return
+    _reentry_logged_at = now
+    dropped, _reentry_dropped = _reentry_dropped, 0
+    logger.debug(
+        "Dropped %d event(s) published from a signal handler while this thread "
+        "was already publishing (e.g. Celery's cold shutdown); the last was %s",
+        dropped,
+        event.task_id if isinstance(event, TaskEvent) else event.event_type.value,
+    )
+
+
 def _publish_event(event: TaskEvent) -> None:
     """Publish event via transport. Fire-and-forget: logs errors, never raises.
 
     The exception is Celery's own control flow (see ``is_task_interrupt``),
-    which propagates.
+    which propagates. An event published from a signal handler that
+    interrupted another publish on this thread is dropped (see
+    ``_publish_once``).
     """
     if _transport is None:
         logger.warning("stemtrace not initialized, event dropped: %s", event.task_id)
         return
 
     try:
-        _transport.publish(event)
+        _publish_once(_transport, event)
     except Exception as exc:
         if is_task_interrupt(exc):
             # Celery's control flow (a soft time limit raised into the task
@@ -944,7 +1009,8 @@ def on_worker_ready(sender: Any, **_: Any) -> None:
         )
 
         if _transport is not None:
-            _transport.publish(event)
+            if not _publish_once(_transport, event):
+                return
             logger.info(
                 "Worker ready event sent to transport: %s:%d (%d tasks)",
                 hostname,
@@ -984,7 +1050,8 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
         )
 
         if _transport is not None:
-            _transport.publish(event)
+            if not _publish_once(_transport, event):
+                return
             logger.info("Worker shutdown event sent to transport: %s:%d", hostname, pid)
         else:
             logger.warning(
