@@ -4,6 +4,7 @@ import { TanStackRouterDevtools } from '@tanstack/router-devtools'
 import { useSyncExternalStore } from 'react'
 import { isSessionRejected, subscribeSessionRejected } from '@/api/client'
 import { useHealth } from '@/api/queries'
+import { ThemeToggle } from '@/components/frame/ThemeToggle'
 import { LogoutButton } from '@/components/LogoutButton'
 import { SessionRejectedNotice } from '@/components/SessionRejectedNotice'
 import { SproutMark } from '@/components/SproutMark'
@@ -112,6 +113,7 @@ function RootLayout() {
                   <span className="text-xs text-slate-500">{statusLabel}</span>
                 </div>
               </Tooltip>
+              <ThemeToggle />
               <LogoutButton />
             </div>
           </div>
