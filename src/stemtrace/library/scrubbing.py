@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from enum import Enum, Flag
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,50 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _key_names(key: object) -> list[str]:
+    """The names a dict key carries, lowercased.
+
+    A task's dicts can have any hashable key. A str is a name, and so is bytes
+    (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
+    as UTF-8 with replacement so it never raises. A tuple or frozenset key
+    carries the names of its parts, and an Enum member its own name (if it has
+    one) plus its value's names (checked first: str- and int-mixin members are
+    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
+    carries the names of all members (aliases and multi-bit members included)
+    whose bits it has, since its own name may be missing (a composite on
+    Python 3.10, unknown bits) and its value is an int.
+    Other keys (an int, None, any other object) carry none. ``str(key)`` is
+    never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
+    raise.
+    """
+    match key:
+        case Flag():
+            own = [key.name.lower()] if isinstance(key.name, str) else []
+            # __members__, not iteration: iteration skips aliases on every
+            # version, and multi-bit members on 3.11+. Its keys are the
+            # names: an alias's member object carries the canonical name.
+            members = [
+                name.lower()
+                for name, member in type(key).__members__.items()
+                if member.value and key.value & member.value == member.value
+            ]
+            return [*own, *members]
+        case Enum():
+            # A custom Enum can override name; don't call str methods on None.
+            name = [key.name.lower()] if isinstance(key.name, str) else []
+            return [*name, *_key_names(key.value)]
+        case str():
+            return [key.lower()]
+        case bytes():
+            return [key.decode("utf-8", "replace").lower()]
+        case tuple() | frozenset():
+            return [name for part in key for name in _key_names(part)]
+        case _:
+            return []
+
+
 def _is_sensitive_key(
-    key: str,
+    key: object,
     sensitive_keys: frozenset[str],
     safe_keys: frozenset[str] | None = None,
 ) -> bool:
@@ -64,27 +107,32 @@ def _is_sensitive_key(
     - 'user_password' matches 'password'
     - 'API_KEY' matches 'api_key'
 
+    A key that isn't a str is matched by the names it carries (see
+    ``_key_names``): ``b"password"`` and ``("user", "api_key")`` are
+    sensitive, ``1`` and ``None`` never are. The values under keys that aren't
+    sensitive are still scrubbed.
+
     Args:
-        key: The key name to check.
+        key: The dict key to check.
         sensitive_keys: Set of sensitive key patterns.
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
-        True if the key should be scrubbed.
+        True if any name the key carries is sensitive and not a safe key.
     """
-    if safe_keys and key.lower() in {k.lower() for k in safe_keys}:
-        return False
-
-    key_lower = key.lower()
-    return any(pattern in key_lower for pattern in sensitive_keys)
+    safe = {k.lower() for k in safe_keys} if safe_keys else set()
+    return any(
+        name not in safe and any(pattern in name for pattern in sensitive_keys)
+        for name in _key_names(key)
+    )
 
 
 def scrub_dict(
-    data: dict[str, Any],
+    data: dict[Any, Any],
     sensitive_keys: frozenset[str] = DEFAULT_SENSITIVE_KEYS,
     additional_keys: frozenset[str] | None = None,
     safe_keys: frozenset[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[Any, Any]:
     """Recursively scrub sensitive keys from a dictionary.
 
     Args:
@@ -104,7 +152,7 @@ def scrub_dict(
         sensitive_keys | additional_keys if additional_keys else sensitive_keys
     )
 
-    result: dict[str, Any] = {}
+    result: dict[Any, Any] = {}
     for key, value in data.items():
         if _is_sensitive_key(key, all_sensitive, safe_keys):
             result[key] = FILTERED
