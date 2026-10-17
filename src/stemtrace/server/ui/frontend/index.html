@@ -1,6 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <!-- Apply a stored theme before any CSS loads, so the page never paints in the wrong
+         theme. Without a stored choice the tokens follow prefers-color-scheme. -->
+    <script>
+      try {
+        var t = localStorage.getItem('stemtrace-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+      } catch (e) {}
+    </script>
     <meta charset="UTF-8" />
     <!-- Inline favicon: no request, no auth redirect, independent of the mount prefix.
          Source of truth: docs/brand/. Deliberately uses thicker strokes (3.2, r=3) than
