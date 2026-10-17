@@ -1,0 +1,128 @@
+/* Signal box tokens (approved prototype, .context/features/ui-redesign.md). One neutral grey
+   family, no chromatic accent: selection and primary actions are an inverted ink fill. Colour is
+   reserved for state. --success/--failure/--retry are the dataviz-validated chart fills; --X-t is
+   the text-safe tint of each (>= 4.5:1 on ground, surface and raised); --on-X is text on a fill.
+   Light on :root; dark in BOTH the OS media query and [data-theme="dark"] (the stored override).
+   tests/tokens.spec.ts checks the contrast and that the two dark blocks stay identical. */
+:root {
+  color-scheme: light;
+  --bg: #eff0f1;
+  --surface: #ffffff;
+  --raised: #e4e6e8;
+  --ink: #1a1c1e;
+  --muted: #5b6168;
+  --on-ink: #eff0f1;
+  --sel-bg: var(--raised);
+  --sel-fg: var(--ink);
+  --sel-hi: var(--failure-t);
+  --rule: #e4e6e8;
+  --track: #787e85;
+  --hover: rgba(26, 28, 30, 0.06);
+  --press: #dee0e3;
+  --scrim: rgba(26, 28, 30, 0.45);
+  --shadow: 0 14px 36px rgba(26, 28, 30, 0.24);
+  --shadow-side: -14px 0 36px -12px rgba(26, 28, 30, 0.3);
+  --success: #1c985a;
+  --failure: #ac1b18;
+  --retry: #d9a514;
+  --running: #2f6fdb;
+  --pending: #80878e;
+  --anomaly: #be3a9a;
+  --on-success: #111315;
+  --on-failure: #ffffff;
+  --on-retry: #111315;
+  --on-running: #ffffff;
+  --on-pending: #111315;
+  --on-anomaly: #ffffff;
+  --success-t: #1b6441;
+  --failure-t: #a31b18;
+  --retry-t: #6e581a;
+  --running-t: #28549f;
+  --pending-t: #555a5f;
+  --anomaly-t: #8d3175;
+  --sprout: #1b8a4e;
+  --sans:
+    "Overpass Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono:
+    "Overpass Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1a1c1e;
+    --surface: #222528;
+    --raised: #2b2f33;
+    --ink: #ecedee;
+    --muted: #9ea4aa;
+    --on-ink: #1a1c1e;
+    --sel-bg: var(--ink);
+    --sel-fg: var(--on-ink);
+    --sel-hi: var(--on-ink);
+    --rule: #30353a;
+    --track: #7a8188;
+    --hover: rgba(236, 237, 238, 0.07);
+    --press: #313639;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --shadow: 0 14px 36px rgba(6, 8, 10, 0.62);
+    --shadow-side: -14px 0 36px -12px rgba(6, 8, 10, 0.6);
+    --success: #00908a;
+    --failure: #ec5d4b;
+    --retry: #845b00;
+    --running: #3f86e6;
+    --pending: #5e656c;
+    --anomaly: #ee7fc4;
+    --on-success: #111315;
+    --on-failure: #111315;
+    --on-retry: #ffffff;
+    --on-running: #111315;
+    --on-pending: #ffffff;
+    --on-anomaly: #111315;
+    --success-t: #63b7b4;
+    --failure-t: #ec9489;
+    --retry-t: #b8a477;
+    --running-t: #81ade9;
+    --pending-t: #a2a6aa;
+    --anomaly-t: #ee91cb;
+    --sprout: #3fbf7f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1c1e;
+  --surface: #222528;
+  --raised: #2b2f33;
+  --ink: #ecedee;
+  --muted: #9ea4aa;
+  --on-ink: #1a1c1e;
+  --sel-bg: var(--ink);
+  --sel-fg: var(--on-ink);
+  --sel-hi: var(--on-ink);
+  --rule: #30353a;
+  --track: #7a8188;
+  --hover: rgba(236, 237, 238, 0.07);
+  --press: #313639;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow: 0 14px 36px rgba(6, 8, 10, 0.62);
+  --shadow-side: -14px 0 36px -12px rgba(6, 8, 10, 0.6);
+  --success: #00908a;
+  --failure: #ec5d4b;
+  --retry: #845b00;
+  --running: #3f86e6;
+  --pending: #5e656c;
+  --anomaly: #ee7fc4;
+  --on-success: #111315;
+  --on-failure: #111315;
+  --on-retry: #ffffff;
+  --on-running: #111315;
+  --on-pending: #ffffff;
+  --on-anomaly: #111315;
+  --success-t: #63b7b4;
+  --failure-t: #ec9489;
+  --retry-t: #b8a477;
+  --running-t: #81ade9;
+  --pending-t: #a2a6aa;
+  --anomaly-t: #ee91cb;
+  --sprout: #3fbf7f;
+}
