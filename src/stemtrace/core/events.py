@@ -73,9 +73,18 @@ class TaskEvent(BaseModel):
         kwargs: Keyword arguments passed to the task (scrubbed).
         result: Return value of the task (SUCCESS state only).
         exception: Exception message (FAILURE/RETRY states).
+        exception_type: Exception class (FAILURE/RETRY states): ``module.Class``,
+            or just ``Class`` for builtins (e.g. ``ValueError``). For a retry,
+            the exception that caused it.
         traceback: Full traceback string (FAILURE/RETRY states).
         output: What the attempt printed and logged, in order (SUCCESS,
             FAILURE and RETRY events, when output capture is enabled).
+        hostname: Nodename of the worker that handled the task (``name@host``,
+            as in ``WorkerEvent.hostname``). Worker events only.
+        queue: Queue the task message was sent to, when Celery published it
+            straight to a queue (the default); None when it went through a
+            named exchange, which may route it to any number of queues.
+        routing_key: Routing key the task message was published with.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,6 +108,10 @@ class TaskEvent(BaseModel):
     exception: str | None = None
     traceback: str | None = None
     output: str | None = None
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class WorkerEvent(BaseModel):

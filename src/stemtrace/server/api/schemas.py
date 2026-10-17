@@ -47,6 +47,10 @@ class TaskEventResponse(BaseModel):
     exception: str | None = None
     traceback: str | None = None
     output: str | None = None
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class TaskNodeResponse(BaseModel):
@@ -69,6 +73,12 @@ class TaskNodeResponse(BaseModel):
     first_seen: datetime | None = None
     last_updated: datetime | None = None
     duration_ms: int | None = None
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -104,6 +114,12 @@ class GraphNodeResponse(BaseModel):
     duration_ms: int | None = None
     first_seen: datetime | None = None
     last_updated: datetime | None = None
+    # Where the task ran and came from, and what it raised: each from the
+    # furthest-along event that reports it (see TaskNode._latest).
+    exception_type: str | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    routing_key: str | None = None
 
 
 class GraphResponse(BaseModel):
