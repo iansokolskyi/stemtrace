@@ -133,7 +133,12 @@ def _hang_callbacks_from_unlocks(
 
 
 def _random_events(
-    seed: int, count: int, *, acyclic: bool = False, odd_names: bool = True
+    seed: int,
+    count: int,
+    *,
+    acyclic: bool = False,
+    odd_names: bool = True,
+    shared_names: bool = False,
 ) -> list[TaskEvent]:
     """Events for a small pool of tasks with groups, chords and odd parents.
 
@@ -148,7 +153,10 @@ def _random_events(
     chord's own included). With ``odd_names``, some tasks are named
     ``celery.chord_unlock`` (the parent of a chord callback, shared between
     chords) and some events report another name for their task ID, as a
-    reused ID (``task.replace()``) does.
+    reused ID (``task.replace()``) does. With ``shared_names``, some headers
+    name another callback than their chord's (a later task, preferably another
+    chord's callback), so a chord's headers name different callbacks and
+    chords share one.
     """
     rng = random.Random(seed)
     group_of = {t: rng.choice([*_GROUP_IDS, None, None]) for t in _TASK_IDS}
@@ -190,6 +198,16 @@ def _random_events(
     }
     if acyclic and odd_names:
         _hang_callbacks_from_unlocks(extra, callback_of, parent_of, name_of, group_of)
+    # Its own stream too: plans without shared names keep every draw.
+    names_rng = random.Random(seed ^ 0xCA11)
+    names_of_header: dict[str, str] = {}
+    for i, t in enumerate(_TASK_IDS):
+        # A later task, as in Celery (a callback runs after its headers),
+        # preferring another chord's callback so that chords share one.
+        later = _TASK_IDS[i + 1 :]
+        shared = [c for c in callback_of.values() if c in later]
+        if shared_names and later and names_rng.random() < 0.4:
+            names_of_header[t] = names_rng.choice(shared or later)
     events = []
     for i in range(count):
         task_id = rng.choice(_TASK_IDS)
@@ -203,7 +221,7 @@ def _random_events(
         if rng.random() < 0.1 and not acyclic:
             group_id = rng.choice([*_GROUP_IDS, None])
         callback = (
-            callback_of[group_id]
+            names_of_header.get(task_id, callback_of[group_id])
             if group_id and task_id in headers and rng.random() < 0.5
             else None
         )
@@ -334,3 +352,54 @@ def test_remove_one_task_then_continue_matches_rebuild(seed: int) -> None:
         if prefix._cycle_broken or rebuilt._cycle_broken:
             continue  # a cycle is still open: where it breaks depends on order
         assert graph_state(prefix) == graph_state(rebuilt), (seed, cut, victim)
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_remove_one_task_with_shared_callback_names_matches_rebuild(seed: int) -> None:
+    """As above, with headers naming different callbacks and chords naming
+    one callback: what a chord is named for doesn't depend on which name
+    came last, so a removal leaves what the remaining events build.
+
+    Without ``celery.chord_unlock`` names: two chords sharing one chord_unlock
+    task is a documented limitation (README, "shared chord tasks").
+    """
+    rng = random.Random(30_000 + seed)
+    events = _random_events(seed, 60, acyclic=True, odd_names=False, shared_names=True)
+    for attempt in range(4):
+        cut = len(events) if attempt == 0 else rng.randint(1, len(events))
+        graph = TaskGraph()
+        for event in events[:cut]:
+            graph.add_event(event)
+        victim = rng.choice(sorted(graph.nodes))
+        graph.remove_node(victim)
+        assert_graph_invariants(graph)
+        for event in events[cut:]:
+            graph.add_event(event)
+        assert_graph_invariants(graph)
+        rebuilt = TaskGraph()
+        for position, event in enumerate(events):
+            if event.task_id != victim or position >= cut:
+                rebuilt.add_event(event)
+        missing = set(rebuilt.nodes) - set(graph.nodes)
+        if missing or graph._cycle_broken or rebuilt._cycle_broken:
+            continue  # a removed GROUP/CHORD not recreated, or a cycle still open
+        assert graph_state(graph) == graph_state(rebuilt), (seed, cut, victim)
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_add_event_shared_callback_names_any_order_names_same_callbacks(
+    seed: int,
+) -> None:
+    """Which callback each chord is named for doesn't depend on event order."""
+    events = _random_events(seed, 60, acyclic=True, odd_names=False, shared_names=True)
+    named: set[tuple[tuple[str, str | None], ...]] = set()
+    for shuffle in range(4):
+        order = list(events)
+        random.Random(shuffle).shuffle(order)
+        graph = TaskGraph()
+        for event in order:
+            graph.add_event(event)
+        named.add(
+            tuple(sorted((g, t.named_callback) for g, t in graph._groups.items()))
+        )
+    assert len(named) == 1, named

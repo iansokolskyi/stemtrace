@@ -2896,34 +2896,50 @@ class TestGraphLinksStayConsistent:
         }
         assert graph.root_ids == ["group:g"]
 
-    def test_add_event_chord_naming_new_callback_unlinks_old_one(self) -> None:
-        graph = _build(
+    def test_add_event_header_naming_two_callbacks_keeps_smaller_in_any_order(
+        self,
+    ) -> None:
+        # One header names cb1, then (or before) cb2: a tie, the smaller ID wins.
+        graphs = _every_order(
             _ev("cb1", parent_id="h1"),
             _ev("h1", group_id="g", chord_callback_id="cb1"),
-        )
-        assert graph.nodes["group:g"].children == ["h1", "cb1"]
-
-        graph.add_event(
-            _ev("h1", TaskState.STARTED, group_id="g", chord_callback_id="cb2")
+            _ev("h1", TaskState.STARTED, group_id="g", chord_callback_id="cb2"),
         )
 
-        assert_graph_invariants(graph)
-        assert graph.nodes["group:g"].children == ["h1"]
-        assert graph.nodes["group:g"].chord_callback_id == "cb2"
-        assert graph.nodes["group:g"].chord_id is None
-        assert graph.nodes["cb1"].parent_id == "h1"
+        for graph in graphs:
+            assert graph.nodes["group:g"].chord_callback_id == "cb1"
+            assert graph.nodes["group:g"].chord_id == "cb1"
+            assert graph.nodes["cb1"].parent_id == "group:g"
 
-    def test_add_event_callback_claimed_by_second_chord_leaves_first(self) -> None:
-        graph = _build(
+    def test_add_event_callback_most_headers_name_wins_in_any_order(self) -> None:
+        graphs = _every_order(
+            _ev("h1", group_id="g", chord_callback_id="cb2"),
+            _ev("h2", group_id="g", chord_callback_id="cb2"),
+            _ev("h3", group_id="g", chord_callback_id="cb1"),
+            _ev("cb2", parent_id="h1"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["group:g"].chord_callback_id == "cb2"
+            assert graph.nodes["group:g"].chord_id == "cb2"
+
+    def test_add_event_callback_named_by_two_chords_goes_to_smaller_group_in_any_order(
+        self,
+    ) -> None:
+        graphs = _every_order(
             _ev("cb", parent_id="b1"),
             _ev("a1", group_id="a", chord_callback_id="cb"),
             _ev("b1", group_id="b", chord_callback_id="cb"),
         )
 
-        assert graph.nodes["group:a"].children == ["a1"]
-        assert graph.nodes["group:a"].chord_callback_id is None
-        assert graph.nodes["group:b"].children == ["b1", "cb"]
-        assert graph.nodes["cb"].parent_id == "group:b"
+        for graph in graphs:
+            assert graph.nodes["group:a"].chord_callback_id == "cb"
+            assert graph.nodes["group:b"].chord_callback_id is None
+            assert graph._chord_by_callback == {"cb": "a"}
+            # Chord a's walk from cb never reaches its header, so neither draws it.
+            assert graph.nodes["group:a"].chord_id is None
+            assert graph.nodes["group:b"].chord_id is None
+            assert graph.nodes["cb"].parent_id == "b1"
 
 
 class TestRemoveNode:
@@ -3474,3 +3490,118 @@ class TestDerivedFactsFollowTheirInputs:
 
         assert graph._chord_by_callback == {}
         assert graph._groups == {}
+
+    @pytest.mark.parametrize(
+        "events",
+        [
+            # Two headers of one chord name different callbacks.
+            (
+                _ev("h1", TaskState.STARTED, group_id="g", chord_callback_id="X"),
+                _ev("h2", TaskState.STARTED, group_id="g", chord_callback_id="Y"),
+                _ev("X", TaskState.STARTED, parent_id="h1"),
+                _ev("Y", TaskState.STARTED, parent_id="h2"),
+            ),
+            # Two chords name one callback.
+            (
+                _ev("a", TaskState.STARTED, group_id="g1", chord_callback_id="cb"),
+                _ev("b", TaskState.STARTED, group_id="g2", chord_callback_id="cb"),
+                _ev("cb", TaskState.STARTED, parent_id="a"),
+                _ev("cb2", TaskState.STARTED, parent_id="b"),
+            ),
+        ],
+        ids=["headers_name_two_callbacks", "chords_share_a_callback"],
+    )
+    def test_remove_node_after_any_order_matches_rebuild_without_it(
+        self, events: tuple[TaskEvent, ...]
+    ) -> None:
+        """Which callback a chord is named for comes from the claims left, not
+        from which claim came last, so removing a header (or a chord's only
+        header) gives what the remaining events build."""
+        task_ids = sorted({e.task_id for e in events})
+        for order in permutations(events):
+            for victim in task_ids:
+                graph = _build(*order)
+                graph.remove_node(victim)
+                assert_graph_invariants(graph)
+                rebuilt = _build(*(e for e in order if e.task_id != victim))
+                assert graph_state(graph) == graph_state(rebuilt), (order, victim)
+
+    def test_add_event_tails_pick_smallest_body_start_in_any_order(self) -> None:
+        # The named callback never arrives, so the chord's stamped tasks start
+        # its body; both qualify (they report the chord's own parent).
+        graphs = _every_order(
+            _ev("p", TaskState.STARTED),
+            _ev(
+                "h",
+                TaskState.STARTED,
+                group_id="g",
+                parent_id="p",
+                chord_callback_id="cb",
+            ),
+            _ev("t7", TaskState.STARTED, group_id="g", parent_id="p"),
+            _ev("t1", TaskState.STARTED, group_id="g", parent_id="p"),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["group:g"].chord_id == "t1"
+            assert graph._callback_of == {"t1": "g"}
+
+    def test_add_event_chord_without_its_name_draws_body_from_tails_in_any_order(
+        self,
+    ) -> None:
+        # g0 keeps "cb" (smaller group ID), so g2 is named for nothing: its
+        # stamped task t1 starts its body, also when g2 was a GROUP first.
+        graphs = _every_order(
+            _ev("p", TaskState.STARTED),
+            _ev("a", TaskState.STARTED, group_id="g0", chord_callback_id="cb"),
+            _ev("t1", TaskState.STARTED, group_id="g2", parent_id="p"),
+            _ev("t6", TaskState.STARTED, group_id="g2", parent_id="q"),
+            _ev(
+                "b",
+                TaskState.STARTED,
+                group_id="g2",
+                parent_id="p",
+                chord_callback_id="cb",
+            ),
+        )
+
+        for graph in graphs:
+            assert graph.nodes["group:g2"].chord_callback_id is None
+            assert graph.nodes["group:g2"].chord_id == "t1"
+
+    def test_remove_node_group_parent_being_removed_keeps_other_chord_callback(
+        self,
+    ) -> None:
+        """While t5 is removed, its group's members still vote for it as the
+        group's parent: placing the group under it looked like a cycle, which
+        released another chord's callback on the way up."""
+        events = (
+            _ev("t0", TaskState.STARTED),
+            _ev(
+                "h",
+                TaskState.STARTED,
+                group_id="g1",
+                parent_id="t0",
+                chord_callback_id="cb",
+            ),
+            _ev("t1", TaskState.STARTED, group_id="g1", parent_id="t0"),
+            _ev("t2", TaskState.STARTED, parent_id="t1"),
+            _ev(
+                "t5",
+                TaskState.STARTED,
+                group_id="g0",
+                parent_id="t2",
+                chord_callback_id="x",
+            ),
+            _ev("t6", TaskState.STARTED, group_id="g0", parent_id="t5"),
+            _ev("t8", TaskState.STARTED, group_id="g0", parent_id="t5"),
+        )
+        graph = _build(*events)
+        assert graph.nodes["group:g1"].chord_id == "t1"
+
+        graph.remove_node("t5")
+
+        assert_graph_invariants(graph)
+        rebuilt = _build(*(e for e in events if e.task_id != "t5"))
+        assert graph.nodes["group:g1"].chord_id == "t1"
+        assert graph_state(graph) == graph_state(rebuilt)

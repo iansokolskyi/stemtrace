@@ -101,9 +101,10 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"
             assert graph._callback_of.get(node.chord_id) == node.group_id, node_id
-        if node.node_type == NodeType.CHORD and node.chord_callback_id is not None:
-            named = graph._chord_by_callback.get(node.chord_callback_id)
-            assert named == node.group_id, (node_id, node.chord_callback_id, named)
+        named_id = node.chord_callback_id
+        if node.node_type == NodeType.CHORD and named_id not in (None, node.group_id):
+            named = graph._chord_by_callback.get(named_id or "")
+            assert named == node.group_id, (node_id, named_id, named)
     for callback_id, group_id in graph._callback_of.items():
         chord = nodes.get(_group_node_id(group_id))
         assert chord is not None, (callback_id, group_id, "callback of no chord")
@@ -127,19 +128,40 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
 
 
 def _check_named_callbacks(graph: TaskGraph) -> None:
-    """Named chord callbacks: the tally owns them, the node and index agree."""
+    """Named chord callbacks follow from the headers' claims, whatever the order.
+
+    A chord claims the callback most of its headers named (ties: the smallest
+    ID); a claimed callback is named for the claiming chord with the smallest
+    group ID (a chord claiming its own group ID, a group body, competes with
+    no one). The CHORD node and the indexes agree (also while the node is
+    removed): no stale entries.
+    """
+    claimants: dict[str, set[str]] = {}
     for group_id, tally in graph._groups.items():
+        assert set(tally.claims) <= set(tally.headers), (
+            group_id,
+            "claim by non-header",
+        )
+        counts: dict[str, int] = {}
+        for named in tally.claims.values():
+            for callback_id in named:
+                counts[callback_id] = counts.get(callback_id, 0) + 1
+        assert dict(tally.claim_counts) == counts, group_id
+        top = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0] if counts else None
+        assert tally.claimed_callback == top, group_id
+        if top is not None and top != group_id:
+            claimants.setdefault(top, set()).add(group_id)
+    assert {k: set(v) for k, v in graph._claimants.items()} == claimants
+    owners = {callback_id: min(groups) for callback_id, groups in claimants.items()}
+    assert graph._chord_by_callback == owners
+    for group_id, tally in graph._groups.items():
+        claimed = tally.claimed_callback
+        own = claimed == group_id
+        expected = claimed if own or owners.get(claimed or "") == group_id else None
+        assert tally.named_callback == expected, group_id
         node = graph.nodes.get(_group_node_id(group_id))
         if node is not None and node.node_type == NodeType.CHORD:
             assert node.chord_callback_id == tally.named_callback, group_id
-    # Each named callback is one chord's current name (also while the CHORD
-    # node is removed): no stale entries. Which name a chord keeps when its
-    # headers (or two chords) name different callbacks isn't checked here.
-    for callback_id, group_id in graph._chord_by_callback.items():
-        tally = graph._groups.get(group_id)
-        assert tally is not None, (callback_id, group_id, "named by no group")
-        assert tally.headers, (callback_id, group_id, "named by no chord")
-        assert tally.named_callback == callback_id, (callback_id, group_id)
 
 
 def _check_missing_parent_indexes(graph: TaskGraph) -> None:

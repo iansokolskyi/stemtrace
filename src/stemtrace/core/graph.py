@@ -464,6 +464,9 @@ class _GroupTally:
     """
 
     __slots__ = (
+        "claim_counts",
+        "claimed_callback",
+        "claims",
         "direct_parents",
         "headers",
         "members",
@@ -495,9 +498,17 @@ class _GroupTally:
         # Members that aren't headers: for a chord, its callback or a chain
         # body's last task, stamped with the group ID.
         self.tails: dict[str, None] = {}
-        # The callback ID the headers named (a chord's ``chord_callback_id``).
-        # Kept here, not only on the CHORD node: removing the node keeps the
-        # headers, and a recreated node must know what their events said.
+        # The callback IDs each header's events named, and how many headers
+        # named each one. The chord claims the one most headers named (ties:
+        # the smallest ID), whatever order the events came in, and claims
+        # again from the others when a header goes.
+        self.claims: dict[str, dict[str, None]] = {}
+        self.claim_counts: Counter[str] = Counter()
+        self.claimed_callback: str | None = None
+        # The claimed callback, if no chord with a smaller group ID claims it
+        # too (a chord's ``chord_callback_id``). Kept here, not only on the
+        # CHORD node: removing the node keeps the headers, and a recreated
+        # node must know what their events said.
         self.named_callback: str | None = None
         # ``parent()`` when the group node was last placed: chords that read
         # it (as their own parent, or their body group's) re-resolve when it
@@ -549,6 +560,12 @@ class _GroupTally:
         if parent_id is not None:
             self.vote_of[member_id] = parent_id
             _bump(self.parent_votes, parent_id, 1)
+
+    def top_claim(self) -> str | None:
+        """The callback most headers named (ties: the smallest ID)."""
+        if not self.claim_counts:
+            return None
+        return min(self.claim_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
 
     def parent(self) -> str | None:
         """The parent most counted members vote for (ties: the smallest ID).
@@ -784,7 +801,10 @@ class TaskGraph(BaseModel):
     _link_owner: dict[str, str] = PrivateAttr(default_factory=dict)
     # Link -> its index in its member's chain.
     _link_pos: dict[str, int] = PrivateAttr(default_factory=dict)
-    # Chord callback ID the headers name -> the chord's group ID.
+    # Callback ID -> the chords claiming it (see ``_GroupTally.claims``), and
+    # -> the one it is named for: the smallest group ID among them. A chord
+    # claiming its own group ID (a group body) isn't listed.
+    _claimants: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     _chord_by_callback: dict[str, str] = PrivateAttr(default_factory=dict)
     # Node drawn as a chord's callback -> that chord's group ID; and the
     # chord_unlock task that fired it -> the chord's group ID.
@@ -1123,10 +1143,7 @@ class TaskGraph(BaseModel):
         roots, waiting for it like for any missing parent; a removed
         GROUP/CHORD releases its members to their own parents (or the roots)
         but keeps their membership, so a later member event can recreate it
-        (a CHORD with the callback its headers named). Headers naming
-        different callbacks, or two chords naming one, aren't Celery shapes:
-        the last name wins, and removing the task that gave it doesn't bring
-        back an earlier one.
+        (a CHORD with the callback its headers named).
 
         Args:
             task_id: ID of the node to remove.
@@ -1268,7 +1285,13 @@ class TaskGraph(BaseModel):
         if chord_group is not None and _group_node_id(chord_group) in self.nodes:
             self._set_awaited(node.task_id, None)
             return _group_node_id(chord_group)
-        if reported is not None and reported in self.nodes:
+        # A node being removed (still in ``nodes``) is as good as gone: placing
+        # under it would look like a cycle and break a link elsewhere.
+        if (
+            reported is not None
+            and reported in self.nodes
+            and reported not in self._removing
+        ):
             self._set_awaited(node.task_id, None)
             return reported
         self._set_awaited(node.task_id, reported)
@@ -1520,7 +1543,7 @@ class TaskGraph(BaseModel):
             if changed:
                 self._rechain(node)
         if callback_id is not None:
-            self._name_chord_callback(group_id, callback_id)
+            self._claim_name(group_id, node.task_id, callback_id)
 
     def _add_membership(
         self,
@@ -1628,6 +1651,11 @@ class TaskGraph(BaseModel):
                 self._place(member)
                 # It no longer counts as a member: chords reading it see a task.
                 self._retrigger(member_id, changed=True)
+        # Its stamped tasks can start its body even if no callback is named for
+        # it (another chord with a smaller group ID claims the one it names).
+        # Without a node yet, ``_create_group_node`` resolves it.
+        if group_node is not None:
+            self._resolve_callback(group_id)
 
     def _create_group_node(self, group_id: str, tally: _GroupTally) -> None:
         """Create the synthetic GROUP/CHORD node and move its members into it."""
@@ -1878,6 +1906,8 @@ class TaskGraph(BaseModel):
         tally.tails.pop(node.task_id, None)
         was_header = node.task_id in tally.headers
         tally.headers.pop(node.task_id, None)
+        if was_header:
+            self._drop_claims(group_id, node.task_id)
         if tally.chains_allowed() != was_allowed:
             self._rechain_group(tally)
         group_node = self.nodes.get(_group_node_id(group_id))
@@ -1894,14 +1924,9 @@ class TaskGraph(BaseModel):
     ) -> None:
         """The last header is gone: the others count as plain members again."""
         self._recount(tally)
-        named = tally.named_callback
-        tally.named_callback = None
-        if named is not None and self._chord_by_callback.get(named) == group_id:
-            del self._chord_by_callback[named]
         if group_node is not None:
             self._set_callback(group_node, group_id, None)
             self._drop_body_group(group_id)
-            group_node.chord_callback_id = None
             group_node.node_type = NodeType.GROUP
             group_node.name = "group"
         self._reset_body_walks(group_id)
@@ -1931,29 +1956,70 @@ class TaskGraph(BaseModel):
 
     # -- chords ------------------------------------------------------------
 
-    def _name_chord_callback(self, group_id: str, callback_id: str) -> None:
-        """Record the callback ID a chord's header named.
+    def _claim_name(self, group_id: str, header_id: str, callback_id: str) -> None:
+        """Record that a chord's header named a callback ID."""
+        named = self._groups[group_id].claims.setdefault(header_id, {})
+        if callback_id in named:
+            return
+        named[callback_id] = None
+        _bump(self._groups[group_id].claim_counts, callback_id, 1)
+        self._refresh_claim(group_id)
 
-        A callback ID belongs to one chord: another chord naming it loses it.
+    def _drop_claims(self, group_id: str, header_id: str) -> None:
+        """Forget the callback IDs a header that left its chord named."""
+        tally = self._groups[group_id]
+        for callback_id in tally.claims.pop(header_id, {}):
+            _bump(tally.claim_counts, callback_id, -1)
+        self._refresh_claim(group_id)
+
+    def _refresh_claim(self, group_id: str) -> None:
+        """Re-pick the callback a chord claims, and the chords it is named for.
+
+        A callback ID is named for one chord: of those claiming it, the one
+        with the smallest group ID (as for a drawn callback, see
+        ``_may_draw_callback``). The others name none. So neither event order
+        nor which header or chord went first decides it. A chord's own group
+        ID (its body is a group) competes with no one: another chord naming
+        that ID means this chord is its body.
         """
         tally = self._groups[group_id]
-        if tally.named_callback == callback_id:
+        claimed = tally.top_claim()
+        previous = tally.claimed_callback
+        if claimed == previous:
             return
+        tally.claimed_callback = claimed
+        affected = {group_id}
+        for callback_id, sign in ((previous, -1), (claimed, 1)):
+            if callback_id is None or callback_id == group_id:
+                continue
+            if sign < 0:
+                _drop_from(self._claimants, callback_id, group_id)
+            else:
+                _add_to(self._claimants, callback_id, group_id)
+            affected.update(self._claimants.get(callback_id, {}))
+        for chord_id in sorted(affected):
+            self._refresh_named(chord_id)
+
+    def _refresh_named(self, group_id: str) -> None:
+        """Name a chord's callback from its claim; re-resolve it if that changed."""
+        tally = self._groups[group_id]
+        claimed = tally.claimed_callback
+        if claimed is None or claimed == group_id:
+            named = claimed
+        else:
+            named = claimed if min(self._claimants[claimed]) == group_id else None
         previous = tally.named_callback
+        if named == previous:
+            return
         if previous is not None and self._chord_by_callback.get(previous) == group_id:
             del self._chord_by_callback[previous]
-        other_group = self._chord_by_callback.get(callback_id)
-        self._chord_by_callback[callback_id] = group_id
-        tally.named_callback = callback_id
-        self.nodes[_group_node_id(group_id)].chord_callback_id = callback_id
+        if named is not None and named != group_id:
+            self._chord_by_callback[named] = group_id
+        tally.named_callback = named
+        chord_node = self.nodes.get(_group_node_id(group_id))
+        if chord_node is not None:
+            chord_node.chord_callback_id = named
         self._reset_body_walks(group_id)
-        if other_group is not None and other_group != group_id:
-            self._groups[other_group].named_callback = None
-            other = self.nodes.get(_group_node_id(other_group))
-            if other is not None:
-                other.chord_callback_id = None
-            self._reset_body_walks(other_group)
-            self._resolve_callback(other_group)
         self._resolve_callback(group_id)
 
     def _retrigger(self, node_id: str, *, changed: bool = False) -> None:
@@ -2026,10 +2092,8 @@ class TaskGraph(BaseModel):
             callback = self._walk_to_body(group_id, named, tally, chord_parent)
             if callback is None:
                 callback = self._named_group_body(named, group_id)
-        for tail_id in tally.tails:
-            if callback is not None:
-                break
-            callback = self._walk_to_body(group_id, tail_id, tally, chord_parent)
+        if callback is None:
+            callback = self._tail_body(group_id, tally, chord_parent)
         if callback is not None and not self._may_draw_callback(
             callback[0], chord_node, group_id, chord_parent
         ):
@@ -2037,6 +2101,22 @@ class TaskGraph(BaseModel):
         self._set_callback(chord_node, group_id, callback)
         if callback is None or callback[0] != _body_node_id(group_id):
             self._drop_body_group(group_id)
+
+    def _tail_body(
+        self, group_id: str, tally: _GroupTally, chord_parent: str | None
+    ) -> tuple[str, str | None] | None:
+        """The body start the chord's stamped tasks walk to (no name to go by).
+
+        Every tail is walked and the smallest start wins, so the tail that
+        arrived first doesn't decide it (walks resume, so this stays cheap).
+        """
+        found = [
+            start
+            for tail_id in tally.tails
+            if (start := self._walk_to_body(group_id, tail_id, tally, chord_parent))
+            is not None
+        ]
+        return min(found, key=lambda s: (s[0], s[1] or "")) if found else None
 
     def _may_draw_callback(
         self,
