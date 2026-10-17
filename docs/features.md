@@ -120,3 +120,40 @@ Limitations:
 - `GET /api/tasks` filters on these fields by reading every event of every task, several times
   the cost of a name filter: on a full store of 10,000 tasks (6 events each) a filtered request
   took 40 to 130 ms against 10 to 30 ms for a name filter, on a loaded 2-vCPU host.
+
+## Summary endpoints
+
+Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page
+through every task. A task counts at the time of its last event (the final event once it
+finished) and under its current state, so a task that failed and then succeeded on retry counts
+as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`) before now, or from
+`from_date` (pass one or the other); every response says which window it covered. A window
+ending now also takes tasks stamped later by a worker whose clock is ahead.
+
+- `GET /api/overview?within=1h` (default `1h`): finished runs, failures, runs per minute and the
+  failure rate (FAILURE over finished runs; 0 with none), each with `baseline`, the same value for
+  the window of equal length just before. Finished means SUCCESS, FAILURE, REVOKED or REJECTED.
+  `workers` counts online and known workers from worker events, without asking the workers.
+- `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
+  state (states with no run in range are left out). Bucket edges are multiples of the bucket
+  size since the Unix epoch, so they don't move between requests. Without `within` or
+  `from_date` it covers every task the server holds. `group_by=task_group` adds the same
+  counts per [task group](configuration.md#task-groups). At most 1,440 buckets; more is a `422`.
+- `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
+  `exception_type`, most failures first. Each group has its count, first and last failure, task
+  names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
+  class form one group with `exception_type: null`.
+
+Each request copies the server's list of task summaries once and computes outside the lock that
+the event consumer uses, so it never holds up incoming events for longer than that copy.
+
+The task list also takes:
+
+- `state=FAILURE,RETRY`: any of several states, in any case. An unknown state is a `422` that
+  lists the valid ones.
+- `within=1h` (also on `GET /api/graphs`), as above.
+- `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
+  task's event list. The task detail always includes them.
+
+`GET /api/health` reports the Celery broker's kind as `broker`: `redis`, `rabbitmq`, `memory`,
+or `null`. Only the URL's scheme is read; the URL itself is never returned.
