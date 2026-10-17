@@ -18,6 +18,8 @@ class TaskState(str, Enum):
     REVOKED = "REVOKED"
     REJECTED = "REJECTED"
     RETRY = "RETRY"
+    # The task raised Celery's Ignore (not a replace): it ended without a result.
+    IGNORED = "IGNORED"
 
 
 class WorkerEventType(str, Enum):

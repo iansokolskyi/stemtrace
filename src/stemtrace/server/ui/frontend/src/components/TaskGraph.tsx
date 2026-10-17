@@ -40,6 +40,7 @@ const stateColors: Record<string, { bg: string; border: string }> = {
   RETRY: { bg: '#92400E', border: '#F59E0B' },
   REVOKED: { bg: '#5B21B6', border: '#8B5CF6' },
   REJECTED: { bg: '#7F1D1D', border: '#DC2626' },
+  IGNORED: { bg: '#3F3F46', border: '#71717A' },
 }
 
 const syntheticColors: Record<NodeType, { bg: string; border: string }> = {

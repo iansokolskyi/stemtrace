@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from celery import Celery, chain, group
-from celery.exceptions import SoftTimeLimitExceeded
+from celery.exceptions import Ignore, Reject, SoftTimeLimitExceeded
 from celery.signals import (
     after_task_publish,
     task_failure,
@@ -474,6 +474,63 @@ class TestTaskPostrun:
         )
 
         assert len(MemoryTransport.events) == 0
+
+
+class TestTaskPostrunIgnoredRejected:
+    """Ignore() and Reject end a task without task_failure: postrun reports them."""
+
+    def _postrun(self, task: MagicMock, state: str, retval: object) -> None:
+        _on_task_postrun(
+            task_id="task-123",
+            task=task,
+            args=(),
+            kwargs={},
+            retval=retval,
+            state=state,
+        )
+
+    def test_ignore_emits_ignored_with_worker_fields(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        mock_task.request.retries = 2
+        mock_task.request.hostname = "celery@w1"
+        mock_task.request.delivery_info = {"routing_key": "q1", "exchange": ""}
+
+        self._postrun(mock_task, "IGNORED", Ignore())
+
+        (event,) = MemoryTransport.events
+        assert event.state == TaskState.IGNORED
+        assert event.task_id == "task-123"
+        assert event.name == "tests.sample_task"
+        assert event.retries == 2
+        assert event.hostname == "celery@w1"
+        assert event.queue == "q1"
+
+    def test_ignore_from_replace_emits_nothing(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """Celery's Task.replace() raises Ignore('Replaced by new task'); the
+        replacement's last task reuses the ID and reports its own outcome."""
+        self._postrun(mock_task, "IGNORED", Ignore("Replaced by new task"))
+
+        assert MemoryTransport.events == []
+
+    def test_reject_without_requeue_emits_rejected(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        self._postrun(mock_task, "REJECTED", Reject("bad input", requeue=False))
+
+        (event,) = MemoryTransport.events
+        assert event.state == TaskState.REJECTED
+        assert event.exception == "bad input"
+
+    def test_reject_with_requeue_emits_nothing(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """A requeued message runs again: its next STARTED follows."""
+        self._postrun(mock_task, "REJECTED", Reject("busy", requeue=True))
+
+        assert MemoryTransport.events == []
 
 
 class TestTaskFailure:
