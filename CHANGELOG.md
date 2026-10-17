@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task events record the worker's nodename (`hostname`), the `queue` and `routing_key` the task was sent with and, on failures and retries, the exception class (`exception_type`, e.g. `myapp.errors.PartnerAPIError`; for a retry, the exception it was for). The API's task, graph node and event responses include them, and `GET /api/tasks` filters on `hostname`, `queue` and `exception_type`. `queue` is empty for tasks routed through a topic or other named exchange, which can reach several queues. See the README. Upgrading: in either order. A server from before this release ignores the new fields, and this release's server shows them as empty for older workers' events; tasks get them once workers (and, for PENDING, the code that sends tasks) run this release.
+
 ## [0.4.0] - 2026-10-13
 
 **Highlights:**

@@ -316,6 +316,40 @@ on RabbitMQ it costs about 0.7 ms per message, about 22% of the throughput of no
   that can differ, so first-attempt RECEIVED events are always listed first.
 - Verified with real workers on the prefork, threads, solo, gevent and eventlet pools.
 
+#### Worker, Queue and Exception Type
+
+Task events record where a task ran, where it was sent and what it raised. The API's task, graph
+node and event responses include them, with no configuration:
+
+| Field | Example | On events |
+|---|---|---|
+| `hostname` | `celery@media-gpu-1` | RECEIVED, STARTED, SUCCESS, FAILURE, RETRY, REVOKED |
+| `queue` | `media` | PENDING and the worker's events |
+| `routing_key` | `media` | PENDING and the worker's events |
+| `exception_type` | `ValueError`, `myapp.errors.PartnerAPIError` | FAILURE, RETRY |
+
+- `hostname` is the worker's nodename, the same name the Workers page lists (also under
+  `celery multi`). Tasks run eagerly with `apply()` have none.
+- `exception_type` is the class only (`module.Class`, just `Class` for builtins), never the
+  message, so it carries no task arguments. On a RETRY it is the exception the retry was for
+  (`self.retry(exc=...)`), not Celery's `Retry`.
+- A task (in the task list, the task detail and graph nodes) has the latest value its events
+  report. Its `exception_type` is the last exception it raised, also when a retry then
+  succeeded; add `state=FAILURE` to get failures only.
+- `GET /api/tasks` filters on them exactly: `?hostname=celery@media-gpu-1`, `?queue=media`,
+  `?exception_type=myapp.errors.PartnerAPIError`.
+
+Limitations:
+
+- `queue` is known only when Celery publishes straight to a queue: the default, and routes that
+  name a queue (`task_routes`, `apply_async(queue=...)`) on a direct exchange. A route through a
+  topic, fanout or other named exchange (an exchange and routing key, or a queue bound to a
+  non-direct exchange) can reach any number of queues, so `queue` is empty and only
+  `routing_key` is set. Checked with a topic exchange on real Redis and RabbitMQ workers.
+- A FAILURE that Celery reports from the worker's main process, such as a hard time limit
+  (`billiard.exceptions.TimeLimitExceeded`), carries no `hostname`, `queue` or `routing_key`,
+  like its parent and root IDs. The task keeps the values from its STARTED event.
+
 ### Canvas Graph Visualization
 
 `stemtrace` automatically detects and visualizes Celery canvas constructs:
