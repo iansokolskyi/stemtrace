@@ -90,8 +90,9 @@ You can start the server first, before any worker runs `init_worker`:
 - **Workers** and **Registry** pages: when the UI requests their data, the server asks the
   workers on its broker URL with Celery inspect, at most once every 2 seconds per server process.
   It sends `stats` and `registered` one after the other (`ping` too when `stats` gets no reply),
-  each waiting until 0.5 s pass without a reply, and the page waits for them: at least 1 s, and
-  about 18 s when the broker refuses connections. Every
+  each waiting until 0.5 s pass without a reply, and the page waits for them: at least 1 s,
+  about 18 s when the broker refuses connections or its name doesn't resolve, and several
+  minutes when connecting times out (e.g. a firewalled host). Every
   worker that answers is listed, instrumented or not, with the tasks it has registered. Those
   tasks show **Never Run** until stemtrace receives an event for one of them.
 - **Tasks** and **graphs** stay empty until instrumented processes publish events.
