@@ -331,10 +331,13 @@ node and event responses include them, with no configuration:
 - `hostname` is the worker's nodename, the same name the Workers page lists (also under
   `celery multi`). Tasks run eagerly with `apply()` have none.
 - `exception_type` is the class only (`module.Class`, just `Class` for builtins), never the
-  message, so it carries no task arguments. On a RETRY it is the exception the retry was for
-  (`self.retry(exc=...)`), not Celery's `Retry`.
-- A task (in the task list, the task detail and graph nodes) has the latest value its events
-  report. Its `exception_type` is the last exception it raised, also when a retry then
+  message, so it carries no task arguments. On a RETRY it is the exception the retry was for:
+  the `exc` given to `self.retry()`, or else the exception being handled when it was called
+  (`except ConnectionError: raise self.retry()`). Only a retry with neither (e.g. polling until
+  something is ready) reports `celery.exceptions.Retry`.
+- A task (in the task list, the task detail and graph nodes) has the value from its furthest-along
+  event that reports one, judged the way its state is, so skewed worker clocks don't mix up
+  attempts. Its `exception_type` is the last exception it raised, also when a retry then
   succeeded; add `state=FAILURE` to get failures only.
 - `GET /api/tasks` filters on them exactly: `?hostname=celery@media-gpu-1`, `?queue=media`,
   `?exception_type=myapp.errors.PartnerAPIError`.
