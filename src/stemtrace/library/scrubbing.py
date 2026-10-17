@@ -64,8 +64,8 @@ def _key_names(key: object) -> list[str]:
     one) plus its value's names (checked first: str- and int-mixin members are
     str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
     carries the names of all members (aliases and multi-bit members included)
-    whose bits it has: a composite has no name on Python 3.10 (``READ|SECRET``
-    on 3.11+), and its value is an int.
+    whose bits it has, since its own name may be missing (a composite on
+    Python 3.10, unknown bits) and its value is an int.
     Other keys (an int, None, any other object) carry none. ``str(key)`` is
     never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
     raise.
@@ -73,9 +73,9 @@ def _key_names(key: object) -> list[str]:
     match key:
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
-            # __members__, not iteration: 3.11+ iterates single-bit members
-            # only, leaving out multi-bit members and aliases. Its keys are
-            # the names: an alias's member object carries the canonical name.
+            # __members__, not iteration: iteration skips aliases on every
+            # version, and multi-bit members on 3.11+. Its keys are the
+            # names: an alias's member object carries the canonical name.
             members = [
                 name.lower()
                 for name, member in type(key).__members__.items()
