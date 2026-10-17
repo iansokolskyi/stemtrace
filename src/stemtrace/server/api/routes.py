@@ -154,6 +154,7 @@ def _node_to_response(
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+    runtime_ms, total_runtime_ms = node.run_times()
 
     task_group, tags = _group_of(node, group_of)
     return TaskNodeResponse(
@@ -172,6 +173,9 @@ def _node_to_response(
         first_seen=first_seen,
         last_updated=last_updated,
         duration_ms=duration_ms,
+        queue_wait_ms=node.queue_wait_ms,
+        runtime_ms=runtime_ms,
+        total_runtime_ms=total_runtime_ms,
         exception_type=node.exception_type,
         hostname=node.hostname,
         queue=node.queue,
@@ -254,6 +258,7 @@ def _node_to_graph_response(
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+    runtime_ms, total_runtime_ms = node.run_times()
 
     # UI traversal is order-sensitive when callbacks can appear as both direct
     # children and CHORD-linked nodes. Prefer TASK children first so callback
@@ -279,6 +284,9 @@ def _node_to_graph_response(
         task_group=task_group,
         tags=tags,
         duration_ms=duration_ms,
+        queue_wait_ms=node.queue_wait_ms,
+        runtime_ms=runtime_ms,
+        total_runtime_ms=total_runtime_ms,
         first_seen=first_seen,
         last_updated=last_updated,
         exception_type=node.exception_type,
