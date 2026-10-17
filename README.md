@@ -703,7 +703,10 @@ The UI doesn't show groups yet.
 `src`, in any case) are skipped, so `tasks.search.reindex` and `app.billing.tasks.charge` give
 `search` and `billing`. The last segment is the task's own name and never names a group: names
 with no dots, or only generic modules (`add`, `tasks.add`, `app.tasks.add`,
-`celery.chord_unlock`), are in `ungrouped`. Empty segments (`a..b`) are ignored.
+`celery.chord_unlock`), are in `ungrouped`. Empty segments (`a..b`) are ignored. Only leading
+generic segments are skipped, so when every task name starts with your project's package
+(`myproject.billing.charge`, `myproject.search.reindex`) all tasks land in one group,
+`myproject`: define groups in code for such layouts.
 
 **Code-defined groups** take precedence. Each has a `name`, `match` (glob patterns on the full
 task name, case-sensitive; `*` also matches dots), optional `tags` and an optional `color`
@@ -742,7 +745,9 @@ color = "#2563eb"
 
 The rules are checked at startup: an unknown key (`matches`, `tag`), a missing `match`, an
 invalid color or two groups with the same name stop the server with a `ConfigurationError`
-(`stemtrace server` exits with a usage error). TOML files need Python 3.11+ (stdlib `tomllib`);
+(`stemtrace server` exits with a usage error). A `GroupRule(...)` you build yourself is checked
+when you build it and raises pydantic's `ValidationError`. `create_router(groups=...)` takes the
+same values and checks them when the router is created. TOML files need Python 3.11+ (stdlib `tomllib`);
 on Python 3.10, define the groups in code. Groups are a **server** setting, like node aliases;
 workers don't need them.
 
