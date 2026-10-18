@@ -84,7 +84,8 @@ pages work even if the server missed `worker_ready` events.
 - A worker stopped cold (SIGQUIT) on the prefork pool ends without Celery's `worker_shutdown`.
   It publishes a `worker_terminating` event instead, and the server marks it offline at once,
   as for `worker_shutdown`. An idle worker stopped with SIGQUIT sends it on any pool. On Celery 5.5+ a cold stop
-  cancels the running tasks first: each shows a RETRY "cancelled by Celery", except, on Celery
+  cancels the running tasks first: each normally shows a RETRY "cancelled by Celery" (see
+  [Stopping workers](deployment.md#stopping-workers) for when it doesn't), except, on Celery
   5.6+, tasks with `acks_late`, which are requeued and show nothing (they stay STARTED until
   redelivered). Other cases, with a task running (checked with Celery 5.6.3):
   - SIGQUIT during a warm stop (SIGTERM, then SIGQUIT; or Ctrl+C twice) cancels the running
@@ -93,8 +94,11 @@ pages work even if the server missed `worker_ready` events.
     plain cold stop.
   - threads pool: Celery can't cancel running tasks, so a cold stop waits for them like a warm
     one and ends with `worker_shutdown`.
-  - gevent pool: Celery's cold-shutdown handler fails (`BlockingSwitchOutError`) after
-    cancelling the tasks, and the worker ends with `worker_shutdown`.
+  - gevent pool, a task running Python code: the cold stop completes, as on prefork, and the
+    worker sends `worker_terminating`.
+  - gevent pool, a task waiting on I/O: Celery's cold-shutdown handler fails
+    (`BlockingSwitchOutError`) after cancelling the tasks, and the worker ends with
+    `worker_shutdown`.
   - solo pool: SIGQUIT fails the running task (`NotImplementedError`) and the worker keeps
     running.
   - eventlet: not checked.

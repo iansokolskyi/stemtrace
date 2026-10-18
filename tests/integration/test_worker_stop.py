@@ -267,3 +267,52 @@ def test_cold_stop_after_warm_stop_ends_with_worker_shutdown(
     assert "worker_shutdown" in kinds, log
     assert "worker_terminating" not in kinds, log
     assert "SUCCESS:True" not in kinds, log
+
+
+@pytest.fixture
+def gevent_worker(tmp_path: Path) -> Iterator[StoppableWorker]:
+    """A gevent worker, stopped by the test."""
+    run = StoppableWorker("gevent", tmp_path)
+    try:
+        run.wait(
+            "worker_ready",
+            lambda es: any(
+                e.event_type == WorkerEventType.WORKER_READY for e in _worker_events(es)
+            ),
+        )
+        yield run
+    finally:
+        run.close()
+
+
+@needs_celery_55
+@pytest.mark.parametrize(
+    ("task", "ends_with"),
+    [
+        ("output_test.busy", "worker_terminating"),
+        ("output_test.sleepy", "worker_shutdown"),
+    ],
+    ids=["running_python", "waiting_on_io"],
+)
+def test_gevent_cold_stop_end_depends_on_what_the_task_is_doing(
+    gevent_worker: StoppableWorker, task: str, ends_with: str
+) -> None:
+    """The SIGQUIT handler runs in the task's greenlet. If the task is running
+    Python code, the cold stop completes: worker_terminating. If it is waiting
+    on I/O, Celery's cold-shutdown handler fails joining the pool
+    (BlockingSwitchOutError) and the worker ends with worker_shutdown. Either
+    way the task is cancelled first."""
+    task_id = _start_sleepy(gevent_worker, 12, task)
+
+    gevent_worker.proc.send_signal(signal.SIGQUIT)
+    gevent_worker.proc.wait(timeout=TIMEOUT_SECONDS)
+
+    entries = gevent_worker.entries()
+    kinds = _kinds(entries, task_id)
+    log = gevent_worker.log_path.read_text(errors="replace")[-3000:]
+    assert _cancelled(entries, task_id), log
+    assert ends_with in kinds, log
+    other = (
+        "worker_shutdown" if ends_with == "worker_terminating" else "worker_terminating"
+    )
+    assert other not in kinds, log

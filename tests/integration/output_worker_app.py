@@ -196,6 +196,15 @@ def sleepy(seconds: float) -> str:
     return "slept"
 
 
+@app.task(name="output_test.busy")
+def busy(seconds: float) -> str:
+    """Run Python code for ``seconds`` without yielding to gevent's hub."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        pass
+    return "busy"
+
+
 @app.task(name="output_test.sleepy_late", acks_late=True)
 def sleepy_late(seconds: float) -> str:
     """Like ``sleepy``, acknowledged only after it finishes (redelivered if lost)."""
