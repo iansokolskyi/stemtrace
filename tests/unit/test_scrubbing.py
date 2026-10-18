@@ -17,6 +17,7 @@ from stemtrace.library.scrubbing import (
     scrub_args,
     scrub_dict,
 )
+from stemtrace.library.signals import _scrub_and_serialize_args
 
 
 class TestIsSensitiveKey:
@@ -916,5 +917,11 @@ def test_scrub_dict_namedtuple_key_drops_state_its_new_set() -> None:
 
     assert (tuple(out_key), type(out_key)) == (("pw",), _StatefulKey)
     assert not hasattr(out_key, "original")
-    with pytest.raises(AttributeError):  # the capture then shows its placeholder
+    with pytest.raises(AttributeError):
         repr(out_key)
+
+
+def test_capture_of_namedtuple_key_that_reads_new_state_is_a_placeholder() -> None:
+    args = ({_StatefulKey(_Field.PASSWORD): "v"},)
+
+    assert _scrub_and_serialize_args(args) == ["[Not captured: AttributeError]"]
