@@ -42,64 +42,10 @@ def _losses(dropped: int, unconfirmed: int) -> str:
 class PublishBreaker:
     """Thread- and fork-safe circuit breaker for fire-and-forget publishers.
 
-    Usage: call ``allow()`` before each publish attempt and skip the attempt
-    when it returns None. Otherwise it returns a ticket; report the attempt's
-    outcome by passing that ticket to ``record_success()`` or
-    ``record_failure()``.
-
-    States:
-        Closed: every attempt is allowed. The ``failures_to_open``-th failure
-            in a row opens the breaker; a success ends the run. Every failure
-            counts the same, however long it took and whether or not the
-            event was sent: a healthy broker can look slow (e.g. a thread
-            waiting for the GIL misses its socket deadline), so a single
-            timeout only loses its own event and never a cooldown's worth.
-        Open: attempts are dropped until the cooldown expires. Then a single
-            caller is let through as the probe; no other probe is admitted
-            while it is outstanding (up to ``probe_timeout``, after which it
-            is presumed lost and a new probe may start). Only the probe's
-            outcome changes the state: a failed probe doubles the cooldown
-            (capped at ``max_cooldown``) and restarts it; a successful one
-            closes the breaker and resets the cooldown. A probe that fails
-            unconfirmed right after an unconfirmed failure (the one that
-            opened the breaker or the previous probe) sets the cooldown
-            straight to the cap and keeps it there: two in a row usually
-            mean the broker is stalled, which can last minutes,
-            while a single one may just be a brief stall.
-
-    Attempts that were already in flight when the breaker opened (other
-    threads of the same process) only count as lost when they fail and
-    don't change the state when they succeed, so a burst of concurrent
-    failures opens the breaker once, with the initial cooldown.
-
-    Logging is rate-limited independently of the state, so a flapping broker
-    can't flood the logs, and every line reports the events dropped (and
-    sent but unconfirmed) since the previous line. Per ``log_interval``, at
-    most:
-
-    - one line for a failure while the breaker stays closed (WARNING with
-      traceback);
-    - one line for a failure that opens the breaker (with traceback);
-    - one recovery line for an outage whose opening line was written (if
-      that line is rate-limited, it is owed and written once one is due,
-      on a later successful publish);
-    - one report line otherwise: a summary when a probe fails, a recovery
-      line for an outage whose opening line was suppressed, or, once
-      publishing works again, a line with the losses still unreported.
-      It is written once an interval has passed since the last line that
-      reported losses (and, while open, when the next probe fails, at most
-      ``max_cooldown`` later), so while events keep being published no loss
-      stays unreported for longer than about one interval plus the
-      maximum cooldown (1.5 minutes with stemtrace's settings).
-
-    So at most four lines per interval, however the broker behaves. Nothing
-    is logged per dropped event.
-
-    The state is guarded by a lock, so it can be shared by the threads of a
-    threads/gevent/eventlet pool. A process that forks (Celery's prefork
-    pool) starts over in the child with a closed breaker and a fresh lock: a
-    breaker opened in the parent never silences a child, and a lock held by
-    another parent thread at fork time can't deadlock it.
+    Call ``allow()`` before each attempt and skip it on None; otherwise report the
+    outcome with the returned ticket (``record_success()``, ``record_failure()``).
+    ``failures_to_open`` failures in a row open it; then one probe per cooldown
+    (doubling up to ``max_cooldown``) decides. A forked child starts closed.
     """
 
     def __init__(
@@ -239,12 +185,9 @@ class PublishBreaker:
     def should_attempt(self, ticket: int) -> bool:
         """Whether an attempt that started earlier is still worth making.
 
-        For a caller that had to wait after ``allow()`` returned ``ticket``
-        (e.g. for a shared connection). False only while the breaker is open
-        and ``ticket`` isn't the probe's: the attempt was already in flight
-        when the breaker opened, and the broker is known to be down. Once the
-        breaker has closed again the broker answered, so the attempt goes
-        ahead, whatever the ticket's age.
+        For a caller that had to wait after ``allow()`` (e.g. for a shared
+        connection). False only while the breaker is open and ``ticket`` isn't
+        the probe's.
 
         Args:
             ticket: The ticket ``allow()`` returned for the attempt.
@@ -255,11 +198,8 @@ class PublishBreaker:
     def record_dropped(self, ticket: int) -> None:
         """Count an event dropped without an attempt (it says nothing about the broker).
 
-        For an event that was skipped, or that couldn't get a shared resource
-        in time: it is reported with the next log line like any dropped
-        event, but doesn't count as a failure and never changes the state. If
-        ``ticket`` is the outstanding probe's, the probe never reached the
-        broker, so its slot is freed for the next caller.
+        Reported with the next log line, but never a failure and never changes
+        the state. A dropped probe frees its slot for the next caller.
 
         Args:
             ticket: The ticket ``allow()`` returned for the dropped attempt.
@@ -273,12 +213,9 @@ class PublishBreaker:
     def record_interrupted(self, ticket: int) -> None:
         """Release an attempt the task's own control flow cut short.
 
-        For an attempt ended by something that isn't about the broker (a
-        Celery soft time limit raised into the task mid-publish): it counts
-        neither as a failure nor as a dropped event, and never changes the
-        state. If ``ticket`` is the outstanding probe's, its slot is freed for
-        the next caller; otherwise the probe would stay "outstanding" until
-        ``probe_timeout`` and every event in between would be dropped.
+        For an attempt ended by something unrelated to the broker (a Celery soft
+        time limit raised mid-publish): neither a failure nor a drop. A probe's
+        slot is freed, so events aren't dropped until ``probe_timeout``.
 
         Args:
             ticket: The ticket ``allow()`` returned for the interrupted attempt.
@@ -417,6 +354,8 @@ class PublishBreaker:
             else:
                 self._dropped += 1
             kind = self._transition_on_failure(ticket, unconfirmed, now)
+            # One line per kind (failure while closed, opening, recovery,
+            # report) per log_interval: at most four, never one per event.
             if kind is None:
                 return
             if kind == "closed":
@@ -480,6 +419,8 @@ class PublishBreaker:
             that was already in flight while the breaker is open.
         """
         if self._open_until is None:
+            # Every failure counts the same, however slow: a healthy broker can
+            # look slow (a thread waiting for the GIL misses its deadline).
             if ticket != self._epoch:
                 # Started before the breaker last opened and closed: the event
                 # is lost, but it says nothing about the broker now.
@@ -494,8 +435,12 @@ class PublishBreaker:
             self._open_until = now + self._cooldown
             return "opened"
         if self._probe_ticket is None or ticket != self._probe_ticket:
+            # In flight when it opened: only the probe changes the state, so a
+            # burst of concurrent failures opens the breaker once.
             return None
         self._probe_ticket = None
+        # Two unconfirmed in a row usually mean a stalled broker, which can last
+        # minutes; a single one may be a brief stall.
         if unconfirmed and self._last_unconfirmed:
             self._cooldown = self._max_cooldown
         else:

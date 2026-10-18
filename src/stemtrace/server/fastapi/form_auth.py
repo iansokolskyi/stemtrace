@@ -109,11 +109,9 @@ def resolve_session_secret(explicit_secret: str | None) -> tuple[str, bool]:
     """Return the cookie-signing secret, generating a per-process one if unset.
 
     An explicit secret (``login_secret`` / ``--login-secret`` /
-    ``STEMTRACE_LOGIN_SECRET``) always takes precedence. Without one, a random
-    secret is generated for this process and a warning is logged: sessions then
-    only work within this single process, so with several workers or replicas
-    users get logged out at random (401s) unless all of them share the same
-    explicit secret.
+    ``STEMTRACE_LOGIN_SECRET``) wins. Without one, a random per-process secret
+    is generated and a warning logged: with several workers or replicas, users
+    then get logged out at random (401s).
 
     Args:
         explicit_secret: Configured secret, if any.
@@ -268,26 +266,10 @@ def check_session_cookie(
 ) -> SessionStatus:
     """Classify a session cookie as valid, invalid, or signed by another secret.
 
-    ``SECRET_MISMATCH`` is reported only when all of these hold:
-
-    - this process generated its own secret (none configured), so other
-      workers/replicas necessarily sign with different secrets;
-    - the cookie is well-formed and unexpired but its signature doesn't match;
-    - its issue time (``iat``) is strictly after this process started, so it
-      must come from a live sibling. Older cookies were signed before a
-      restart, and cookies without ``iat`` come from older versions; both are
-      plain ``INVALID`` (normal login redirect), not evidence of siblings.
-
-    With a configured secret, a bad signature is always plain ``INVALID``
-    (forged cookie or rotated secret). The payload of a badly signed cookie is
-    unauthenticated: it never grants access, and its username is ignored so the
-    outcome can't be used to probe for the configured username.
-
-    Accepted limitation: anyone can forge an unsigned-but-plausible payload with
-    a recent ``iat`` and so learn, from the 401 ``reason``, that no login secret
-    is configured, and trigger the (rate-limited) mismatch warning. That
-    reveals a configuration fact, not credentials, and the startup warning
-    already tells operators to set a secret.
+    ``SECRET_MISMATCH`` only for a well-formed, unexpired, badly signed cookie
+    that must come from a live sibling (see :func:`_is_from_live_sibling`);
+    anything else that fails is ``INVALID``. A badly signed payload never grants
+    access and its username is ignored, so the outcome can't probe usernames.
 
     Args:
         cookie_value: Cookie value from client.
@@ -316,15 +298,17 @@ def check_session_cookie(
 def _is_from_live_sibling(payload: dict[str, object], config: FormAuthConfig) -> bool:
     """Whether a badly signed, unexpired payload must come from a sibling process.
 
-    Only when this process generated its own secret (so siblings necessarily
-    sign with other secrets) and the cookie was issued strictly after this
-    process started. See :func:`check_session_cookie` for why.
+    Only when this process generated its own secret (so siblings sign with
+    others) and the cookie was issued after this process started: older cookies
+    predate a restart, and ones without ``iat`` come from older versions.
     """
     if not config.secret_is_generated:
         return False
     iat = payload.get("iat")
     if isinstance(iat, bool) or not isinstance(iat, int | float):
         return False
+    # Accepted: a forged payload with a recent iat learns from the 401 reason
+    # that no secret is configured (a config fact, not a credential).
     return iat > config.started_at
 
 

@@ -1,33 +1,11 @@
 """Per-task output capture: what a task printed and logged, per attempt.
 
-How it works:
-
-- A ``ContextVar`` holds the active :class:`OutputBuffer`. ``task_prerun`` starts
-  one, the terminal signal handlers stop it and attach the text to the terminal
-  event. A ContextVar is per thread / greenlet, so concurrent tasks in a threads,
-  gevent or eventlet pool never see each other's output. Nothing swaps global
-  streams per task.
-- One process-wide :class:`TaskOutputHandler` is attached to the root logger
-  **and** to ``celery.task`` (Celery sets ``propagate=False`` on it, so
-  ``get_task_logger`` records never reach root). It appends records to the
-  active buffer, if there is one.
-- A :class:`TeeStream` wraps ``sys.stdout`` and ``sys.stderr`` (installed once):
-  it forwards every write to the stream it wraps and appends the text to the
-  active buffer. Under Celery's default ``worker_redirect_stdouts=True`` that
-  stream is Celery's ``LoggingProxy``, which still logs each write chunk to
-  ``celery.redirected`` for the worker log; the handler ignores those records,
-  so ``print()`` is captured once, as written (``print("a", 1)`` would be four
-  records but is one line of text).
-
-Output is one combined, chronological string of stdout, stderr and log records.
-
-The handler also stands in for ``logging.lastResort``: Python prints WARNING+
-records to stderr when a logger chain has no handlers, and our handler on root
-would otherwise count as one and silence them.
-
-Limitations: output from threads the task starts itself isn't captured (new
-threads start with an empty context), and output is free text, so it isn't
-scrubbed for secrets.
+A ``ContextVar`` holds the active :class:`OutputBuffer` (``task_prerun`` starts it,
+the terminal signals stop it), so concurrent tasks in any pool never mix output.
+One process-wide :class:`TaskOutputHandler` on the root logger and ``celery.task``
+captures log records, and a :class:`TeeStream` around ``sys.stdout``/``sys.stderr``
+captures prints, as one chronological string. The handler also stands in for
+``logging.lastResort``. Limitations are in docs/configuration.md.
 """
 
 from __future__ import annotations
@@ -246,15 +224,10 @@ _HANDLER_FRAME_DEPTH = 8
 def _record_being_emitted() -> logging.LogRecord | None:
     """The log record whose handler is writing to the tee right now, if any.
 
-    Called from :meth:`TeeStream.write`; looks a few frames up for
-    ``logging.Handler.handle`` and returns its ``record``. Returns None for
-    writes made under the base ``Handler.handleError``,
-    ``LogRecord.getMessage`` or ``Formatter.format`` (a logging error report,
-    or a print while formatting), which are user-visible text rather than a
-    handler's copy of a record.
-
-    Cost: at most ``_HANDLER_FRAME_DEPTH`` frame hops per write, and only while
-    a task's output is being captured; writes outside tasks never get here.
+    Looks up to ``_HANDLER_FRAME_DEPTH`` frames up for ``logging.Handler.handle``
+    (only while a task is captured). None for writes under ``handleError``,
+    ``getMessage`` or ``Formatter.format``: user-visible text, not a handler's
+    copy of a record.
     """
     # The caller of TeeStream.write (which always has one).
     frame: FrameType | None = sys._getframe(2)
@@ -273,11 +246,9 @@ def _record_being_emitted() -> logging.LogRecord | None:
 def _tee_should_skip(record: logging.LogRecord) -> bool:
     """Whether a handler's write of ``record`` to the tee must not be captured.
 
-    A handler whose stream is the tee (a StreamHandler created after the tee
-    was installed) would otherwise copy records into the output: internal ones
-    (Celery, kombu, stemtrace) that must never be output, and records our
-    handler captures itself, which would appear twice. Only records our handler
-    can't see (a chain without it) are left to the tee.
+    A handler writing to the tee would otherwise copy internal records
+    (Celery, kombu, stemtrace) into the output, and records our handler already
+    captures twice. Only records our handler can't see are left to the tee.
     """
     if not _should_capture(record.name):
         return True
@@ -426,6 +397,8 @@ _install_lock = threading.Lock()
 
 
 def _capture_loggers() -> tuple[logging.Logger, logging.Logger]:
+    # celery.task too: Celery 5.6 setup_task_loggers() sets propagate=False on
+    # it, so get_task_logger() records never reach root.
     return logging.getLogger(), logging.getLogger("celery.task")
 
 
@@ -459,12 +432,8 @@ def install_capture() -> None:
 
     Idempotent, and called at every ``task_prerun``: Celery's worker logging
     setup (``worker_hijack_root_logger``) clears root and ``celery.task``
-    handlers *after* ``init_worker`` has run, and user logging config may do
-    the same. Re-adding at prerun also means it runs in the process that
-    executes tasks (the prefork child). Cost per call: a few list lookups plus
-    one pass over all loggers and their handlers (see
-    :func:`_repoint_tee_stream_handlers`), about 100 microseconds with 500
-    loggers.
+    handlers after ``init_worker`` runs, and so may user logging config. It
+    also runs in the process that executes tasks (the prefork child).
     """
     with _install_lock:
         for target in _capture_loggers():
@@ -489,18 +458,10 @@ def _chain_has_our_handler(start: logging.Logger) -> bool:
 def _repoint_tee_stream_handlers() -> None:
     """Point StreamHandlers that write to a tee at the stream it wraps.
 
-    A ``StreamHandler()`` created after the tee was installed binds the tee as
-    its stream, so the tee would copy its records into the output. When our
-    handler sees those records too (it's in the chain of every logger the
-    handler is attached to), writing to the wrapped stream instead leaves the
-    console output unchanged and our handler captures each record once. A
-    handler on a chain our handler doesn't reach (a library logger with
-    ``propagate=False``) stays on the tee: it is the only way those records
-    get captured. Runs at every install (each task's prerun), so handlers added
-    since the last task are caught too.
-
-    Cost: one pass over ``logging.Logger.manager.loggerDict`` and each
-    logger's handler list, plus a parent-chain walk per tee-bound handler.
+    A ``StreamHandler()`` created after the tee binds it as its stream. Where
+    our handler sees the same records, repointing keeps the console unchanged
+    and captures each record once; a handler our handler doesn't reach (a
+    ``propagate=False`` library logger) stays on the tee, its only capture path.
     """
     loggers: list[logging.Logger] = [logging.root]
     loggers.extend(
