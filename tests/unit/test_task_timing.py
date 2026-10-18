@@ -166,7 +166,8 @@ class TestTiming:
         assert _timing(node) == (1003, 1001, 1001)
 
     def test_run_without_a_reported_end_is_left_out(self) -> None:
-        # A pool process lost mid-run reports nothing; acks_late redelivers.
+        # A pool process lost mid-run reports nothing; acks_late with
+        # reject_on_worker_lost redelivers (celery 5.6.3 Request.on_failure).
         node = _node(_event(P, 0), _event(S, 1), _event(S, 5), _event(OK, 7))
 
         assert _timing(node) == (1000, 2000, 2000)
@@ -211,10 +212,10 @@ class TestTiming:
         self, behind: float, expected: tuple[int | None, ...]
     ) -> None:
         # Events without a hostname (workers before this release): worker A's
-        # pool process is lost after STARTED (acks_late, no end event); B,
-        # `behind` seconds slow, runs it in 2 s. Once B's STARTED is stamped
-        # before A's, A's STARTED starts the last run, read against B's
-        # SUCCESS: too short, 0 at worst.
+        # pool process is lost after STARTED (acks_late with
+        # reject_on_worker_lost, no end event); B, `behind` seconds slow, runs
+        # it in 2 s. Once B's STARTED is stamped before A's, A's STARTED starts
+        # the last run, read against B's SUCCESS: too short, 0 at worst.
         node = _node(
             _event(P, 0),
             _event(S, 10),
@@ -413,8 +414,11 @@ class TestTiming:
     def test_earlier_end_of_the_final_attempt_on_its_worker_has_no_runtimes(
         self, events: list[tuple[TaskState, float, int, str]]
     ) -> None:
-        # The worker ended the final event's attempt before: the events can't
-        # tell which start goes with which end, so unknown, not a guess.
+        # The worker already ended the final event's attempt. Its earlier end
+        # pops the attempt's latest STARTED, so the final event has none. Three
+        # cases are an attempt run twice, where the events can't tell which start
+        # goes with which end; two are one run ended twice (a revoke race). All
+        # unknown, not a guess.
         assert _runtimes(events) == (None, None)
 
     @pytest.mark.parametrize(
@@ -477,8 +481,10 @@ class TestTiming:
         assert (node.runtime_ms, node.total_runtime_ms) == (3000, 3000)
 
     def test_message_received_twice_before_it_started_has_runtimes(self) -> None:
-        # A RECEIVED per delivery (publish_received=True): the first delivery
-        # was lost before it started, so one worker ran the attempt once.
+        # A regression guard, not proof of a fix: the case was already right
+        # when this was added. A RECEIVED per delivery (publish_received=True):
+        # the first delivery was lost before it started, so one worker ran the
+        # attempt once.
         a = {"hostname": "celery@a"}
         node = _node(
             _event(P, 0),
