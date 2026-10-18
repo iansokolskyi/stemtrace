@@ -4,6 +4,7 @@
 # object's string annotations without its module globals.
 
 import base64
+import time
 from typing import Annotated, Any
 
 import pytest
@@ -13,6 +14,10 @@ from fastapi.testclient import TestClient
 
 import stemtrace
 from stemtrace.server.fastapi.api_key import API_KEY_ENV_VAR
+from stemtrace.server.fastapi.form_auth import (
+    SESSION_SECRET_MISMATCH_REASON,
+    sign_session,
+)
 from stemtrace.server.fastapi.login_throttle import LOGIN_IP_MAX_FAILURES
 
 KEY = "0123456789abcdef0123456789abcdef"
@@ -118,3 +123,33 @@ def test_basic_auth_helper_with_the_login_page_needs_a_session_too() -> None:
         wrong_basic = {"Authorization": "Basic " + base64.b64encode(b"a:b").decode()}
         assert client.get(API, headers=wrong_basic).status_code == 401
         assert client.get(API, headers=BEARER).status_code == 200
+
+
+def test_a_session_signed_by_another_process_says_why_it_was_refused() -> None:
+    """As the middleware does for a request without the key: the 401 carries the reason."""
+    app = FastAPI()
+    stemtrace.init_app(
+        app,
+        broker_url="memory://",
+        embedded_consumer=False,
+        serve_ui=False,
+        api_key=KEY,
+        auth_dependency=Depends(_admit_everything),
+        login_username="admin",
+        login_password="secret",  # NOSONAR - test credential only
+    )  # no login_secret: this process generates its own
+    now = time.time()
+    foreign = sign_session(
+        {"u": "admin", "exp": int(now) + 3600, "iat": now + 1}, "another-secret"
+    )
+
+    with TestClient(app) as client:
+        resp = client.get(
+            API, headers={**JUNK, "Cookie": f"stemtrace_session={foreign}"}
+        )
+
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "detail": "Authentication required",
+        "reason": SESSION_SECRET_MISMATCH_REASON,
+    }
