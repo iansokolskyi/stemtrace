@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-18
+
 **Highlights:**
 - Task groups: every task now belongs to a group (automatic from its module, or defined in code or a TOML file), returned by the API and listed by `GET /api/groups`. The UI shows them in the next release.
 - Task events now record which worker ran a task, the queue it was sent to and the exception class, and `GET /api/tasks` can filter on all three.
@@ -293,7 +295,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.10...v0.4.0
 [0.3.10]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...v0.3.9
