@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `skills/stemtrace-api/SKILL.md`: teaches a coding agent to query failures, tracebacks, workflow graphs, workers and the registry with `curl` and `jq`.
 - Task and graph node responses split `duration_ms` (first event to last) into `queue_wait_ms` (sent to the first run starting), `runtime_ms` (the last run) and `total_runtime_ms` (all runs, retries included). They are empty when the events they need are missing, never negative, and computed by the server from the events it has, so they also appear for tasks from older workers: no upgrade order. See [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md#queue-wait-and-runtime).
 
+### Fixed
+- gevent workers now finish a cold shutdown (SIGQUIT) that lands while a task's greenlet is running Python code. The signal handler runs in that greenlet, which Celery has just scheduled to kill, and stemtrace's RETRY publish for the cancelled task waited there (for the broker's reply, or for the task's captured output), which let the kill abort the shutdown: the worker kept running. Such a RETRY is now published from a greenlet of its own after the handler returns (at the latest when the worker exits). In 10 runs each with a real gevent worker, the worker exited 10 times out of 10 (3 out of 10 before; 2 out of 10 with `capture_output=True`), and the RETRY was published every time. eventlet workers, and gevent workers with task events (`-E`) or a result backend, still don't finish this shutdown, with or without stemtrace: Celery's own handler waits there first. See [Stopping workers](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md#stopping-workers).
+
 ## [0.4.1] - 2026-10-18
 
 **Highlights:**

@@ -166,13 +166,15 @@ event for each cancelled task that isn't `acks_late` (those get no RETRY; the br
 them). stemtrace makes sure that publish can't wait on one it interrupted: in this
 race, the cancelled task's RETRY event is dropped instead.
 
-Known limitation (gevent pool): if the cold shutdown lands while a task's greenlet is running
-Python code (CPU work, or anything else that isn't waiting on I/O), the signal handler runs
-inside that greenlet, which Celery has just scheduled to kill. stemtrace's RETRY publish for that
-task then waits for the event broker's reply (and, with `capture_output=True`, can also wait for
-the task's output buffer), which lets the kill run: it interrupts the shutdown, and the worker
-keeps running. Send SIGQUIT again or SIGKILL to stop the worker. Prefork, threads and solo workers aren't affected. Eventlet workers ignore
-a cold shutdown in this situation even without stemtrace.
+On gevent and eventlet workers that handler can run inside the cancelled task's own greenlet,
+which Celery has just scheduled to kill, so stemtrace publishes that RETRY from a greenlet of its
+own once the handler has returned (at the latest when the worker exits) and never waits inside
+the handler.
+
+Celery itself doesn't finish a cold shutdown that lands while a task's greenlet is running Python
+code (rather than waiting on I/O) on eventlet workers, or on gevent workers with task events
+(`-E`) or a result backend: its own handler waits there before stemtrace's code runs, with or
+without stemtrace. Send SIGQUIT again or SIGKILL to stop such a worker.
 
 ## Health endpoint
 
