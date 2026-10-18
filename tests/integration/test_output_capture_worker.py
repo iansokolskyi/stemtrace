@@ -367,3 +367,73 @@ def test_unconfigured_logging_still_prints_warnings(
         time.sleep(0.2)
     for line in expected:
         assert log.count(line) == 1, f"{line!r} not printed once; worker log:\n{log}"
+
+
+def _final_state(events: list[TaskEvent], task_id: str) -> TaskState:
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    return graph.nodes[task_id].state
+
+
+def test_ignore_publishes_ignored_and_ends_the_task(worker: WorkerRun) -> None:
+    task_id = worker.send("output_test.ignored")
+
+    events = worker.wait_for(task_id, TaskState.IGNORED)
+
+    (ignored,) = [e for e in events if e.state == TaskState.IGNORED]
+    assert ignored.output is not None
+    assert "about to ignore" in ignored.output
+    assert ignored.hostname is not None
+    assert _final_state(events, task_id) == TaskState.IGNORED
+
+
+def test_reject_without_requeue_publishes_rejected(worker: WorkerRun) -> None:
+    task_id = worker.send("output_test.rejected")
+
+    events = worker.wait_for(task_id, TaskState.REJECTED)
+
+    (rejected,) = [e for e in events if e.state == TaskState.REJECTED]
+    assert rejected.exception == "bad input"
+    assert _final_state(events, task_id) == TaskState.REJECTED
+
+
+def test_requeued_reject_without_acks_late_publishes_rejected(
+    worker: WorkerRun,
+) -> None:
+    """The worker acked the message before the run: the requeue does nothing."""
+    task_id = worker.send("output_test.rejected_requeue_early_ack")
+
+    events = worker.wait_for(task_id, TaskState.REJECTED)
+
+    assert [e.state for e in events if e.state == TaskState.STARTED] == [
+        TaskState.STARTED
+    ]
+    (rejected,) = [e for e in events if e.state == TaskState.REJECTED]
+    assert rejected.exception == "busy"
+    assert _final_state(events, task_id) == TaskState.REJECTED
+
+
+def test_requeued_reject_publishes_nothing_and_the_next_delivery_runs(
+    worker: WorkerRun,
+) -> None:
+    task_id = worker.send("output_test.rejected_once")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    assert [e.state for e in events if e.state == TaskState.STARTED] == [
+        TaskState.STARTED,
+        TaskState.STARTED,
+    ]
+    assert TaskState.REJECTED not in {e.state for e in events}
+    assert _final_state(events, task_id) == TaskState.SUCCESS
+
+
+def test_replace_publishes_no_ignored_for_the_replaced_task(worker: WorkerRun) -> None:
+    """Celery's replace() raises Ignore; the replacement reuses the task ID."""
+    task_id = worker.send("output_test.replaced")
+
+    events = worker.wait_for(task_id, TaskState.SUCCESS)
+
+    assert TaskState.IGNORED not in {e.state for e in events}
+    assert _final_state(events, task_id) == TaskState.SUCCESS

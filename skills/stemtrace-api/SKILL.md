@@ -107,7 +107,7 @@ Registry `status` is `active` (ran and registered), `never_run` or `not_register
 
 ## Filters and pitfalls
 
-- **States are uppercase**: `PENDING RECEIVED STARTED SUCCESS FAILURE REVOKED REJECTED RETRY`.
+- **States are uppercase**: `PENDING RECEIVED STARTED SUCCESS FAILURE REVOKED REJECTED RETRY IGNORED`.
   An unknown or lowercase `state` (`state=failure`) is **ignored, not rejected**: you silently
   get every task. Check that `.tasks[].state` is what you asked for.
 - `state` is the task's **current** state: a task that failed and then succeeded on retry is
