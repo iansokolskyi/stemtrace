@@ -368,47 +368,16 @@ class TestTiming:
                 ],
                 (FAIL, 17000, 17000),
             ),
-            # The same attempt run twice on one worker (a visibility-timeout
-            # redelivery): the first run's end is the same worker and attempt
-            # as the final event, so the latest run is the final event's.
-            (
-                [
-                    (S, 0, 0, "a"),
-                    (S, 3600, 0, "a"),
-                    (OK, 4000, 0, "a"),
-                    (OK, 7000, 0, "a"),
-                ],
-                (OK, 3400000, 3400000),
-            ),
-            # revoke(terminate=True) racing a run that already finished: celery
-            # 5.6.3 worker/request.py Request.terminate announces REVOKED once
-            # the run started, whatever the pool process sent.
-            (
-                [(S, 0, 0, "a"), (OK, 5, 0, "a"), (REVOKED, 5.1, 0, "a")],
-                (REVOKED, 5100, 5100),
-            ),
-            (
-                [(S, 0, 0, "a"), (REVOKED, 5, 0, "a"), (OK, 5.1, 0, "a")],
-                (OK, 5100, 5100),
-            ),
         ],
-        ids=[
-            "0.4.1-failure-last",
-            "success-last-other-worker",
-            "no-hostnames",
-            "redelivered-on-same-worker",
-            "revoked-after-success",
-            "success-after-revoked",
-        ],
+        ids=["0.4.1-failure-last", "success-last-other-worker", "no-hostnames"],
     )
-    def test_finished_runs_never_end_again(
+    def test_terminal_before_the_final_event_closes_its_run(
         self,
         events: list[tuple[TaskState, float, int, str | None]],
         expected: tuple[object, ...],
     ) -> None:
-        # A terminal event that isn't the final one closes its own run, so a
-        # later end can't pair with that finished run, unless both are the
-        # same worker and attempt.
+        # A SUCCESS/FAILURE that isn't the final event closes its own run, so
+        # a later end can't pair with that finished run.
         node = _node(
             *(
                 _event(state, at, retries=retries, hostname=host)
@@ -418,16 +387,72 @@ class TestTiming:
 
         assert (node.state, node.runtime_ms, node.total_runtime_ms) == expected
 
+    @pytest.mark.parametrize(
+        "events",
+        [
+            # A visibility-timeout redelivery overlapping the first run.
+            [(S, 0, 0, "a"), (S, 3600, 0, "a"), (OK, 4000, 0, "a"), (OK, 7000, 0, "a")],
+            # A redelivery that waited for the worker's only slot.
+            [(S, 0, 0, "a"), (OK, 4000, 0, "a"), (S, 5000, 0, "a"), (OK, 7000, 0, "a")],
+            # The same, with the second run's STARTED missed.
+            [(S, 0, 0, "a"), (OK, 4000, 0, "a"), (OK, 7000, 0, "a")],
+            # A pool process lost mid-run, redelivered to the same worker.
+            [(S, 0, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")],
+            # A cold shutdown's RETRY, redelivered to the same worker.
+            [(S, 0, 0, "a"), (RT, 1, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")],
+            # An earlier attempt run twice, then retried on another worker.
+            [
+                (S, 0, 0, "a"),
+                (S, 5, 0, "a"),
+                (RT, 7, 0, "a"),
+                (S, 8, 1, "b"),
+                (OK, 9, 1, "b"),
+            ],
+            # Two RETRYs of one attempt on one worker, the second STARTED missed.
+            [
+                (S, 0, 0, "a"),
+                (RT, 4000, 0, "a"),
+                (RT, 7000, 0, "a"),
+                (S, 8000, 1, "b"),
+                (OK, 9000, 1, "b"),
+            ],
+            # revoke(terminate=True) racing a run that already finished: celery
+            # 5.6.3 worker/request.py Request.terminate announces REVOKED once
+            # the run started, whatever the pool process sent.
+            [(S, 0, 0, "a"), (OK, 5, 0, "a"), (REVOKED, 5.1, 0, "a")],
+            [(S, 0, 0, "a"), (REVOKED, 5, 0, "a"), (OK, 5.1, 0, "a")],
+        ],
+        ids=[
+            "overlapping",
+            "one-after-the-other",
+            "second-started-missed",
+            "lost-run",
+            "cold-shutdown-retry",
+            "earlier-attempt",
+            "retried-twice",
+            "revoked-after-success",
+            "success-after-revoked",
+        ],
+    )
+    def test_attempt_run_twice_on_one_worker_has_no_runtimes(
+        self, events: list[tuple[TaskState, float, int, str]]
+    ) -> None:
+        # The events can't tell which start goes with which end: unknown, not
+        # a guess.
+        node = _node(
+            *(
+                _event(state, at, retries=retries, hostname=host)
+                for state, at, retries, host in events
+            )
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+
     def test_end_without_worker_closes_the_latest_run(self) -> None:
         # A FAILURE without a worker (from an older worker's main process)
-        # closes the latest unfinished run: A's second run, not B's.
+        # closes the latest unfinished run: A's, not B's.
         a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
-        node = _node(
-            _event(S, 1, **a),
-            _event(S, 2, **b),
-            _event(S, 3, **a),
-            _event(FAIL, 5),
-        )
+        node = _node(_event(S, 1, **b), _event(S, 3, **a), _event(FAIL, 5))
 
         assert (node.runtime_ms, node.total_runtime_ms) == (2000, 2000)
 
