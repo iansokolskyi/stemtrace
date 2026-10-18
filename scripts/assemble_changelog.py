@@ -11,10 +11,18 @@ and deletes the fragments; ``--check`` only validates them; ``--dry-run`` prints
 from __future__ import annotations
 
 import argparse
+import itertools
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from markdown_it import MarkdownIt
+
+if TYPE_CHECKING:
+    from markdown_it.token import Token
+    from markdown_it.utils import EnvType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Keep a Changelog order; also the order of the headings in the assembled section.
@@ -25,11 +33,10 @@ DESCRIPTION = "Merge changelog fragments into CHANGELOG.md under [Unreleased]."
 _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
-# CommonMark: an ATX heading may be indented up to 3 spaces past its container's content
-# column, which is 2 inside a '- ' item (so 5 here), or follow bullet markers.
-_HEADING_LINE = re.compile(r"^(?: {0,5}| *(?:[-*+] +)+)#{1,6}(?:\s|$)", re.MULTILINE)
-# A column-0 line that isn't a bullet; bullet continuations are indented.
-_NON_BULLET_LINE = re.compile(r"^(?!- |[ \t]|$).+$", re.MULTILINE)
+_MARKDOWN = MarkdownIt("commonmark")
+# GFM renders `[^1]: note text` as a footnote, but CommonMark only treats it as a link
+# definition when the note is a single word, so it is also matched in paragraph text.
+_FOOTNOTE_DEFINITION = re.compile(r"^\[\^[^\]\s]+\]:", re.MULTILINE)
 _LINK_DEFINITIONS = re.compile(
     r"(?:^\[[^\]\n]+\]:[ \t]+\S+[ \t]*(?:\n|\Z))+\Z", re.MULTILINE
 )
@@ -57,18 +64,122 @@ def _invalid_name(name: str) -> str | None:
     return f"name must be <slug>.<type>.md, type one of: {', '.join(TYPES)}"
 
 
+@dataclass(frozen=True)
+class _Parsed:
+    """CommonMark parse of a text: tokens, its lines and the first definition's line."""
+
+    tokens: list[Token]
+    lines: list[str]
+    definition: int | None  # Definitions leave no tokens, only env["references"].
+
+
+def _parse(text: str) -> _Parsed:
+    """Parse ``text`` as CommonMark."""
+    env: EnvType = {}
+    tokens = _MARKDOWN.parse(text, env)
+    spans = [ref["map"][0] for ref in env.get("references", {}).values()]
+    return _Parsed(tokens, text.split("\n"), min(spans) if spans else None)
+
+
+def _line_with(doc: _Parsed, span: list[int], needle: str) -> str:
+    """Return the line within ``span`` that holds ``needle``, else the span's first."""
+    inside = doc.lines[span[0] : span[1]]
+    return next((ln for ln in inside if needle in ln), doc.lines[span[0]])
+
+
+def _heading_line(doc: _Parsed) -> str | None:
+    """Return the last line of the first heading at any depth (setext: the underline)."""
+    for token in doc.tokens:
+        if token.type == "heading_open" and token.map:
+            return doc.lines[token.map[1] - 1]
+    return None
+
+
+def _definition_line(doc: _Parsed) -> str | None:
+    """Return the first link reference definition's line."""
+    return None if doc.definition is None else doc.lines[doc.definition]
+
+
+def _footnote_line(doc: _Parsed) -> str | None:
+    """Return the line of the first GFM footnote definition in paragraph text."""
+    for token in doc.tokens:
+        found = _FOOTNOTE_DEFINITION.search(token.content)
+        if token.type == "inline" and token.map and found:
+            return _line_with(doc, token.map, found.group(0))
+    return None
+
+
+def _html_line(doc: _Parsed) -> str | None:
+    """Return the line of the first raw HTML block or inline tag."""
+    for token in doc.tokens:
+        if token.type == "html_block" and token.map:
+            return doc.lines[token.map[0]]
+        for child in token.children or []:
+            if child.type == "html_inline" and token.map:
+                return _line_with(doc, token.map, child.content)
+    return None
+
+
+def _empty_bullet_line(doc: _Parsed) -> str | None:
+    """Return the line of the first list item with no content."""
+    for token, following in itertools.pairwise(doc.tokens):
+        if token.type == "list_item_open" and following.type == "list_item_close":
+            return doc.lines[token.map[0]] if token.map else ""
+    return None
+
+
+def _block_line(doc: _Parsed) -> str | None:
+    """Return the line of the first top-level block that isn't a ``-`` list."""
+    for token in doc.tokens:
+        is_dash_list = token.type == "bullet_list_open" and token.markup == "-"
+        if token.level == 0 and token.nesting != -1 and not is_dash_list:
+            return doc.lines[token.map[0]] if token.map else ""
+    return None
+
+
+# In the order they are reported; the kind picks the message in _OFFENDER_MESSAGES.
+_CHECKS = (
+    ("heading", _heading_line),
+    ("definition", _definition_line),
+    ("definition", _footnote_line),
+    ("html", _html_line),
+    ("empty", _empty_bullet_line),
+    ("block", _block_line),
+)
+
+
+def _first_offender(text: str) -> tuple[str, str] | None:
+    """Return the first thing in ``text`` that isn't plain ``-`` bullets, with its line.
+
+    A CommonMark parser decides what a heading, block or definition is, so fences,
+    quotes and nesting can't be misread.
+    """
+    doc = _parse(text)
+    for kind, check in _CHECKS:
+        line = check(doc)
+        if line is not None:
+            return kind, line
+    return None
+
+
+_OFFENDER_MESSAGES = {
+    "heading": "must not contain headings: {}",
+    "definition": "must not contain link reference definitions, found {}",
+    "html": "must not contain raw HTML, found {}",
+    "empty": "must not contain an empty bullet: {}",
+    "block": "must be only '- ' bullets, not {}",
+}
+
+
 def _invalid_body(body: str) -> str | None:
     """Return why ``body`` can't be inserted as bullets, or None when it can."""
     if not body:
         return "file is empty"
-    if not body.startswith("- "):
-        return "entry must start with a '- ' bullet"
-    if _HEADING_LINE.search(body):
-        return "entry must not contain headings (the file name sets the heading)"
-    prose = _NON_BULLET_LINE.search(body)
-    if prose:
-        return f"every line must be a '- ' bullet or indented, not {prose.group(0)!r}"
-    return None
+    offender = _first_offender(body)
+    if offender is None:
+        return None
+    kind, line = offender
+    return f"entry {_OFFENDER_MESSAGES[kind].format(repr(line))}"
 
 
 def _read_fragment(path: Path) -> Fragment | str:
@@ -129,11 +240,12 @@ def _parse_sections(body: str) -> tuple[str, dict[str, str]]:
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
         content = body[heading.end() : end].strip()
-        prose = _NON_BULLET_LINE.search(content)
-        if prose:
+        offender = _first_offender(content)
+        if offender:
+            kind, line = offender
+            problem = _OFFENDER_MESSAGES[kind].format(repr(line))
             raise ChangelogError(
-                f"text under '### {heading.group(1)}' in [Unreleased] must be '- ' "
-                f"bullets, not {prose.group(0)!r}; move it above the first '### ' heading"
+                f"text under '### {heading.group(1)}' in [Unreleased] {problem}"
             )
         previous = sections.get(heading.group(1))
         sections[heading.group(1)] = f"{previous}\n{content}" if previous else content

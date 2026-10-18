@@ -64,6 +64,11 @@ lowest-pins:
 lowest-pins-check:
 	$(LOWEST_COMPILE) --resolution lowest-direct pyproject.toml | diff .github/lowest-requirements.txt -
 	$(LOWEST_COMPILE) -c .github/lowest-requirements.txt .github/lowest-test-tools.in | diff .github/lowest-test-tools.txt -
+	@floor=$$(sed -n 's/^ *"bump-my-version>=\([0-9][0-9.]*\)[",].*/\1/p' pyproject.toml); \
+	[ "$$(printf '%s\n' "$$floor" | grep -c .)" = 1 ] \
+		|| { echo "pyproject.toml needs exactly one \"bump-my-version>=X.Y.Z\" line (an upper bound after a comma is fine); found: $$floor"; exit 1; }; \
+	[ "$$(grep -cxF "bump-my-version==$$floor" .github/lowest-test-tools.in)" = 1 ] \
+		|| { echo "pin bump-my-version==$$floor (the pyproject.toml floor) on one line of .github/lowest-test-tools.in, then run make lowest-pins"; exit 1; }
 
 # Run integration tests
 test-integration:

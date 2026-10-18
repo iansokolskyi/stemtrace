@@ -56,6 +56,7 @@ dev = [
     "types-redis>=4.0.0",
     "hatchling>=1.20.0",  # For build hook IDE support
     "bump-my-version>=0.28.0",
+    "markdown-it-py>=4.0.0",  # Parses changelog fragments (scripts/assemble_changelog.py)
     "websockets>=12.0",  # For WebSocket E2E tests
     "build>=1.0.0",  # For local package builds
     "twine>=5.0.0",  # For package verification

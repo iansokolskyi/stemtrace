@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import collections
 import importlib.util
+import random
 import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "assemble_changelog.py"
@@ -330,6 +334,18 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
     assert exc.value.code == 2
 
 
+FENCED_BODIES = [
+    "- Run:\n  ```sh\n  # install it\n  pip install stemtrace\n  ```\n",
+    "- Run:\n  ~~~sh\n  # install it\n  ~~~\n",
+    "- A.\n  - Nested:\n    ```\n    ## Heading-like\n    ---\n    ```\n",
+    "- A.\n  ```\n  # shorter fence inside\n  ``\n  # still inside\n  ```\n",
+    "- A.\n  ````\n  ```\n  # inside a four-backtick fence\n  ````\n",
+    "- A.\n  ```\n  # unclosed fence runs to the end\n",
+    "- ```\n  # fence opened on the bullet line\n  ```\n",
+    "- A.\n  > ```\n  > # quoted fence\n  > ```\n",
+]
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -343,6 +359,23 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
         "- A.\n     ### Five\n",
         "- ## [Unreleased]\n",
         "- A.\n  - ## Nested\n",
+        "- A.\n\t## Tab\n",
+        "- A.\n  - B.\n      ## Nested six\n",
+        "- A.\n  - B.\n       ## Nested seven\n",
+        "- A.\n  1. ## Ordered\n",
+        "- 1. ## Ordered direct\n",
+        "- A.\n  > ## Quote\n",
+        "- A.\n  >## Quote without space\n",
+        "- A.\n  ---\n",
+        "- A.\n  ===\n",
+        "- A.\n  - B.\n    ----\n",
+        "- A.\n  ```\n  # In a fence\n  ```\n  ## After the fence\n",
+        # A fence ends with its container: these headings are outside it.
+        "- Adds:\n  ```sh\n  pip install x\n- Fixes.\n  ## Installation\n",
+        "- A.\n  ~~~\n- # H\n",
+        "- A.\n  > ```\n  > code\n  ## After the quote\n",
+        "- A.\n  - B.\n    ```\n    code\n  ## After the nested item\n",
+        "- A.\n  ~~~\n  ```\n  ~~~\n  ## Heading\n",
     ],
 )
 def test_check_fragment_with_heading_line_fails(
@@ -360,10 +393,24 @@ def test_check_fragment_with_heading_line_fails(
     [
         "- Fixes `#152` and #153.\n",
         "- A.\n  #152 is the pull request.\n",
-        "- A.\n      # a six-space indented code line\n",
+        "- A.\n  A line of text\n  with an = sign and a - dash.\n",
+        "- A.\nlazy continuation\n",
+        "- A.\n      # indented code, not a heading\n",
+        "- A.\n\n  Second paragraph.\n\n  - Nested.\n",
+        "- Fixes [#12](https://example.com/12) and <https://example.com> too.\n",
+        "- A.\n  [x] is not a definition.\n",
+        "- A reference to a note[^1] without a definition.\n",
+        "- Writes `[^1]: note text` in code.\n",
+        "- A.\n  ```\n  [^1]: note text in a fence\n  ```\n",
+        "- A.\n\n  [^ 1]: a space in the label is not a footnote.\n",
+        # A definition can't interrupt a paragraph, so this is plain text.
+        "- A.\n  [x]: https://paragraph.example\n",
+        "- Writes `<b>` and a < b and 1 > 0 in code and text.\n",
+        "- A.\n  * Nested items may use other markers.\n  + Like this.\n",
+        *FENCED_BODIES,
     ],
 )
-def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
+def test_check_fragment_with_markup_that_is_not_rejected_is_valid(
     tmp_path: Path, body: str
 ) -> None:
     root = _project(tmp_path, "", {"1.added.md": body})
@@ -372,19 +419,103 @@ def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
 
 
 @pytest.mark.parametrize(
-    "body",
-    ["- A.\nlazy continuation\n", "- A.\n\nSeparate paragraph.\n", "- A.\n* Star.\n"],
+    ("body", "offender"),
+    [
+        ("Not a bullet.\n", "Not a bullet."),
+        ("- A.\n\nSeparate paragraph.\n", "Separate paragraph."),
+        ("- A.\n* Star.\n", "* Star."),
+        ("+ Plus.\n", "+ Plus."),
+        ("1. Ordered.\n", "1. Ordered."),
+        ("> Quote.\n", "> Quote."),
+        ("- A.\n\n---\n", "---"),
+        ("- A.\n\n```\ncode\n```\n", "```"),
+    ],
 )
-def test_check_fragment_with_line_that_is_not_bullet_or_indented_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str
+def test_check_fragment_with_top_level_block_that_is_not_a_dash_list_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
 ) -> None:
     root = _project(tmp_path, "", {"1.added.md": body})
 
     assert assemble.main(["--root", str(root), "--check"]) == 1
 
     err = capsys.readouterr().err
-    assert "1.added.md: every line must be a '- ' bullet or indented" in err
-    assert body.strip().splitlines()[-1] in err
+    assert f"1.added.md: entry must be only '- ' bullets, not {offender!r}" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [
+        ("[x]: https://example.com\n", "[x]: https://example.com"),
+        # The first definition wins, so this one would hijack the [0.4.1] link.
+        ("- A.\n\n[0.4.1]: https://evil.example\n", "[0.4.1]: https://evil.example"),
+        (
+            "- A.\n\n[unreleased]: https://example.com/compare/v0.4.1...HEAD\n",
+            "[unreleased]: https://example.com/compare/v0.4.1...HEAD",
+        ),
+        ("- A.\n\n[^x]: footnote-style\n", "[^x]: footnote-style"),
+        # A multi-word note isn't a CommonMark definition, but GitHub renders a
+        # footnote, and two fragments that reuse [^1] would overwrite each other.
+        ("- A[^1]\n\n  [^1]: This is the note.\n", "  [^1]: This is the note."),
+        ("- A[^1]\n[^1]: note text\n", "[^1]: note text"),
+        ("- A[^1]\n  [^1]: note text\n", "  [^1]: note text"),
+        ("- A.\n\n[^note-1]: Requires Redis 7.\n", "[^note-1]: Requires Redis 7."),
+        ("- A.\n\n  [x]: https://nested.example\n", "  [x]: https://nested.example"),
+        ("- [x]: https://example.com\n", "- [x]: https://example.com"),
+        ("- A.\n\n[x]: <https://e> 'Title'\n", "[x]: <https://e> 'Title'"),
+    ],
+)
+def test_check_fragment_with_link_reference_definition_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert (
+        "1.added.md: entry must not contain link reference definitions, "
+        f"found {offender!r}" in err
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [
+        ("- C.\n\n  <h2>Hi</h2>\n", "  <h2>Hi</h2>"),
+        (
+            "- C.\n\n  </li></ul><h2>Top</h2><ul><li>\n",
+            "  </li></ul><h2>Top</h2><ul><li>",
+        ),
+        ("- Uses <b>bold</b> text.\n", "- Uses <b>bold</b> text."),
+        ("- A.\n\n<div>Raw HTML.</div>\n", "<div>Raw HTML.</div>"),
+        ("- <!-- hidden -->\n", "- <!-- hidden -->"),
+        ("- A.\n  - B <br> C.\n", "  - B <br> C."),
+    ],
+)
+def test_check_fragment_with_raw_html_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert f"1.added.md: entry must not contain raw HTML, found {offender!r}" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [("-", "-"), ("- A.\n-\n- B.\n", "-"), ("- -\n", "- -"), ("- A.\n\n-\n", "-")],
+)
+def test_check_fragment_with_empty_bullet_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert f"1.added.md: entry must not contain an empty bullet: {offender!r}" in err
 
 
 def test_check_fragment_with_utf8_bom_is_valid(tmp_path: Path) -> None:
@@ -419,6 +550,41 @@ def test_check_prose_after_unreleased_subheading_fails(
     assert "'- ' bullets" in err
     assert "**Upgrading:** any order." in err
     assert _changelog(root) == before
+
+
+@pytest.mark.parametrize(
+    ("section", "problem"),
+    [
+        (
+            "- Existing.\n\n[0.1.0]: https://evil.example\n",
+            "must not contain link reference definitions, "
+            "found '[0.1.0]: https://evil.example'",
+        ),
+        (
+            "- Existing[^1]\n\n  [^1]: A note.\n",
+            "must not contain link reference definitions, found '  [^1]: A note.'",
+        ),
+        (
+            "- Existing.\n\n<h2>Top</h2>\n",
+            "must not contain raw HTML, found '<h2>Top</h2>'",
+        ),
+        (
+            "- Existing <b>bold</b>.\n",
+            "must not contain raw HTML, found '- Existing <b>bold</b>.'",
+        ),
+        ("-\n", "must not contain an empty bullet: '-'"),
+        ("- Existing.\n  ## Nested\n", "must not contain headings: '  ## Nested'"),
+    ],
+)
+def test_check_unreleased_section_with_unsupported_markup_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], section: str, problem: str
+) -> None:
+    root = _project(tmp_path, f"\n### Changed\n{section}", {"1.added.md": "- A.\n"})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert f"text under '### Changed' in [Unreleased] {problem}" in err
 
 
 def _bump_config_for_changelog(source: Path) -> tuple[str, str]:
@@ -475,3 +641,113 @@ def test_assemble_then_bump_with_quoted_heading_and_link_edits_changelog_once(
     assert text.endswith(
         f"[unreleased]: {link}/v{new}...HEAD\n[{new}]: {link}/v{current}...v{new}\n"
     )
+
+
+class _RenderedTags(HTMLParser):
+    """Record every tag of rendered HTML, and which ones sit at the top level."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.depth = 0
+        self.tags: list[str] = []
+        self.top_level: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: object) -> None:
+        self.tags.append(tag)
+        if self.depth == 0:
+            self.top_level.append(tag)
+        self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        self.depth -= 1
+
+
+def _oracle_reasons(body: str) -> set[str]:
+    """Say why body should be rejected, without the validator's token walk.
+
+    Headings and top-level blocks come from rendered HTML, raw HTML from comparing
+    renders with HTML on and off, and empty bullets from the output. The list marker
+    and link definitions are not in the HTML, so those two read the parser output.
+    """
+    md = MarkdownIt("commonmark")
+    html = md.render(body)
+    tags = _RenderedTags()
+    tags.feed(html)
+    env: dict[str, object] = {}
+    tokens = md.parse(body, env)
+    checks = {
+        "heading": any(re.fullmatch(r"h[1-6]", tag) for tag in tags.tags),
+        "block": any(tag != "ul" for tag in tags.top_level),
+        "html": html != MarkdownIt("commonmark", {"html": False}).render(body),
+        "empty": "<li></li>" in html,
+        "marker": any(
+            t.type == "bullet_list_open" and t.level == 0 and t.markup != "-"
+            for t in tokens
+        ),
+        "definition": bool(env.get("references"))
+        or any(
+            re.search(r"^\[\^[^\]\s]+\]:", t.content, re.MULTILINE)
+            for t in tokens
+            if t.type == "inline"
+        ),
+    }
+    return {reason for reason, found in checks.items() if found}
+
+
+def _fuzz_bodies(count: int, seed: int) -> list[str]:
+    """Return seeded random bodies that mix indents, containers, fences and dedents."""
+    rng = random.Random(seed)
+    indents = ["", "", " ", "  ", "   ", "    ", "\t", "      "]
+    prefixes = ["", "", "", "- ", "1. ", "> ", ">", "- - ", "> - ", "* ", "+ "]
+    texts = ["# H", "## H", "###### H", "####### H", "#x", "---", "===", "--", "text"]
+    texts += ["```", "```sh", "~~~", "````", "``", "`# x`", "- B", "- # H", "", ""]
+    texts += ["more text", "word # not", "    code", "- B\n  - C", "-", "- "]
+    texts += ["<h2>Hi</h2>", "<b>x</b> y", "a < b", "<div>", "[x]: https://e"]
+    texts += ["[^x]: note", "[x]", "* B", "+ B", "[x]: https://e 'T'"]
+    texts += ["[^1]: Requires Redis 7.", "A[^1]", "[^ 1]: no"]
+    openers = [
+        "- A.",
+        "- ```",
+        "- > Q",
+        "- 1. N",
+        "- - N",
+        "- A.\n  ```",
+        "- A.\n  ~~~",
+    ]
+    bodies = []
+    for _ in range(count):
+        lines = [rng.choice(openers)]
+        for _ in range(rng.randint(1, 6)):
+            lines.append(rng.choice(indents) + rng.choice(prefixes) + rng.choice(texts))
+        bodies.append("\n".join(lines).strip())
+    return bodies
+
+
+def test_invalid_body_agrees_with_independent_oracle_on_random_bodies() -> None:
+    bodies = _fuzz_bodies(count=6000, seed=20261018)
+    reasons = {body: _oracle_reasons(body) for body in bodies}
+
+    disagreements = [
+        body
+        for body in bodies
+        if (assemble._invalid_body(body) is not None) != bool(reasons[body])
+    ]
+
+    assert disagreements == []
+    counts = collections.Counter(r for found in reasons.values() for r in found)
+    assert set(counts) == {"heading", "block", "html", "empty", "marker", "definition"}
+    assert min(counts.values()) >= 100
+    assert sum(1 for found in reasons.values() if not found) >= 500
+    assert sum(1 for b, found in reasons.items() if found and "```" in b) >= 100
+
+
+def test_released_changelog_sections_and_current_fragments_pass_the_rules() -> None:
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.split(r"^## \[", text, flags=re.MULTILINE)[1:]
+
+    for section in sections:
+        body = assemble._LINK_DEFINITIONS.sub("", section.partition("\n")[2])
+        assemble._parse_sections(body)
+
+    assert len(sections) >= 15
+    assert assemble.main(["--root", str(ROOT), "--check"]) == 0
