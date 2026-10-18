@@ -104,11 +104,12 @@ def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
 
 
 def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
-    """The graph's nodes, each GROUP/CHORD together with all that belongs to it.
+    """The graph's nodes, each GROUP/CHORD together with what shows its state.
 
-    That is every node drawn under it (a group of chains keeps its chain links,
-    a chord its callback's chain) and every task of its group, even one drawn
-    elsewhere (a replaced member).
+    That is every node drawn directly inside it (a GROUP/CHORD too), its member
+    tasks, and the tasks between a member and it (a chain's earlier steps, the
+    callback's chain). Tasks a member starts, and a workflow its callback
+    starts, are units of their own.
     """
     root = {node_id: node_id for node_id in graph.nodes}
 
@@ -128,39 +129,40 @@ def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
 
 
 def _unit_links(graph: TaskGraph) -> list[tuple[str, str]]:
-    """Pairs of nodes in one eviction unit: drawn under a container, or its member."""
-    links = [
-        (node_id, top)
-        for node_id, top in _topmost_containers(graph).items()
-        if top is not None
-    ]
-    containers: dict[str, list[str]] = {}
+    """Pairs of nodes in one eviction unit (see ``_eviction_units``)."""
+    links: list[tuple[str, str]] = []
+    containers: dict[str, set[str]] = {}
     for node in graph.nodes.values():
         if node.node_type != NodeType.TASK and node.group_id is not None:
-            containers.setdefault(node.group_id, []).append(node.task_id)
+            containers.setdefault(node.group_id, set()).add(node.task_id)
+        parent = graph.nodes.get(node.parent_id) if node.parent_id else None
+        if parent is not None and parent.node_type != NodeType.TASK:
+            links.append((node.task_id, parent.task_id))  # drawn directly inside
     for node in graph.nodes.values():
-        if node.node_type == NodeType.TASK and node.group_id in containers:
-            links.extend((node.task_id, c) for c in containers[node.group_id])
+        owners = containers.get(node.group_id or "")
+        if node.node_type != NodeType.TASK or owners is None:
+            continue
+        links.extend((node.task_id, owner) for owner in owners)
+        links.extend((step, node.task_id) for step in _steps_to(graph, node, owners))
     return links
 
 
-def _topmost_containers(graph: TaskGraph) -> dict[str, str | None]:
-    """Each node's topmost GROUP/CHORD ancestor (or itself), following parents."""
-    tops: dict[str, str | None] = {}
-    for node in graph.nodes.values():
-        path: list[TaskNode] = []
-        current: TaskNode | None = node
-        while current is not None and current.task_id not in tops:
-            tops[current.task_id] = None  # placeholder: a parent loop stops here
-            path.append(current)
-            parent_id = current.parent_id
-            current = graph.nodes.get(parent_id) if parent_id is not None else None
-        above = tops[current.task_id] if current is not None else None
-        for step in reversed(path):
-            if above is None and step.node_type != NodeType.TASK:
-                above = step.task_id
-            tops[step.task_id] = above
-    return tops
+def _steps_to(graph: TaskGraph, member: TaskNode, owners: set[str]) -> list[str]:
+    """The tasks between ``member`` and the first GROUP/CHORD above it.
+
+    None unless that container is one of ``owners`` (a member drawn elsewhere).
+    """
+    steps: list[str] = []
+    current = member
+    while current.parent_id is not None and current.parent_id not in steps:
+        parent = graph.nodes.get(current.parent_id)
+        if parent is None:
+            return []
+        if parent.node_type != NodeType.TASK:
+            return steps if parent.task_id in owners else []
+        steps.append(parent.task_id)
+        current = parent
+    return []
 
 
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
