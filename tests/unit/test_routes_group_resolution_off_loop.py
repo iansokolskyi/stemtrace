@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+import uvloop
 from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
@@ -22,6 +23,7 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 T0 = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("loop", ["asyncio", "uvloop"])
 @pytest.mark.parametrize(
     "path",
     [
@@ -32,9 +34,13 @@ T0 = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
     ],
 )
 def test_resolving_all_names_leaves_the_loop_free(
-    path: str, monkeypatch: pytest.MonkeyPatch
+    path: str, loop: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request made while names resolve completes before resolution ends."""
+    """A request made while names resolve completes before resolution ends.
+
+    Also on uvloop, which uvicorn uses when installed: its ``run_in_executor``
+    (behind ``asyncio.to_thread``) warns on Python 3.14.
+    """
     store = GraphStore()
     for i, name in enumerate(["billing.charge", "search.reindex", "app.tasks.add"]):
         store.add_event(
@@ -73,5 +79,14 @@ def test_resolving_all_names_leaves_the_loop_free(
             resolving, other = await asyncio.gather(client.get(path), other_request())
             return resolving.status_code, other
 
-    assert asyncio.run(scenario()) == (200, 200)
+    if loop == "uvloop":
+        event_loop = uvloop.new_event_loop()
+        try:
+            result = event_loop.run_until_complete(scenario())
+        finally:
+            event_loop.close()
+    else:
+        result = asyncio.run(scenario())
+
+    assert result == (200, 200)
     assert waits == [True]

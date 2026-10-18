@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import functools
 import logging
@@ -17,6 +16,11 @@ from typing import TYPE_CHECKING, Annotated
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.routing import APIRoute
+
+# Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
+# goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
+# asyncio.iscoroutinefunction (uvloop 0.22.1). anyio's worker threads don't.
+from starlette.concurrency import run_in_threadpool
 
 from stemtrace.core.graph import NodeType
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
@@ -146,7 +150,7 @@ def _group_task_names(
     after this snapshot is matched from the next request on. None when
     neither filter is given.
 
-    Runs in a worker thread (``asyncio.to_thread``): with thousands of
+    Runs in a worker thread (``run_in_threadpool``): with thousands of
     distinct names it takes long enough (about 128 ms at 7,000) to hold up
     every other request on the event loop. ``group_of``'s cache is
     thread-safe.
@@ -482,7 +486,7 @@ class _InspectRefresher:
         try:
             if self._refreshed_recently():
                 return
-            inspector = await asyncio.to_thread(
+            inspector = await run_in_threadpool(
                 _get_inspector,
                 broker_url,
                 timeout_seconds=_INSPECT_TIMEOUT_SECONDS,
@@ -490,7 +494,7 @@ class _InspectRefresher:
             if inspector is None:
                 return
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(
+                await run_in_threadpool(
                     _refresh_worker_registry_from_inspect,
                     worker_registry,
                     inspector,
@@ -739,7 +743,7 @@ def _add_task_routes(
         group_of = _group_lookup(groups)
         # Every stored name is resolved: off the event loop (see
         # _group_task_names).
-        task_names = await asyncio.to_thread(
+        task_names = await run_in_threadpool(
             _group_task_names, store, group_of, task_group, tag
         )
         nodes, total = store.get_nodes(
@@ -794,7 +798,7 @@ def _add_task_routes(
             await refresher.maybe_refresh()
 
         # Resolves the group of every known name: off the event loop.
-        tasks = await asyncio.to_thread(
+        tasks = await run_in_threadpool(
             functools.partial(
                 _build_task_registry,
                 store,
@@ -875,7 +879,7 @@ def _add_graph_routes(
         matches (anywhere in the graph, not only its root).
         """
         group_of = _group_lookup(groups)
-        task_names = await asyncio.to_thread(
+        task_names = await run_in_threadpool(
             _group_task_names, store, group_of, task_group, tag
         )
         # Roots plus children (for synthetic node timing) from one snapshot
@@ -941,7 +945,7 @@ def _add_group_routes(
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
         # Resolves the group of every known name: off the event loop.
-        members = await asyncio.to_thread(
+        members = await run_in_threadpool(
             lambda: groups.members(
                 _known_task_names(store, _hostnames_by_registered_task(worker_registry))
             )
