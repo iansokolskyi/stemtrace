@@ -137,8 +137,8 @@ Limitations:
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
   (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery's signal.
   stemtrace takes them from the failing request itself: the attempt's retry count, `hostname`,
-  `queue`, `routing_key` and parent, root and group IDs. Workers from before this release send
-  none of these (and `retries=0`): the task then keeps the values of its
+  `queue`, `routing_key` and parent, root and group IDs. Workers up to 0.4.1 send none of these
+  on such a FAILURE (and `retries=0`): the task then keeps the values of its
   furthest-along earlier event that has them, which, when a lost broker connection made Celery
   run the same attempt again on a worker whose clock is behind the first one's, can be the first
   worker.
@@ -191,14 +191,15 @@ Limitations:
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. When such a first run ends last (its SUCCESS or FAILURE is the
-  task's final event), the task reports that run, on its own worker; for events from workers
-  before this release, both fields are empty in that case.
+  task's final event), the task reports that run, on its own worker. Events from workers up to
+  0.4.0 carry no `hostname`, so those runs can't be told apart: both fields can be empty, or a
+  later attempt's start can be paired with that end.
 - `queue_wait_ms` ends at the earliest first-attempt STARTED, whatever worker stamped it: if
   Celery ran the first attempt again on a worker whose clock is behind, it can come out shorter,
   by up to that offset.
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run.
-- Events from workers before this release have no `hostname`, and their main-process FAILURE
-  has `retries=0` whatever the attempt. For those, a run's start and end can come from two
+- Workers up to 0.4.0 send no `hostname`, and the main-process FAILURE of workers up to 0.4.1
+  has none and `retries=0` whatever the attempt. For those events, a run's start and end can come from two
   workers' clocks: with the second worker's clock behind, runtimes can come out too short (0 at
   worst) or empty, and a hard time limit's FAILURE after missed events can make the runtime too
   long.
