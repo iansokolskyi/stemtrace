@@ -1,7 +1,7 @@
 """One long-lived AMQP connection per process for publishing events to RabbitMQ.
 
-Reusing the connection costs about 0.3 ms per event instead of about 9 ms for a new
-one. :meth:`PublisherConnection.publish` is bounded (at most one ``io_timeout`` wait
+Reusing the connection is far cheaper than connecting per event.
+:meth:`PublisherConnection.publish` is bounded (at most one ``io_timeout`` wait
 for the connection, then one bounded connect pass), serializes threads with one
 lock, never reuses a parent's socket after fork, and replaces a connection the
 broker closed before it loses an event. It raises on failure; the transport turns
