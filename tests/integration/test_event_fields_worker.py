@@ -182,7 +182,10 @@ def _start_worker(run: Run) -> subprocess.Popen[bytes]:
                 APP_MODULE,
                 "worker",
                 "--pool=prefork",
-                "--concurrency=2",
+                # Two slots left the countdown task waiting for one: a hard-limited
+                # task pins a slot for its limit and costs a respawn, and
+                # ef.throw_false_then_hard_limit pins one for 15 s.
+                "--concurrency=4",
                 f"--hostname={run.nodename}",
                 f"--queues={','.join(queues)}",
                 "--loglevel=INFO",
