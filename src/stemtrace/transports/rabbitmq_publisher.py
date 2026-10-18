@@ -1,83 +1,11 @@
 """One long-lived AMQP connection per process for publishing events to RabbitMQ.
 
-Opening a connection per event (TCP connect, AMQP handshake, channel, close)
-costs about 9 ms; publishing on a connection that is already open costs about
-0.3 ms. This module owns that connection for :class:`RabbitMQTransport`, and
-keeps every guarantee the per-event connection gave:
-
-**Bounded.** Connecting tries each host of the URL once (``connect_timeout``,
-no kombu retry sleeps), and every later socket read or write times out after
-``io_timeout``. The longest the connection can legitimately be held is derived
-from the steps of one attempt (:meth:`PublisherConnection._attempt_bound`). A
-publish that has to wait for the connection waits one ``io_timeout`` at most
-and then drops its event: publishers never make tasks wait for each other
-longer than that.
-
-**Never raises into a task.** :meth:`PublisherConnection.publish` raises; the
-transport turns every exception into a breaker failure.
-
-**One thread at a time.** kombu and py-amqp connections are not thread-safe
-(a channel's frames must not interleave), so one lock serializes publishes.
-It is held for one readability check and one socket write (microseconds),
-or for one bounded connect pass. A signal handler can raise between
-``acquire()`` returning and the ``try`` that releases (Python can't close
-that window), and a holder can outlive its bound. The holder's thread (or
-greenlet) and the time it took the lock are recorded: a thread that finds the
-lock held by itself, or a waiter that finds its holder gone or past the
-bound, starts over with a new connection state (and logs a warning), leaving
-the old socket to its owner. Per-thread connections were rejected: under
-gevent and eventlet ``threading.local`` is greenlet-local and Celery runs every task in
-a new greenlet, so every task would open a connection, and a threads pool
-would hold one connection per thread. Publisher confirms were rejected too:
-waiting for Basic.Ack would hold the lock for a network round trip per event.
-
-**Fork-safe.** A child never uses its parent's socket: ``os.register_at_fork``
-(Python's forks, including Celery's prefork pool) and a PID check (forks that
-skip the hooks, e.g. uWSGI's) start the child with no connection and a new
-lock (a parent thread may hold the old one at fork time). The inherited
-socket is never shut down or closed with the AMQP handshake: py-amqp 5.3
-``_AbstractTransport.close()`` calls ``sock.shutdown(SHUT_RDWR)``, which
-would end the parent's connection. Only the child's copy of the file
-descriptor is closed.
-
-**A dead connection is noticed before it loses an event.** Before each
-publish, if the socket is readable (``poll``, plus ``SSLSocket.pending()``),
-its frames are read: the only way py-amqp processes inbound frames. A
-connection closed by the broker (restart, ``rabbitmqctl close_connection``, a
-deleted exchange closing the channel, EOF) raises there, and is replaced
-inside the same attempt: the event is published on the new connection, and
-only a failure to connect counts against the breaker. An event written in the
-same instant the broker closes the connection can still be lost without an
-error, as can events written in the first second after the network silently
-drops (no FIN or RST): py-amqp 5.3 sets ``TCP_USER_TIMEOUT`` to 1s.
-
-**Reading never spins or stalls.** py-amqp's ``Channel._basic_publish`` also
-reads pending frames before every publish, with ``drain_events(timeout=0)``,
-and raises out of the publish if one says the connection is gone (losing the
-event). Its ``Transport._read()`` treats EAGAIN as ``continue`` after the
-first read of a frame (5.0.6 and 5.3.1), so a zero-timeout read of a frame
-that is only partly there spins until the frame completes or the peer
-closes: unbounded against a frozen broker, and it starves a gevent hub. The
-connection's ``drain_events(timeout=0)`` is replaced (see
-:func:`_install_guarded_drain`) by one that reads only while the socket is
-readable, with a positive timeout so a partial frame keeps its bytes for the
-next read, under a deadline across all the reads of the call.
-
-**Memory or disk alarm.** RabbitMQ sends Connection.Blocked after the first
-publish that follows the alarm and then stops reading from the connection
-(py-amqp 5.3 ``Connection._on_blocked`` calls ``on_blocked`` and does
-nothing else; publishing on a blocked connection succeeds until the kernel's
-buffers fill, thousands of events later, and the write then times out).
-The pre-publish read picks the frame up: while blocked, events are dropped
-without being sent, and the same connection is kept, so an alarm costs no
-new connection (and no blocked connection per breaker probe) and resumes at
-the Connection.Unblocked frame.
-
-**Heartbeats are off** for this connection (``heartbeat=0``, also when the
-URL says ``?heartbeat=N``): nothing runs between publishes to send them, and
-the broker closes a connection that misses two intervals.
-
-Library behavior cited here was read in kombu 5.6.1 and py-amqp 5.3.1.
+Reusing the connection costs about 0.3 ms per event instead of about 9 ms for a new
+one. :meth:`PublisherConnection.publish` is bounded (at most one ``io_timeout`` wait
+for the connection, then one bounded connect pass), serializes threads with one
+lock, never reuses a parent's socket after fork, and replaces a connection the
+broker closed before it loses an event. It raises on failure; the transport turns
+that into a breaker failure. User-facing behavior is in ``docs/brokers.md``.
 """
 
 from __future__ import annotations
@@ -173,7 +101,10 @@ class _Process:
         self.pid = os.getpid()
         # Created here, not at import: gevent or eventlet may patch
         # ``threading`` after stemtrace is imported, and a real lock would
-        # block the whole hub when contended.
+        # block the whole hub when contended. One lock per process because
+        # kombu/py-amqp connections aren't thread-safe; not per thread, since
+        # under gevent/eventlet threading.local is per greenlet and Celery
+        # starts a greenlet per task (one connection per task).
         self.lock = threading.Lock()
         self.conn: Any = None  # kombu Connection
         self.amqp: Any = None  # its py-amqp connection
@@ -208,11 +139,9 @@ _connecting: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar(
 def track_connecting_transport(transport: Any) -> None:
     """Remember a py-amqp transport that is connecting, if a connect is in progress.
 
-    If the connect is abandoned midway (a greenlet killed by a time limit)
-    nothing is left that can close its socket: the half-open connection stays
-    referenced by the dead stack. The transport, not the socket it opened
-    first, is what to close: over TLS py-amqp replaces ``transport.sock`` with
-    an SSLSocket that took over the raw socket's descriptor.
+    A connect abandoned midway (a greenlet killed by a time limit) leaves nothing
+    that could close its socket. Track the transport, not its first socket: over
+    TLS py-amqp replaces ``transport.sock`` with an SSLSocket.
     """
     transports = _connecting.get()
     if transports is not None:
@@ -228,6 +157,8 @@ def _abandon(proc: _Process) -> None:
     sock = proc.sock
     proc.conn = proc.amqp = proc.sock = proc.producer = None
     if sock is not None:
+        # Not shutdown(): it would end the parent's connection too (py-amqp 5.3
+        # _AbstractTransport.close() calls sock.shutdown(SHUT_RDWR)).
         # detach() hands over the descriptor without closing it (-1 if the
         # socket is already closed or another thread detached it), so the
         # close below is a plain close(2).
@@ -281,21 +212,13 @@ def _readable(sock: Any) -> bool:
 def _install_guarded_drain(amqp: Any) -> None:
     """Make ``amqp.drain_events(timeout=0)`` safe against a partly received frame.
 
-    py-amqp's own ``Channel._basic_publish`` calls ``drain_events(timeout=0)``
-    before every publish (when the broker has the connection.blocked
-    capability, i.e. RabbitMQ), and our pre-publish check does too. Its
-    ``Transport._read()`` treats EAGAIN as ``continue`` after the first read
-    of a frame (5.0.6 and 5.3.1), so a zero-timeout read of a frame that is
-    only partly there (a frozen broker, ``docker pause``) spins until the
-    frame completes or the peer closes: unbounded under the connection lock,
-    and it starves a gevent hub. The instance's ``drain_events`` is replaced
-    for the zero-timeout case: read only while the socket is readable, with a
-    positive timeout so a partial frame raises ``socket.timeout`` and keeps
-    its bytes for the next read (``read_frame`` and ``_read`` put them back,
-    in both versions), and with a deadline across all the ``recv()`` calls of
-    the drain, so a frame that trickles in a byte at a time can't extend it
-    (py-amqp 5.0.6 and 5.3.1 read through ``transport._quick_recv``).
+    The replacement reads only while the socket is readable, with a positive
+    timeout so a partial frame keeps its bytes for the next read, under one
+    deadline across all its ``recv()`` calls: it never spins or waits long.
     """
+    # py-amqp 5.0.6/5.3.1 Transport._read() retries EAGAIN mid-frame, so a
+    # zero-timeout drain of a partial frame (frozen broker) spins under the
+    # lock and starves a gevent hub; Channel._basic_publish drains every time.
     base = type(amqp).drain_events
 
     def drain_events(timeout: float | None = None) -> None:
@@ -315,6 +238,8 @@ def _drain_pending(amqp: Any) -> NoReturn:
             reports it; anything a frame's handler raises comes first.
     """
     transport = amqp.transport
+    # py-amqp 5.0.6/5.3.1 read every frame through transport._quick_recv, and
+    # read_frame()/_read() keep a partial frame's bytes when it times out.
     quick_recv = getattr(transport, "_quick_recv", None)
     if quick_recv is not None:
         deadline = time.monotonic() + DRAIN_DEADLINE
@@ -487,13 +412,10 @@ class PublisherConnection:
     def _acquire(self, proc: _Process) -> _Process:
         """Take the connection lock, starting over if its holder can't release it.
 
-        A task waits at most ``_lock_wait`` in total, whatever happens meanwhile
-        (one deadline across all the rounds, so a lock replaced under it
-        doesn't start a new wait). A lock this very thread still holds (a
-        signal handler raised inside it) is replaced without waiting, since
-        nobody else will release it. A lock whose holder is gone or past the
-        longest an attempt can take is replaced too, at most MAX_LOCK_ROUNDS
-        times.
+        Waits at most ``_lock_wait`` in total, across all rounds. A lock this
+        thread still holds (a signal handler raised inside it), or whose holder
+        is gone or past :meth:`_attempt_bound`, is replaced, at most
+        MAX_LOCK_ROUNDS times.
 
         Returns:
             The state whose lock the caller now holds (a new one if the old
@@ -527,11 +449,10 @@ class PublisherConnection:
     def _holder_is_gone(self, proc: _Process, deadline: float) -> bool:
         """Whether the lock's holder can no longer release it in time.
 
-        True if nobody recorded taking it (a signal handler raised between
-        ``acquire()`` and the ``try`` that releases it) while the lock is
-        still taken, or the holder is past the longest an attempt can take.
-        The grace for a holder that has taken the lock but not yet recorded
-        it comes out of the wait (``deadline``).
+        True if the lock is taken but nobody recorded taking it (a signal handler
+        raised between ``acquire()`` and the ``try``), or the holder is past
+        :meth:`_attempt_bound`. The grace for an unrecorded holder comes out of
+        ``deadline``.
         """
         since = proc.held_since
         if since is None:
@@ -621,6 +542,8 @@ class PublisherConnection:
                 declare=[exchange],
                 serializer="json",
                 # Persistent, so the broker can retain messages in queues.
+                # No publisher confirms: waiting for Basic.Ack would hold the
+                # lock for a network round trip per event.
                 delivery_mode=2,
                 retry=False,
             )
@@ -729,6 +652,8 @@ class PublisherConnection:
             # The py-amqp connection (connected, so this doesn't reconnect).
             amqp = proc.amqp = conn.connection
             proc_ref = weakref.ref(proc)
+            # py-amqp 5.3 Connection._on_blocked only calls on_blocked: writes
+            # keep succeeding until kernel buffers fill, so we track it.
             amqp.on_blocked = functools.partial(_set_blocked, proc_ref, True)
             amqp.on_unblocked = functools.partial(_set_blocked, proc_ref, False)
             _install_guarded_drain(amqp)
@@ -742,22 +667,18 @@ class PublisherConnection:
     def _connection(self, connection_cls: Any, first: int) -> Any:
         """Create a kombu connection for the URL, set to start at host ``first``.
 
-        It switches hosts the way kombu's own failover does, so every entry
-        gets exactly the parameters kombu resolves for it: a bare host
-        (``;rabbit2``) takes credentials, port, virtual host and TLS options
-        from the first entry; a URL-form entry (``;amqp://rabbit2``) gets no
-        credentials (guest/guest) unless it names them, and takes port and
-        virtual host from the previous entry only when it omits them.
-        Rebuilding the URL with a different first entry would resolve them
-        differently (e.g. a bare ``;rabbit2`` would lose the first entry's
-        credentials and vhost). No I/O happens here.
+        Switching with kombu's own failover keeps the parameters kombu resolves
+        for each entry (a bare ``;rabbit2`` inherits the first entry's
+        credentials and vhost); rebuilding the URL with another first entry
+        would resolve them differently. No I/O happens here.
         """
         conn = connection_cls(
             self._url,
             connect_timeout=self._connect_timeout,
+            # No heartbeats: nothing runs between publishes to send them.
             # Wins over ``?heartbeat=`` in the URL, which a kwarg doesn't
             # (kombu 5.6.1 Transport.establish_connection merges
-            # transport_options last): see the module docstring.
+            # transport_options last).
             transport_options={
                 "heartbeat": 0,
                 # Shown as the connection's name in RabbitMQ's management UI.
@@ -771,11 +692,8 @@ class PublisherConnection:
     def _bound_io(self, amqp: Any) -> Any:
         """Make every later socket read/write of a py-amqp connection time out.
 
-        py-amqp's ``read_timeout`` transport option doesn't bound reads (its
-        reader retries on the resulting EAGAIN), and its frame waits outside
-        the handshake use the socket's own timeout. Setting that timeout on
-        the connected socket bounds channel open, declare, publish and the
-        close. A no-op for transports without a socket attribute.
+        Bounds channel open, declare, publish and the close. A no-op for
+        transports without a socket attribute.
 
         Returns:
             The socket (None for such transports).
@@ -785,6 +703,8 @@ class PublisherConnection:
         # socket.socket is looked up at call time, so gevent's monkey-patched
         # socket class matches too.
         if isinstance(sock, socket.socket):
+            # Not py-amqp's read_timeout option (its reader retries the EAGAIN
+            # it causes); frame waits after the handshake use this timeout.
             sock.settimeout(self._io_timeout)
             return sock
         logger.debug(
