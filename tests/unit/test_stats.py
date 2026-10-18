@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from stemtrace.core.events import TaskState
+from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.stats import (
     FAILURE_SAMPLES,
     MAX_BUCKETS,
@@ -276,3 +277,16 @@ def test_auto_bucket_picks_the_smallest_that_fits(
 def test_bucket_starts_reject_a_start_after_the_end() -> None:
     with pytest.raises(ValueError, match="after now"):
         bucket_starts(T0 + timedelta(seconds=1), T0, timedelta(minutes=5))
+
+
+def test_run_record_only_for_task_nodes_with_events() -> None:
+    task = TaskNode(task_id="t", name="app.work", state=TaskState.PENDING)
+    group = TaskNode(
+        task_id="group:g",
+        name="group",
+        state=TaskState.SUCCESS,
+        node_type=NodeType.GROUP,
+    )
+
+    assert RunRecord.from_node(task) is None  # no events yet
+    assert RunRecord.from_node(group) is None
