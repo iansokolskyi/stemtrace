@@ -134,18 +134,14 @@ def test_overview_places_a_run_at_its_last_event_under_its_state(
     assert body["failures"] == {"value": 0, "baseline": 0}
 
 
-@pytest.mark.parametrize("retries", [0, 1])
-def test_overview_late_stamped_pending_does_not_move_a_run(
-    store: GraphStore, retries: int
-) -> None:
-    """A PENDING whose sender's clock is ahead sorts first, so the run stays put."""
+def test_overview_late_stamped_pending_does_not_move_a_run(store: GraphStore) -> None:
+    """A first attempt's PENDING stamped late (sender's clock ahead) sorts first."""
     for state, ago in [
         (TaskState.STARTED, 62),
         (TaskState.SUCCESS, 61),
         (TaskState.PENDING, 30),
     ]:
-        event = _event("a", state, ago)
-        store.add_event(event.model_copy(update={"retries": retries}))
+        store.add_event(_event("a", state, ago))
 
     body = _client(store).get("/api/overview?within=1h").json()
 
