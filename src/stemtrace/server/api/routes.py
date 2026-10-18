@@ -21,6 +21,7 @@ from fastapi.routing import APIRoute
 # goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
 # asyncio.iscoroutinefunction (uvloop 0.22.1). anyio's worker threads don't.
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from stemtrace.core.graph import NodeType
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from celery.app.control import Inspect
+    from starlette.types import Receive, Scope, Send
 
     from stemtrace.core.events import TaskEvent, TaskState
     from stemtrace.core.graph import TaskNode
@@ -1023,19 +1025,61 @@ def _add_worker_routes(
         )
 
 
-def _serve_head_on_get_routes(router: APIRouter) -> None:
-    """Answer HEAD on every GET route, like GET without a body.
+class _ApiRoute(APIRoute):
+    """An API route whose 405 ``Allow`` header also names HEAD on a GET route.
 
-    FastAPI's routes take only the methods they declare, so a HEAD got a 405
-    from the router before any dependency ran: before authentication, and,
-    behind the login, a 404 for Bearer requests (the API key check never
-    ran). As a route method it passes the same dependencies as GET; uvicorn
-    sends the headers without the body (checked with uvicorn 0.40.0, h11 and
-    httptools).
+    The HEAD route next to it (``_serve_head_on_get_routes``) answers HEAD,
+    but the router builds a 405 from the one route that matched the path.
     """
-    for route in router.routes:
-        if isinstance(route, APIRoute) and route.methods and "GET" in route.methods:
-            route.methods.add("HEAD")
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle the request; on a 405 from a GET route, list HEAD as allowed."""
+        try:
+            await super().handle(scope, receive, send)
+        except StarletteHTTPException as exc:
+            # starlette 0.38-1.7 Route.handle raises the 405 inside an app.
+            if (
+                exc.status_code == 405
+                and exc.headers is not None
+                and self.methods
+                and "GET" in self.methods
+                and scope["method"] not in self.methods
+            ):
+                allow = ", ".join(sorted(self.methods | {"HEAD"}))
+                raise StarletteHTTPException(
+                    status_code=405, headers={**exc.headers, "Allow": allow}
+                ) from exc
+            raise
+
+
+def _serve_head_on_get_routes(router: APIRouter) -> None:
+    """Add a HEAD route next to every GET route: same endpoint, name and checks.
+
+    A HEAD request then passes authentication like GET instead of getting a
+    405 before any dependency runs. The HEAD routes stay out of the OpenAPI
+    schema, where they would repeat each GET operation and its ID.
+    """
+    # Separate routes, not "HEAD" added to the GET routes' methods: FastAPI
+    # builds one operation ID per route, so every second method duplicated it
+    # (a warning, an error under strict warning filters). uvicorn (0.40.0, h11
+    # and httptools) sends a HEAD response's headers without the body.
+    get_routes = [
+        route
+        for route in router.routes
+        if isinstance(route, APIRoute) and route.methods and "GET" in route.methods
+    ]
+    for route in get_routes:
+        router.add_api_route(
+            route.path.removeprefix(router.prefix),
+            route.endpoint,
+            methods=["HEAD"],
+            name=route.name,
+            response_model=route.response_model,
+            response_class=route.response_class,
+            status_code=route.status_code,
+            dependencies=route.dependencies,
+            include_in_schema=False,
+        )
 
 
 def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): positional callers must keep working
@@ -1067,7 +1111,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     Raises:
         ConfigurationError: If ``groups`` is invalid or its file can't be loaded.
     """
-    router = APIRouter(prefix="/api", tags=["stemtrace"])
+    router = APIRouter(prefix="/api", tags=["stemtrace"], route_class=_ApiRoute)
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)

@@ -653,3 +653,23 @@ def test_other_methods_are_405_with_allow_in_every_key_mode() -> None:
             resp = form_and_key.post("/stemtrace/api/tasks", headers=headers)
             assert resp.status_code == 405
             assert set(resp.headers["allow"].split(", ")) == {"GET", "HEAD"}
+
+
+def test_openapi_lists_each_get_operation_once_without_head() -> None:
+    """HEAD routes stay out of the schema: as extra methods on the GET routes
+    they duplicated every operation ID, and generating the schema failed."""
+    with TestClient(_app(api_key=KEY)) as client:
+        resp = client.get("/openapi.json")
+
+    assert resp.status_code == 200
+    operations = [
+        (path, method) for path, item in resp.json()["paths"].items() for method in item
+    ]
+    ids = [
+        op["operationId"]
+        for item in resp.json()["paths"].values()
+        for op in item.values()
+    ]
+    assert ("/stemtrace/api/tasks", "get") in operations
+    assert all(method != "head" for _, method in operations)
+    assert len(ids) == len(set(ids))
