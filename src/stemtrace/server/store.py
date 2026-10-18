@@ -907,6 +907,7 @@ class GraphStore:
         if len(self._graph.nodes) <= self._max_nodes:
             return
         keep = int(self._max_nodes * 0.9)
+        # A unit is as old as its newest node.
         units = sorted(
             _eviction_units(self._graph),
             key=lambda unit: max(_eviction_age(n, self._graph) for n in unit),
@@ -915,7 +916,6 @@ class GraphStore:
             excess = len(self._graph.nodes) - keep
             if excess <= 0:
                 return
-            # A unit is as old as its newest node (see _eviction_units).
             if len(unit) > keep:
                 unit = sorted(unit, key=lambda n: _eviction_age(n, self._graph))
                 unit = unit[:excess]
