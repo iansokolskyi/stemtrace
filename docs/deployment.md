@@ -174,10 +174,11 @@ publishes that RETRY from a greenlet of its own once the handler has returned. I
 hasn't finished when the worker exits, the worker waits for it for up to 2 seconds and then
 exits without it.
 
-Celery itself doesn't finish a cold shutdown that lands while a task's greenlet is running Python
-code (rather than waiting on I/O) on eventlet workers, or on gevent workers with task events
-(`-E`) or a result backend: its own handler waits there before stemtrace's code runs, with or
-without stemtrace. Send SIGQUIT again or SIGKILL to stop such a worker.
+Celery itself often doesn't finish a cold shutdown that lands while a task's greenlet is running
+Python code (rather than waiting on I/O), with or without stemtrace: its own handler waits there
+before stemtrace's code runs. In 10 runs each of a gevent worker without stemtrace, a worker with
+a result backend never exited and one with task events (`-E`) exited twice; eventlet workers
+never exited. Send SIGQUIT again or SIGKILL to stop such a worker.
 
 ## Health endpoint
 
