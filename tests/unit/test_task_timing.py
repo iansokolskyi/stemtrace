@@ -307,17 +307,41 @@ class TestTiming:
 
         assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
 
-    def test_late_failure_of_attempt_zero_never_ends_attempt_one_on_one_worker(
+    def test_late_failure_of_attempt_zero_ends_its_own_run_on_one_worker(
         self,
     ) -> None:
-        # Both attempts on worker A (throw=False); attempt 0's FAILURE comes
-        # last and carries its worker, so it isn't an older main-process one.
+        # Both attempts on worker A (throw=False): attempt 1 finishes, then
+        # attempt 0 fails at 20 s. The FAILURE (attempt 0, worker A) ends
+        # attempt 0's run, never attempt 1's.
         a = {"hostname": "celery@a"}
         node = _node(
-            _event(S, 1, **a), _event(S, 3, retries=1, **a), _event(FAIL, 20, **a)
+            _event(S, 1, **a),
+            _event(S, 3, retries=1, **a),
+            _event(OK, 4, retries=1, **a),
+            _event(FAIL, 20, **a),
         )
 
-        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+        assert (node.state, node.runtime_ms, node.total_runtime_ms) == (
+            FAIL,
+            19000,
+            19000,
+        )
+
+    @pytest.mark.parametrize("behind", [0, 1, 1.2, 1.5, 1.9, 2, 5, 60])
+    def test_older_workers_retry_closes_its_own_run_mid_upgrade(
+        self, behind: float
+    ) -> None:
+        # An older worker (no hostname) runs attempt 0 and loses the broker;
+        # this release's worker B, its clock behind, runs it again.
+        b = {"hostname": "celery@b"}
+        node = _node(
+            _event(S, 10),
+            _event(RT, 11),
+            _event(S, 12 - behind, **b),
+            _event(OK, 14 - behind, **b),
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (2000, 3000)
 
     def test_end_without_worker_closes_the_latest_run(self) -> None:
         # A FAILURE without a worker (from an older worker's main process)

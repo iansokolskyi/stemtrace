@@ -170,18 +170,29 @@ def _ms(delta: timedelta) -> int:
     return max(0, delta // _MILLISECOND)
 
 
-def _run_start(
-    open_runs: dict[str | None, TaskEvent], hostname: str | None
-) -> TaskEvent | None:
+# An unfinished run's key: its worker and attempt. Events without a worker
+# (workers before 0.5) share one key, so they pair as they always did.
+_RunKey = tuple[str | None, int | None]
+_NO_WORKER: _RunKey = (None, None)
+
+
+def _run_key(event: TaskEvent) -> _RunKey:
+    """The run an event belongs to: its worker and attempt."""
+    return _NO_WORKER if event.hostname is None else (event.hostname, event.retries)
+
+
+def _run_start(open_runs: dict[_RunKey, TaskEvent], end: TaskEvent) -> TaskEvent | None:
     """Take the unfinished run an end event (RETRY or final) closes.
 
-    The one on the end's worker, else (mid-upgrade) the one without a worker.
-    An end without a worker (older workers) closes the latest unfinished run.
+    The one of the end's worker and attempt; mid-upgrade, the run without a
+    worker. An end without a worker (older workers) closes the run without
+    one, else the latest unfinished run.
     """
-    if hostname is not None:
-        if hostname in open_runs:
-            return open_runs.pop(hostname)
-        return open_runs.pop(None, None)
+    key = _run_key(end)
+    if key in open_runs:
+        return open_runs.pop(key)
+    if end.hostname is not None:
+        return open_runs.pop(_NO_WORKER, None)
     if not open_runs:
         return None
     return open_runs.pop(next(reversed(open_runs)))
@@ -376,14 +387,15 @@ class TaskNode(BaseModel):
             key=_precedence,
         )
         runs: list[tuple[TaskEvent, TaskEvent]] = []
-        # Unfinished run per worker (None: an event without a hostname).
-        open_runs: dict[str | None, TaskEvent] = {}
+        # Unfinished run per worker and attempt (see _run_key).
+        open_runs: dict[_RunKey, TaskEvent] = {}
         for event in [*ordered, final]:
             if event.state == TaskState.STARTED:
-                open_runs.pop(event.hostname, None)
-                open_runs[event.hostname] = event  # last in insertion order
+                key = _run_key(event)
+                open_runs.pop(key, None)
+                open_runs[key] = event  # last in insertion order
                 continue
-            started = _run_start(open_runs, event.hostname)
+            started = _run_start(open_runs, event)
             if started is not None:
                 runs.append((started, event))
         if not runs or runs[-1][1] is not final:
