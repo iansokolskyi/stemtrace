@@ -707,9 +707,9 @@ def _on_task_retry(
 
 
 def _green_spawn() -> Callable[..., Any] | None:
-    """``gevent.spawn`` or ``eventlet.spawn`` if sockets are green, else None.
+    """Return ``gevent.spawn`` or ``eventlet.spawn`` if sockets are green, else None.
 
-    Read through ``sys.modules``: nothing is imported unless the worker
+    Read through ``sys.modules``, so nothing is imported unless the worker
     already monkey-patched (Celery does, before importing the app).
     """
     monkey = sys.modules.get("gevent.monkey")
@@ -724,19 +724,17 @@ def _green_spawn() -> Callable[..., Any] | None:
 def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
     """Publish ``event`` from a greenlet of its own, after the caller returns.
 
-    For the RETRY Celery sends when it cancels a task from its cold-shutdown
-    signal handler (celery 5.6.3 worker/request.py ``_announce_cancelled``
-    sends task_retry with no reason and no einfo). CPython runs that handler
-    in whatever greenlet is current, possibly the cancelled task's, which
-    gevent's ``terminate_job`` has just scheduled to kill
-    (concurrency/gevent.py: ``gevent.kill`` runs ``greenlet.throw`` from the
-    hub's callback queue). A publish waits on its socket, which yields to the
-    hub; the kill then unwinds the handler before Celery sets
-    ``should_terminate`` and the worker keeps running. Spawning only
-    schedules the new greenlet and never switches, so the handler finishes
-    first; the RETRY goes out when the hub next runs, at the latest when
-    the interpreter exits (``_flush_deferred_publishes``).
+    Used for the RETRY of a task Celery cancels from its cold-shutdown
+    signal handler: a publish there yields to the hub, which can run the
+    kill Celery scheduled for the handler's greenlet and abort the shutdown.
+    Spawning only schedules, so the handler finishes first.
     """
+    # The handler runs in whatever greenlet is current, possibly the
+    # cancelled task's; celery 5.6.3 concurrency/gevent.py terminate_job
+    # schedules its kill (gevent.kill -> hub callback greenlet.throw), and
+    # worker/request.py _announce_cancelled then sends task_retry with no
+    # reason and no einfo. The RETRY goes out when the hub next runs, at the
+    # latest at interpreter exit (_flush_deferred_publishes).
     global _flush_at_exit_registered
     _deferred_publishes[:] = [g for g in _deferred_publishes if not g.dead]
     _deferred_publishes.append(spawn(_publish_event, event))
@@ -746,13 +744,10 @@ def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
 
 
 def _flush_deferred_publishes(timeout_s: float = _DEFERRED_FLUSH_TIMEOUT_S) -> None:
-    """Let deferred publishes finish, for at most ``timeout_s`` seconds.
-
-    A cold shutdown sends no ``worker_shutdown`` (celery 5.6.3
-    worker/worker.py ``WorkController.terminate``), so this runs at exit.
-    ``time.sleep`` is green under monkey-patching: waiting lets the hub run
-    them.
-    """
+    """Let deferred publishes finish, for at most ``timeout_s`` seconds."""
+    # Registered with atexit: a cold shutdown sends no worker_shutdown
+    # (celery 5.6.3 worker/worker.py WorkController.terminate). time.sleep is
+    # green under monkey-patching, so waiting lets the hub run them.
     deadline = time.monotonic() + timeout_s
     while any(not g.dead for g in _deferred_publishes) and time.monotonic() < deadline:
         time.sleep(0.01)
