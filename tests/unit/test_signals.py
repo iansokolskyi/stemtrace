@@ -2,6 +2,7 @@
 
 import logging
 import os
+from enum import Enum, IntEnum
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -45,6 +46,18 @@ from stemtrace.library.signals import (
     on_worker_shutdown,
 )
 from stemtrace.transports.memory import MemoryTransport
+
+
+class _Field(str, Enum):
+    """A str-mixin keyword named like a credential, valued like nothing."""
+
+    PASSWORD = "pw"
+
+
+class _Slot(IntEnum):
+    """An int keyword named like a credential."""
+
+    API_TOKEN = 1
 
 
 @pytest.fixture(autouse=True)
@@ -967,6 +980,19 @@ class TestRealPublish:
             return {b"password": "hunter2", ("api_key",): "sk-1", "token": "t0k"}
 
         return app
+
+    @pytest.mark.parametrize(
+        ("key", "shown"), [(_Field.PASSWORD, "pw"), (_Slot.API_TOKEN, "1")]
+    )
+    def test_send_task_with_enum_keyword_shows_it_as_matched(
+        self, app: Celery, key: object, shown: str
+    ) -> None:
+        """The key is matched as its value, so it must read as its value too:
+        never ``Field.PASSWORD`` next to a value that wasn't filtered."""
+        app.send_task("tests.echo", kwargs={key: "hunter2", "password": "x"})
+
+        [event] = MemoryTransport.events
+        assert event.kwargs == {shown: "hunter2", "password": FILTERED}
 
     def test_send_task_pending_carries_parent_and_root(self, app: Celery) -> None:
         app.send_task("tests.add", args=(1, 2), parent_id="parent-1", root_id="root-1")

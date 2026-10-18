@@ -668,19 +668,27 @@ class _StrMixin(str, Enum):
     """Base for str-mixin members made in the sweep below."""
 
 
-_KIND_CASES: list[tuple[str, type[Enum], object, bool]] = [
-    # (kind, enum base, member value, a sensitive value matches)
-    ("int_enum", IntEnum, 1, False),
-    ("int_flag", IntFlag, 1, False),
-    ("int_mixin", _IntMixin, 1, False),
-    ("str_mixin", _StrMixin, "", True),
-    ("enum", Enum, "", True),
-    ("flag", Flag, 1, False),
-]
+# kind -> (enum base, member value is a str, expected for the member names
+# below: LABEL="colour", TOKEN="colour", LABEL="api_key", TOKEN="api_key").
+_KINDS: dict[str, tuple[type[Enum], bool, tuple[bool, bool, bool, bool]]] = {
+    "int_enum": (IntEnum, False, (False, False, False, False)),
+    "int_flag": (IntFlag, False, (False, False, False, False)),
+    "int_mixin": (_IntMixin, False, (False, False, False, False)),
+    "str_mixin": (_StrMixin, True, (False, False, True, True)),
+    "enum": (Enum, True, (False, True, True, True)),
+    "flag": (Flag, False, (False, True, False, True)),
+}
 if sys.version_info >= (3, 11):
     from enum import StrEnum
 
-    _KIND_CASES.append(("str_enum", StrEnum, "", True))
+    _KINDS["str_enum"] = (StrEnum, True, (False, False, True, True))
+_MEMBERS = [
+    ("LABEL", "colour"),
+    ("TOKEN", "colour"),
+    ("LABEL", "api_key"),
+    ("TOKEN", "api_key"),
+]
+_MEMBER_IDS = ["plain", "sensitive_name", "sensitive_value", "both"]
 
 
 def _member(base: type[Enum], name: str, value: object) -> Enum:
@@ -689,36 +697,71 @@ def _member(base: type[Enum], name: str, value: object) -> Enum:
 
 
 @pytest.mark.parametrize(
-    ("base", "value", "value_matches"),
-    [case[1:] for case in _KIND_CASES],
-    ids=[case[0] for case in _KIND_CASES],
-)
-@pytest.mark.parametrize(
-    ("name", "str_value"),
+    ("base", "str_valued", "name", "str_value", "expected"),
     [
-        ("LABEL", "colour"),
-        ("TOKEN", "colour"),
-        ("LABEL", "api_key"),
-        ("TOKEN", "api_key"),
+        (base, str_valued, name, str_value, expected[i])
+        for base, str_valued, expected in _KINDS.values()
+        for i, (name, str_value) in enumerate(_MEMBERS)
     ],
-    ids=["plain", "sensitive_name", "sensitive_value", "both"],
+    ids=[f"{kind}-{member}" for kind in _KINDS for member in _MEMBER_IDS],
 )
 def test_is_sensitive_key_with_enum_member_follows_what_the_key_equals(
-    base: type[Enum], value: object, value_matches: bool, name: str, str_value: str
+    base: type[Enum], str_valued: bool, name: str, str_value: str, expected: bool
 ) -> None:
     """A member that is an int or a str (IntEnum, IntFlag, str or int mixins,
     StrEnum) equals and hashes like its value, so it is matched as that value:
     an int never, a str by its text. Other members are matched by their name
     (and a str value)."""
-    member = _member(base, name, str_value if isinstance(value, str) else value)
-    is_int_or_str = isinstance(member, (int, str))
-    expected = (
-        value_matches and str_value == "api_key"
-        if is_int_or_str
-        else name == "TOKEN" or (value_matches and str_value == "api_key")
-    )
+    member = _member(base, name, str_value if str_valued else 1)
 
     assert _is_sensitive_key(member, DEFAULT_SENSITIVE_KEYS) is expected
+
+
+class _Field(str, Enum):
+    """A str-mixin key named like a credential, valued like nothing."""
+
+    PASSWORD = "pw"
+
+
+class _Slot2(IntEnum):
+    """An int key named like a credential."""
+
+    API_TOKEN = 1
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_Field.PASSWORD, "pw"),
+        (_Slot2.API_TOKEN, 1),
+        (("user", _Field.PASSWORD), ("user", "pw")),
+        (frozenset({_Slot2.API_TOKEN}), frozenset({1})),
+        (True, True),
+        (_Cred.PASSWORD, _Cred.PASSWORD),
+    ],
+    ids=["str_mixin", "int_enum", "tuple_part", "frozenset_part", "bool", "plain_enum"],
+)
+def test_scrub_dict_shows_a_key_as_what_it_was_matched_by(
+    key: object, shown: object
+) -> None:
+    """A key matched as its str or int value is written as that value, the way
+    json writes it, so a value kept under ``Field.PASSWORD`` shows under
+    ``"pw"`` and never under the credential-looking name."""
+    ((out_key, _),) = scrub_dict({key: "v"}).items()
+
+    assert out_key == shown
+    assert type(out_key) is type(shown)
+    if isinstance(shown, tuple | frozenset):
+        assert [type(p) for p in sorted(out_key, key=str)] == [
+            type(p) for p in sorted(shown, key=str)
+        ]
+
+
+def test_safe_serialize_text_fallback_shows_keys_as_matched() -> None:
+    """A dict json can't encode is shown as text: its keys too read as their value."""
+    text = safe_serialize({_Slot2.API_TOKEN: "sk", ("a", "b"): 1}, max_size=10_000)
+
+    assert text == "{1: 'sk', ('a', 'b'): 1}"
 
 
 def test_scrub_dict_with_http_status_key_keeps_its_value() -> None:

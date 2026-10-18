@@ -171,12 +171,35 @@ def _scrub_dict(
     """Scrub a dictionary with patterns already lowercased by the entry point."""
     result: dict[Any, Any] = {}
     for key, value in data.items():
+        shown = _as_matched(key)
         if _is_sensitive_key(key, patterns, safe_keys):
-            result[key] = FILTERED
+            result[shown] = FILTERED
         else:
-            result[key] = _scrub_value(value, patterns, safe_keys)
+            result[shown] = _scrub_value(value, patterns, safe_keys)
 
     return result
+
+
+def _as_matched(key: Any) -> Any:
+    """A dict key as ``_key_names`` matches it: a str or int as its plain value.
+
+    An Enum member that is a str or int otherwise prints as its name
+    (``Field.PASSWORD``), which may look sensitive while its value isn't. It
+    equals and hashes like its value, so the dict keeps the same keys.
+    """
+    match key:
+        case bool():
+            return key
+        case str():
+            return str.__str__(key)
+        case int():
+            return int(key)
+        case tuple():
+            return tuple(_as_matched(part) for part in key)
+        case frozenset():
+            return frozenset(_as_matched(part) for part in key)
+        case _:
+            return key
 
 
 def _scrub_value(
