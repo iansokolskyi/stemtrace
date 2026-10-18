@@ -7,18 +7,23 @@ counts its runs, so "skipped" is a number, not an assumption.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import stemtrace
 from stemtrace.server.fastapi.api_key import API_KEY_ENV_VAR
 from stemtrace.server.fastapi.extension import StemtraceExtension
-from stemtrace.server.fastapi.login_throttle import LOGIN_IP_MAX_FAILURES
+from stemtrace.server.fastapi.login_throttle import (
+    LOGIN_IP_MAX_FAILURES,
+    LOGIN_LOCKOUT_BASE_S,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -340,6 +345,95 @@ def test_form_key_and_host_websocket_takes_the_key_or_a_session(
         pass
 
     assert host.checks == 0
+
+
+def test_form_key_and_host_liveness_probe_needs_no_session(
+    form_key_and_host: TestClient, host: HostAuth
+) -> None:
+    """The login middleware waives the session for the probe; the gate must too."""
+    assert form_key_and_host.get("/stemtrace/api/health/live").status_code == 401
+    assert host.checks == 1
+    assert form_key_and_host.get("/stemtrace/api/health/live", headers=HOST).json() == {
+        "status": "ok"
+    }
+    assert form_key_and_host.get(
+        "/stemtrace/api/health/live", headers=BEARER
+    ).json() == {"status": "ok"}
+    assert host.checks == 2
+
+
+# --- what counts as a refusal -------------------------------------------------
+
+
+def test_key_and_host_validation_error_of_the_dependency_counts_as_a_failure() -> None:
+    def needs_tenant(x_tenant: str = Header()) -> None:
+        del x_tenant
+
+    with TestClient(_app(api_key=KEY, auth_dependency=Depends(needs_tenant))) as client:
+        codes = [
+            client.get("/stemtrace/api/tasks", headers=WRONG).status_code
+            for _ in range(LOGIN_IP_MAX_FAILURES)
+        ]
+
+    assert codes == [422] * (LOGIN_IP_MAX_FAILURES - 1) + [429]
+
+
+def test_key_and_host_broken_dependency_is_a_500_and_never_a_key_failure() -> None:
+    def broken() -> None:
+        raise RuntimeError("database is down")
+
+    app = _app(api_key=KEY, auth_dependency=Depends(broken))
+    with TestClient(app, raise_server_exceptions=False) as client:
+        codes = [
+            client.get("/stemtrace/api/tasks", headers=WRONG).status_code
+            for _ in range(LOGIN_IP_MAX_FAILURES * 2)
+        ]
+        valid = client.get("/stemtrace/api/tasks", headers=BEARER).status_code
+
+    assert codes == [500] * (LOGIN_IP_MAX_FAILURES * 2)
+    assert valid == 200
+
+
+# --- concurrency ---------------------------------------------------------------
+
+
+async def test_key_and_host_burst_of_wrong_keys_cannot_find_the_key() -> None:
+    """Failures are counted after the dependency's await: slots stand in for them."""
+    entered = 0
+    release = asyncio.Event()
+
+    async def slow_refusal() -> None:
+        nonlocal entered
+        entered += 1
+        await release.wait()
+        raise HTTPException(status_code=401, detail="host login required")
+
+    app = _app(api_key=KEY, auth_dependency=Depends(slow_refusal))
+    transport = httpx.ASGITransport(app=app, client=("10.0.0.9", 4242))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        wrong = [
+            asyncio.create_task(client.get("/stemtrace/api/tasks", headers=WRONG))
+            for _ in range(LOGIN_IP_MAX_FAILURES * 20)
+        ]
+        # The right key last: a burst that could still compare it would get a 200.
+        right = asyncio.create_task(client.get("/stemtrace/api/tasks", headers=BEARER))
+        for _ in range(10_000):
+            if entered == LOGIN_IP_MAX_FAILURES * 20 + 1:
+                break
+            await asyncio.sleep(0)
+        release.set()
+        codes = [r.status_code for r in await asyncio.gather(*wrong)]
+        right_response = await right
+        after = await client.get("/stemtrace/api/tasks", headers=BEARER)
+
+    # Only as many keys were compared as the lockout would have allowed.
+    assert codes.count(401) == LOGIN_IP_MAX_FAILURES - 1
+    assert codes.count(429) == len(codes) - (LOGIN_IP_MAX_FAILURES - 1)
+    assert right_response.status_code == 429
+    assert right_response.headers["retry-after"] == str(int(LOGIN_LOCKOUT_BASE_S))
+    assert after.status_code == 429
 
 
 # --- embedded app with a dependency chain -------------------------------------

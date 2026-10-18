@@ -684,3 +684,28 @@ class TestLoginEndpointThrottling:
             )
 
         assert other_client.status_code == (303 if trusted else 429)
+
+
+def test_ip_failures_left_counts_down_to_zero_when_locked() -> None:
+    throttle = LoginThrottle(hash_key=b"stemtrace-test" * 2)
+    attempt = LoginAttempt(client_ip="1.2.3.4", username=None, device_id=None)
+
+    left = [throttle.ip_failures_left("1.2.3.4")]
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        throttle.record_failure(attempt)
+        left.append(throttle.ip_failures_left("1.2.3.4"))
+
+    assert left == list(range(LOGIN_IP_MAX_FAILURES, -1, -1))
+    assert throttle.ip_failures_left("5.6.7.8") == LOGIN_IP_MAX_FAILURES
+
+
+def test_ip_failures_left_forgets_old_failures() -> None:
+    now = [1000.0]
+    throttle = LoginThrottle(clock=lambda: now[0], hash_key=b"stemtrace-test" * 2)
+    attempt = LoginAttempt(client_ip="1.2.3.4", username=None, device_id=None)
+    throttle.record_failure(attempt)
+    assert throttle.ip_failures_left("1.2.3.4") == LOGIN_IP_MAX_FAILURES - 1
+
+    now[0] += LOGIN_FAILURE_MEMORY_S
+
+    assert throttle.ip_failures_left("1.2.3.4") == LOGIN_IP_MAX_FAILURES

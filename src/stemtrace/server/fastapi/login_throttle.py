@@ -198,6 +198,15 @@ class _BucketTable:
         now = self._clock()
         return max(0.0, min(self._wait(i, now) for i in self._slots(key)))
 
+    def failures_left(self, key: str) -> int:
+        """Failures ``key`` may still have before its next lockout (0 once locked)."""
+        now = self._clock()
+        counts = (
+            0 if self._is_forgotten(i, now) else int(self._counts[i])
+            for i in self._slots(key)
+        )
+        return max(0, self._max_failures - min(counts))
+
     def record_failure(self, key: str) -> None:
         """Count a failure for ``key`` in both of its buckets."""
         now = self._clock()
@@ -311,6 +320,11 @@ class LoginThrottle:
                     ip_wait = self._by_ip.retry_after(_ip_key(attempt.client_ip))
                     wait = max(wait, ip_wait)
         return math.ceil(wait)
+
+    def ip_failures_left(self, client_ip: str) -> int:
+        """Failures the IP may still have before it is locked out."""
+        with self._lock:
+            return self._by_ip.failures_left(_ip_key(client_ip))
 
     def record_failure(self, attempt: LoginAttempt) -> None:
         """Count a failed sign-in against the IP and the device or username."""

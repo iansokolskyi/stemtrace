@@ -220,34 +220,87 @@ def test_guard_locks_ip_after_max_failures_even_for_right_key(
     assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
 
 
-def test_guard_uncounted_wrong_key_is_invalid_and_leaves_the_ip_unlocked(
-    guard: ApiKeyGuard,
-) -> None:
-    statuses = {
-        guard.check("wrong", "1.2.3.4", count_failure=False).status
-        for _ in range(LOGIN_IP_MAX_FAILURES * 2)
-    }
+def test_attempt_wrong_key_is_uncounted_until_rejected(guard: ApiKeyGuard) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES * 2):
+        with guard.attempt("wrong", "1.2.3.4") as attempt:
+            assert attempt.status is KeyStatus.INVALID
 
-    assert statuses == {KeyStatus.INVALID}
     assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
 
 
-def test_guard_record_failure_locks_the_ip_on_the_last_allowed_failure(
+def test_attempt_reject_counts_and_locks_on_the_last_allowed_failure(
     guard: ApiKeyGuard, clock: FakeClock
 ) -> None:
-    waits = [guard.record_failure("1.2.3.4") for _ in range(LOGIN_IP_MAX_FAILURES)]
+    waits = []
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        with guard.attempt("wrong", "1.2.3.4") as attempt:
+            waits.append(attempt.reject())
 
     assert waits == [0] * (LOGIN_IP_MAX_FAILURES - 1) + [int(LOGIN_LOCKOUT_BASE_S)]
-    # Checked before comparing, even uncounted: the right key is still refused.
-    assert guard.check(KEY, "1.2.3.4", count_failure=False) == KeyCheck(
-        KeyStatus.THROTTLED, int(LOGIN_LOCKOUT_BASE_S)
-    )
+    # Checked before comparing: the right key is refused during the lockout.
+    with guard.attempt(KEY, "1.2.3.4") as locked:
+        assert locked.status is KeyStatus.THROTTLED
+        assert locked.retry_after == int(LOGIN_LOCKOUT_BASE_S)
 
     clock.now += LOGIN_LOCKOUT_BASE_S
     assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
 
 
-def test_guard_record_failure_without_client_address_never_locks(
+def test_attempt_stops_comparing_keys_while_wrong_ones_are_in_flight(
+    guard: ApiKeyGuard,
+) -> None:
+    """A burst can't test more keys than the failures it would be allowed."""
+    held = [guard.attempt("wrong", "1.2.3.4") for _ in range(LOGIN_IP_MAX_FAILURES)]
+    assert {a.status for a in held} == {KeyStatus.INVALID}
+
+    # The right key is not compared either, or the burst could find it.
+    with guard.attempt(KEY, "1.2.3.4") as capped:
+        assert capped.status is KeyStatus.THROTTLED
+        assert capped.retry_after == int(LOGIN_LOCKOUT_BASE_S)
+    # Other clients are unaffected.
+    with guard.attempt(KEY, "5.6.7.8") as other:
+        assert other.status is KeyStatus.VALID
+
+    for attempt in held:
+        attempt.__exit__(None, None, None)
+    with guard.attempt(KEY, "1.2.3.4") as freed:
+        assert freed.status is KeyStatus.VALID
+
+
+def test_attempt_in_flight_slots_count_with_failures_already_recorded(
+    guard: ApiKeyGuard,
+) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES - 2):
+        guard.record_failure("1.2.3.4")
+
+    first = guard.attempt("wrong", "1.2.3.4")
+    second = guard.attempt("wrong", "1.2.3.4")
+    third = guard.attempt("wrong", "1.2.3.4")
+
+    assert [a.status for a in (first, second, third)] == [
+        KeyStatus.INVALID,
+        KeyStatus.INVALID,
+        KeyStatus.THROTTLED,
+    ]
+
+
+def test_attempt_slot_is_freed_when_the_block_raises(guard: ApiKeyGuard) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES * 3):
+        with pytest.raises(RuntimeError), guard.attempt("wrong", "1.2.3.4"):
+            raise RuntimeError("request cancelled or broke")
+
+    assert guard.attempt(KEY, "1.2.3.4").status is KeyStatus.VALID
+
+
+def test_attempt_without_client_address_is_never_capped(guard: ApiKeyGuard) -> None:
+    held = [guard.attempt("wrong", None) for _ in range(LOGIN_IP_MAX_FAILURES * 3)]
+
+    assert {a.status for a in held} == {KeyStatus.INVALID}
+    assert guard.attempt(KEY, None).status is KeyStatus.VALID
+    assert held[0].reject() == 0
+
+
+def test_record_failure_without_client_address_never_locks(
     guard: ApiKeyGuard,
 ) -> None:
     assert {guard.record_failure(None) for _ in range(50)} == {0}
