@@ -94,11 +94,13 @@ pages work even if the server missed `worker_ready` events.
     plain cold stop.
   - threads pool: Celery can't cancel running tasks, so a cold stop waits for them like a warm
     one and ends with `worker_shutdown`.
-  - gevent pool, a task running Python code: the cold stop completes, as on prefork, and the
-    worker sends `worker_terminating`.
-  - gevent pool, a task waiting on I/O: Celery's cold-shutdown handler fails
-    (`BlockingSwitchOutError`) after cancelling the tasks, and the worker ends with
-    `worker_shutdown`.
+  - gevent pool without a result backend or `-E`, a task running Python code: the cold stop
+    completes, as on prefork, and the worker sends `worker_terminating`.
+  - gevent pool without a result backend or `-E`, a task waiting on I/O: Celery's
+    cold-shutdown handler fails (`BlockingSwitchOutError`) after cancelling the tasks, and the
+    worker ends with `worker_shutdown`.
+  - gevent pool with a result backend or `-E`: see
+    [Stopping workers](deployment.md#stopping-workers).
   - solo pool: SIGQUIT fails the running task (`NotImplementedError`) and the worker keeps
     running.
   - eventlet: not checked.
