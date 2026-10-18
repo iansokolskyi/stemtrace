@@ -298,8 +298,9 @@ async def test_tokens_in_flight_cover_the_failures_left_for_the_right_key_too() 
             await asyncio.sleep(0)
         else:
             pytest.fail("the requests never reached the dependency")
-        sixth = await client.get(API, headers=_wrong_key(99))
-        right_key = await client.get(API, headers=BEARER)
+        # Bounded: without the cap these wait for the dependency, which is blocked.
+        sixth = await asyncio.wait_for(client.get(API, headers=_wrong_key(99)), 5)
+        right_key = await asyncio.wait_for(client.get(API, headers=BEARER), 5)
         release.set()
         responses = await asyncio.gather(*tasks)
         after = await client.get(API, headers=BEARER)

@@ -93,24 +93,36 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   updates; enable the login page for those. `require_api_key` is a separate, older helper for
   embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key
   described here is the one built into the server.
-- **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
-  redirect. A wrong key is refused even if a valid session cookie comes with it.
+- **With a custom `auth_dependency` and the login page**, only the key skips the session check.
+  Every other request needs a session cookie *and* the dependency, as without a key, whatever
+  `Authorization` header it carries: a request without a session gets `401`, so
+  `require_basic_auth` credentials alone are not enough until the browser has signed in.
+- **Errors.** Without a custom `auth_dependency`, a missing or wrong key gets `401` with
+  `WWW-Authenticate: Bearer`, never a redirect, and a wrong key is refused even if a valid
+  session cookie comes with it. With one, a request that isn't the key gets the dependency's own
+  answer, which can be a redirect or a `403`; only the login page's missing session is a `401`
+  from stemtrace.
 - **Throttling.** Wrong keys count per client IP in the login's failed-attempt throttle, so
   failed sign-ins and wrong keys from one IP add up: the fifth gets `429` with `Retry-After`
   (30 seconds, doubling up to 15 minutes), and so does every later request with a Bearer token,
   even the right key. A valid key doesn't clear the count. Requests without a client address (a
   Unix socket) aren't throttled. Counts are per process.
-- **Throttling with a custom `auth_dependency`.** A Bearer token counts as a wrong key only if
-  it has the key's length and the dependency refuses the request with `401`, `403` or `422`, so
-  the app's own tokens don't lock its users out. An answer of `5xx` or `429`, or a request the
-  dependency lets in, never counts. The fifth refusal is answered with the lockout's `429`
-  instead of the dependency's answer. A token of the key's length is in flight until its
-  response starts, and an IP whose tokens in flight already cover the failures it has left gets
-  `429` with `Retry-After: 1` without any key comparison, so a burst can't try more keys than
-  the lockout allows. While an IP is locked out or has that many in flight, Bearer tokens of
-  the key's length get `429`, even the right key and tokens the dependency would accept (an
-  app whose own tokens are exactly as long as the key sees this with five such requests at
-  once); other requests still go to the dependency.
+- **Throttling with a custom `auth_dependency`.** A Bearer token of the key's length counts as
+  a wrong key unless the dependency lets the request in. Any other answer counts: `401`, `403`,
+  `422`, a redirect, `400`, `404`, `5xx`, the dependency's own `429`, and an unhandled error in
+  the dependency, so a failing token decoder can't be used to guess keys for free. An error of
+  the endpoint after the dependency admitted the request doesn't count. The trade-off: while the
+  dependency fails (an identity provider outage, say), the app's own tokens that are exactly as
+  long as the key count as wrong keys and can lock their IP out. Tokens of any other length
+  never count. With the login page on, a wrong key without a session gets `401` and counts too.
+  The fifth failure is answered with the lockout's `429` instead of the dependency's answer
+  (unless the dependency crashed, which stays a `500`). A token of the key's length is in flight
+  until the dependency admits it or its response starts, and an IP whose tokens in flight
+  already cover the failures it has left gets `429` with `Retry-After: 1` without any key
+  comparison, so a burst can't try more keys than the lockout allows. While an IP is locked out
+  or has that many in flight, Bearer tokens of the key's length get `429`, even the right key
+  and tokens the dependency would accept (an app whose own tokens are exactly as long as the
+  key sees this with five such requests at once); other requests still go to the dependency.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
   (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes
