@@ -1,4 +1,4 @@
-"""Tests for ``chord_not_run_reason``: why a chord's callback never ran."""
+"""Tests for ``chord_not_run_reasons``: why a chord's callback hasn't run."""
 
 import json
 import random
@@ -47,7 +47,8 @@ def _chord_reasons(graph: TaskGraph) -> dict[str, str | None]:
     }
 
 
-# A reason only ever appears or moves up this order; it never clears.
+# As events arrive a reason only appears or moves up this order, and clears
+# only when the chord's callback is drawn.
 _REASON_RANK = {None: 0, "header_ignored": 1, "header_revoked": 2, "header_failed": 3}
 
 
@@ -284,17 +285,28 @@ def test_chord_not_run_reasons_scans_the_nodes_a_fixed_number_of_times() -> None
     assert nodes.scans <= 2
 
 
-def test_get_graph_reason_clears_when_the_failed_header_is_evicted() -> None:
-    """Documented limitation: the reason is worked out from the headers still
-    stored, so evicting the failed one (oldest first) while the chord stays
-    clears it."""
+@pytest.mark.parametrize(
+    ("kept", "after"),
+    [
+        (TaskState.SUCCESS, None),
+        (TaskState.IGNORED, "header_ignored"),
+        (TaskState.REVOKED, "header_revoked"),
+        (TaskState.FAILURE, "header_failed"),
+    ],
+)
+def test_get_graph_reason_follows_the_headers_still_stored(
+    kept: TaskState, after: str | None
+) -> None:
+    """The reason is worked out from the headers still stored: evicting the
+    failed one (oldest first) while the chord stays lowers or clears it."""
     store = GraphStore(max_nodes=10)
     store.add_event(
         _ev("h0", TaskState.FAILURE, 1, group_id="g", chord_callback_id="cb")
     )
     for i in range(1, 4):
+        state = kept if i == 2 else TaskState.SUCCESS
         store.add_event(
-            _ev(f"h{i}", TaskState.SUCCESS, 1 + i, group_id="g", chord_callback_id="cb")
+            _ev(f"h{i}", state, 1 + i, group_id="g", chord_callback_id="cb")
         )
     client = _client(store)
     assert (
@@ -307,4 +319,4 @@ def test_get_graph_reason_clears_when_the_failed_header_is_evicted() -> None:
 
     nodes = client.get("/api/graphs/group:g").json()["nodes"]
     assert sorted(nodes) == ["group:g", "h2", "h3"]
-    assert nodes["group:g"]["not_run_reason"] is None
+    assert nodes["group:g"]["not_run_reason"] == after
