@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `skills/stemtrace-api/SKILL.md`: teaches a coding agent to query failures, tracebacks, workflow graphs, workers and the registry with `curl` and `jq`.
 - Task and graph node responses split `duration_ms` (first event to last) into `queue_wait_ms` (sent to the first run starting), `runtime_ms` (the last run) and `total_runtime_ms` (all runs, retries included). They are empty when the events they need are missing, never negative, and computed by the server from the events it has, so they also appear for tasks from older workers: no upgrade order. See [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md#queue-wait-and-runtime).
 
+### Changed
+- Dependency updates. The bundled UI now uses `react` and `react-dom` 19.3.1 (was 19.3.0). The Docker image moves to the `python:3.12.15-slim-trixie` base image (was 3.12.14) and its locked runtime packages to `kombu` 5.6.2, `fastapi` 0.143.1 and `pydantic` 2.14.1 (with `pydantic-core` 2.50.1 and `typing-inspection` 0.4.4). Development only: `ruff` 0.17.0, `bump-my-version` 1.6.0 and, for the frontend E2E tests, Playwright 1.64.1. Installs with pip are unchanged: the minimum versions in `pyproject.toml` did not move.
+
 ## [0.4.1] - 2026-10-18
 
 **Highlights:**
