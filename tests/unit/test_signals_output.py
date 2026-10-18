@@ -41,7 +41,7 @@ task_logger = get_task_logger("tests.unit.output_tasks.celery")
 
 @pytest.fixture(autouse=True)
 def clean_state() -> Iterator[None]:
-    """Reset transport, signals, capture install and config around each test."""
+    """Reset transport, signals and the output capture install around each test."""
     MemoryTransport.clear()
     disconnect_signals()
     _uninstall_capture()
@@ -51,7 +51,6 @@ def clean_state() -> Iterator[None]:
     _uninstall_capture()
     disconnect_signals()
     MemoryTransport.clear()
-    set_config(StemtraceConfig(transport_url="memory://"))
 
 
 @pytest.fixture
