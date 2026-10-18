@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import importlib
 import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -55,22 +56,16 @@ def _describe(error: ValidationError) -> str:
     )
 
 
-def _toml_loads(file: Path) -> Callable[[str], dict[str, Any]]:
-    """Return ``tomllib.loads``, or explain why TOML files need Python 3.11+.
+def _toml_loads() -> Callable[[str], dict[str, Any]]:
+    """Return the TOML parser: stdlib ``tomllib``, or ``tomli`` before Python 3.11.
 
-    Imported by name rather than ``import tomllib``: mypy checks against
-    Python 3.10, where the module doesn't exist.
+    ``tomli`` is the package ``tomllib`` was taken from: the same ``loads``,
+    and a ``TOMLDecodeError`` that subclasses ValueError.
     """
-    try:
-        loads: Callable[[str], dict[str, Any]] = importlib.import_module(
-            "tomllib"
-        ).loads
-    except ImportError:
-        raise ConfigurationError(
-            f"Cannot load task groups file {file}: TOML needs Python 3.11 or "
-            "newer (tomllib). On Python 3.10, pass the groups in code: "
-            "init_app(groups=[GroupRule(...)])."
-        ) from None
+    # Imported by name: mypy checks against 3.10, where tomllib doesn't exist,
+    # and tomli (a dependency on 3.10 only) isn't installed where it runs.
+    module = "tomllib" if sys.version_info >= (3, 11) else "tomli"
+    loads: Callable[[str], dict[str, Any]] = importlib.import_module(module).loads
     return loads
 
 
@@ -84,18 +79,17 @@ def load_groups_file(path: str | os.PathLike[str]) -> GroupConfig:
         The groups, in file order.
 
     Raises:
-        ConfigurationError: If the file can't be read, isn't valid TOML, has
-            invalid or duplicate groups, or Python is older than 3.11.
+        ConfigurationError: If the file can't be read, isn't valid TOML, or
+            has invalid or duplicate groups.
     """
     file = Path(path)
     try:
         text = file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigurationError(f"Cannot read task groups file {file}: {exc}") from exc
-    loads = _toml_loads(file)
     try:
-        document = loads(text)
-    except ValueError as exc:  # tomllib.TOMLDecodeError subclasses ValueError
+        document = _toml_loads()(text)
+    except ValueError as exc:  # TOMLDecodeError subclasses ValueError (both)
         raise ConfigurationError(
             f"Task groups file {file} is not valid TOML: {exc}"
         ) from exc

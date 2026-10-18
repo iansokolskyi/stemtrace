@@ -2216,20 +2216,24 @@ class TestApiRouteTable:
             if isinstance(route, APIRoute)
         ]
 
-        assert table == [
-            ("/api/health", ["GET"]),
-            ("/api/health/live", ["GET"]),
-            ("/api/tasks", ["GET"]),
-            ("/api/tasks/registry", ["GET"]),
-            ("/api/tasks/{task_id}", ["GET"]),
-            ("/api/tasks/{task_id}/children", ["GET"]),
-            ("/api/graphs", ["GET"]),
-            ("/api/graphs/{root_id}", ["GET"]),
-            ("/api/groups", ["GET"]),
-            ("/api/overview", ["GET"]),
-            ("/api/stats/timeseries", ["GET"]),
-            ("/api/failures", ["GET"]),
-            ("/api/workers", ["GET"]),
-            ("/api/workers/{hostname}", ["GET"]),
+        get_paths = [
+            "/api/health",
+            "/api/health/live",
+            "/api/tasks",
+            "/api/tasks/registry",
+            "/api/tasks/{task_id}",
+            "/api/tasks/{task_id}/children",
+            "/api/graphs",
+            "/api/graphs/{root_id}",
+            "/api/groups",
+            "/api/overview",
+            "/api/stats/timeseries",
+            "/api/failures",
+            "/api/workers",
+            "/api/workers/{hostname}",
+        ]
+        # Each GET route, then a HEAD route for it (kept out of the schema).
+        assert table == [(path, ["GET"]) for path in get_paths] + [
+            (path, ["HEAD"]) for path in get_paths
         ]
         assert len(table) == len(router.routes)
