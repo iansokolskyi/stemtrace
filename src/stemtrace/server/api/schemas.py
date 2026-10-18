@@ -52,6 +52,8 @@ class TaskEventResponse(BaseModel):
     hostname: str | None = None
     queue: str | None = None
     routing_key: str | None = None
+    # When this attempt was scheduled to run (countdown/eta); see TaskEvent.eta.
+    eta: datetime | None = None
 
 
 class TaskNodeResponse(BaseModel):
@@ -82,6 +84,8 @@ class TaskNodeResponse(BaseModel):
     queue_wait_ms: int | None = None
     runtime_ms: int | None = None
     total_runtime_ms: int | None = None
+    # The first attempt's ETA (countdown/eta): queue_wait_ms starts there if later.
+    eta: datetime | None = None
     # Where the task ran and came from, and what it raised: each from the
     # furthest-along event that reports it (see TaskNode._latest).
     exception_type: str | None = None
@@ -129,6 +133,8 @@ class GraphNodeResponse(BaseModel):
     queue_wait_ms: int | None = None
     runtime_ms: int | None = None
     total_runtime_ms: int | None = None
+    # The first attempt's ETA (countdown/eta): queue_wait_ms starts there if later.
+    eta: datetime | None = None
     first_seen: datetime | None = None
     last_updated: datetime | None = None
     # Where the task ran and came from, and what it raised: each from the

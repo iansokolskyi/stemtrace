@@ -10820,5 +10820,113 @@
    "chord_callback_id": null,
    "retries": 0
   }
+ ],
+ "countdown": [
+  {
+   "task_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-18T02:24:43.501557Z",
+   "parent_id": null,
+   "root_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:24:45.463306Z"
+  },
+  {
+   "task_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T02:24:45.463888Z",
+   "parent_id": null,
+   "root_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:24:45.463306Z"
+  },
+  {
+   "task_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-18T02:24:45.494954Z",
+   "parent_id": null,
+   "root_id": "e4a01211-71a1-4b71-a287-6a253f754d62",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:24:45.463306Z"
+  }
+ ],
+ "countdown_retry_countdown": [
+  {
+   "task_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "name": "flows.retry_later",
+   "state": "PENDING",
+   "timestamp": "2026-10-18T02:28:24.781806Z",
+   "parent_id": null,
+   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:28:25.743666Z"
+  },
+  {
+   "task_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "name": "flows.retry_later",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T02:28:25.744245Z",
+   "parent_id": null,
+   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:28:25.743666Z"
+  },
+  {
+   "task_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "name": "flows.retry_later",
+   "state": "RETRY",
+   "timestamp": "2026-10-18T02:28:25.784335Z",
+   "parent_id": null,
+   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0,
+   "eta": "2026-10-18T02:28:25.743666Z"
+  },
+  {
+   "task_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "name": "flows.retry_later",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T02:28:26.745408Z",
+   "parent_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 1,
+   "eta": "2026-10-18T02:28:26.744822Z"
+  },
+  {
+   "task_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "name": "flows.retry_later",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-18T02:28:26.745978Z",
+   "parent_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 1,
+   "eta": "2026-10-18T02:28:26.744822Z"
+  }
  ]
 }

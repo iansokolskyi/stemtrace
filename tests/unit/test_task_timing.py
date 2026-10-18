@@ -245,6 +245,85 @@ class TestTiming:
         assert _timing(group) == (None, None, None)
 
 
+def _at(seconds: float) -> datetime:
+    return T0 + timedelta(seconds=seconds)
+
+
+class TestEta:
+    """A first attempt sent with a countdown or ETA: the wait starts at the ETA."""
+
+    @pytest.mark.parametrize(
+        ("events", "expected_wait"),
+        [
+            # Sent at 0 with countdown=3, started half a second after the ETA.
+            ([(P, 0, 3), (S, 3.5, 3), (OK, 4, 3)], 500),
+            # RECEIVED arrives before the ETA (the worker holds the message): still 500.
+            ([(P, 0, 3), (R, 0.1, 3), (S, 3.5, 3), (OK, 4, 3)], 500),
+            # Only the worker's events carry it (the sender doesn't run stemtrace).
+            ([(R, 0.1, 3), (S, 3.5, 3), (OK, 4, 3)], 500),
+            # Only STARTED carries it.
+            ([(P, 0, None), (S, 3.5, 3), (OK, 4, 3)], 500),
+            # An ETA already past when the task was sent changes nothing.
+            ([(P, 2, 1), (S, 3.5, 1), (OK, 4, 1)], 1500),
+            # The worker's clock behind the sender's: started "before" the ETA is 0.
+            ([(P, 0, 3), (S, 2.9, 3), (OK, 3.4, 3)], 0),
+            # No ETA anywhere: unchanged.
+            ([(P, 0, None), (S, 3.5, None), (OK, 4, None)], 3500),
+        ],
+        ids=[
+            "countdown",
+            "received-before-eta",
+            "worker-only",
+            "started-only",
+            "eta-in-the-past",
+            "worker-clock-behind",
+            "no-eta",
+        ],
+    )
+    def test_wait_starts_at_eta(
+        self,
+        events: list[tuple[TaskState, float, float | None]],
+        expected_wait: int,
+    ) -> None:
+        node = _node(
+            *(
+                _event(state, at, eta=None if eta is None else _at(eta))
+                for state, at, eta in events
+            )
+        )
+
+        assert node.queue_wait_ms == expected_wait
+        assert node.runtime_ms == 500
+
+    def test_node_eta_is_the_first_attempts(self) -> None:
+        node = _node(
+            _event(P, 0, eta=_at(3)),
+            _event(S, 3.5, eta=_at(3)),
+            _event(RT, 4, eta=_at(3)),
+            _event(S, 20, retries=1, eta=_at(19)),
+            _event(OK, 21, retries=1, eta=_at(19)),
+        )
+
+        assert node.eta == _at(3)
+        assert node.queue_wait_ms == 500
+
+    def test_retry_eta_never_shortens_the_first_wait(self) -> None:
+        # The first attempt had no ETA; only the retry did.
+        node = _node(
+            _event(P, 0),
+            _event(S, 2),
+            _event(RT, 3),
+            _event(S, 20, retries=1, eta=_at(19)),
+            _event(OK, 21, retries=1, eta=_at(19)),
+        )
+
+        assert node.eta is None
+        assert node.queue_wait_ms == 2000
+
+    def test_no_eta(self) -> None:
+        assert _node(_event(P, 0), _event(S, 2)).eta is None
+
+
 SKEWS = (-60, 0, 60)
 PRE_START = ("pending", "received", "both", "none")
 
@@ -363,6 +442,48 @@ class TestRealCaptures:
             ms(span((P, 0), (S, 0))),
             ms(span((S, 1), (OK, 1))),
             ms(span((S, 0), (RT, 0)) + span((S, 1), (OK, 1))),
+        )
+
+    def test_countdown_is_not_counted_as_waiting(self) -> None:
+        # add.s(1, 1).set(countdown=2) on a worker with nothing else to do.
+        graph = TaskGraph()
+        for event in _capture("countdown"):
+            graph.add_event(event)
+        [node] = graph.nodes.values()
+        etas = {e.eta for e in node.events}
+        started = next(e.timestamp for e in node.events if e.state == S)
+        pending = next(e.timestamp for e in node.events if e.state == P)
+
+        assert len(etas) == 1
+        assert node.eta is not None
+        assert etas == {node.eta}
+        assert node.eta - pending > timedelta(seconds=1.9)
+        assert node.queue_wait_ms == max(
+            0, (started - node.eta) // timedelta(milliseconds=1)
+        )
+        assert node.queue_wait_ms is not None
+        assert node.queue_wait_ms < 100
+
+    def test_retry_countdown_has_its_own_eta(self) -> None:
+        # Sent with countdown=1, then self.retry(countdown=1) once.
+        graph = TaskGraph()
+        for event in _capture("countdown_retry_countdown"):
+            graph.add_event(event)
+        [node] = graph.nodes.values()
+        first = {e.eta for e in node.events if e.retries == 0}
+        retry = {e.eta for e in node.events if e.retries == 1}
+        started = next(
+            e.timestamp for e in node.events if e.state == S and e.retries == 0
+        )
+
+        assert first == {node.eta}
+        assert len(retry) == 1
+        [retry_eta] = retry
+        assert node.eta is not None
+        assert retry_eta is not None
+        assert retry_eta - node.eta > timedelta(seconds=0.9)
+        assert node.queue_wait_ms == max(
+            0, (started - node.eta) // timedelta(milliseconds=1)
         )
 
     @pytest.mark.parametrize("flow", sorted(json.loads(FLOWS.read_text())))

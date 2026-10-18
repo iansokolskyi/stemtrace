@@ -24,6 +24,7 @@ from celery.signals import (
     worker_shutdown,
 )
 from celery.utils.serialization import UnpickleableExceptionWrapper
+from celery.utils.time import maybe_iso8601
 
 from stemtrace.core.events import (
     RegisteredTaskDefinition,
@@ -488,10 +489,11 @@ class _WorkerFields(TypedDict):
     hostname: str | None
     queue: str | None
     routing_key: str | None
+    eta: datetime | None
 
 
 def _worker_fields(request: Any) -> _WorkerFields:
-    """Hostname, queue and routing key of a worker's task request.
+    """Hostname, queue, routing key and ETA of a worker's task request.
 
     ``request`` is ``task.request`` or the worker's ``Request``: celery 5.6.3
     worker/request.py ``Request.__init__`` gives both the consumer's
@@ -506,6 +508,8 @@ def _worker_fields(request: Any) -> _WorkerFields:
         hostname=None if is_eager else _nodename(request),
         queue=queue,
         routing_key=routing_key,
+        # task.request.eta is the message's string (celery 5.6.3 app/task.py Context).
+        eta=_parse_eta(getattr(request, "eta", None)),
     )
 
 
@@ -723,6 +727,27 @@ def _on_task_revoked(
     )
 
 
+def _parse_eta(value: Any) -> datetime | None:
+    """When a task message is scheduled to run, in UTC; None if it isn't or can't be read.
+
+    Celery writes ``eta`` (from ``countdown`` or ``eta``) into the message as an ISO 8601
+    string, or None (celery 5.6.3 and 5.2.2 app/amqp.py ``as_task_v2`` and
+    ``as_task_v1``). The worker parses it with ``maybe_iso8601`` and reads a naive value
+    as UTC (celery 5.6.3 worker/request.py ``Request.__init__`` lines 135-142, 5.2.2
+    lines 130-137, through ``maybe_make_aware``), so a naive value is UTC here too. A
+    value the worker can't parse makes it reject the message; here it is left out.
+    """
+    if not value or not isinstance(value, str | datetime):
+        return None
+    try:
+        parsed: datetime = maybe_iso8601(value)  # only falsy values give None
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _published_message(
     body: Any, headers: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -741,6 +766,7 @@ def _published_message(
             "group": headers.get("group"),
             "parent_id": headers.get("parent_id"),
             "root_id": headers.get("root_id"),
+            "eta": headers.get("eta"),
             "args": args,
             "kwargs": kwargs,
         }
@@ -752,6 +778,7 @@ def _published_message(
             "group": body.get("taskset"),
             "parent_id": None,
             "root_id": None,
+            "eta": body.get("eta"),
             "args": body.get("args") or (),
             "kwargs": body.get("kwargs") or {},
         }
@@ -819,6 +846,7 @@ def _on_after_task_publish(
             kwargs=_scrub_and_serialize_kwargs(kwargs) if kwargs else None,
             queue=queue,
             routing_key=routing_key,
+            eta=_parse_eta(message["eta"]),
         )
     )
 

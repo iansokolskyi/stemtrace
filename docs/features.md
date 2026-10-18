@@ -141,10 +141,16 @@ also split it up:
 
 | Field | From | To |
 |---|---|---|
-| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED) | its first run starting (first STARTED) |
+| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED), or its ETA if that is later | its first run starting (first STARTED) |
 | `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
 | `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
 
+- A task sent with a `countdown` or `eta` is held by the worker until then. That time is
+  scheduled, not waiting, so `queue_wait_ms` counts from the ETA: a task sent with
+  `countdown=60` that starts 0.2 seconds after its ETA waited 200 ms. Task and graph node
+  responses give the first attempt's ETA as `eta` (UTC, empty for a task that could run at
+  once), and each event carries its own attempt's ETA as `eta`, so a retry's countdown shows
+  on the retry's events.
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
@@ -156,7 +162,9 @@ also split it up:
   without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
   before it started. GROUP and CHORD nodes have none.
 - They are computed on the server from the events it already has, so they also appear for tasks
-  recorded by older workers.
+  recorded by older workers. The ETA is recorded by the code that sends the task (on PENDING)
+  and by the worker (on its events); when neither runs this release, a countdown is counted in
+  `queue_wait_ms` as before.
 
 Limitations:
 
@@ -165,10 +173,9 @@ Limitations:
   first; a negative wait, from that or from a sender clock ahead of the worker's, counts as 0.
   A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
   (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
-  earlier.
-- A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
-  in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
-  in the queue.
+  earlier. Celery computes an ETA from the sending process's clock (now plus the `countdown`),
+  and the worker starts the task when its own clock reaches it, so a worker clock behind the
+  sender's makes the task start "before" its ETA: that wait counts as 0.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind

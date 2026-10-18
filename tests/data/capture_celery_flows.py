@@ -187,6 +187,18 @@ def flaky_add(self: Any, x: int, y: int) -> int:
     return x + y
 
 
+_retried_later: set[str] = set()
+
+
+@app.task(bind=True, name="flows.retry_later")
+def retry_later(self: Any, x: int, y: int) -> int:
+    """Add, retrying once with a one-second countdown on its first run."""
+    if self.request.id not in _retried_later:
+        _retried_later.add(self.request.id)
+        raise self.retry(countdown=1)
+    return x + y
+
+
 def _flows() -> dict[str, Callable[[], Signature]]:
     return {
         "chain": lambda: chain(add.s(1, 1), add.s(2), add.s(3)),
@@ -306,6 +318,9 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             chain(add.si(1, 1), paginate_to.si(0, 3)), add.si(2, 2)
         ),
         "chain_replace12": lambda: chain(add.s(1, 1), paginate_to.si(0, 12)),
+        # Sent with a countdown: the events carry its ETA (eta is captured from here on).
+        "countdown": lambda: add.s(1, 1).set(countdown=2),
+        "countdown_retry_countdown": lambda: retry_later.s(1, 1).set(countdown=1),
     }
 
 
@@ -324,6 +339,7 @@ def _event_dict(event: Any) -> dict[str, Any]:
             "chord_id",
             "chord_callback_id",
             "retries",
+            "eta",
         },
     )
 
