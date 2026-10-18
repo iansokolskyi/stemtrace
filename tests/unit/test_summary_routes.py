@@ -134,10 +134,18 @@ def test_overview_places_a_run_at_its_last_event_under_its_state(
     assert body["failures"] == {"value": 0, "baseline": 0}
 
 
-def test_overview_late_stamped_pending_does_not_move_a_run(store: GraphStore) -> None:
+@pytest.mark.parametrize("retries", [0, 1])
+def test_overview_late_stamped_pending_does_not_move_a_run(
+    store: GraphStore, retries: int
+) -> None:
     """A PENDING whose sender's clock is ahead sorts first, so the run stays put."""
-    store.add_event(_event("a", TaskState.SUCCESS, 61))
-    store.add_event(_event("a", TaskState.PENDING, 30))
+    for state, ago in [
+        (TaskState.STARTED, 62),
+        (TaskState.SUCCESS, 61),
+        (TaskState.PENDING, 30),
+    ]:
+        event = _event("a", state, ago)
+        store.add_event(event.model_copy(update={"retries": retries}))
 
     body = _client(store).get("/api/overview?within=1h").json()
 
@@ -147,10 +155,14 @@ def test_overview_late_stamped_pending_does_not_move_a_run(store: GraphStore) ->
 def test_overview_counts_are_integers_in_json(store: GraphStore) -> None:
     store.add_event(_event("a", TaskState.FAILURE, 5))
 
-    text = _client(store).get("/api/overview?within=1h").text
+    body = _client(store).get("/api/overview?within=1h").json()
 
-    assert '"runs":{"value":1,"baseline":0}' in text
-    assert '"failures":{"value":1,"baseline":0}' in text
+    # == can't tell 1 from 1.0; the JSON type can.
+    counts = [
+        body[kpi][key] for kpi in ("runs", "failures") for key in ("value", "baseline")
+    ]
+    assert counts == [1, 0, 1, 0]
+    assert all(type(count) is int for count in counts)
 
 
 def test_overview_window_edges(store: GraphStore) -> None:
