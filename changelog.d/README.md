@@ -36,6 +36,7 @@ When a maintainer runs `make release-pr`, `scripts/assemble_changelog.py` merges
 fragments into `## [Unreleased]` in `CHANGELOG.md` and deletes them. It puts each entry under
 the `### <Type>` heading in Keep a Changelog order and sorts entries by file name within a
 type. Text above the first `###` heading in Unreleased, such as a **Highlights:** block,
-stays on top.
+stays on top. Text under a `###` heading must be `- ` bullets: the release fails on other
+text there, because it would be filed under that heading.
 
 CI runs `--check` and fails on a fragment with an invalid name or content.

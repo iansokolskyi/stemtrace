@@ -120,7 +120,7 @@ release-check:
 	@echo "=== Pre-release Checklist ==="
 	@echo "0. Checking the changelog has entries (fragments in changelog.d/ or [Unreleased] text)..."
 	@uv run python scripts/assemble_changelog.py --check
-	@test -n "$$(find changelog.d -type f ! -name README.md -print -quit 2>/dev/null)" \
+	@test -n "$$(find changelog.d -type f ! -name README.md ! -name '.*' -print -quit 2>/dev/null)" \
 		|| uv run python scripts/changelog_section.py Unreleased > /dev/null
 	@echo "1. Running all checks..."
 	$(MAKE) check

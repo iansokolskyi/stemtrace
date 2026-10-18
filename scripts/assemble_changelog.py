@@ -25,6 +25,10 @@ DESCRIPTION = "Merge changelog fragments into CHANGELOG.md under [Unreleased]."
 _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
+# CommonMark: up to 3 spaces of indent still make an ATX heading.
+_HEADING_LINE = re.compile(r"^ {0,3}#", re.MULTILINE)
+# A column-0 line that isn't a bullet; bullet continuations are indented.
+_NON_BULLET_LINE = re.compile(r"^(?!- |[ \t]|$).+$", re.MULTILINE)
 _LINK_DEFINITIONS = re.compile(
     r"(?:^\[[^\]\n]+\]:[ \t]+\S+[ \t]*(?:\n|\Z))+\Z", re.MULTILINE
 )
@@ -58,7 +62,7 @@ def _invalid_body(body: str) -> str | None:
         return "file is empty"
     if not body.startswith("- "):
         return "entry must start with a '- ' bullet"
-    if re.search(r"^#", body, re.MULTILINE):
+    if _HEADING_LINE.search(body):
         return "entry must not contain headings (the file name sets the heading)"
     return None
 
@@ -69,7 +73,7 @@ def _read_fragment(path: Path) -> Fragment | str:
     if problem:
         return problem
     try:
-        body = path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+        body = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").strip()
     except (OSError, UnicodeDecodeError) as exc:
         return f"can't read file: {exc}"
     problem = _invalid_body(body)
@@ -85,14 +89,15 @@ def read_fragments(directory: Path) -> tuple[list[Fragment], list[str]]:
         directory: The ``changelog.d`` directory; a missing one has no fragments.
 
     Returns:
-        The valid fragments and one message per invalid file. ``README.md`` is skipped.
+        The valid fragments and one message per invalid file. ``README.md`` and
+        dotfiles are skipped.
     """
     fragments: list[Fragment] = []
     errors: list[str] = []
     paths = sorted(directory.iterdir()) if directory.is_dir() else []
     for path in paths:
-        if path.name == README_NAME:
-            continue
+        if path.name == README_NAME or path.name.startswith("."):
+            continue  # README.md and OS files such as .DS_Store
         result = _read_fragment(path)
         if isinstance(result, Fragment):
             fragments.append(result)
@@ -120,6 +125,12 @@ def _parse_sections(body: str) -> tuple[str, dict[str, str]]:
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
         content = body[heading.end() : end].strip()
+        prose = _NON_BULLET_LINE.search(content)
+        if prose:
+            raise ChangelogError(
+                f"text under '### {heading.group(1)}' in [Unreleased] must be '- ' "
+                f"bullets, not {prose.group(0)!r}; move it above the first '### ' heading"
+            )
         previous = sections.get(heading.group(1))
         sections[heading.group(1)] = f"{previous}\n{content}" if previous else content
     return preamble.strip(), sections

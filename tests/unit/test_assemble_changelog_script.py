@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +19,14 @@ assemble = importlib.util.module_from_spec(_spec)
 # Registered before exec: dataclasses resolves the module through sys.modules.
 sys.modules["assemble_changelog"] = assemble
 _spec.loader.exec_module(assemble)
+
+_section_spec = importlib.util.spec_from_file_location(
+    "changelog_section", ROOT / "scripts" / "changelog_section.py"
+)
+assert _section_spec is not None
+assert _section_spec.loader is not None
+changelog_section = importlib.util.module_from_spec(_section_spec)
+_section_spec.loader.exec_module(changelog_section)
 
 HEADER = "# Changelog\n\nIntro.\n\n"
 RELEASED = "## [0.1.0] - 2026-01-01\n\n### Fixed\n- Old bug.\n"
@@ -318,3 +328,106 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
         assemble.main(["--root", str(tmp_path), "--check", "--dry-run"])
 
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- A.\n## [Unreleased]\n",
+        "- A.\n## [9.9.9] - 2026-01-01\n",
+        "- A.\n   ## [Unreleased]\n",
+        "- A.\n   ### Sneaky\n",
+        "- A.\n#### Deeper\n",
+    ],
+)
+def test_check_fragment_with_heading_line_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    assert "1.added.md: entry must not contain headings" in capsys.readouterr().err
+
+
+def test_check_fragment_with_utf8_bom_is_valid(tmp_path: Path) -> None:
+    root = _project(tmp_path, "", {})
+    (root / "changelog.d" / "1.added.md").write_bytes(b"\xef\xbb\xbf- A.\n")
+
+    assert assemble.main(["--root", str(root)]) == 0
+
+    assert _unreleased(root) == "## [Unreleased]\n\n### Added\n- A.\n\n"
+
+
+def test_check_ignores_dotfiles_in_fragment_directory(tmp_path: Path) -> None:
+    root = _project(tmp_path, "", {"1.added.md": "- A.\n"})
+    (root / "changelog.d" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+
+    assert assemble.main(["--root", str(root), "--check"]) == 0
+
+
+def test_check_prose_after_unreleased_subheading_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(
+        tmp_path,
+        "\n### Changed\n- Existing.\n\n**Upgrading:** any order.\n",
+        {"1.added.md": "- A.\n"},
+    )
+    before = _changelog(root)
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert "'- ' bullets" in err
+    assert "**Upgrading:** any order." in err
+    assert _changelog(root) == before
+
+
+def _bump_config_for_changelog(source: Path) -> tuple[str, str]:
+    """Return the repo's bump config cut down to its CHANGELOG.md entries."""
+    text = source.read_text(encoding="utf-8")
+    marker = "[[tool.bumpversion.files]]"
+    header, *entries = text.split(marker)
+    kept = [e for e in entries if 'filename = "CHANGELOG.md"' in e]
+    match = re.search(r'^current_version = "([^"]+)"', header, re.MULTILINE)
+    assert match is not None
+    return header + "".join(marker + e for e in kept), match.group(1)
+
+
+def test_assemble_then_bump_with_heading_text_in_fragment_adds_one_version_heading(
+    tmp_path: Path,
+) -> None:
+    # bump-my-version 1.6.0 (files.py ConfiguredFile.make_file_change) substitutes
+    # every match of the CHANGELOG search pattern; this runs the real config end to end.
+    config, current = _bump_config_for_changelog(ROOT / ".bumpversion.toml")
+    major, minor, patch = (int(part) for part in current.split("."))
+    new = f"{major}.{minor}.{patch + 1}"
+    (tmp_path / ".bumpversion.toml").write_text(config, encoding="utf-8")
+    link = "https://github.com/iansokolskyi/stemtrace/compare"
+    (tmp_path / "CHANGELOG.md").write_text(
+        f"# Changelog\n\n## [Unreleased]\n\n## [{current}] - 2026-01-01\n\n"
+        f"### Fixed\n- Old.\n\n[unreleased]: {link}/v{current}...HEAD\n",
+        encoding="utf-8",
+    )
+    fragment_dir = tmp_path / "changelog.d"
+    fragment_dir.mkdir()
+    bullet = "- A maintainer's release merges entries into `## [Unreleased]`.\n"
+    (fragment_dir / "1.changed.md").write_text(bullet, encoding="utf-8")
+    assert assemble.main(["--root", str(tmp_path)]) == 0
+
+    subprocess.run(
+        [sys.executable, "-m", "bumpversion", "bump", "patch", "--no-commit"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    text = _changelog(tmp_path)
+    assert len(re.findall(rf"^## \[{new}\]", text, re.MULTILINE)) == 1
+    assert len(re.findall(r"^## \[Unreleased\]", text, re.MULTILINE)) == 1
+    assert (
+        changelog_section.changelog_section(text, new)
+        == f"### Changed\n{bullet.strip()}"
+    )
