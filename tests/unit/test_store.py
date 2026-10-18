@@ -10,9 +10,14 @@ from pathlib import Path
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
-from stemtrace.server.store import GraphStore, WorkerRegistry, _eviction_units
+from stemtrace.server.store import (
+    GraphStore,
+    WorkerRegistry,
+    _eviction_units,
+    _steps_to,
+)
 from tests.conftest import InterleavingLock
 from tests.graph_invariants import assert_graph_invariants
 
@@ -2671,3 +2676,38 @@ def test_eviction_keeps_each_inner_group_of_a_fan_out_whole() -> None:
     for i in shown:
         assert {f"i{i}m{n}" for n in range(4)} <= nodes.keys(), i
         assert nodes[f"group:inner{i}"].state == TaskState.FAILURE
+
+
+def _node(task_id: str, kind: NodeType = NodeType.TASK, **kw: str) -> TaskNode:
+    return TaskNode(
+        task_id=task_id,
+        name="tests.task",
+        state=TaskState.SUCCESS,
+        node_type=kind,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    ("top", "owners", "steps"),
+    [
+        ("group:g", {"group:g"}, ["s2", "s1"]),
+        # A member drawn inside another group's tree (a replaced task): its
+        # steps belong to that group, not to the member's own.
+        ("group:h", {"group:g"}, []),
+    ],
+    ids=["own_container", "other_container"],
+)
+def test_eviction_unit_takes_a_member_s_steps_only_up_to_its_own_group(
+    top: str, owners: set[str], steps: list[str]
+) -> None:
+    graph = TaskGraph()
+    for node in (
+        _node(top, NodeType.GROUP, group_id=top.removeprefix("group:")),
+        _node("s1", parent_id=top),
+        _node("s2", parent_id="s1"),
+        _node("m", parent_id="s2", group_id="g"),
+    ):
+        graph.nodes[node.task_id] = node
+
+    assert _steps_to(graph, graph.nodes["m"], owners) == steps
