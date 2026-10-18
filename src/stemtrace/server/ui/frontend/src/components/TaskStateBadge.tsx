@@ -18,6 +18,7 @@ const stateClasses: Record<string, string> = {
   RETRY: 'task-state-retry',
   REVOKED: 'task-state-revoked',
   REJECTED: 'task-state-rejected',
+  IGNORED: 'task-state-ignored',
 }
 
 export function TaskStateBadge({ state, className }: TaskStateBadgeProps) {

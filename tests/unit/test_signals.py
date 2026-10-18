@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from celery import Celery, chain, group
-from celery.exceptions import SoftTimeLimitExceeded
+from celery.exceptions import Ignore, Reject, SoftTimeLimitExceeded
 from celery.signals import (
     after_task_publish,
     task_failure,
@@ -476,6 +476,132 @@ class TestTaskPostrun:
         assert len(MemoryTransport.events) == 0
 
 
+class TestTaskPostrunIgnoredRejected:
+    """Ignore() and Reject end a task without task_failure: postrun reports them."""
+
+    def _postrun(self, task: MagicMock, state: str, retval: object) -> None:
+        _on_task_postrun(
+            task_id="task-123",
+            task=task,
+            args=(),
+            kwargs={},
+            retval=retval,
+            state=state,
+        )
+
+    def test_ignore_emits_ignored_with_worker_fields(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        mock_task.request.retries = 2
+        mock_task.request.hostname = "celery@w1"
+        mock_task.request.delivery_info = {"routing_key": "q1", "exchange": ""}
+
+        self._postrun(mock_task, "IGNORED", Ignore())
+
+        (event,) = MemoryTransport.events
+        assert event.state == TaskState.IGNORED
+        assert event.task_id == "task-123"
+        assert event.name == "tests.sample_task"
+        assert event.retries == 2
+        assert event.hostname == "celery@w1"
+        assert event.queue == "q1"
+
+    def test_ignore_from_replace_emits_nothing(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """Celery's Task.replace() raises Ignore('Replaced by new task'); the
+        replacement's last task reuses the ID and reports its own outcome."""
+        self._postrun(mock_task, "IGNORED", Ignore("Replaced by new task"))
+
+        assert MemoryTransport.events == []
+
+    def test_reject_without_requeue_emits_rejected(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        self._postrun(mock_task, "REJECTED", Reject("bad input", requeue=False))
+
+        (event,) = MemoryTransport.events
+        assert event.state == TaskState.REJECTED
+        assert event.exception == "bad input"
+
+    @pytest.mark.parametrize("acks_late", [False, True])
+    @pytest.mark.parametrize("is_eager", [False, True])
+    @pytest.mark.parametrize("requeue", [False, True])
+    def test_reject_emits_rejected_unless_the_message_runs_again(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+        acks_late: bool,
+        is_eager: bool,
+        requeue: bool,
+    ) -> None:
+        """Only an acks_late worker task's message is still unacknowledged
+        when Reject(requeue=True) reaches the worker, so only it runs again
+        (celery 5.6.3 worker/request.py: ``on_accepted`` acks first unless
+        ``acks_late``; ``reject()`` does nothing once acknowledged). An eager
+        apply() has no message at all."""
+        mock_task.acks_late = acks_late
+        mock_task.request.is_eager = is_eager
+
+        self._postrun(mock_task, "REJECTED", Reject("busy", requeue=requeue))
+
+        runs_again = requeue and acks_late and not is_eager
+        assert [e.state for e in MemoryTransport.events] == (
+            [] if runs_again else [TaskState.REJECTED]
+        )
+
+    def test_reject_with_exception_reason_reports_its_class(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        """Celery's Task.retry raises Reject(exc, requeue=False) when it can't
+        send the retry (celery 5.6.3 app/task.py ``retry``)."""
+        self._postrun(
+            mock_task, "REJECTED", Reject(ConnectionError("no broker"), requeue=False)
+        )
+
+        (event,) = MemoryTransport.events
+        assert event.exception == "ConnectionError: no broker"
+        assert event.exception_type == "ConnectionError"
+
+    def test_reject_with_text_reason_has_no_exception_type(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        self._postrun(mock_task, "REJECTED", Reject("bad input", requeue=False))
+
+        (event,) = MemoryTransport.events
+        assert (event.exception, event.exception_type) == ("bad input", None)
+
+
+class TestEagerReject:
+    """Reject through Celery's real tracer, via task.apply()."""
+
+    @pytest.fixture
+    def app(self, transport: MemoryTransport) -> Celery:
+        app = Celery("reject-tests", broker="memory://", backend="cache+memory://")
+
+        @app.task(name="tests.requeue_default")
+        def requeue_default() -> None:
+            raise Reject("busy", requeue=True)
+
+        @app.task(name="tests.requeue_late", acks_late=True)
+        def requeue_late() -> None:
+            raise Reject("busy", requeue=True)
+
+        return app
+
+    @pytest.mark.parametrize("name", ["tests.requeue_default", "tests.requeue_late"])
+    def test_eager_requeued_reject_publishes_rejected(
+        self, app: Celery, name: str
+    ) -> None:
+        """apply() runs once whatever acks_late says: nothing requeues it."""
+        app.tasks[name].apply()
+
+        assert [e.state for e in MemoryTransport.events] == [
+            TaskState.STARTED,
+            TaskState.REJECTED,
+        ]
+
+
 class TestTaskFailure:
     """Tests for task_failure signal handler."""
 
@@ -908,8 +1034,8 @@ class TestRealPublish:
             (1, {"1": "a"}),
             (None, {"None": "a"}),
             # json.dumps rejects these keys: safe_serialize falls back to str().
-            ((1, 2), {"_truncated": "{(1, 2): 'a'}"}),
-            (b"k", {"_truncated": "{b'k': 'a'}"}),
+            ((1, 2), {"_as_text": "{(1, 2): 'a'}"}),
+            (b"k", {"_as_text": "{b'k': 'a'}"}),
         ],
         ids=["int", "none", "tuple", "bytes"],
     )
@@ -1350,6 +1476,74 @@ class TestSignalsScrubbingAndCaptureBranches:
         assert event.kwargs is not None
         assert "_truncated" in event.kwargs
 
+    @pytest.mark.parametrize(
+        ("kwargs", "error_name"),
+        [(None, "TypeError"), (["a", 1], "ValueError")],
+        ids=["none", "list"],
+    )
+    def test_task_prerun_with_scrubbing_off_and_non_dict_kwargs_publishes(
+        self, mock_task: MagicMock, kwargs: Any, error_name: str
+    ) -> None:
+        # Celery always sends a dict; a non-Celery producer may not. dict()
+        # rejects these inside the capture boundary.
+        set_config(
+            StemtraceConfig(transport_url="memory://", scrub_sensitive_data=False)
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs=kwargs)
+
+        [event] = MemoryTransport.events
+        assert event.kwargs == {"_not_captured": f"[Not captured: {error_name}]"}
+
+    def test_task_prerun_with_uppercase_additional_sensitive_key_filters(
+        self, mock_task: MagicMock
+    ) -> None:
+        set_config(
+            StemtraceConfig(
+                transport_url="memory://", additional_sensitive_keys=frozenset({"MRN"})
+            )
+        )
+        connect_signals(MemoryTransport())
+
+        _on_task_prerun(
+            task_id="task-123",
+            task=mock_task,
+            args=({"mrn": 1},),
+            kwargs={"patient_MRN": 2, "name": "alice"},
+        )
+
+        [event] = MemoryTransport.events
+        assert event.args == [{"mrn": FILTERED}]
+        assert event.kwargs == {"patient_MRN": FILTERED, "name": "alice"}
+
+    @pytest.mark.parametrize(
+        ("max_data_size", "label"),
+        [(10240, "_as_text"), (10, "_truncated")],
+        ids=["fits", "too_big"],
+    )
+    def test_task_prerun_labels_kwargs_text_fallback_by_what_happened(
+        self, mock_task: MagicMock, max_data_size: int, label: str
+    ) -> None:
+        # json.dumps(default=str) can't encode the value, so safe_serialize
+        # falls back to str() of the kwargs, truncated only if it's too big.
+        set_config(
+            StemtraceConfig(transport_url="memory://", max_data_size=max_data_size)
+        )
+        connect_signals(MemoryTransport())
+        kwargs = {"k": _StrRaisesValueError()}
+
+        _on_task_prerun(task_id="task-123", task=mock_task, args=(), kwargs=kwargs)
+
+        [event] = MemoryTransport.events
+        text = str(kwargs)
+        expected = (
+            text
+            if label == "_as_text"
+            else f"[Truncated: {len(text)} bytes > {max_data_size} max]"
+        )
+        assert event.kwargs == {label: expected}
+
     def test_task_postrun_omits_result_when_capture_result_disabled(self) -> None:
         """When capture_result=False, SUCCESS events should have result=None."""
         set_config(StemtraceConfig(transport_url="memory://", capture_result=False))
@@ -1550,6 +1744,16 @@ class TestWorkerLifecycleEdgeCases:
 
         on_worker_shutdown(sender=sender, sig=15)
         assert "Failed to publish worker_shutdown event" in caplog.text
+
+
+class _StrRaisesValueError:
+    """A value json.dumps(default=str) rejects; its repr still works."""
+
+    def __str__(self) -> str:
+        raise ValueError("no str")
+
+    def __repr__(self) -> str:
+        return "<_StrRaisesValueError>"
 
 
 def _receiver_errors(responses: list[tuple[Any, Any]]) -> list[Any]:

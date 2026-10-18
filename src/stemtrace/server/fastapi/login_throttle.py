@@ -155,13 +155,16 @@ class LoginAttempt:
     Attributes:
         client_ip: Client address from the ASGI scope, or None if the server
             reported none (e.g. a Unix socket).
-        username: Submitted username, valid or not.
+        username: Submitted username, valid or not. None for attempts that
+            have no username (an API key): only the IP limit applies to them,
+            since a shared counter would let anyone lock the key out for
+            every client.
         device_id: Device id from a valid device cookie for ``username``
             (see :func:`device_id_from_cookie`), or None.
     """
 
     client_ip: str | None
-    username: str
+    username: str | None
     device_id: str | None
 
 
@@ -338,7 +341,9 @@ class LoginThrottle:
             if attempt.device_id is not None:
                 wait = self._by_device.retry_after(attempt.device_id)
             else:
-                wait = self._by_username.retry_after(attempt.username)
+                wait = 0.0
+                if attempt.username is not None:
+                    wait = self._by_username.retry_after(attempt.username)
                 if attempt.client_ip:
                     ip_wait = self._by_ip.retry_after(_ip_key(attempt.client_ip))
                     wait = max(wait, ip_wait)
@@ -351,7 +356,7 @@ class LoginThrottle:
                 self._by_ip.record_failure(_ip_key(attempt.client_ip))
             if attempt.device_id is not None:
                 self._by_device.record_failure(attempt.device_id)
-            else:
+            elif attempt.username is not None:
                 self._by_username.record_failure(attempt.username)
 
     def record_success(self, attempt: LoginAttempt) -> None:
@@ -361,7 +366,8 @@ class LoginThrottle:
                 self._by_ip.reset(_ip_key(attempt.client_ip))
             if attempt.device_id is not None:
                 self._by_device.reset(attempt.device_id)
-            self._by_username.reset(attempt.username)
+            if attempt.username is not None:
+                self._by_username.reset(attempt.username)
 
 
 def _parse_client_address(
