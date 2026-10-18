@@ -343,6 +343,50 @@ class TestTiming:
 
         assert (node.runtime_ms, node.total_runtime_ms) == (2000, 3000)
 
+    @pytest.mark.parametrize(
+        ("events", "expected"),
+        [
+            # 0.4.1: worker events carry a hostname, a main-process FAILURE
+            # doesn't (and says retries=0). Attempt 1 finished on A first.
+            (
+                [(S, 1, 0, "a"), (S, 3, 1, "a"), (OK, 4, 1, "a"), (FAIL, 20, 0, None)],
+                (FAIL, 19000, 19000),
+            ),
+            # Attempt 0 (on A) ends last with its own SUCCESS (throw=False).
+            (
+                [(S, 1, 0, "a"), (S, 3, 1, "b"), (OK, 4, 1, "b"), (OK, 20, 0, "a")],
+                (OK, 19000, 19000),
+            ),
+            # No hostnames at all (0.4.0 and earlier): the events cannot tell the
+            # runs apart, so attempt 1's start pairs with the late FAILURE.
+            (
+                [
+                    (S, 1, 0, None),
+                    (S, 3, 1, None),
+                    (OK, 4, 1, None),
+                    (FAIL, 20, 0, None),
+                ],
+                (FAIL, 17000, 17000),
+            ),
+        ],
+        ids=["0.4.1-failure-last", "success-last-other-worker", "no-hostnames"],
+    )
+    def test_finished_runs_never_end_again(
+        self,
+        events: list[tuple[TaskState, float, int, str | None]],
+        expected: tuple[object, ...],
+    ) -> None:
+        # A SUCCESS/FAILURE that isn't the final event closes its own run, so
+        # a later end can't pair with that finished run.
+        node = _node(
+            *(
+                _event(state, at, retries=retries, hostname=host)
+                for state, at, retries, host in events
+            )
+        )
+
+        assert (node.state, node.runtime_ms, node.total_runtime_ms) == expected
+
     def test_end_without_worker_closes_the_latest_run(self) -> None:
         # A FAILURE without a worker (from an older worker's main process)
         # closes the latest unfinished run: A's second run, not B's.

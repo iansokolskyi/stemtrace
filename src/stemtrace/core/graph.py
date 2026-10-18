@@ -171,7 +171,8 @@ def _ms(delta: timedelta) -> int:
 
 
 # An unfinished run's key: its worker and attempt. Events without a worker
-# (workers before 0.5) share one key, so they pair as they always did.
+# (workers up to 0.4.0, and 0.4.1's main-process FAILURE) share one key, so
+# they pair as they always did.
 _RunKey = tuple[str | None, int | None]
 _NO_WORKER: _RunKey = (None, None)
 
@@ -383,7 +384,7 @@ class TaskNode(BaseModel):
         if final is None or final.state not in _TERMINAL_STATES:
             return None
         ordered = sorted(
-            (e for e in self.events if e.state in (TaskState.STARTED, TaskState.RETRY)),
+            (e for e in self.events if e is not final and e.state != TaskState.PENDING),
             key=_precedence,
         )
         runs: list[tuple[TaskEvent, TaskEvent]] = []
@@ -395,13 +396,22 @@ class TaskNode(BaseModel):
                 open_runs.pop(key, None)
                 open_runs[key] = event  # last in insertion order
                 continue
+            if event.state == TaskState.RECEIVED:
+                continue
+            if event is not final and event.state in _TERMINAL_STATES:
+                # An attempt that ended in its own SUCCESS/FAILURE before the
+                # final event (retry(throw=False)): closed and left out. Without
+                # a worker (0.4.0 and earlier) the run can't be told apart.
+                if event.hostname is not None:
+                    open_runs.pop(_run_key(event), None)
+                continue
             started = _run_start(open_runs, event)
             if started is not None:
                 runs.append((started, event))
         if not runs or runs[-1][1] is not final:
             return None
-        # Only an older worker's main-process FAILURE: this release's workers
-        # give it its attempt and worker.
+        # Only an older worker's main-process FAILURE (no worker, retries=0
+        # whatever the attempt): this release's workers give it both.
         from_main_process = (
             final.state == TaskState.FAILURE
             and final.retries == 0
