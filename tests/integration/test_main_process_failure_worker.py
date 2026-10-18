@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -26,6 +27,7 @@ from celery import Celery, chain, chord, group
 from celery.canvas import Signature
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent
+from stemtrace.core.graph import TaskGraph
 from stemtrace.core.ports import ClosableTransport
 from stemtrace.library.signals import connect_signals, disconnect_signals
 from stemtrace.transports import get_transport
@@ -105,6 +107,15 @@ SHAPES: dict[str, Shape] = {
 }
 
 
+# Chains whose first step is hard-limited in its on_success handler, after Celery
+# sent the second step. In "ran" the later steps finish before the limit; in
+# "running" the second is still running at the limit and the third not yet sent.
+LATE_CHAINS = {
+    "ran": ["mp.late_first", "mp.ok", "mp.ok", "mp.ok"],
+    "running": ["mp.late_first", "mp.slow", "mp.ok"],
+}
+
+
 class Scenario:
     """One canvas sent for one failure path, and the events its tasks produced."""
 
@@ -125,23 +136,28 @@ class Scenario:
                 return role
         return "<id>"
 
-    def failures(self) -> dict[str, tuple[Any, ...]]:
-        """Each role's FAILURE, as the fields every failure path must agree on."""
-        return {
-            self.token(e.task_id) or "": (
-                self.token(e.parent_id),
-                self.token(e.root_id),
-                self.token(e.group_id),
-                self.token(e.chord_id),
-                self.token(e.chord_callback_id),
-                e.hostname is not None,
-                e.queue is not None,
-                e.routing_key is not None,
-                e.retries,
-            )
-            for e in self.events
-            if e.state == TaskState.FAILURE
-        }
+    def failures(self) -> dict[str, list[tuple[Any, ...]]]:
+        """Each role's FAILUREs, as the fields every failure path must agree on.
+
+        A list per role, so a task that gets two FAILUREs differs from one that gets one.
+        """
+        failures: dict[str, list[tuple[Any, ...]]] = {}
+        for e in self.events:
+            if e.state == TaskState.FAILURE:
+                failures.setdefault(self.token(e.task_id) or "", []).append(
+                    (
+                        self.token(e.parent_id),
+                        self.token(e.root_id),
+                        self.token(e.group_id),
+                        self.token(e.chord_id),
+                        self.token(e.chord_callback_id),
+                        e.hostname is not None,
+                        e.queue is not None,
+                        e.routing_key is not None,
+                        e.retries,
+                    )
+                )
+        return failures
 
 
 class Run:
@@ -156,6 +172,14 @@ class Run:
         self.nodename = f"mp-{suffix}@localhost"
         self.client = redis.from_url(REDIS_URL)
         self.scenarios: dict[tuple[str, str], Scenario] = {}
+        # Each LATE_CHAINS chain's task IDs by step, and its events.
+        self.late_ids = {
+            name: {f"s{i}": str(uuid.uuid4()) for i in range(1, len(tasks) + 1)}
+            for name, tasks in LATE_CHAINS.items()
+        }
+        self.late_events: dict[str, list[TaskEvent]] = {
+            name: [] for name in LATE_CHAINS
+        }
 
     def events(self) -> list[TaskEvent | WorkerEvent]:
         """Every event published to the run's stream so far."""
@@ -177,9 +201,17 @@ class Run:
         }
         for scenario in self.scenarios.values():
             scenario.events = []
+        self.late_events = {name: [] for name in LATE_CHAINS}
+        late = {
+            task_id: name
+            for name, steps in self.late_ids.items()
+            for task_id in steps.values()
+        }
         for event in self.events():
             if isinstance(event, TaskEvent) and event.task_id in by_id:
                 by_id[event.task_id].events.append(event)
+            elif isinstance(event, TaskEvent) and event.task_id in late:
+                self.late_events[late[event.task_id]].append(event)
 
     def wait(self, ready: Callable[[], bool], seconds: float) -> bool:
         """Poll until ``ready()``; False once ``seconds`` have passed."""
@@ -198,6 +230,16 @@ class Run:
         """Whether every scenario's failing task has its FAILURE."""
         self.collect()
         return all("x" in s.failures() for s in self.scenarios.values())
+
+    def late_chains_have(self, state: TaskState, steps: tuple[str, ...]) -> bool:
+        """Whether, in every late chain, each of ``steps`` has an event in ``state``."""
+        self.collect()
+        return all(
+            (task_id, state) in {(e.task_id, e.state) for e in self.late_events[name]}
+            for name, ids in self.late_ids.items()
+            for step, task_id in ids.items()
+            if step in steps
+        )
 
     def all_failures_in(self) -> bool:
         """Whether every scenario has the FAILURE of each task its shape fails."""
@@ -243,6 +285,16 @@ def _stop_worker(proc: subprocess.Popen[bytes]) -> None:
         proc.wait()
 
 
+def _send_late_chains(sender: Celery, run: Run) -> None:
+    for name, tasks in LATE_CHAINS.items():
+        chain(
+            *(
+                sender.signature(task).set(task_id=run.late_ids[name][f"s{i}"])
+                for i, task in enumerate(tasks, start=1)
+            )
+        ).apply_async()
+
+
 def _send(sender: Celery, scenario: Scenario) -> None:
     ids = scenario.roles
 
@@ -281,7 +333,25 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Run]:
         assert run.wait(run.primary_failures_in, TIMEOUT_SECONDS), run.worker_log()
         # The unrun steps' FAILUREs trail the failing task's, in the same handler.
         run.wait(run.all_failures_in, TRAILING_SECONDS)
-        run.collect()
+        # The late chains go once the pool is free, so their steps run before the limit.
+        connect_signals(transport)
+        try:
+            _send_late_chains(sender, run)
+        finally:
+            disconnect_signals()
+        # Every later step runs whatever stemtrace publishes, and the first step's
+        # FAILURE is the main process's; the later steps' FAILUREs trail it.
+        assert run.wait(
+            lambda: (
+                run.late_chains_have(TaskState.FAILURE, ("s1",))
+                and run.late_chains_have(TaskState.SUCCESS, ("s2", "s3", "s4"))
+            ),
+            TIMEOUT_SECONDS,
+        ), run.worker_log()
+        run.wait(
+            lambda: run.late_chains_have(TaskState.FAILURE, ("s2", "s3", "s4")),
+            TRAILING_SECONDS,
+        )
         yield run
     finally:
         _stop_worker(proc)
@@ -322,3 +392,72 @@ def test_failures_match_the_exception_ones(run: Run, shape: str, kind: str) -> N
     oracle = run.scenarios[shape, "exception"].failures()
 
     assert run.scenarios[shape, kind].failures() == oracle
+
+
+def _late_events(run: Run, name: str, step: str, state: TaskState) -> list[TaskEvent]:
+    task_id = run.late_ids[name][step]
+    return [
+        e for e in run.late_events[name] if e.task_id == task_id and e.state == state
+    ]
+
+
+def _late_limit_time(run: Run, name: str) -> datetime:
+    """When the main process recorded the failure: its last FAILURE in the chain."""
+    return max(
+        e.timestamp for e in run.late_events[name] if e.state == TaskState.FAILURE
+    )
+
+
+def _late_states(
+    run: Run, name: str, until: datetime | None = None
+) -> dict[str, TaskState]:
+    """The later steps' node states, from the events up to ``until`` (default: all)."""
+    steps = {task_id: step for step, task_id in run.late_ids[name].items()}
+    graph = TaskGraph()
+    for event in run.late_events[name]:
+        if until is None or event.timestamp <= until:
+            graph.add_event(event)
+    return {
+        steps[task_id]: node.state
+        for task_id, node in graph.nodes.items()
+        if steps[task_id] != "s1"
+    }
+
+
+# The main process records a failure after the pool process already sent the next
+# step, so its request.chain still lists every later step (stemtrace publishes a
+# FAILURE for each, as celery's backend stores one: celery 5.6.3 backends/base.py
+# mark_as_failure). The tests below pin what that shows; docs/graphs.md says it.
+def test_late_failure_fails_the_later_steps_that_already_ran(run: Run) -> None:
+    limit = _late_limit_time(run, "ran")
+
+    for step in ("s2", "s3", "s4"):
+        [success] = _late_events(run, "ran", step, TaskState.SUCCESS)
+        [failure] = _late_events(run, "ran", step, TaskState.FAILURE)
+        assert success.timestamp < limit
+        assert failure.hostname is None
+    # The later FAILURE wins over the earlier SUCCESS.
+    assert _late_states(run, "ran") == dict.fromkeys(
+        ("s2", "s3", "s4"), TaskState.FAILURE
+    )
+
+
+def test_late_failure_shows_running_and_unsent_steps_failed_until_they_finish(
+    run: Run,
+) -> None:
+    limit = _late_limit_time(run, "running")
+    [s2_started] = _late_events(run, "running", "s2", TaskState.STARTED)
+    [s2_success] = _late_events(run, "running", "s2", TaskState.SUCCESS)
+    [s3_pending] = _late_events(run, "running", "s3", TaskState.PENDING)
+    [s3_failure] = _late_events(run, "running", "s3", TaskState.FAILURE)
+
+    # At the limit s2 is running and s3 is not sent yet (its FAILURE precedes its PENDING).
+    assert s2_started.timestamp < limit < s2_success.timestamp
+    assert s3_failure.timestamp < s3_pending.timestamp
+    assert _late_states(run, "running", until=limit) == dict.fromkeys(
+        ("s2", "s3"), TaskState.FAILURE
+    )
+    # Each step's own result then replaces its FAILURE.
+    assert _late_states(run, "running") == dict.fromkeys(
+        ("s2", "s3"), TaskState.SUCCESS
+    )
