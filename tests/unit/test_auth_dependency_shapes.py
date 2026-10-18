@@ -6,11 +6,12 @@
 from typing import Any
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, params
 from fastapi.testclient import TestClient
 
 import stemtrace
 from stemtrace.core.exceptions import ConfigurationError
+from stemtrace.server.fastapi import StemtraceExtension
 from stemtrace.server.fastapi.api_key import API_KEY_ENV_VAR
 
 KEY = "0123456789abcdef0123456789abcdef"
@@ -52,6 +53,12 @@ REFUSED: dict[str, Any] = {
     "lambda": lambda request: None,
     "non-callable": 5,
     "string": "require_admin",
+    # A Depends with no callable passes isinstance: FastAPI resolves it to the
+    # wrapper's own annotation (fastapi 0.143.1) and the app boots.
+    "empty-Depends": Depends(),
+    "Depends-None": Depends(None),
+    "empty-Security": Security(),
+    "Depends-subclass-without-callable": type("_Marked", (params.Depends,), {})(),
 }
 
 
@@ -112,3 +119,49 @@ def test_anything_but_a_depends_is_refused_at_setup(
 def test_create_router_refuses_anything_but_a_depends(shape: str) -> None:
     with pytest.raises(ConfigurationError, match=r"Depends\(\.\.\.\)"):
         stemtrace.create_router(auth_dependency=REFUSED[shape], api_key=KEY)
+
+
+def _shape(app: FastAPI) -> tuple[object, ...]:
+    return (
+        list(app.routes),
+        list(app.user_middleware),
+        app.router.lifespan_context,
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(REFUSED))
+def test_a_refused_dependency_leaves_the_app_unchanged_with_form_login(
+    shape: str,
+) -> None:
+    app = FastAPI()
+    before = _shape(app)
+
+    with pytest.raises(ConfigurationError, match=r"Depends\(\.\.\.\)"):
+        stemtrace.init_app(
+            app,
+            broker_url="memory://",
+            embedded_consumer=False,
+            serve_ui=False,
+            auth_dependency=REFUSED[shape],
+            login_username="admin",
+            login_password="hunter2",
+            login_secret="s" * 32,
+        )
+
+    assert _shape(app) == before
+
+
+def test_extension_init_app_refused_dependency_leaves_the_app_unchanged() -> None:
+    app = FastAPI()
+    before = _shape(app)
+    extension = StemtraceExtension(
+        broker_url="memory://",
+        embedded_consumer=False,
+        serve_ui=False,
+        auth_dependency=Depends(),
+    )
+
+    with pytest.raises(ConfigurationError, match=r"Depends\(\.\.\.\)"):
+        extension.init_app(app)
+
+    assert _shape(app) == before

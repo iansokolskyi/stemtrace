@@ -40,6 +40,7 @@ from stemtrace.server.fastapi.api_key import configured_api_key
 from stemtrace.server.fastapi.form_auth import FormAuthConfig, resolve_session_secret
 from stemtrace.server.fastapi.form_auth_middleware import create_form_auth_middleware
 from stemtrace.server.fastapi.login_routes import create_login_router
+from stemtrace.server.fastapi.router import check_auth_dependency
 from stemtrace.server.groups import GroupsInput, configured_groups
 from stemtrace.transports import get_transport as _get_transport
 
@@ -260,7 +261,9 @@ def init_app(
     Raises:
         ConfigurationError: If no broker URL can be determined, the groups
             are invalid or their file can't be loaded, or the API key is too
-            short or has invalid characters.
+            short or has invalid characters, or ``auth_dependency`` isn't a
+            ``Depends(...)`` or ``Security(...)`` that wraps a callable (the
+            app is left unchanged).
     """
     if broker_url is None:
         broker_url = os.getenv("STEMTRACE_BROKER_URL")
@@ -281,6 +284,7 @@ def init_app(
         ).strip() or None
 
     # Validated before anything is installed on the app.
+    check_auth_dependency(auth_dependency)
     group_config = configured_groups(groups)
     effective_api_key = configured_api_key(api_key)
 

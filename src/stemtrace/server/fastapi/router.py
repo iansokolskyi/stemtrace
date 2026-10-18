@@ -25,6 +25,26 @@ if TYPE_CHECKING:
     from stemtrace.server.groups import GroupsInput
 
 
+def check_auth_dependency(auth_dependency: Any) -> None:
+    """Refuse an ``auth_dependency`` that isn't a ``Depends(...)`` with a callable.
+
+    Raises:
+        ConfigurationError: If it is neither None, nor a ``Depends(...)`` or
+            ``Security(...)`` that wraps a callable.
+    """
+    if auth_dependency is None:
+        return
+    # A Depends with no callable passes isinstance; fastapi 0.143.1 then
+    # resolves it to the wrapper's own annotation, so the app boots.
+    if not isinstance(auth_dependency, params.Depends) or (
+        auth_dependency.dependency is None
+    ):
+        raise ConfigurationError(
+            "auth_dependency must be a FastAPI dependency: wrap the callable in "
+            "Depends(...), e.g. auth_dependency=Depends(require_admin)."
+        )
+
+
 def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): positional callers must keep working
     store: GraphStore | None = None,
     consumer: AsyncEventConsumer | None = None,
@@ -68,13 +88,10 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         ConfigurationError: Here, not on the first request, if ``groups`` is
             invalid or its file can't be loaded, or ``api_key`` is shorter
             than 16 characters or has characters other than visible ASCII, or
-            ``auth_dependency`` isn't a ``Depends(...)`` or ``Security(...)``.
+            ``auth_dependency`` isn't a ``Depends(...)`` or ``Security(...)`` that
+            wraps a callable.
     """
-    if auth_dependency is not None and not isinstance(auth_dependency, params.Depends):
-        raise ConfigurationError(
-            "auth_dependency must be a FastAPI dependency: wrap the callable in "
-            "Depends(...), e.g. auth_dependency=Depends(require_admin)."
-        )
+    check_auth_dependency(auth_dependency)
     if store is None:
         store = GraphStore()
     if ws_manager is None:
