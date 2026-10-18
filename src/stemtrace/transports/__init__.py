@@ -19,6 +19,27 @@ _SCHEME_ALIASES: dict[str, str] = {
     "pyamqp": "amqp",
 }
 
+_BROKER_KINDS: dict[str, str] = {
+    "redis": "redis",
+    "amqp": "rabbitmq",
+    "memory": "memory",
+}
+
+
+def broker_kind(url: str | None) -> str | None:
+    """Name the kind of broker a URL points to: ``redis``, ``rabbitmq`` or ``memory``.
+
+    Only the scheme is read, so nothing from the URL (host, credentials)
+    leaks into the answer.
+
+    Returns:
+        The kind, or None without a URL or for an unsupported scheme.
+    """
+    if not url:
+        return None
+    scheme = urlparse(url).scheme.lower()
+    return _BROKER_KINDS.get(_SCHEME_ALIASES.get(scheme, scheme))
+
 
 def get_transport(
     url: str, prefix: str = "stemtrace", ttl: int = 86400
@@ -42,4 +63,4 @@ def get_transport(
     raise UnsupportedBrokerError(scheme)
 
 
-__all__ = ["get_transport"]
+__all__ = ["broker_kind", "get_transport"]
