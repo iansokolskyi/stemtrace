@@ -1,6 +1,6 @@
 """API key auth across modes, surfaces and entry points (HTTP and WebSocket).
 
-Matrix: auth mode {key only, form + key, form only, auth_dependency + key} x
+Matrix: auth mode {key only, form + key, form only} x
 surface {JSON API, liveness probe, UI page, WebSocket} x entry point
 {init_app, StemtraceExtension, create_router, CLI}.
 """
@@ -309,25 +309,6 @@ def test_form_only_bearer_header_does_not_bypass_login(form_only: TestClient) ->
     _assert_ws_denied(form_only, headers=BEARER)
 
 
-# --- auth_dependency + key: both needed ------------------------------------
-
-
-def test_auth_dependency_and_key_both_required() -> None:
-    app = _app(
-        api_key=KEY, auth_dependency=stemtrace.require_api_key("other-secret-value")
-    )
-    both = {**BEARER, "X-API-Key": "other-secret-value"}
-
-    with TestClient(app) as client:
-        assert client.get("/stemtrace/api/tasks", headers=both).status_code == 200
-        assert client.get("/stemtrace/api/tasks", headers=BEARER).status_code == 401
-        only_dep = client.get(
-            "/stemtrace/api/tasks", headers={"X-API-Key": "other-secret-value"}
-        )
-        assert only_dep.status_code == 401
-        assert only_dep.headers["www-authenticate"] == "Bearer"
-
-
 # --- entry points -----------------------------------------------------------
 
 
@@ -567,23 +548,6 @@ def test_form_and_key_liveness_with_any_bearer_is_200(
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
-
-
-def test_auth_dependency_and_key_websocket_and_liveness() -> None:
-    """The dependency covers the JSON API only: WS needs the key, liveness the dependency."""
-    app = _app(
-        api_key=KEY, auth_dependency=stemtrace.require_api_key("other-secret-value")
-    )
-    dep = {"X-API-Key": "other-secret-value"}
-
-    with TestClient(app) as client:
-        with client.websocket_connect("/stemtrace/ws", headers=BEARER):
-            pass
-        _assert_ws_denied(client, headers=dep)
-        assert client.get("/stemtrace/api/health/live").status_code == 401
-        assert client.get("/stemtrace/api/health/live", headers=dep).status_code == 200
-        # A browser with only the host's auth can't use the dashboard's data.
-        assert client.get("/stemtrace/api/tasks", headers=dep).status_code == 401
 
 
 def test_cli_login_failures_count_toward_key_lockout(

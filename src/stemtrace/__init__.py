@@ -248,10 +248,11 @@ def init_app(
         api_key: Require ``Authorization: Bearer <key>`` on the JSON API (not
             the liveness probe) and the WebSocket, for scripts and coding
             agents. With the form login, a session cookie also passes; with
-            ``auth_dependency``, the JSON API needs both (the WebSocket, which
-            the dependency doesn't cover, needs the key). At least 16 visible ASCII
-            characters. If None or blank, uses the STEMTRACE_API_KEY env var
-            (blank means unset).
+            ``auth_dependency``, a valid key skips the dependency and any other
+            request goes through it (the WebSocket, which the dependency doesn't
+            cover, needs the key). At least 16 visible ASCII characters. If
+            None or blank, uses the STEMTRACE_API_KEY env var (blank means
+            unset).
 
     Returns:
         The initialized StemtraceExtension instance.

@@ -103,10 +103,11 @@ class StemtraceExtension:
                 Unlike ``init_app()``, doesn't read ``STEMTRACE_GROUPS``.
             api_key: Require ``Authorization: Bearer <key>`` on the JSON API
                 (not the liveness probe) and the WebSocket. With form login, a
-                valid session cookie also passes; with ``auth_dependency``, the
-                JSON API needs both (the WebSocket, which the dependency doesn't
-                cover, needs the key). At least 16 visible ASCII characters. Unlike
-                ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
+                valid session cookie also passes; with ``auth_dependency``, a
+                valid key skips the dependency and any other request goes through
+                it (the WebSocket, which the dependency doesn't cover, needs the
+                key). At least 16 visible ASCII characters. Unlike ``init_app()``,
+                doesn't read ``STEMTRACE_API_KEY``.
 
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be

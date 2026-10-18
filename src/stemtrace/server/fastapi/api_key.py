@@ -2,10 +2,10 @@
 
 One key (``init_app(api_key=...)``, ``--api-key`` or ``STEMTRACE_API_KEY``) lets
 scripts and coding agents read the API without the browser login. With form login,
-a valid session cookie *or* the key passes; with a custom ``auth_dependency``, a
-JSON API request needs both (FastAPI runs every router dependency), while the
-WebSocket needs only the key. Failed attempts are throttled per client IP by the
-login's ``LoginThrottle``. The key is never logged. See docs/security.md.
+a valid session cookie *or* the key passes; with a custom ``auth_dependency``, the
+key *or* the dependency does (a valid key skips it). The WebSocket takes the key or
+a session cookie only. Failed attempts are throttled per client IP by the login's
+``LoginThrottle``. The key is never logged. See docs/security.md.
 """
 
 from __future__ import annotations
@@ -18,9 +18,18 @@ import secrets
 from dataclasses import dataclass
 from typing import Any, Final
 
-from fastapi import Depends, HTTPException, Request, status
+# Runtime imports: FastAPI resolves the dependencies' annotations when registering routes.
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 
 from stemtrace.core.exceptions import ConfigurationError
+from stemtrace.server.fastapi.dependency_runner import DependencyRunner
 from stemtrace.server.fastapi.form_auth import (
     FormAuthConfig,
     SessionStatus,
@@ -148,7 +157,13 @@ class ApiKeyGuard:
         self._key = api_key.encode("ascii")
         self._throttle = throttle
 
-    def check(self, token: str | None, client_ip: str | None) -> KeyCheck:
+    def check(
+        self,
+        token: str | None,
+        client_ip: str | None,
+        *,
+        count_failure: bool = True,
+    ) -> KeyCheck:
         """Check a presented key.
 
         The lockout is checked before the key, as ``POST /login`` does:
@@ -160,22 +175,38 @@ class ApiKeyGuard:
             token: Key presented by the client (None if it sent none).
             client_ip: Client address; None skips throttling (e.g. a Unix
                 socket), as the login does.
+            count_failure: Count a wrong key against the IP. Pass False when
+                something else may still admit the request; then call
+                :meth:`record_failure` if nothing does.
         """
         if token is None:
             return KeyCheck(KeyStatus.ABSENT)
-        attempt = LoginAttempt(
-            client_ip=client_ip or None, username=None, device_id=None
-        )
-        wait = self._throttle.retry_after(attempt)
+        wait = self._throttle.retry_after(_attempt(client_ip))
         if wait:
             return KeyCheck(KeyStatus.THROTTLED, wait)
         if secrets.compare_digest(token.encode("utf-8"), self._key):
             return KeyCheck(KeyStatus.VALID)
-        self._throttle.record_failure(attempt)
-        wait = self._throttle.retry_after(attempt)
+        if not count_failure:
+            return KeyCheck(KeyStatus.INVALID)
+        wait = self.record_failure(client_ip)
         if wait:
             return KeyCheck(KeyStatus.THROTTLED, wait)
         return KeyCheck(KeyStatus.INVALID)
+
+    def record_failure(self, client_ip: str | None) -> int:
+        """Count a failed key attempt against the IP.
+
+        Returns:
+            Seconds until the IP may try again; 0 if this failure didn't lock it.
+        """
+        attempt = _attempt(client_ip)
+        self._throttle.record_failure(attempt)
+        return self._throttle.retry_after(attempt)
+
+
+def _attempt(client_ip: str | None) -> LoginAttempt:
+    """A key attempt counts against the client's IP only."""
+    return LoginAttempt(client_ip=client_ip or None, username=None, device_id=None)
 
 
 def has_valid_session(cookies: dict[str, str], config: FormAuthConfig | None) -> bool:
@@ -184,6 +215,26 @@ def has_valid_session(cookies: dict[str, str], config: FormAuthConfig | None) ->
         return False
     status_ = check_session_cookie(cookies.get(config.cookie_name), config)
     return status_ is SessionStatus.VALID
+
+
+def _unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _too_many_attempts(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many failed API key attempts",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
 
 
 def api_key_dependency(
@@ -201,31 +252,68 @@ def api_key_dependency(
         route_name = getattr(request.scope.get("route"), "name", None)
         if route_name in PUBLIC_ROUTE_NAMES:
             return
-        client_ip = request.client.host if request.client else None
         result = guard.check(
-            bearer_token(request.headers.get("authorization")), client_ip
+            bearer_token(request.headers.get("authorization")), _client_ip(request)
         )
         if result.status is KeyStatus.VALID:
             return
         if result.status is KeyStatus.THROTTLED:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many failed API key attempts",
-                headers={"Retry-After": str(result.retry_after)},
-            )
+            raise _too_many_attempts(result.retry_after)
         if result.status is KeyStatus.ABSENT and has_valid_session(
             dict(request.cookies), form_auth_config
         ):
             return
-        detail = (
+        raise _unauthorized(
             "Invalid API key"
             if result.status is KeyStatus.INVALID
             else "Authentication required"
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=detail,
-            headers={"WWW-Authenticate": "Bearer"},
+
+    return Depends(_verify)
+
+
+def api_key_or_dependency(
+    guard: ApiKeyGuard,
+    form_auth_config: FormAuthConfig | None,
+    auth_dependency: Any,
+) -> Any:
+    """Create the router dependency that admits a valid key, else defers to ``auth_dependency``.
+
+    A valid key skips ``auth_dependency``. Any other request must pass the session
+    check (with form login) and ``auth_dependency``, whose error is the response.
+    A key nothing admitted counts as a failed attempt, and a lockout answers 429.
+    """
+    runner = DependencyRunner(auth_dependency)
+
+    async def _verify(
+        request: Request,
+        response: Response,
+        background_tasks: BackgroundTasks,
+    ) -> None:
+        request.scope[GATE_SCOPE_KEY] = True
+        client_ip = _client_ip(request)
+        # Not counted yet: a Bearer token meant for auth_dependency (a JWT) is no failure.
+        result = guard.check(
+            bearer_token(request.headers.get("authorization")),
+            client_ip,
+            count_failure=False,
         )
+        if result.status is KeyStatus.VALID:
+            return
+        try:
+            if form_auth_config is not None and not has_valid_session(
+                dict(request.cookies), form_auth_config
+            ):
+                raise _unauthorized("Authentication required")
+            await runner.run(request, response, background_tasks)
+        except Exception as exc:
+            # Always re-raised: this only decides whether the rejection also
+            # counts against the client's key attempts.
+            wait = result.retry_after
+            if result.status is KeyStatus.INVALID:
+                wait = guard.record_failure(client_ip)
+            if wait:
+                raise _too_many_attempts(wait) from exc
+            raise
 
     return Depends(_verify)

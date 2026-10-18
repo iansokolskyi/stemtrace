@@ -220,6 +220,39 @@ def test_guard_locks_ip_after_max_failures_even_for_right_key(
     assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
 
 
+def test_guard_uncounted_wrong_key_is_invalid_and_leaves_the_ip_unlocked(
+    guard: ApiKeyGuard,
+) -> None:
+    statuses = {
+        guard.check("wrong", "1.2.3.4", count_failure=False).status
+        for _ in range(LOGIN_IP_MAX_FAILURES * 2)
+    }
+
+    assert statuses == {KeyStatus.INVALID}
+    assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+
+
+def test_guard_record_failure_locks_the_ip_on_the_last_allowed_failure(
+    guard: ApiKeyGuard, clock: FakeClock
+) -> None:
+    waits = [guard.record_failure("1.2.3.4") for _ in range(LOGIN_IP_MAX_FAILURES)]
+
+    assert waits == [0] * (LOGIN_IP_MAX_FAILURES - 1) + [int(LOGIN_LOCKOUT_BASE_S)]
+    # Checked before comparing, even uncounted: the right key is still refused.
+    assert guard.check(KEY, "1.2.3.4", count_failure=False) == KeyCheck(
+        KeyStatus.THROTTLED, int(LOGIN_LOCKOUT_BASE_S)
+    )
+
+    clock.now += LOGIN_LOCKOUT_BASE_S
+    assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+
+
+def test_guard_record_failure_without_client_address_never_locks(
+    guard: ApiKeyGuard,
+) -> None:
+    assert {guard.record_failure(None) for _ in range(50)} == {0}
+
+
 def test_guard_right_key_does_not_clear_ip_failures(guard: ApiKeyGuard) -> None:
     for _ in range(LOGIN_IP_MAX_FAILURES - 1):
         guard.check("wrong", "1.2.3.4")

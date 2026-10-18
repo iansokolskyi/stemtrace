@@ -11,6 +11,7 @@ from stemtrace.server.api.websocket import create_websocket_router
 from stemtrace.server.fastapi.api_key import (
     ApiKeyGuard,
     api_key_dependency,
+    api_key_or_dependency,
     normalize_api_key,
 )
 from stemtrace.server.fastapi.login_throttle import LoginThrottle
@@ -39,8 +40,9 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     """Create API router. For embedded consumer, use StemtraceExtension.
 
     With ``form_auth_config``, a valid session cookie is accepted instead of the
-    API key. With ``auth_dependency`` too, a JSON API request needs both; the
-    WebSocket (not covered by ``auth_dependency``) needs the key.
+    API key. With ``auth_dependency`` too, a valid key skips it and any other
+    request goes through it; the WebSocket (not covered by ``auth_dependency``)
+    needs the key.
 
     Args:
         store: Graph store to serve; a new empty one if None.
@@ -89,10 +91,16 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         ws_manager, form_auth_config=form_auth_config, api_key_guard=guard
     )
 
+    # One dependency when both are set: FastAPI can't make one router dependency
+    # skip another, so the key gate runs auth_dependency itself when no key admits.
     dependencies: list[Any] = []
-    if guard is not None:
+    if guard is not None and auth_dependency is not None:
+        dependencies.append(
+            api_key_or_dependency(guard, form_auth_config, auth_dependency)
+        )
+    elif guard is not None:
         dependencies.append(api_key_dependency(guard, form_auth_config))
-    if auth_dependency is not None:
+    elif auth_dependency is not None:
         dependencies.append(auth_dependency)
 
     router.include_router(api_router, dependencies=dependencies)
