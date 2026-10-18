@@ -51,7 +51,8 @@ st tasks --data-urlencode "state=FAILURE" --data-urlencode "from_date=$SINCE" \
 st failures --data-urlencode "within=1h" |
   jq -r '.groups[] | [.count, (.exception_type // "-"), (.task_names | join(","))] | @tsv'
 
-# Finished runs, failure rate and workers for the last hour, against the hour before
+# Runs (SUCCESS/FAILURE/REVOKED/REJECTED, not IGNORED), failure rate and workers for the
+# last hour, against the hour before
 st overview --data-urlencode "within=1h" |
   jq '{runs, failure_rate, workers}'
 

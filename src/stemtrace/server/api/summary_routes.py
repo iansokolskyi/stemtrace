@@ -18,6 +18,7 @@ from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
     FailureGroupListResponse,
     FailureGroupResponse,
+    KpiCountResponse,
     KpiResponse,
     OverviewResponse,
     TimeSeriesResponse,
@@ -104,10 +105,10 @@ def _add_overview_route(
     ) -> OverviewResponse:
         """KPIs over the last ``within``, each with the window of equal length before it.
 
-        Runs are runs with an outcome (SUCCESS, FAILURE, REVOKED, REJECTED; not
-        IGNORED, a task that chose not to run), placed by their last event in lifecycle order.
-        The failure rate is FAILURE runs over those runs (0 with none). Workers are counted from worker events as the
-        server last saw them, without asking the workers.
+        Runs are tasks that ended SUCCESS, FAILURE, REVOKED or REJECTED (not
+        IGNORED: those chose not to run), placed by their last event in
+        lifecycle order. The failure rate is FAILURE runs over runs (0 with
+        none). Workers are counted from worker events, without asking them.
         """
         if from_date is not None:
             # Rejected rather than ignored, so a script never gets the
@@ -125,8 +126,10 @@ def _add_overview_route(
         return OverviewResponse(
             window=_window_response(window),
             baseline_window=_window_response(baseline),
-            runs=KpiResponse(value=current.runs, baseline=previous.runs),
-            failures=KpiResponse(value=current.failures, baseline=previous.failures),
+            runs=KpiCountResponse(value=current.runs, baseline=previous.runs),
+            failures=KpiCountResponse(
+                value=current.failures, baseline=previous.failures
+            ),
             runs_per_minute=KpiResponse(
                 value=current.runs_per_minute, baseline=previous.runs_per_minute
             ),

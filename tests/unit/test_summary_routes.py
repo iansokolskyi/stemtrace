@@ -66,7 +66,7 @@ def _client(
 
 
 def test_overview_compares_the_window_with_the_one_before(store: GraphStore) -> None:
-    # last hour: 3 finished (1 failed), 1 running; hour before: 1 finished, failed
+    # last hour: 3 runs (1 failed), 1 running; hour before: 1 run, failed
     for task_id, state, ago in [
         ("a", TaskState.SUCCESS, 5),
         ("b", TaskState.SUCCESS, 30),
@@ -132,6 +132,25 @@ def test_overview_places_a_run_at_its_last_event_under_its_state(
 
     assert body["runs"] == {"value": 1, "baseline": 0}
     assert body["failures"] == {"value": 0, "baseline": 0}
+
+
+def test_overview_late_stamped_pending_does_not_move_a_run(store: GraphStore) -> None:
+    """A PENDING whose sender's clock is ahead sorts first, so the run stays put."""
+    store.add_event(_event("a", TaskState.SUCCESS, 61))
+    store.add_event(_event("a", TaskState.PENDING, 30))
+
+    body = _client(store).get("/api/overview?within=1h").json()
+
+    assert body["runs"] == {"value": 0, "baseline": 1}
+
+
+def test_overview_counts_are_integers_in_json(store: GraphStore) -> None:
+    store.add_event(_event("a", TaskState.FAILURE, 5))
+
+    text = _client(store).get("/api/overview?within=1h").text
+
+    assert '"runs":{"value":1,"baseline":0}' in text
+    assert '"failures":{"value":1,"baseline":0}' in text
 
 
 def test_overview_window_edges(store: GraphStore) -> None:

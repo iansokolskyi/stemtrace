@@ -249,10 +249,17 @@ class TimeWindowResponse(BaseModel):
 
 
 class KpiResponse(BaseModel):
-    """A value for the window and the same value for the window before it."""
+    """A rate for the window and the same rate for the window before it."""
 
     value: float
     baseline: float
+
+
+class KpiCountResponse(BaseModel):
+    """A count for the window and the same count for the window before it."""
+
+    value: int
+    baseline: int
 
 
 class WorkerCountsResponse(BaseModel):
@@ -267,8 +274,8 @@ class OverviewResponse(BaseModel):
 
     window: TimeWindowResponse
     baseline_window: TimeWindowResponse
-    runs: KpiResponse
-    failures: KpiResponse
+    runs: KpiCountResponse
+    failures: KpiCountResponse
     runs_per_minute: KpiResponse
     failure_rate: KpiResponse
     workers: WorkerCountsResponse
