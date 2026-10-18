@@ -41,6 +41,7 @@ dependencies = [
     "typer>=0.16.0",  # first version whose --help works with click 8.2+ (passes make_metavar its ctx); verified by the test suite
     "uvicorn[standard]>=0.20.0",
     "httpx>=0.24.0",  # Required for healthchecks in Docker
+    "tomli>=1.2.2; python_version < '3.11'",  # task group TOML files on Python 3.10 (tomllib from 3.11); lowest version verified by the test suite (hatchling, in the test tools, needs 1.2.2)
 ]
 
 [project.optional-dependencies]
