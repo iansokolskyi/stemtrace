@@ -1,7 +1,6 @@
 """Tests for public API."""
 
 import logging
-import sys
 import warnings
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -597,7 +596,6 @@ class TestInitAppGroups:
 
         assert captured == {}
 
-    @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is Python 3.11+")
     def test_init_app_without_groups_reads_env_var_file(
         self,
         captured: dict[str, object],

@@ -244,7 +244,7 @@ def init_app(
             file. The first rule whose ``match`` globs match a task name wins;
             other tasks get their automatic group (from the task name). If
             None or blank, uses the STEMTRACE_GROUPS env var (a TOML file
-            path; blank means unset). TOML files need Python 3.11+.
+            path; blank means unset).
         api_key: Require ``Authorization: Bearer <key>`` on the JSON API (not
             the liveness probe) and the WebSocket, for scripts and coding
             agents. With the form login, a session cookie also passes; with
