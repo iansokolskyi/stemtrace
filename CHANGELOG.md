@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A group or chord is no longer split when the store evicts old tasks (`max_nodes`). Eviction took the oldest tasks one by one, so a group could lose its failed member and show `SUCCESS`, and a chord could lose its callback. A group or chord is now evicted with all its members (and a chord with its callback) once its newest member is among the oldest, so one eviction can free more than 10% of the store. A group bigger than 90% of `max_nodes` can't be held whole: its oldest members are evicted as before, and its state comes from the members still held.
+
 ## [0.4.1] - 2026-10-18
 
 **Highlights:**

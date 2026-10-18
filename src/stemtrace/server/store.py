@@ -101,6 +101,32 @@ def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     return max(member_times, default=_MIN_DATETIME), 1
 
 
+def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
+    """The graph's nodes, each GROUP/CHORD together with all it contains.
+
+    A container's ``children`` are its members (a chord's headers and its
+    callback); a member that is itself a container brings its own members.
+    """
+    owner = {
+        child_id: node.task_id
+        for node in graph.nodes.values()
+        if node.node_type != NodeType.TASK
+        for child_id in node.children
+    }
+
+    def top(node_id: str) -> str:
+        seen: set[str] = set()
+        while node_id in owner and node_id not in seen:
+            seen.add(node_id)
+            node_id = owner[node_id]
+        return node_id
+
+    units: dict[str, list[TaskNode]] = {}
+    for node in graph.nodes.values():
+        units.setdefault(top(node.task_id), []).append(node)
+    return list(units.values())
+
+
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the first timestamp for a node (including children for synthetic nodes)."""
     if node.first_seen is not None:
@@ -870,19 +896,28 @@ class GraphStore:
             return last_time
 
     def _maybe_evict(self) -> None:
-        """Evict oldest 10% when over capacity. Call with lock held.
+        """Evict the oldest units down to 90% of capacity. Call with lock held.
 
-        A GROUP/CHORD node is as old as its newest member and goes after it,
-        so a container isn't evicted while its members are still shown.
+        A unit is a GROUP/CHORD with its members (and a chord's callback), or
+        a task in no group; it is as old as its newest node. A group is
+        evicted whole, so its state and a chord's reason never come from part
+        of its members, and one eviction can free much more than 10%. A group
+        bigger than 90% of ``max_nodes`` can't be held whole: when it is the
+        oldest unit, its oldest members go, as single tasks do.
         """
         if len(self._graph.nodes) <= self._max_nodes:
             return
-
-        nodes_by_age = sorted(
-            self._graph.nodes.values(),
-            key=lambda n: _eviction_age(n, self._graph),
+        keep = int(self._max_nodes * 0.9)
+        units = sorted(
+            _eviction_units(self._graph),
+            key=lambda unit: max(_eviction_age(n, self._graph) for n in unit),
         )
-
-        to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)
-        for node in nodes_by_age[:to_remove]:
-            self._graph.remove_node(node.task_id)
+        for unit in units:
+            excess = len(self._graph.nodes) - keep
+            if excess <= 0:
+                return
+            if len(unit) > keep:
+                unit = sorted(unit, key=lambda n: _eviction_age(n, self._graph))
+                unit = unit[:excess]
+            for node in unit:
+                self._graph.remove_node(node.task_id)

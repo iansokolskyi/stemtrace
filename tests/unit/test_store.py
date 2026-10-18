@@ -2022,13 +2022,14 @@ class TestGraphStoreEvictionGroupLinks:
         self,
     ) -> None:
         store = GraphStore(max_nodes=20)
-        store.add_event(self._event("m1", 1, group_id="g"))
-        store.add_event(self._event("m2", 100, group_id="g"))
-        store.add_event(self._event("m3", 100, group_id="g"))
+        for i in range(1, 4):
+            store.add_event(self._event(f"m{i}", i, group_id="g"))
         for i in range(17):
-            store.add_event(self._event(f"x{i}", 10 + i))  # 21 nodes -> 18
+            store.add_event(self._event(f"x{i}", 10 + i))  # 21 nodes -> 17
+        assert store.get_node("group:g") is None
 
         store.add_event(self._event("m2", 101, TaskState.FAILURE, group_id="g"))
+        store.add_event(self._event("m3", 102, TaskState.SUCCESS, group_id="g"))
 
         group = store._graph.nodes["group:g"]
         assert group.parent_id is None
@@ -2037,7 +2038,7 @@ class TestGraphStoreEvictionGroupLinks:
         assert group.state == TaskState.FAILURE
         assert_graph_invariants(store._graph)
 
-    def test_eviction_keeps_group_while_its_newest_member_lives(self) -> None:
+    def test_eviction_keeps_group_whole_while_its_newest_member_lives(self) -> None:
         store = GraphStore(max_nodes=20)
         store.add_event(self._event("m1", 1, group_id="g"))
         store.add_event(self._event("m2", 100, group_id="g"))
@@ -2045,17 +2046,30 @@ class TestGraphStoreEvictionGroupLinks:
         for i in range(17):
             store.add_event(self._event(f"x{i}", 10 + i))
 
-        # 21 nodes -> down to 18: the three oldest tasks go, the group stays.
-        assert store.get_node("m1") is None
-        assert store.get_node("x0") is None
-        assert store.get_node("x1") is None
+        # 21 nodes -> down to 18: the group is as new as m3, so the three
+        # oldest plain tasks go and m1, though older, stays with its group.
+        assert [store.get_node(f"x{i}") for i in range(3)] == [None, None, None]
         group = store.get_node("group:g")
         assert group is not None
-        assert group.children == ["m2", "m3"]
-        assert store._graph.nodes["m2"].parent_id == "group:g"
+        assert group.children == ["m1", "m2", "m3"]
         assert_graph_invariants(store._graph)
 
-    def test_eviction_of_chord_callback_drops_it_from_chord_children(self) -> None:
+    def test_eviction_keeps_group_state_of_an_evicted_failure(self) -> None:
+        """Evicting a group's failed member alone made the group show SUCCESS."""
+        store = GraphStore(max_nodes=10)
+        store.add_event(self._event("m0", 1, TaskState.FAILURE, group_id="g"))
+        for i in range(1, 4):
+            store.add_event(self._event(f"m{i}", 1 + i, group_id="g"))
+        for i in range(6):
+            store.add_event(self._event(f"x{i}", 10 + i))
+
+        # 11 nodes: the group (newest member at 4s) is the oldest unit and goes whole.
+        assert sorted(store._graph.nodes) == [f"x{i}" for i in range(6)]
+        assert_graph_invariants(store._graph)
+
+    def test_eviction_of_a_chord_takes_its_callback_with_it(self) -> None:
+        """Before, the oldest task (the callback) went alone, leaving the
+        chord without it."""
         store = GraphStore(max_nodes=5)
         store.add_event(self._event("P", 50))
         store.add_event(self._event("cb", 1, parent_id="P"))
@@ -2063,12 +2077,26 @@ class TestGraphStoreEvictionGroupLinks:
             self._event("h1", 60, group_id="g", chord_callback_id="cb", parent_id="P")
         )
         store.add_event(self._event("x", 70))
-        store.add_event(self._event("y", 80))  # 6 nodes -> 4: cb, then P go
+        # 5 nodes. The callback is the oldest task, but it belongs to the
+        # chord, which is as new as h1 (60s): P goes first, then the chord
+        # with h1 and cb.
+        store.add_event(self._event("y", 80))  # 6 nodes -> 4, then 2
 
-        assert store.get_node("cb") is None
-        chord = store.get_node("group:g")
-        assert chord is not None
-        assert chord.children == ["h1"]
+        assert sorted(store._graph.nodes) == ["x", "y"]
+        assert_graph_invariants(store._graph)
+
+    def test_eviction_splits_a_group_bigger_than_the_store_oldest_first(self) -> None:
+        """A group over 90% of max_nodes can't be held whole: its oldest members go."""
+        store = GraphStore(max_nodes=10)
+        # Newest first, so arrival order isn't age order.
+        for i in range(11):
+            store.add_event(self._event(f"m{i}", 20 - i, group_id="g"))
+
+        # At 11 nodes (10 members and the group) -> 9: the two oldest, m9
+        # (11s) and m8 (12s), go; m10 brings it back to 10, the limit.
+        assert sorted(store._graph.nodes) == sorted(
+            ["group:g", "m10", *(f"m{i}" for i in range(8))]
+        )
         assert_graph_invariants(store._graph)
 
 
@@ -2280,3 +2308,77 @@ class TestWorkerSeenByTaskEvents:
         worker = registry.get_worker("celery@w1", 100)
         assert worker is not None
         assert worker.last_seen == _minutes_ago(1)
+
+
+def _units(nodes: dict[str, TaskNode]) -> dict[str, set[str]]:
+    """Each node's unit: everything reachable from its top container's children."""
+    owner = {
+        child: node.task_id
+        for node in nodes.values()
+        if node.node_type != NodeType.TASK
+        for child in node.children
+    }
+
+    def top(node_id: str) -> str:
+        seen: set[str] = set()
+        while node_id in owner and node_id not in seen:
+            seen.add(node_id)
+            node_id = owner[node_id]
+        return node_id
+
+    by_top: dict[str, set[str]] = {}
+    for node_id in nodes:
+        by_top.setdefault(top(node_id), set()).add(node_id)
+    return {node_id: unit for unit in by_top.values() for node_id in unit}
+
+
+def _random_event(rng: random.Random, i: int, ids: list[str]) -> TaskEvent:
+    kind = rng.choice(["task", "child", "member", "header", "callback"])
+    kw: dict[str, str] = {}
+    task_id = f"t{i}"
+    if kind == "child" and ids:
+        kw["parent_id"] = rng.choice(ids)
+    elif kind == "member":
+        kw["group_id"] = f"g{rng.randrange(3)}"
+    elif kind == "header":
+        c = rng.randrange(2)
+        kw.update(group_id=f"c{c}", chord_callback_id=f"cb{c}")
+    elif kind == "callback":
+        task_id = f"cb{rng.randrange(2)}"
+    state = rng.choice([TaskState.SUCCESS, TaskState.FAILURE, TaskState.STARTED])
+    return TaskEvent(
+        task_id=task_id,
+        name="tests.task",
+        state=state,
+        timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        + timedelta(seconds=i + rng.choice([0, 0, -5, 5])),
+        **kw,
+    )
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_eviction_never_splits_a_group_that_fits(seed: int) -> None:
+    """Over random stores of tasks, groups and chords: eviction removes a
+    group's (or chord's) members and container together, unless the group is
+    bigger than what eviction keeps (90% of max_nodes)."""
+    rng = random.Random(seed)
+    max_nodes = rng.randrange(4, 25)
+    keep = int(max_nodes * 0.9)
+    store = GraphStore(max_nodes=max_nodes)
+    ids: list[str] = []
+    for i in range(80):
+        before = dict(store._graph.nodes)
+        units = _units(before)
+        event = _random_event(rng, i, ids)
+        store.add_event(event)
+        ids.append(event.task_id)
+        after = store._graph.nodes
+
+        assert len(after) <= max_nodes, seed
+        removed = before.keys() - after.keys()
+        for node_id in removed:
+            unit = units[node_id]
+            # The new event may have joined this unit before the eviction.
+            if len(unit) + 1 <= keep:
+                assert not (unit & after.keys()), (seed, i, node_id, sorted(unit))
+        assert_graph_invariants(store._graph)
