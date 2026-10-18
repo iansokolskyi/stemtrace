@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,17 @@ class Run:
 
 
 TERMINAL = {TaskState.SUCCESS, TaskState.FAILURE}
+
+
+def _finished(run: "Run", task: str) -> bool:
+    """Whether ``task`` sent its last event (attempt 0's late FAILURE for one)."""
+    states = {e.state for e in run.task_events(task)}
+    if task == "ef.throw_false_then_hard_limit":
+        attempts = {(e.state, e.retries) for e in run.task_events(task)}
+        return {(TaskState.FAILURE, 0), (TaskState.SUCCESS, 1)} <= attempts
+    return bool(states & TERMINAL)
+
+
 TASKS = [
     "ef.default",
     "ef.routed",
@@ -145,6 +157,7 @@ TASKS = [
     "ef.retries_in_except",
     "ef.hard_limit",
     "ef.retry_then_hard_limit",
+    "ef.throw_false_then_hard_limit",
 ]
 
 
@@ -166,7 +179,7 @@ def _start_worker(run: Run) -> subprocess.Popen[bytes]:
                 APP_MODULE,
                 "worker",
                 "--pool=prefork",
-                "--concurrency=1",
+                "--concurrency=2",
                 f"--hostname={run.nodename}",
                 f"--queues={','.join(queues)}",
                 "--loglevel=INFO",
@@ -228,9 +241,7 @@ def run(
         finally:
             disconnect_signals()
         run.wait(
-            lambda: all(
-                any(e.state in TERMINAL for e in run.task_events(t)) for t in TASKS
-            ),
+            lambda: all(_finished(run, t) for t in TASKS),
             "a terminal event for every task",
         )
         yield run
@@ -339,7 +350,33 @@ def test_main_process_failure_of_a_retry_carries_its_attempt(run: Run) -> None:
     assert (failure.retries, failure.hostname) == (1, run.nodename)
     # The last run is attempt 1's, on one worker's clock (about the 1 s limit).
     assert node.runtime_ms is not None
-    assert node.runtime_ms == int(
-        (failure.timestamp - started_1.timestamp).total_seconds() * 1000
+    assert node.runtime_ms == (failure.timestamp - started_1.timestamp) // timedelta(
+        milliseconds=1
     )
     assert 900 <= node.runtime_ms <= 5000
+
+
+def test_main_process_failure_of_attempt_zero_after_attempt_one(run: Run) -> None:
+    # self.retry(throw=False): attempt 1 arrives and finishes while attempt 0
+    # still runs; attempt 0 then hits the hard time limit. Its FAILURE is
+    # attempt 0's, and attempt 1's run gets no runtime it never had.
+    events = run.task_events("ef.throw_false_then_hard_limit")
+    [failure] = [e for e in events if e.state == TaskState.FAILURE]
+    started_0 = run.event("ef.throw_false_then_hard_limit", TaskState.STARTED, 0)
+    started_1 = run.event("ef.throw_false_then_hard_limit", TaskState.STARTED, 1)
+    success_1 = run.event("ef.throw_false_then_hard_limit", TaskState.SUCCESS, 1)
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    node = graph.nodes[run.task_ids["ef.throw_false_then_hard_limit"]]
+
+    assert (failure.retries, failure.hostname) == (0, run.nodename)
+    ms = timedelta(milliseconds=1)
+    if success_1.timestamp < failure.timestamp:
+        # The usual order: attempt 0's FAILURE is the final event and ends
+        # attempt 0's own run (about the 3 s limit), never attempt 1's.
+        assert node.runtime_ms == (failure.timestamp - started_0.timestamp) // ms
+        assert node.runtime_ms >= 2900
+    else:
+        # Attempt 1 waited for a free pool process: its SUCCESS is final.
+        assert node.runtime_ms == (success_1.timestamp - started_1.timestamp) // ms

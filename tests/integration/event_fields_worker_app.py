@@ -88,6 +88,21 @@ def retry_then_hard_limit(self: Task) -> None:
     time.sleep(30)
 
 
+@app.task(
+    name="ef.throw_false_then_hard_limit",
+    bind=True,
+    time_limit=3,
+    max_retries=1,
+    default_retry_delay=0,
+)
+def throw_false_then_hard_limit(self: Task) -> None:
+    """Attempt 0 retries without raising and outlives the hard limit; attempt 1 is quick."""
+    if self.request.retries == 0:
+        self.retry(throw=False, countdown=0)
+        time.sleep(30)
+    time.sleep(0.3)
+
+
 @app.task(name="ef.retries_once", bind=True, max_retries=1, default_retry_delay=0)
 def retries_once(self: Task) -> None:
     """Retry once because of a user-defined exception, then succeed."""
