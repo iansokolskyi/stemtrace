@@ -76,10 +76,12 @@ pages work even if the server missed `worker_ready` events.
 
 ## Worker, queue and exception type
 
-A task that raises Celery's `Ignore` ends as **IGNORED**, and one that raises `Reject` without
-requeueing ends as **REJECTED** (with the reason as its exception). Both used to stay STARTED,
-because Celery sends no failure for them. A `Reject(requeue=True)` publishes nothing: the
-message runs again. `task.replace()` raises `Ignore` internally, but the replaced task isn't
+A task that raises Celery's `Ignore` ends as **IGNORED**, and one that raises `Reject` ends as
+**REJECTED**, with the reason as its exception (shown on the task page). Both used to stay
+STARTED, because Celery sends no failure for them. A `Reject(requeue=True)` publishes nothing on
+a task with `acks_late`: the message runs again. Without `acks_late` the worker acknowledged the
+message before the task ran, so the requeue does nothing and the task ends as REJECTED, as it
+does under eager `apply()`. `task.replace()` raises `Ignore` internally, but the replaced task isn't
 IGNORED: the replacement takes over its task ID and reports its own outcome. In a group, an
 ignored task ranks below every other state, so a group of finished and ignored tasks shows
 IGNORED. Workers older than this release send neither, and a server older than this release
