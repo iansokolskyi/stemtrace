@@ -45,6 +45,10 @@ WS_BEARER_PREFIX: Final[str] = "stemtrace.bearer."
 #: tell a request it deferred actually reached the key check.
 GATE_SCOPE_KEY: Final[str] = "stemtrace.api_key_checked"
 
+#: ``Retry-After`` while a client's wrong keys in flight cover the failures it
+#: has left: they resolve as soon as the app's dependency answers.
+API_KEY_BUSY_RETRY_AFTER_S: Final[int] = 1
+
 #: Route names the key doesn't guard (the liveness probe, used by container
 #: health checks that carry no credentials).
 PUBLIC_ROUTE_NAMES: Final[frozenset[str]] = frozenset({"stemtrace_health_live"})
@@ -164,23 +168,47 @@ class ApiKeyGuard:
         result = self.peek(token, client_ip)
         if result.status is not KeyStatus.INVALID:
             return result
-        self.record_failure(client_ip)
-        return self.peek(token, client_ip)
+        wait = self.record_failure(client_ip)
+        return KeyCheck(KeyStatus.THROTTLED, wait) if wait else result
 
     def peek(self, token: str | None, client_ip: str | None) -> KeyCheck:
-        """Check a presented key like :meth:`check`, without counting a failure."""
+        """Check a presented key like :meth:`check`, without counting a failure.
+
+        A client with as many wrong keys in flight as it has failures left
+        gets no comparison either (:meth:`hold`), so a burst can't try more
+        keys than a lockout allows.
+        """
         if token is None:
             return KeyCheck(KeyStatus.ABSENT)
-        wait = self._throttle.retry_after(_attempt(client_ip))
+        attempt = _attempt(client_ip)
+        wait = self._throttle.retry_after(attempt)
         if wait:
             return KeyCheck(KeyStatus.THROTTLED, wait)
+        if attempt.client_ip and not self._throttle.ip_has_capacity(attempt.client_ip):
+            return KeyCheck(KeyStatus.THROTTLED, API_KEY_BUSY_RETRY_AFTER_S)
         if secrets.compare_digest(token.encode("utf-8"), self._key):
             return KeyCheck(KeyStatus.VALID)
         return KeyCheck(KeyStatus.INVALID)
 
-    def record_failure(self, client_ip: str | None) -> None:
-        """Count a wrong key from ``client_ip`` toward its lockout."""
-        self._throttle.record_failure(_attempt(client_ip))
+    def record_failure(self, client_ip: str | None) -> int:
+        """Count a wrong key against ``client_ip``.
+
+        Returns:
+            Seconds until the client may try again; 0 if this failure didn't lock it.
+        """
+        attempt = _attempt(client_ip)
+        self._throttle.record_failure(attempt)
+        return self._throttle.retry_after(attempt)
+
+    def hold(self, client_ip: str | None) -> None:
+        """Count a wrong key in flight for ``client_ip`` until :meth:`release`."""
+        if client_ip:
+            self._throttle.hold_ip_attempt(client_ip)
+
+    def release(self, client_ip: str | None) -> None:
+        """End the in-flight count :meth:`hold` started."""
+        if client_ip:
+            self._throttle.release_ip_attempt(client_ip)
 
     def could_be_key(self, token: str) -> bool:
         """Whether ``token`` has the key's length (a token of another length is never it).
@@ -200,6 +228,15 @@ def has_valid_session(cookies: dict[str, str], config: FormAuthConfig | None) ->
         return False
     status_ = check_session_cookie(cookies.get(config.cookie_name), config)
     return status_ is SessionStatus.VALID
+
+
+def too_many_attempts(retry_after: int) -> HTTPException:
+    """The 429 a locked-out client gets, with ``Retry-After``."""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many failed API key attempts",
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 def api_key_dependency(
@@ -224,11 +261,7 @@ def api_key_dependency(
         if result.status is KeyStatus.VALID:
             return
         if result.status is KeyStatus.THROTTLED:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many failed API key attempts",
-                headers={"Retry-After": str(result.retry_after)},
-            )
+            raise too_many_attempts(result.retry_after)
         if result.status is KeyStatus.ABSENT and has_valid_session(
             dict(request.cookies), form_auth_config
         ):

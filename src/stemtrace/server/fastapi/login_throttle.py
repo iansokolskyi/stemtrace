@@ -198,6 +198,15 @@ class _BucketTable:
         now = self._clock()
         return max(0.0, min(self._wait(i, now) for i in self._slots(key)))
 
+    def failures_left(self, key: str) -> int:
+        """Failures ``key`` may still have before its next lockout (0 once locked)."""
+        now = self._clock()
+        counts = (
+            0 if self._is_forgotten(i, now) else int(self._counts[i])
+            for i in self._slots(key)
+        )
+        return max(0, self._max_failures - min(counts))
+
     def record_failure(self, key: str) -> None:
         """Count a failure for ``key`` in both of its buckets."""
         now = self._clock()
@@ -268,6 +277,8 @@ class LoginThrottle:
         # for other threads (sync test client, threaded server), never held
         # across I/O.
         self._lock = threading.Lock()
+        # Attempts in flight per IP key; only IPs with one in flight have an entry.
+        self._ip_in_flight: dict[str, int] = {}
         key = hash_key if hash_key is not None else secrets.token_bytes(32)
         self._by_ip, self._by_username, self._by_device = (
             _BucketTable(
@@ -311,6 +322,34 @@ class LoginThrottle:
                     ip_wait = self._by_ip.retry_after(_ip_key(attempt.client_ip))
                     wait = max(wait, ip_wait)
         return math.ceil(wait)
+
+    def ip_has_capacity(self, client_ip: str) -> bool:
+        """Whether ``client_ip`` may start an attempt whose failure isn't counted yet.
+
+        False while its attempts in flight already cover the failures it has
+        left before a lockout, so a burst can't try more keys than the lockout
+        allows. Always True with none in flight.
+        """
+        key = _ip_key(client_ip)
+        with self._lock:
+            held = self._ip_in_flight.get(key, 0)
+            return held == 0 or held < self._by_ip.failures_left(key)
+
+    def hold_ip_attempt(self, client_ip: str) -> None:
+        """Count an attempt in flight for ``client_ip`` until it is released."""
+        key = _ip_key(client_ip)
+        with self._lock:
+            self._ip_in_flight[key] = self._ip_in_flight.get(key, 0) + 1
+
+    def release_ip_attempt(self, client_ip: str) -> None:
+        """End an attempt counted by :meth:`hold_ip_attempt`."""
+        key = _ip_key(client_ip)
+        with self._lock:
+            left = self._ip_in_flight.get(key, 0) - 1
+            if left > 0:
+                self._ip_in_flight[key] = left
+            else:
+                self._ip_in_flight.pop(key, None)
 
     def record_failure(self, attempt: LoginAttempt) -> None:
         """Count a failed sign-in against the IP and the device or username."""

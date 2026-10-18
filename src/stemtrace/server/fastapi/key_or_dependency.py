@@ -9,11 +9,14 @@ dependency keeps FastAPI's own rules (sub-dependencies, ``dependency_overrides``
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, Final, cast
 
 from fastapi import APIRouter
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers
+from starlette.requests import Request
 from starlette.routing import Match
 
 from stemtrace.server.fastapi.api_key import (
@@ -22,6 +25,7 @@ from stemtrace.server.fastapi.api_key import (
     KeyStatus,
     api_key_dependency,
     bearer_token,
+    too_many_attempts,
 )
 
 if TYPE_CHECKING:
@@ -38,8 +42,45 @@ _KEY_COPY_STATUSES: Final[frozenset[KeyStatus]] = frozenset(
     {KeyStatus.VALID, KeyStatus.THROTTLED}
 )
 
-#: Responses that mean the app's dependency refused the request.
-_REFUSED: Final[frozenset[int]] = frozenset({401, 403})
+#: Responses that mean the app's dependency refused the request's credentials
+#: (422: a required header or query of the dependency is missing).
+_REFUSED: Final[frozenset[int]] = frozenset({401, 403, 422})
+
+#: ``add_api_route`` options copied from each route, read from the attribute of the same name.
+COPIED_OPTIONS: Final[tuple[str, ...]] = (
+    "response_model",
+    "status_code",
+    "tags",
+    "dependencies",
+    "summary",
+    "description",
+    "response_description",
+    "responses",
+    "deprecated",
+    "methods",
+    "operation_id",
+    "response_model_include",
+    "response_model_exclude",
+    "response_model_by_alias",
+    "response_model_exclude_unset",
+    "response_model_exclude_defaults",
+    "response_model_exclude_none",
+    "response_class",
+    "name",
+    "callbacks",
+    "openapi_extra",
+    "generate_unique_id_function",
+    "strict_content_type",  # FastAPI 0.132+
+)
+
+#: ``add_api_route`` parameters that ``_copy_routes`` sets itself.
+SET_OPTIONS: Final[frozenset[str]] = frozenset(
+    {"self", "path", "endpoint", "include_in_schema", "route_class_override"}
+)
+
+_ADD_API_ROUTE_PARAMETERS: Final[frozenset[str]] = frozenset(
+    inspect.signature(APIRouter.add_api_route).parameters
+)
 
 
 def include_key_or_dependency(
@@ -53,9 +94,9 @@ def include_key_or_dependency(
     """Include ``api_router`` in ``router`` so the key or ``auth_dependency`` lets a request in.
 
     A wrong key counts toward the client's lockout only when the dependency
-    refuses the request too (401 or 403), so the app's own Bearer tokens never
-    lock its users out. A token of another length than the key is never a key
-    attempt and goes straight to the dependency.
+    refuses the request too, so the app's own Bearer tokens never lock its
+    users out. A token of another length than the key is never a key attempt
+    and goes straight to the dependency.
     """
     key_copies = _copy_routes(api_router, _KeyRoute, guard, in_schema=False)
     dependency_copies = _copy_routes(api_router, _DependencyRoute, guard)
@@ -94,16 +135,65 @@ class _DependencyRoute(_GuardedRoute):
         if _verdict(scope, self.guard) is not KeyStatus.INVALID:
             await super().handle(scope, receive, send)
             return
+        attempt = _WrongKey(self.guard, scope, receive, send)
+        try:
+            await super().handle(scope, receive, attempt.send)
+        finally:
+            attempt.end()
 
-        async def _send(message: Message) -> None:
-            if (
-                message["type"] == "http.response.start"
-                and message["status"] in _REFUSED
-            ):
-                self.guard.record_failure(_client_ip(scope))
-            await send(message)
 
-        await super().handle(scope, receive, _send)
+class _WrongKey:
+    """A request with a wrong key of the key's length, which the app's dependency judges.
+
+    It is in flight until the response starts. A refusal counts as a failed
+    key, and the failure that locks the client out is answered 429, as in
+    key-only mode.
+    """
+
+    def __init__(
+        self, guard: ApiKeyGuard, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Hold the client's in-flight slot, before the request's first await."""
+        # Routing checked the client's capacity and nothing has awaited since,
+        # so on one event loop no other request slips in between check and hold.
+        self._guard = guard
+        self._ip = _client_ip(scope)
+        self._scope, self._receive, self._send = scope, receive, send
+        self._holding = True
+        self._replaced = False
+        guard.hold(self._ip)
+
+    async def send(self, message: Message) -> None:
+        """Pass the response on; replace the one that locks the client out."""
+        if self._replaced:
+            return
+        # Starlette's route runs exception handlers inside itself
+        # (``wrap_app_handling_exceptions``, 0.38.6 and 1.7.0), so a handler's
+        # response for any exception type passes through here.
+        if self._holding and message["type"] == "http.response.start":
+            wait = self._settle(refused=message["status"] in _REFUSED)
+            if wait:
+                self._replaced = True
+                await self._answer_locked(wait)
+                return
+        await self._send(message)
+
+    def end(self) -> None:
+        """Free the in-flight slot, whatever happened to the request."""
+        self._settle(refused=False)
+
+    def _settle(self, *, refused: bool) -> int:
+        """Free the slot once, count a failure if refused; return the lockout wait."""
+        if not self._holding:
+            return 0
+        self._holding = False
+        self._guard.release(self._ip)
+        return self._guard.record_failure(self._ip) if refused else 0
+
+    async def _answer_locked(self, wait: int) -> None:
+        request = Request(self._scope, self._receive)
+        response = await http_exception_handler(request, too_many_attempts(wait))
+        await response(self._scope, self._receive, self._send)
 
 
 def _verdict(scope: Scope, guard: ApiKeyGuard) -> KeyStatus:
@@ -150,32 +240,16 @@ def _copy_routes(
                 "type[APIRoute]",
                 type(f"{kind.__name__}{base.__name__}", (kind, base), {"guard": guard}),
             )
+        options = {
+            name: getattr(route, name)
+            for name in COPIED_OPTIONS
+            if name in _ADD_API_ROUTE_PARAMETERS
+        }
         copies.add_api_route(
             route.path,
             route.endpoint,
-            response_model=route.response_model,
-            status_code=route.status_code,
-            tags=route.tags,
-            dependencies=route.dependencies,
-            summary=route.summary,
-            description=route.description,
-            response_description=route.response_description,
-            responses=route.responses,
-            deprecated=route.deprecated,
-            methods=route.methods,
-            operation_id=route.operation_id,
-            response_model_include=route.response_model_include,
-            response_model_exclude=route.response_model_exclude,
-            response_model_by_alias=route.response_model_by_alias,
-            response_model_exclude_unset=route.response_model_exclude_unset,
-            response_model_exclude_defaults=route.response_model_exclude_defaults,
-            response_model_exclude_none=route.response_model_exclude_none,
             include_in_schema=route.include_in_schema and in_schema,
-            response_class=route.response_class,
-            name=route.name,
             route_class_override=classes[base],
-            callbacks=route.callbacks,
-            openapi_extra=route.openapi_extra,
-            generate_unique_id_function=route.generate_unique_id_function,
+            **options,
         )
     return copies
