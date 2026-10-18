@@ -123,6 +123,11 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent, TaskState
 
 
+# A worker not seen for this long is shown offline (see remove_stale_workers).
+# Seen means a worker_ready, a task event from its nodename, or an inspect reply.
+WORKER_STALE_TIMEOUT_MINUTES = 3
+
+
 class WorkerRegistry:
     """Thread-safe registry for worker lifecycle tracking.
 
@@ -255,6 +260,43 @@ class WorkerRegistry:
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
+
+    def mark_seen(
+        self, hostname: str, timestamp: datetime, *, now: datetime | None = None
+    ) -> None:
+        """Record a task event from ``hostname``: its worker is alive.
+
+        Without this a busy worker went offline ``WORKER_STALE_TIMEOUT_MINUTES``
+        after its worker_ready, since only that and inspect replies moved
+        ``last_seen``. A task event names no pid, so it refreshes the node's
+        live entry, the pid registered last (a nodename has one live process).
+        ``timestamp`` is the event's (the worker's clock), as for worker_ready,
+        so a server reading back an old stream doesn't make a dead worker look
+        alive; a time ahead of the server's clock counts as now (a worker clock
+        running ahead would otherwise keep it online after it stopped), a naive
+        one as UTC, and ``last_seen`` never moves back. The worker comes back
+        online only if that time is within the stale window, and never after it
+        reported worker_shutdown (a task's last events can arrive after it).
+
+        Args:
+            hostname: Worker nodename from the task event.
+            timestamp: The event's time.
+            now: Current time (tests); defaults to now.
+        """
+        with self._lock:
+            live_id = self._newest_by_node.get(hostname)
+            worker = self._workers.get(live_id) if live_id else None
+            if worker is None:
+                return
+            current = now or datetime.now(timezone.utc)
+            seen_at = min(_ensure_tz_aware(timestamp), current)
+            if seen_at > worker.last_seen:
+                worker.last_seen = seen_at
+            recent = seen_at >= current - timedelta(
+                minutes=WORKER_STALE_TIMEOUT_MINUTES
+            )
+            if recent and not worker.shutdown_reported:
+                worker.status = WorkerStatus.ONLINE
 
     def mark_offline(self, hostname: str, pid: int) -> None:
         """Mark a worker offline because it stopped answering, not because it said so.
@@ -435,8 +477,10 @@ class WorkerRegistry:
 
     def remove_stale_workers(
         self,
-        stale_timeout_minutes: int = 3,
+        stale_timeout_minutes: int = WORKER_STALE_TIMEOUT_MINUTES,
         cleanup_timeout_minutes: int = 30,
+        *,
+        now: datetime | None = None,
     ) -> None:
         """Mark workers as offline if not seen recently, remove very old ones.
 
@@ -444,9 +488,10 @@ class WorkerRegistry:
             stale_timeout_minutes: Minutes of inactivity before marking stale.
             cleanup_timeout_minutes: Minutes since last seen before removing
                 offline workers entirely (reduces clutter from old sessions).
+            now: Current time (tests); defaults to now.
         """
         with self._lock:
-            now = datetime.now(timezone.utc)
+            now = now or datetime.now(timezone.utc)
             stale_cutoff = now - timedelta(minutes=stale_timeout_minutes)
             cleanup_cutoff = now - timedelta(minutes=cleanup_timeout_minutes)
 

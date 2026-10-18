@@ -15,6 +15,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 FILTERED = "[Filtered]"
+# Start of the text safe_serialize returns instead of a value that is too big.
+TRUNCATED_PREFIX = "[Truncated: "
 
 # Default sensitive key patterns (case-insensitive, partial match)
 DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
@@ -52,6 +54,18 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
         "csrf_token",
     }
 )
+
+
+def _lowercase_patterns(
+    sensitive_keys: frozenset[str], additional_keys: frozenset[str] | None
+) -> frozenset[str]:
+    """All sensitive patterns, lowercased once per call.
+
+    Keys are lowercased before matching; patterns come from user config as
+    written (``additional_sensitive_keys={"MRN"}``), so they are too.
+    """
+    patterns = sensitive_keys | additional_keys if additional_keys else sensitive_keys
+    return frozenset(pattern.lower() for pattern in patterns)
 
 
 def _key_names(key: object) -> list[str]:
@@ -114,7 +128,8 @@ def _is_sensitive_key(
 
     Args:
         key: The dict key to check.
-        sensitive_keys: Set of sensitive key patterns.
+        sensitive_keys: Set of sensitive key patterns, lowercase (see
+            ``_lowercase_patterns``).
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
@@ -148,16 +163,23 @@ def scrub_dict(
         >>> scrub_dict({"password": "secret123", "name": "Alice"})
         {'password': '[Filtered]', 'name': 'Alice'}
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
+    return _scrub_dict(
+        data, _lowercase_patterns(sensitive_keys, additional_keys), safe_keys
     )
 
+
+def _scrub_dict(
+    data: dict[Any, Any],
+    patterns: frozenset[str],
+    safe_keys: frozenset[str] | None,
+) -> dict[Any, Any]:
+    """Scrub a dictionary with patterns already lowercased by the entry point."""
     result: dict[Any, Any] = {}
     for key, value in data.items():
-        if _is_sensitive_key(key, all_sensitive, safe_keys):
+        if _is_sensitive_key(key, patterns, safe_keys):
             result[key] = FILTERED
         else:
-            result[key] = _scrub_value(value, all_sensitive, safe_keys)
+            result[key] = _scrub_value(value, patterns, safe_keys)
 
     return result
 
@@ -169,7 +191,7 @@ def _scrub_value(
 ) -> Any:
     """Recursively scrub a value (handles nested dicts and lists)."""
     if isinstance(value, dict):
-        return scrub_dict(value, sensitive_keys, safe_keys=safe_keys)
+        return _scrub_dict(value, sensitive_keys, safe_keys)
     if isinstance(value, list):
         return [_scrub_value(item, sensitive_keys, safe_keys) for item in value]
     if isinstance(value, tuple):
@@ -194,9 +216,7 @@ def scrub_args(
     Returns:
         List of scrubbed arguments.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
     return [_scrub_value(arg, all_sensitive, safe_keys) for arg in args]
 
 
@@ -219,9 +239,7 @@ def safe_serialize(
     Returns:
         JSON-serializable value, or string representation if serialization fails.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
 
     # First scrub the value
     scrubbed = _scrub_value(value, all_sensitive, safe_keys)
@@ -230,7 +248,7 @@ def safe_serialize(
     try:
         serialized = json.dumps(scrubbed, default=str)
         if len(serialized) > max_size:
-            return f"[Truncated: {len(serialized)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(serialized)} bytes > {max_size} max]"
         # Preserve the original scrubbed shape (not the JSON string).
         return scrubbed
     except (TypeError, ValueError) as e:
@@ -238,5 +256,5 @@ def safe_serialize(
         # Fall back to string representation
         str_repr = str(scrubbed)
         if len(str_repr) > max_size:
-            return f"[Truncated: {len(str_repr)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(str_repr)} bytes > {max_size} max]"
         return str_repr

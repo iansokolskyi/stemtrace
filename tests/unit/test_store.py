@@ -1,5 +1,6 @@
 """Tests for GraphStore."""
 
+import random
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -2069,3 +2070,213 @@ class TestGraphStoreEvictionGroupLinks:
         assert chord is not None
         assert chord.children == ["h1"]
         assert_graph_invariants(store._graph)
+
+
+_NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _minutes_ago(minutes: float) -> datetime:
+    return _NOW - timedelta(minutes=minutes)
+
+
+class TestWorkerSeenByTaskEvents:
+    """A worker's task events show it is alive (busy workers stay online)."""
+
+    @pytest.fixture
+    def registry(self) -> WorkerRegistry:
+        return WorkerRegistry()
+
+    def test_busy_worker_stays_online_past_stale_window(
+        self, registry: WorkerRegistry
+    ) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        for minutes in (9, 6, 3, 1):
+            registry.mark_seen("celery@w1", _minutes_ago(minutes))
+
+        registry.remove_stale_workers(now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.status == WorkerStatus.ONLINE
+        assert worker.last_seen == _minutes_ago(1)
+
+    def test_worker_whose_events_stopped_goes_offline(
+        self, registry: WorkerRegistry
+    ) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.mark_seen("celery@w1", _minutes_ago(5))
+
+        registry.remove_stale_workers(now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.status == WorkerStatus.OFFLINE
+
+    def test_event_from_another_nodename_does_not_refresh(
+        self, registry: WorkerRegistry
+    ) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.register_worker(
+            "celery@w2", 200, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.mark_seen("celery@w2", _minutes_ago(1))
+
+        registry.remove_stale_workers(now=_NOW)
+
+        statuses = {w.hostname: w.status for w in registry.get_all_workers()}
+        assert statuses == {
+            "celery@w1": WorkerStatus.OFFLINE,
+            "celery@w2": WorkerStatus.ONLINE,
+        }
+
+    def test_restarted_node_refreshes_only_its_newest_pid(
+        self, registry: WorkerRegistry
+    ) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.register_worker(
+            "celery@w1", 101, ["t"], event_timestamp=_minutes_ago(8)
+        )
+        registry.mark_seen("celery@w1", _minutes_ago(1))
+
+        registry.remove_stale_workers(now=_NOW)
+
+        old = registry.get_worker("celery@w1", 100)
+        new = registry.get_worker("celery@w1", 101)
+        assert old is not None
+        assert new is not None
+        assert (old.status, old.last_seen) == (WorkerStatus.OFFLINE, _minutes_ago(10))
+        assert (new.status, new.last_seen) == (WorkerStatus.ONLINE, _minutes_ago(1))
+
+    def test_task_event_after_worker_shutdown_does_not_revive(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A task's last event can reach the stream after worker_shutdown."""
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(2)
+        )
+        registry.mark_shutdown("celery@w1", 100)
+        registry.mark_seen("celery@w1", _minutes_ago(1))
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.status == WorkerStatus.OFFLINE
+        assert worker.shutdown_reported is True
+
+    def test_recent_event_brings_stale_worker_back_online(
+        self, registry: WorkerRegistry
+    ) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.remove_stale_workers(now=_NOW)
+
+        registry.mark_seen("celery@w1", _minutes_ago(0.5), now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.status == WorkerStatus.ONLINE
+
+    def test_replayed_old_event_keeps_stale_worker_offline(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A server reading back an old stream must not revive dead workers."""
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.remove_stale_workers(now=_NOW)
+
+        registry.mark_seen("celery@w1", _minutes_ago(6), now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.status == WorkerStatus.OFFLINE
+        assert worker.last_seen == _minutes_ago(6)
+
+    def test_last_seen_never_moves_back(self, registry: WorkerRegistry) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        registry.mark_seen("celery@w1", _minutes_ago(1))
+        registry.mark_seen("celery@w1", _minutes_ago(5))
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.last_seen == _minutes_ago(1)
+
+    def test_unknown_nodename_is_ignored(self, registry: WorkerRegistry) -> None:
+        registry.mark_seen("celery@ghost", _minutes_ago(1))
+
+        assert registry.get_all_workers() == []
+
+    @pytest.mark.parametrize("seed", range(200))
+    def test_status_matches_reference_for_any_event_order_and_timing(
+        self, seed: int
+    ) -> None:
+        """Random task events (in any order) and an optional shutdown, against
+        a model: online iff no shutdown and the newest of worker_ready and the
+        task events is within the stale window."""
+        rng = random.Random(seed)
+        registry = WorkerRegistry()
+        ready = rng.uniform(0, 20)
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(ready)
+        )
+        seen = [rng.uniform(0, 20) for _ in range(rng.randint(0, 6))]
+        shutdown_at = rng.choice([None, None, rng.randint(0, len(seen))])
+        for i, minutes in enumerate(seen):
+            if shutdown_at == i:
+                registry.mark_shutdown("celery@w1", 100)
+            registry.mark_seen("celery@w1", _minutes_ago(minutes), now=_NOW)
+            if rng.random() < 0.3:
+                registry.remove_stale_workers(now=_NOW)
+        if shutdown_at == len(seen):
+            registry.mark_shutdown("celery@w1", 100)
+        registry.remove_stale_workers(now=_NOW)
+
+        newest = min([ready, *seen])
+        expected_online = shutdown_at is None and newest < 3
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert (worker.status == WorkerStatus.ONLINE) is expected_online, (
+            seed,
+            ready,
+            seen,
+            shutdown_at,
+        )
+        assert worker.last_seen == _minutes_ago(newest)
+
+    def test_event_from_clock_ahead_counts_as_now(
+        self, registry: WorkerRegistry
+    ) -> None:
+        """A worker clock 10 minutes ahead must not keep a stopped worker
+        online for 10 more minutes."""
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(1)
+        )
+        registry.mark_seen("celery@w1", _NOW + timedelta(minutes=10), now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.last_seen == _NOW
+        registry.remove_stale_workers(now=_NOW + timedelta(minutes=4))
+        assert worker.status == WorkerStatus.OFFLINE
+
+    def test_naive_event_time_is_utc(self, registry: WorkerRegistry) -> None:
+        registry.register_worker(
+            "celery@w1", 100, ["t"], event_timestamp=_minutes_ago(10)
+        )
+        naive = _minutes_ago(1).replace(tzinfo=None)
+
+        registry.mark_seen("celery@w1", naive, now=_NOW)
+
+        worker = registry.get_worker("celery@w1", 100)
+        assert worker is not None
+        assert worker.last_seen == _minutes_ago(1)
