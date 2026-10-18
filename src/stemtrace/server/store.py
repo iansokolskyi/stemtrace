@@ -899,12 +899,10 @@ class GraphStore:
     def _maybe_evict(self) -> None:
         """Evict the oldest units down to 90% of capacity. Call with lock held.
 
-        A unit is a GROUP/CHORD with its members (and a chord's callback), or
-        a task in no group; it is as old as its newest node. A group is
-        evicted whole, so its state and a chord's reason never come from part
-        of its members, and one eviction can free much more than 10%. A group
-        bigger than 90% of ``max_nodes`` can't be held whole: when it is the
-        oldest unit, its oldest members go, as single tasks do.
+        A group or chord goes whole, with its members and callback, so its
+        state never comes from part of them; one eviction can free over 10%.
+        A unit too big to keep (over 90% of ``max_nodes``) loses its oldest
+        members instead.
         """
         if len(self._graph.nodes) <= self._max_nodes:
             return
@@ -917,6 +915,7 @@ class GraphStore:
             excess = len(self._graph.nodes) - keep
             if excess <= 0:
                 return
+            # A unit is as old as its newest node (see _eviction_units).
             if len(unit) > keep:
                 unit = sorted(unit, key=lambda n: _eviction_age(n, self._graph))
                 unit = unit[:excess]
