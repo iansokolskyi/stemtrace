@@ -820,11 +820,23 @@ def test_scrub_dict_matches_a_str_key_by_its_text_not_its_lower() -> None:
     assert scrub_dict({_LowerLies("password"): "hunter2"}) == {"password": FILTERED}
 
 
-def test_scrub_dict_keeps_a_key_whose_plain_value_is_already_a_key() -> None:
-    """A str subclass equal only to itself would collide with its plain text."""
-    out = scrub_dict({_ById("note"): "first", "note": "second"})
+def test_scrub_dict_shows_a_str_subclass_key_as_plain_text() -> None:
+    """Even one equal only to itself: it is shown (and serialized) as its text."""
+    ((key, value),) = scrub_dict({_ById("note"): "first"}).items()
 
-    assert sorted(out.values()) == ["first", "second"]
+    assert (key, type(key), value) == ("note", str, "first")
+
+
+class _OddMake(tuple[object, ...]):
+    """A tuple subclass with a ``_make`` that isn't namedtuple's."""
+
+    _make = "not callable"
+
+
+def test_scrub_dict_shows_another_tuple_subclass_key_as_a_tuple() -> None:
+    ((key, _),) = scrub_dict({_OddMake(("u", _Field.PASSWORD)): "v"}).items()
+
+    assert (key, type(key)) == (("u", "pw"), tuple)
 
 
 @pytest.mark.parametrize(

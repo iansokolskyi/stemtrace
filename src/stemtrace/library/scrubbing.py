@@ -173,10 +173,6 @@ def _scrub_dict(
     result: dict[Any, Any] = {}
     for key, value in data.items():
         shown = _as_matched(key)
-        # A key that isn't the same dict key as its plain value (a str subclass
-        # equal only to itself) is kept as is when that value is a key too.
-        if shown in data and key not in {shown}:
-            shown = key
         if _is_sensitive_key(key, patterns, safe_keys):
             result[shown] = FILTERED
         else:
@@ -209,8 +205,9 @@ def _rebuilt(key: tuple[Any, ...] | frozenset[Any]) -> Any:
     parts = [_as_matched(part) for part in key]
     if isinstance(key, frozenset):
         return frozenset(parts)
-    make = getattr(type(key), "_make", None)  # a namedtuple keeps its type
-    return make(parts) if make is not None else tuple(parts)
+    if hasattr(type(key), "_fields"):  # a namedtuple keeps its type
+        return tuple.__new__(type(key), parts)
+    return tuple(parts)
 
 
 def _scrub_value(
