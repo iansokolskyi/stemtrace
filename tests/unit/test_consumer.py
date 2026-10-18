@@ -960,3 +960,13 @@ class TestConsumeLoopEventHandling:
         assert errors == ["Error processing event"] * 2
         assert store.node_count == 2
         assert consumer.is_finished is True
+
+
+def test_worker_event_types_are_all_handled() -> None:
+    """_handle_worker_event registers on WORKER_READY and marks every other
+    type offline: a new type needs its own branch there before it is added."""
+    assert set(WorkerEventType) == {
+        WorkerEventType.WORKER_READY,
+        WorkerEventType.WORKER_SHUTDOWN,
+        WorkerEventType.WORKER_TERMINATING,
+    }
