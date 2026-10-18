@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-18
+
+**Highlights:**
+- Task groups: every task now belongs to a group (automatic from its module, or defined in code or a TOML file), returned by the API and listed by `GET /api/groups`. The UI shows them in the next release.
+- Task events now record which worker ran a task, the queue it was sent to and the exception class, and `GET /api/tasks` can filter on all three.
+- Fixes: busy workers no longer show offline after about 3 minutes; a cold worker shutdown (SIGQUIT) during an event publish no longer hangs the worker; dict keys that aren't strings no longer lose a task's events; custom sensitive keys now match in any letter case.
+- The README is now a short overview, with the details on pages under `docs/`, including a new guide to adopting stemtrace in an existing project.
+
+**Upgrading:** in any order. The new event fields are empty for events from older workers, and an older server ignores them. The minimum `typer` is now 0.16.0.
+
 ### Added
 - Task groups: every task belongs to one group, returned as `task_group` (with the group's `tags`) on the API's task, task detail, graph node and task registry responses, and listed by the new `GET /api/groups` (name, source `auto`/`code`, tags, color, task names seen). Automatic groups come from the task name's first module segment, skipping generic ones (`tasks.search.reindex` and `search.tasks.reindex` are both `search`; `add`, `tasks.add` and `celery.chord_unlock` are `ungrouped`). Code-defined groups, matched by glob on the task name with the first match winning, come from `init_app(groups=[GroupRule(...)])` / `StemtraceExtension(groups=...)`, or a TOML file given by `stemtrace server --groups`, `STEMTRACE_GROUPS` or `init_app(groups="file.toml")`; invalid rules fail at startup. TOML files need Python 3.11+. The UI doesn't show groups yet. See [Configuration: task groups](https://github.com/iansokolskyi/stemtrace/blob/main/docs/configuration.md#task-groups).
 - Task events record the worker's nodename (`hostname`), the `queue` and `routing_key` the task was sent with and, on failures and retries, the exception class (`exception_type`, e.g. `myapp.errors.PartnerAPIError`; for a retry, the exception it was for). The API's task, graph node and event responses include them, and `GET /api/tasks` filters on `hostname`, `queue` and `exception_type`. `queue` is empty for tasks routed through a topic or other named exchange, which can reach several queues. See [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md#worker-queue-and-exception-type). Upgrading: in either order. A server from before this release ignores the new fields, and this release's server shows them as empty for older workers' events; tasks get them once workers (and, for PENDING, the code that sends tasks) run this release.
@@ -285,7 +295,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.10...v0.4.0
 [0.3.10]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.8...v0.3.9
