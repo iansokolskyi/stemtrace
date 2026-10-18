@@ -190,10 +190,10 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 
 
 class WorkerTerminatingStep(bootsteps.StartStopStep):  # type: ignore[misc]
-    """Publish WORKER_TERMINATING when a worker stops without sending worker_shutdown.
+    """Publish WORKER_TERMINATING when Celery's cold-stop path runs.
 
-    Celery's cold-stop path (``WorkController.terminate``) skips
-    ``worker_shutdown``, so without this the server would keep the worker online.
+    That path (``WorkController.terminate``) skips ``worker_shutdown``, so
+    without this the server would show the worker online until its stale check.
     """
 
     # After the Pool at start, so before it on terminate.

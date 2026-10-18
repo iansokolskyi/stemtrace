@@ -82,8 +82,8 @@ pages work even if the server missed `worker_ready` events.
   that much time of starting stays online longer. Workers older than 0.4.1 send no worker name
   on task events, so only inspect keeps them online.
 - A worker stopped cold (SIGQUIT) on the prefork pool ends without Celery's `worker_shutdown`.
-  It publishes a `worker_terminating` event instead, and the server marks it offline the same
-  way. An idle worker stopped with SIGQUIT sends it on any pool. On Celery 5.5+ a cold stop
+  It publishes a `worker_terminating` event instead, and the server marks it offline at once,
+  as for `worker_shutdown`. An idle worker stopped with SIGQUIT sends it on any pool. On Celery 5.5+ a cold stop
   cancels the running tasks first: each shows a RETRY "cancelled by Celery", except, on Celery
   5.6+, tasks with `acks_late`, which are requeued and show nothing (they stay STARTED until
   redelivered). Other cases, with a task running (checked with Celery 5.6.3):
