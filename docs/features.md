@@ -205,10 +205,13 @@ Limitations:
 - A worker before stemtrace 0.4.0 sends PENDING without a parent ID, so a replacement's PENDING
   that it sent can look like the task's own. If the task has no PENDING or RECEIVED of its own (for
   example, the code that sent it doesn't call `init_worker` and RECEIVED is off),
-  `queue_wait_ms` is 0 instead of empty for a root task, and for a task that replaced itself.
+  `queue_wait_ms` is 0 instead of empty for a root task, and for a task that replaced itself. A
+  replacement with another task name then also gives the task that name, and a child task loses
+  its link to its parent.
 - When events carry no parent ID (protocol 1, or a root task), only the task's first run is read.
-  If that run's worker didn't record the ETA (a release before this one) and the task was
-  redelivered to a worker that did, the countdown counts as waiting.
+  If neither that run's worker nor the code that sent the task recorded the ETA (a release
+  before this one) and the task was redelivered to a worker that did, the countdown counts as
+  waiting.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind

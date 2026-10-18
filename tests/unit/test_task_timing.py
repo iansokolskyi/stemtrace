@@ -312,8 +312,10 @@ def _mutate(
         if scenario == "replacement-behind" and not own:
             e = e.model_copy(update={"timestamp": e.timestamp - minute})
         out.append(e)
-        # RECEIVED (publish_received=True) on the replacement's worker only, or on both;
-        # stamped by the worker just before the run starts.
+        # RECEIVED (publish_received=True) on the replacement's worker only, or on both.
+        # The worker stamps it when the message arrives, which for these tasks (sent
+        # without a countdown) is just before the run starts; a delayed replacement's
+        # RECEIVED would come near its PENDING, also after the task's own STARTED.
         received = (scenario == "replacement-received" and not own) or (
             scenario == "both-received"
         )
