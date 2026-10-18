@@ -11,12 +11,18 @@ and deletes the fragments; ``--check`` only validates them; ``--dry-run`` prints
 from __future__ import annotations
 
 import argparse
+import itertools
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from markdown_it import MarkdownIt
+
+if TYPE_CHECKING:
+    from markdown_it.token import Token
+    from markdown_it.utils import EnvType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Keep a Changelog order; also the order of the headings in the assembled section.
@@ -55,23 +61,101 @@ def _invalid_name(name: str) -> str | None:
     return f"name must be <slug>.<type>.md, type one of: {', '.join(TYPES)}"
 
 
-def _first_offender(text: str) -> tuple[str, str] | None:
-    """Return the first heading, or top-level block that isn't a ``-`` list, in ``text``.
+@dataclass(frozen=True)
+class _Parsed:
+    """CommonMark parse of a text: tokens, its lines and the first definition's line."""
 
-    The result is ``("heading" | "block", offending line)``. A CommonMark parser
-    decides what a heading or a top-level block is, so fences, quotes and nesting
-    can't be misread.
-    """
-    tokens = _MARKDOWN.parse(text)
-    lines = text.split("\n")
-    for token in tokens:
+    tokens: list[Token]
+    lines: list[str]
+    definition: int | None  # Definitions leave no tokens, only env["references"].
+
+
+def _parse(text: str) -> _Parsed:
+    """Parse ``text`` as CommonMark."""
+    env: EnvType = {}
+    tokens = _MARKDOWN.parse(text, env)
+    spans = [ref["map"][0] for ref in env.get("references", {}).values()]
+    return _Parsed(tokens, text.split("\n"), min(spans) if spans else None)
+
+
+def _line_with(doc: _Parsed, span: list[int], needle: str) -> str:
+    """Return the line within ``span`` that holds ``needle``, else the span's first."""
+    inside = doc.lines[span[0] : span[1]]
+    return next((ln for ln in inside if needle in ln), doc.lines[span[0]])
+
+
+def _heading_line(doc: _Parsed) -> str | None:
+    """Return the last line of the first heading at any depth (setext: the underline)."""
+    for token in doc.tokens:
         if token.type == "heading_open" and token.map:
-            return "heading", lines[token.map[1] - 1]
-    for token in tokens:
+            return doc.lines[token.map[1] - 1]
+    return None
+
+
+def _definition_line(doc: _Parsed) -> str | None:
+    """Return the first link reference definition's line."""
+    return None if doc.definition is None else doc.lines[doc.definition]
+
+
+def _html_line(doc: _Parsed) -> str | None:
+    """Return the line of the first raw HTML block or inline tag."""
+    for token in doc.tokens:
+        if token.type == "html_block" and token.map:
+            return doc.lines[token.map[0]]
+        for child in token.children or []:
+            if child.type == "html_inline" and token.map:
+                return _line_with(doc, token.map, child.content)
+    return None
+
+
+def _empty_bullet_line(doc: _Parsed) -> str | None:
+    """Return the line of the first list item with no content."""
+    for token, following in itertools.pairwise(doc.tokens):
+        if token.type == "list_item_open" and following.type == "list_item_close":
+            return doc.lines[token.map[0]] if token.map else ""
+    return None
+
+
+def _block_line(doc: _Parsed) -> str | None:
+    """Return the line of the first top-level block that isn't a ``-`` list."""
+    for token in doc.tokens:
         is_dash_list = token.type == "bullet_list_open" and token.markup == "-"
         if token.level == 0 and token.nesting != -1 and not is_dash_list:
-            return "block", lines[token.map[0]] if token.map else ""
+            return doc.lines[token.map[0]] if token.map else ""
     return None
+
+
+# In the order they are reported; the kind picks the message in _OFFENDER_MESSAGES.
+_CHECKS = (
+    ("heading", _heading_line),
+    ("definition", _definition_line),
+    ("html", _html_line),
+    ("empty", _empty_bullet_line),
+    ("block", _block_line),
+)
+
+
+def _first_offender(text: str) -> tuple[str, str] | None:
+    """Return the first thing in ``text`` that isn't plain ``-`` bullets, with its line.
+
+    A CommonMark parser decides what a heading, block or definition is, so fences,
+    quotes and nesting can't be misread.
+    """
+    doc = _parse(text)
+    for kind, check in _CHECKS:
+        line = check(doc)
+        if line is not None:
+            return kind, line
+    return None
+
+
+_OFFENDER_MESSAGES = {
+    "heading": "entry must not contain headings (the file name sets the heading): {}",
+    "definition": "entry must not contain link reference definitions, found {}",
+    "html": "entry must not contain raw HTML, found {}",
+    "empty": "entry must not contain an empty bullet: {}",
+    "block": "entry must be only '- ' bullets, not {}",
+}
 
 
 def _invalid_body(body: str) -> str | None:
@@ -82,9 +166,7 @@ def _invalid_body(body: str) -> str | None:
     if offender is None:
         return None
     kind, line = offender
-    if kind == "heading":
-        return f"entry must not contain headings (the file name sets the heading): {line!r}"
-    return f"entry must be only '- ' bullets, not {line!r}"
+    return _OFFENDER_MESSAGES[kind].format(repr(line))
 
 
 def _read_fragment(path: Path) -> Fragment | str:

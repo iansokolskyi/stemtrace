@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import importlib.util
 import random
 import re
@@ -396,10 +397,16 @@ def test_check_fragment_with_heading_line_fails(
         "- A.\nlazy continuation\n",
         "- A.\n      # indented code, not a heading\n",
         "- A.\n\n  Second paragraph.\n\n  - Nested.\n",
+        "- Fixes [#12](https://example.com/12) and <https://example.com> too.\n",
+        "- A.\n  [x] is not a definition.\n",
+        # A definition can't interrupt a paragraph, so this is plain text.
+        "- A.\n  [x]: https://paragraph.example\n",
+        "- Writes `<b>` and a < b and 1 > 0 in code and text.\n",
+        "- A.\n  * Nested items may use other markers.\n  + Like this.\n",
         *FENCED_BODIES,
     ],
 )
-def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
+def test_check_fragment_with_markup_that_is_not_rejected_is_valid(
     tmp_path: Path, body: str
 ) -> None:
     root = _project(tmp_path, "", {"1.added.md": body})
@@ -416,7 +423,6 @@ def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
         ("+ Plus.\n", "+ Plus."),
         ("1. Ordered.\n", "1. Ordered."),
         ("> Quote.\n", "> Quote."),
-        ("- A.\n\n<div>Raw HTML.</div>\n", "<div>Raw HTML.</div>"),
         ("- A.\n\n---\n", "---"),
         ("- A.\n\n```\ncode\n```\n", "```"),
     ],
@@ -430,6 +436,76 @@ def test_check_fragment_with_top_level_block_that_is_not_a_dash_list_fails(
 
     err = capsys.readouterr().err
     assert f"1.added.md: entry must be only '- ' bullets, not {offender!r}" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [
+        ("[x]: https://example.com\n", "[x]: https://example.com"),
+        # The first definition wins, so this one would hijack the [0.4.1] link.
+        ("- A.\n\n[0.4.1]: https://evil.example\n", "[0.4.1]: https://evil.example"),
+        (
+            "- A.\n\n[unreleased]: https://example.com/compare/v0.4.1...HEAD\n",
+            "[unreleased]: https://example.com/compare/v0.4.1...HEAD",
+        ),
+        ("- A.\n\n[^x]: footnote-style\n", "[^x]: footnote-style"),
+        ("- A.\n\n  [x]: https://nested.example\n", "  [x]: https://nested.example"),
+        ("- [x]: https://example.com\n", "- [x]: https://example.com"),
+        ("- A.\n\n[x]: <https://e> 'Title'\n", "[x]: <https://e> 'Title'"),
+    ],
+)
+def test_check_fragment_with_link_reference_definition_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert (
+        "1.added.md: entry must not contain link reference definitions, "
+        f"found {offender!r}" in err
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [
+        ("- C.\n\n  <h2>Hi</h2>\n", "  <h2>Hi</h2>"),
+        (
+            "- C.\n\n  </li></ul><h2>Top</h2><ul><li>\n",
+            "  </li></ul><h2>Top</h2><ul><li>",
+        ),
+        ("- Uses <b>bold</b> text.\n", "- Uses <b>bold</b> text."),
+        ("- A.\n\n<div>Raw HTML.</div>\n", "<div>Raw HTML.</div>"),
+        ("- <!-- hidden -->\n", "- <!-- hidden -->"),
+        ("- A.\n  - B <br> C.\n", "  - B <br> C."),
+    ],
+)
+def test_check_fragment_with_raw_html_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert f"1.added.md: entry must not contain raw HTML, found {offender!r}" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "offender"),
+    [("-", "-"), ("- A.\n-\n- B.\n", "-"), ("- -\n", "- -"), ("- A.\n\n-\n", "-")],
+)
+def test_check_fragment_with_empty_bullet_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert f"1.added.md: entry must not contain an empty bullet: {offender!r}" in err
 
 
 def test_check_fragment_with_utf8_bom_is_valid(tmp_path: Path) -> None:
@@ -464,6 +540,32 @@ def test_check_prose_after_unreleased_subheading_fails(
     assert "'- ' bullets" in err
     assert "**Upgrading:** any order." in err
     assert _changelog(root) == before
+
+
+@pytest.mark.parametrize(
+    ("section", "offender"),
+    [
+        (
+            "- Existing.\n\n[0.1.0]: https://evil.example\n",
+            "[0.1.0]: https://evil.example",
+        ),
+        ("- Existing.\n\n<h2>Top</h2>\n", "<h2>Top</h2>"),
+        ("- Existing <b>bold</b>.\n", "- Existing <b>bold</b>."),
+        ("-\n", "-"),
+    ],
+)
+def test_check_unreleased_section_with_definition_html_or_empty_bullet_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], section: str, offender: str
+) -> None:
+    root = _project(tmp_path, f"\n### Changed\n{section}", {"1.added.md": "- A.\n"})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert (
+        f"text under '### Changed' in [Unreleased] must be only '- ' bullets, not {offender!r}"
+        in err
+    )
 
 
 def _bump_config_for_changelog(source: Path) -> tuple[str, str]:
@@ -541,25 +643,43 @@ class _RenderedTags(HTMLParser):
         self.depth -= 1
 
 
-def _rendered_html_is_not_only_bullets(body: str) -> bool:
-    """Judge body from its rendered HTML: a heading anywhere, or a top level not all <ul>.
+def _oracle_reasons(body: str) -> set[str]:
+    """Say why body should be rejected, without the validator's token walk.
 
-    Walks HTML, not markdown-it tokens, so it checks the validator independently.
+    Headings and top-level blocks come from rendered HTML, raw HTML from comparing
+    renders with HTML on and off, and empty bullets from the output. The list marker
+    and link definitions are not in the HTML, so those two read the parser output.
     """
-    parser = _RenderedTags()
-    parser.feed(MarkdownIt("commonmark").render(body))
-    has_heading = any(re.fullmatch(r"h[1-6]", tag) for tag in parser.tags)
-    return has_heading or any(tag != "ul" for tag in parser.top_level)
+    md = MarkdownIt("commonmark")
+    html = md.render(body)
+    tags = _RenderedTags()
+    tags.feed(html)
+    env: dict[str, object] = {}
+    tokens = md.parse(body, env)
+    checks = {
+        "heading": any(re.fullmatch(r"h[1-6]", tag) for tag in tags.tags),
+        "block": any(tag != "ul" for tag in tags.top_level),
+        "html": html != MarkdownIt("commonmark", {"html": False}).render(body),
+        "empty": "<li></li>" in html,
+        "marker": any(
+            t.type == "bullet_list_open" and t.level == 0 and t.markup != "-"
+            for t in tokens
+        ),
+        "definition": bool(env.get("references")),
+    }
+    return {reason for reason, found in checks.items() if found}
 
 
 def _fuzz_bodies(count: int, seed: int) -> list[str]:
     """Return seeded random bodies that mix indents, containers, fences and dedents."""
     rng = random.Random(seed)
     indents = ["", "", " ", "  ", "   ", "    ", "\t", "      "]
-    prefixes = ["", "", "", "- ", "1. ", "> ", ">", "- - ", "> - "]
+    prefixes = ["", "", "", "- ", "1. ", "> ", ">", "- - ", "> - ", "* ", "+ "]
     texts = ["# H", "## H", "###### H", "####### H", "#x", "---", "===", "--", "text"]
     texts += ["```", "```sh", "~~~", "````", "``", "`# x`", "- B", "- # H", "", ""]
-    texts += ["more text", "word # not", "    code", "- B\n  - C"]
+    texts += ["more text", "word # not", "    code", "- B\n  - C", "-", "- "]
+    texts += ["<h2>Hi</h2>", "<b>x</b> y", "a < b", "<div>", "[x]: https://e"]
+    texts += ["[^x]: note", "[x]", "* B", "+ B", "[x]: https://e 'T'"]
     openers = [
         "- A.",
         "- ```",
@@ -578,22 +698,22 @@ def _fuzz_bodies(count: int, seed: int) -> list[str]:
     return bodies
 
 
-def test_invalid_body_agrees_with_rendered_html_on_random_bodies() -> None:
-    bodies = _fuzz_bodies(count=4000, seed=20261018)
+def test_invalid_body_agrees_with_independent_oracle_on_random_bodies() -> None:
+    bodies = _fuzz_bodies(count=6000, seed=20261018)
+    reasons = {body: _oracle_reasons(body) for body in bodies}
 
     disagreements = [
         body
         for body in bodies
-        if (assemble._invalid_body(body) is not None)
-        != _rendered_html_is_not_only_bullets(body)
+        if (assemble._invalid_body(body) is not None) != bool(reasons[body])
     ]
 
     assert disagreements == []
-    rejected = [b for b in bodies if assemble._invalid_body(b) is not None]
-    fenced = [b for b in rejected if "```" in b or "~~~" in b]
-    assert len(rejected) >= 500
-    assert len(bodies) - len(rejected) >= 500
-    assert len(fenced) >= 100
+    counts = collections.Counter(r for found in reasons.values() for r in found)
+    assert set(counts) == {"heading", "block", "html", "empty", "marker", "definition"}
+    assert min(counts.values()) >= 100
+    assert sum(1 for found in reasons.values() if not found) >= 500
+    assert sum(1 for b, found in reasons.items() if found and "```" in b) >= 100
 
 
 def test_released_changelog_sections_and_current_fragments_pass_the_rules() -> None:
