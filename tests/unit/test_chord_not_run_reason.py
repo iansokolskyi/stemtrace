@@ -52,20 +52,24 @@ _REASON_RANK = {None: 0, "header_ignored": 1, "header_revoked": 2, "header_faile
 
 
 @pytest.mark.parametrize("flow", sorted(f for f in _CAPTURES if "chord" in f))
-def test_chord_not_run_reasons_never_clear_while_events_arrive(flow: str) -> None:
+def test_chord_not_run_reasons_clear_only_when_a_callback_is_drawn(flow: str) -> None:
     """Celery decides a chord's fate at its first failed header (every chord
     path joins the header results with propagate=True: celery 5.6.3
     backends/redis.py and backends/base.py ``on_chord_part_return``,
     app/builtins.py ``unlock_chord``). Headers still queued have only a
     PENDING event, which names no chord, so a rule waiting for "every header"
     showed a reason, cleared it when the next header started, and showed it
-    again."""
+    again. A reason clears only once the chord's callback is drawn (an
+    ignored header that reported its result itself)."""
     for order in _orders(_CAPTURES[flow]):
         graph, seen = TaskGraph(), {}
         for event in order:
             graph.add_event(TaskEvent.model_validate(event))
             for node_id, reason in _chord_reasons(graph).items():
                 before = seen.get(node_id)
+                if reason is None and graph.nodes[node_id].chord_id is not None:
+                    seen[node_id] = None
+                    continue
                 assert _REASON_RANK[reason] >= _REASON_RANK[before], (
                     flow,
                     node_id,
@@ -73,6 +77,22 @@ def test_chord_not_run_reasons_never_clear_while_events_arrive(flow: str) -> Non
                     reason,
                 )
                 seen[node_id] = reason
+
+
+def test_chord_not_run_reason_ignored_header_that_reported_its_result() -> None:
+    """Real capture: the header calls backend.mark_as_done, then raises
+    Ignore. Celery counts its part (5.6.3 backends/base.py mark_as_done) and
+    runs the callback, so the reason shows only until the callback appears."""
+    graph = TaskGraph()
+    reasons = []
+    for event in _CAPTURES["chord_ignored_header_marked_done"]:
+        graph.add_event(TaskEvent.model_validate(event))
+        reasons.extend(_chord_reasons(graph).values())
+
+    shown = [r for i, r in enumerate(reasons) if i == 0 or r != reasons[i - 1]]
+    assert shown == [None, "header_ignored", None]
+    (chord,) = [n for n in graph.nodes.values() if n.node_type == NodeType.CHORD]
+    assert chord.chord_id is not None
 
 
 _NOT_RUN = {

@@ -138,7 +138,7 @@ class GraphNodeResponse(BaseModel):
     queue: str | None = None
     routing_key: str | None = None
     # CHORD nodes in a full graph (GET /graphs/{root_id}) only: why the
-    # callback will never run (see chord_not_run_reasons).
+    # callback hasn't run (see chord_not_run_reasons).
     not_run_reason: ChordNotRunReason | None = None
 
 

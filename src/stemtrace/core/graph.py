@@ -206,14 +206,15 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
 
 
 ChordNotRunReason = Literal["header_failed", "header_revoked", "header_ignored"]
-"""Why a chord's callback will never run: a header failed (or was rejected), was
+"""Why a chord's callback hasn't run: a header failed (or was rejected), was
 revoked, or raised ``Ignore``."""
 
 # A header's state -> the reason it gives, and which reason wins (higher).
 # celery 5.6.3: every chord path joins header results with propagate=True
 # (backends redis.py/base.py on_chord_part_return, builtins.py unlock_chord);
 # handle_reject and handle_ignore (app/trace.py) only log, so the chord never
-# completes. Workers publish REJECTED only when the message won't run again.
+# completes (unless the task called backend.mark_as_done itself). Workers
+# publish REJECTED only when the message won't run again.
 _HEADER_REASONS: dict[TaskState, tuple[int, ChordNotRunReason]] = {
     TaskState.FAILURE: (3, "header_failed"),
     TaskState.REJECTED: (3, "header_failed"),
@@ -2522,12 +2523,12 @@ class TaskGraph(BaseModel):
 def chord_not_run_reasons(
     nodes: Mapping[str, TaskNode],
 ) -> dict[str, ChordNotRunReason]:
-    """Why each chord's callback will never run, by CHORD node ID.
+    """Why each chord's callback hasn't run, by CHORD node ID.
 
     A header (a group task whose events named a callback) that failed, was
-    rejected, revoked or ignored means Celery won't run the callback, even
-    while other headers run; the worst outcome wins and never clears unless a
-    callback is drawn. ``nodes`` must hold the chord's whole graph.
+    rejected, revoked or ignored stops Celery running the callback, even while
+    other headers run; the worst outcome wins and clears only once a callback
+    is drawn. ``nodes`` must hold the chord's whole graph.
     """
     by_group: dict[str, tuple[int, ChordNotRunReason]] = {}
     for node in nodes.values():

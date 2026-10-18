@@ -10968,5 +10968,115 @@
    "chord_callback_id": "b9c7d3df-8d6a-4471-beb0-49c19ee54f56",
    "retries": 0
   }
+ ],
+ "chord_ignored_header_marked_done": [
+  {
+   "task_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "name": "flows.ignore_done",
+   "state": "PENDING",
+   "timestamp": "2026-10-18T11:14:04.929047Z",
+   "parent_id": null,
+   "root_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "name": "flows.add",
+   "state": "PENDING",
+   "timestamp": "2026-10-18T11:14:04.929881Z",
+   "parent_id": null,
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "name": "flows.ignore_done",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T11:14:05.892254Z",
+   "parent_id": null,
+   "root_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_callback_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "retries": 0
+  },
+  {
+   "task_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "name": "flows.ignore_done",
+   "state": "IGNORED",
+   "timestamp": "2026-10-18T11:14:05.951742Z",
+   "parent_id": null,
+   "root_id": "2ecc1db2-457a-4806-b926-399ebcdfebb3",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_callback_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "retries": 0
+  },
+  {
+   "task_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "name": "flows.add",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T11:14:05.952575Z",
+   "parent_id": null,
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_callback_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "retries": 0
+  },
+  {
+   "task_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "name": "flows.tsum",
+   "state": "PENDING",
+   "timestamp": "2026-10-18T11:14:06.458903Z",
+   "parent_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "name": "flows.add",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-18T11:14:06.459240Z",
+   "parent_id": null,
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_callback_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "retries": 0
+  },
+  {
+   "task_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "name": "flows.tsum",
+   "state": "STARTED",
+   "timestamp": "2026-10-18T11:14:06.462983Z",
+   "parent_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  },
+  {
+   "task_id": "4ce7fc48-d94a-4423-a33c-ee138a577eae",
+   "name": "flows.tsum",
+   "state": "SUCCESS",
+   "timestamp": "2026-10-18T11:14:06.463383Z",
+   "parent_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "root_id": "592a5e49-e2d2-42cb-837c-553c0b6ecf15",
+   "group_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
+   "chord_id": null,
+   "chord_callback_id": null,
+   "retries": 0
+  }
  ]
 }

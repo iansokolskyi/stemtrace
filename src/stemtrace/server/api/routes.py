@@ -263,7 +263,7 @@ def _node_to_graph_response(
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
         group_of: Task group by task name (see ``_group_lookup``).
-        not_run_reason: Why a CHORD's callback will never run; only known
+        not_run_reason: Why a CHORD's callback hasn't run; only known
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
 

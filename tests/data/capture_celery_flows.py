@@ -185,6 +185,13 @@ def ignore() -> int:
     raise Ignore()
 
 
+@app.task(bind=True, name="flows.ignore_done")
+def ignore_done(self: Any) -> int:
+    """Report its own result, then raise Ignore: the chord still completes."""
+    self.backend.mark_as_done(self.request.id, 5, request=self.request)
+    raise Ignore()
+
+
 @app.task(name="flows.reject")
 def reject() -> int:
     """Raise Reject without requeue: the message is dropped, the chord never completes."""
@@ -237,6 +244,9 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         ),
         "chord_failed_header": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
         "chord_ignored_header": lambda: chord([ignore.s(), add.s(1, 1)], tsum.s()),
+        "chord_ignored_header_marked_done": lambda: chord(
+            [ignore_done.s(), add.s(1, 1)], tsum.s()
+        ),
         "chord_rejected_header": lambda: chord([reject.s(), add.s(1, 1)], tsum.s()),
         "chord_failed_header_subtask": lambda: chord(
             [add_with_subtask.s(1, 1), fail.s()], tsum.s()
