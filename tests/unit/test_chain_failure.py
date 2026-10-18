@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from celery import Celery, chain, chord, group
 from celery.canvas import Signature
+from celery.contrib.testing.worker import start_worker
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import TaskGraph
@@ -161,22 +162,52 @@ def test_failed_step_skips_unrun_steps_without_a_task(app: Celery) -> None:
     assert [e.name for e in _failures()] == ["t.a"]
 
 
+@pytest.mark.parametrize(
+    "popped", [False, True], ids=["celery_5_6_3", "celery_5_2_to_5_6_2"]
+)
 def test_failed_step_whose_next_step_was_already_sent_publishes_no_more(
-    app: Celery,
+    app: Celery, popped: bool
 ) -> None:
     """Celery sends the next step before it stores the result, so a result it
-    can't store (EncodeError) fails a task whose chain already moved on
-    (celery 5.6.3 app/trace.py: _dispatch_callbacks_and_chain, then
-    mark_as_done raises, then handle_failure). Those steps run."""
+    can't store (EncodeError) fails a task whose chain already moved on; the
+    later steps run. celery 5.6.3 app/trace.py leaves the sent step in
+    request.chain; 5.2.2 to 5.6.2 pop() it before sending."""
+    names = ["t.a", "t.b", "t.c", "t.d"]
+    ((headers, embed),) = _sent(app, chain(*(app.signature(n) for n in names)))
+    steps = list(embed["chain"])  # next step last
+    sent = steps.pop() if popped else steps[-1]
+    app.signature(sent).apply_async(
+        chain=steps if popped else steps[:-1], parent_id=headers["id"]
+    )
+    _drain(app)
+
+    _fail(headers, embed, steps)
+
+    assert [e.task_id for e in _failures()] == [headers["id"]]
+
+
+def test_failed_step_whose_chain_another_task_sent_still_fails_its_steps(
+    app: Celery,
+) -> None:
+    """Only the failed task's own sends count: this process having sent the
+    same chain for another task (it started the workflow) doesn't."""
     names = ["t.a", "t.b", "t.c"]
     ((headers, embed),) = _sent(app, chain(*(app.signature(n) for n in names)))
-    next_step = embed["chain"][-1]
-    app.signature(next_step).apply_async(chain=embed["chain"][:-1])
+    app.signature(embed["chain"][-1]).apply_async(parent_id="someone-else")
     _drain(app)
 
     _fail(headers, embed, embed["chain"])
 
-    assert [e.task_id for e in _failures()] == [headers["id"]]
+    assert [e.name for e in _failures()] == names
+
+
+def test_failed_step_with_a_malformed_next_step_does_not_raise(app: Celery) -> None:
+    ((headers, embed),) = _sent(app, chain(app.signature("t.a"), app.signature("t.b")))
+    malformed = {"task": "t.x", "options": {"task_id": ["x"]}}
+
+    _fail(headers, embed, [*embed["chain"], malformed])
+
+    assert [e.name for e in _failures()] == ["t.a", "t.b"]
 
 
 def test_failed_step_skips_malformed_unrun_steps(app: Celery) -> None:
@@ -243,3 +274,37 @@ def test_real_failed_chain_shows_each_unrun_step_failed_under_the_last() -> None
         ("flows.add", TaskState.FAILURE),
         ("flows.add", TaskState.FAILURE),
     ]
+
+
+def _unstorable() -> object:
+    """A result json can't encode: storing it fails after the chain moved on."""
+    return object()
+
+
+def _add(x: int, y: int) -> int:
+    """Add two numbers."""
+    return x + y
+
+
+def test_real_worker_result_not_stored_leaves_the_sent_steps_running() -> None:
+    """A real worker of whichever Celery is installed (CI runs the oldest
+    supported one too): its chain step dispatch, request.chain shape and
+    EncodeError path, end to end."""
+    app = Celery("chain-worker", broker="memory://", backend="cache+memory://")
+    unstorable = app.task(name="w.unstorable")(_unstorable)
+    add = app.task(name="w.add")(_add)
+    set_config(StemtraceConfig(transport_url="memory://"))
+    MemoryTransport.clear()
+    connect_signals(MemoryTransport())
+    try:
+        with start_worker(app, pool="solo", perform_ping_check=False):
+            workflow = chain(unstorable.si(), add.si(1, 1), add.si(2, 2), add.si(3, 3))
+            result = workflow.apply_async()
+            # propagate=False: get() would also raise the head's EncodeError.
+            result.get(timeout=30, propagate=False)
+            assert result.result == 6
+    finally:
+        disconnect_signals()
+
+    failures = [(e.name, e.hostname) for e in _failures()]
+    assert [name for name, _ in failures] == ["w.unstorable"]

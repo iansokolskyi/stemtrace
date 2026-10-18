@@ -93,8 +93,9 @@ class _RecentIds:
 
 _pending_emitted = _RecentIds()
 _pending_emitted_lock = threading.RLock()
-# Task IDs this process published, kept when they finish: a failed chain step
-# whose next step was already sent didn't stop the chain.
+# "<parent ID>:<task ID>" for each task this process sent, and for the first
+# step of the chain it carried, kept when they finish: a failed chain step whose
+# next step it already sent didn't stop the chain.
 _published_ids = _RecentIds()
 
 # Guard against overly-large docstrings bloating broker events.
@@ -719,14 +720,24 @@ def _on_task_failure(
     _publish_unrun_chain_steps(sender.request, task_id, exception)
 
 
-def _sent_already(step: Any) -> bool:
-    """Whether this process already published ``step``: the chain went on."""
-    # celery 5.6.3 app/trace.py sends the next step before storing the result;
-    # an EncodeError while storing it fails the task afterwards.
+def _sent_already(parent_id: str, step: Any) -> bool:
+    """Whether ``parent_id`` already sent its chain on, with ``step`` next or after."""
+    # Celery sends the next step before storing the result, and an EncodeError
+    # while storing it fails the task afterwards. celery 5.6.3 app/trace.py
+    # leaves the sent step in request.chain; 5.2.2 to 5.6.2 pop() it first, so
+    # request.chain then starts with the sent message's own chain.
+    task_id = _step_task_id(step)
+    if task_id is None:
+        return False
+    with _pending_emitted_lock:
+        return f"{parent_id}:{task_id}" in _published_ids
+
+
+def _step_task_id(step: Any) -> str | None:
+    """A chain step's task ID, if it is a well-formed signature dict."""
     options = step.get("options") if isinstance(step, dict) else None
     task_id = options.get("task_id") if isinstance(options, dict) else None
-    with _pending_emitted_lock:
-        return task_id in _published_ids
+    return task_id if isinstance(task_id, str) else None
 
 
 def _publish_unrun_chain_steps(
@@ -741,7 +752,7 @@ def _publish_unrun_chain_steps(
     # remaining steps, next one last. A group or chord step carries its
     # group's ID, not a task's (later steps are inside it), so it is skipped.
     steps = getattr(request, "chain", None)
-    if not isinstance(steps, list) or not steps or _sent_already(steps[-1]):
+    if not isinstance(steps, list) or not steps or _sent_already(task_id, steps[-1]):
         return
     parent_id = task_id
     for step in reversed(steps):
@@ -854,6 +865,8 @@ def _published_message(
     """
     if headers and headers.get("id"):
         args, kwargs = (body[0], body[1]) if isinstance(body, tuple) else ((), {})
+        embed = body[2] if isinstance(body, tuple) and len(body) > 2 else None
+        chain = embed.get("chain") if isinstance(embed, dict) else None
         return {
             "id": headers["id"],
             "task": headers.get("task"),
@@ -863,6 +876,9 @@ def _published_message(
             "root_id": headers.get("root_id"),
             "args": args,
             "kwargs": kwargs,
+            "next_step": _step_task_id(chain[-1])
+            if isinstance(chain, list) and chain
+            else None,
         }
     if isinstance(body, dict) and body.get("id"):
         return {
@@ -874,6 +890,7 @@ def _published_message(
             "root_id": None,
             "args": body.get("args") or (),
             "kwargs": body.get("kwargs") or {},
+            "next_step": None,
         }
     return None
 
@@ -917,7 +934,11 @@ def _on_after_task_publish(
     # Check-then-add under the lock: concurrent publishes of one task (or a
     # retry re-queue) announce it once.
     with _pending_emitted_lock:
-        _published_ids.add(task_id)
+        parent = message["parent_id"]
+        if parent is not None:
+            _published_ids.add(f"{parent}:{task_id}")
+            if message["next_step"] is not None:
+                _published_ids.add(f"{parent}:{message['next_step']}")
         if task_id in _pending_emitted:
             return
         _pending_emitted.add(task_id)
