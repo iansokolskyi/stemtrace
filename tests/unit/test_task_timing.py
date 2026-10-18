@@ -448,6 +448,20 @@ class TestTiming:
 
         assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
 
+    def test_message_received_twice_before_it_started_has_runtimes(self) -> None:
+        # A RECEIVED per delivery (publish_received=True): the first delivery
+        # was lost before it started, so one worker ran the attempt once.
+        a = {"hostname": "celery@a"}
+        node = _node(
+            _event(P, 0),
+            _event(R, 1, **a),
+            _event(R, 2, **a),
+            _event(S, 3, **a),
+            _event(OK, 5, **a),
+        )
+
+        assert _timing(node) == (3000, 2000, 2000)
+
     def test_end_without_worker_closes_the_latest_run(self) -> None:
         # A FAILURE without a worker (from an older worker's main process)
         # closes the latest unfinished run: A's, not B's.
