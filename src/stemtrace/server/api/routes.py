@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import functools
 import logging
 import threading
 import time
@@ -15,6 +15,13 @@ from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.routing import APIRoute
+
+# Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
+# goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
+# asyncio.iscoroutinefunction (uvloop 0.22.1). anyio's worker threads don't.
+from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from stemtrace.core.graph import NodeType
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
@@ -46,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from celery.app.control import Inspect
+    from starlette.types import Receive, Scope, Send
 
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
@@ -117,23 +125,41 @@ def _group_of(
     return group.name, list(group.tags)
 
 
-def _group_task_names(
+async def _filter_task_names(
     store: GraphStore,
     group_of: Callable[[str], ResolvedGroup],
     task_group: str | None,
     tag: str | None,
 ) -> frozenset[str] | None:
+    """Return the stored task names that pass ``task_group`` and ``tag``; None without either.
+
+    Only a filtered request resolves names, in a worker thread (see
+    ``_group_task_names``); an unfiltered list resolves none, so it doesn't use one.
+    """
+    if task_group is None and tag is None:
+        return None
+    return await run_in_threadpool(_group_task_names, store, group_of, task_group, tag)
+
+
+def _group_task_names(
+    store: GraphStore,
+    group_of: Callable[[str], ResolvedGroup],
+    task_group: str | None,
+    tag: str | None,
+) -> frozenset[str]:
     """Return the stored task names that pass the ``task_group`` and ``tag`` filters.
 
     ``task_group`` matches the group's name exactly; ``tag`` matches when it
     is one of the group's tags; given both, a name must match both (an empty
     value matches nothing, like the other exact filters). Names are resolved
     here, outside the store lock, once each; a task whose name is first seen
-    after this snapshot is matched from the next request on. None when
-    neither filter is given.
+    after this snapshot is matched from the next request on.
+
+    Runs in a worker thread (``run_in_threadpool``): with thousands of
+    distinct names it takes long enough (about 80 ms at 7,000) to hold up
+    every other request on the event loop. ``group_of``'s cache is
+    thread-safe.
     """
-    if task_group is None and tag is None:
-        return None
 
     def accepts(task_name: str) -> bool:
         """Whether tasks named ``task_name`` pass both filters."""
@@ -470,7 +496,7 @@ class _InspectRefresher:
         try:
             if self._refreshed_recently():
                 return
-            inspector = await asyncio.to_thread(
+            inspector = await run_in_threadpool(
                 _get_inspector,
                 broker_url,
                 timeout_seconds=_INSPECT_TIMEOUT_SECONDS,
@@ -478,7 +504,7 @@ class _InspectRefresher:
             if inspector is None:
                 return
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(
+                await run_in_threadpool(
                     _refresh_worker_registry_from_inspect,
                     worker_registry,
                     inspector,
@@ -739,6 +765,7 @@ def _add_task_routes(
         states = params.parse_states(state)
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -750,7 +777,7 @@ def _add_task_routes(
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
-            task_names=_group_task_names(store, group_of, task_group, tag),
+            task_names=task_names,
         )
         return TaskListResponse(
             tasks=[
@@ -793,8 +820,16 @@ def _add_task_routes(
         if refresh and worker_registry is not None:
             await refresher.maybe_refresh()
 
-        tasks = _build_task_registry(
-            store, worker_registry, query=query, status=status, groups=groups
+        # Resolves the group of every known name: off the event loop.
+        tasks = await run_in_threadpool(
+            functools.partial(
+                _build_task_registry,
+                store,
+                worker_registry,
+                query=query,
+                status=status,
+                groups=groups,
+            )
         )
         return TaskRegistryResponse(tasks=tasks, total=len(tasks))
 
@@ -881,13 +916,14 @@ def _add_graph_routes(
         """
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=start,
             to_date=to_date,
-            task_names=_group_task_names(store, group_of, task_group, tag),
+            task_names=task_names,
         )
         return GraphListResponse(
             graphs=[
@@ -943,8 +979,11 @@ def _add_group_routes(
         listed even before any of their tasks is seen. Sorted by name, with
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
-        members = groups.members(
-            _known_task_names(store, _hostnames_by_registered_task(worker_registry))
+        # Resolves the group of every known name: off the event loop.
+        members = await run_in_threadpool(
+            lambda: groups.members(
+                _known_task_names(store, _hostnames_by_registered_task(worker_registry))
+            )
         )
         return TaskGroupListResponse(
             groups=[
@@ -1019,6 +1058,54 @@ def _add_worker_routes(
         )
 
 
+class _ApiRoute(APIRoute):
+    """An API route whose 405 ``Allow`` header also names HEAD on a GET route.
+
+    The HEAD route next to it (``_serve_head_on_get_routes``) answers HEAD,
+    but the router builds a 405 from the one route that matched the path.
+    """
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle the request; another method on a GET route gets a 405 naming HEAD."""
+        # starlette 0.38-1.7 Route.handle raises this 405 inside an app, with
+        # only this route's methods in Allow; raising it first adds HEAD.
+        methods = self.methods or set()  # APIRoute always sets them
+        if "GET" in methods and scope["method"] not in methods:
+            allow = ", ".join(sorted(methods | {"HEAD"}))
+            raise StarletteHTTPException(status_code=405, headers={"Allow": allow})
+        await super().handle(scope, receive, send)
+
+
+def _serve_head_on_get_routes(router: APIRouter) -> None:
+    """Add a HEAD route next to every GET route: same endpoint, name and checks.
+
+    A HEAD request then passes authentication like GET instead of getting a
+    405 before any dependency runs. The HEAD routes stay out of the OpenAPI
+    schema, where they would repeat each GET operation and its ID.
+    """
+    # Separate routes, not "HEAD" added to the GET routes' methods: FastAPI
+    # builds one operation ID per route, so every second method duplicated it
+    # (a warning, an error under strict warning filters). uvicorn (0.40.0, h11
+    # and httptools) sends a HEAD response's headers without the body.
+    get_routes = [
+        route
+        for route in router.routes
+        if isinstance(route, APIRoute) and route.methods and "GET" in route.methods
+    ]
+    for route in get_routes:
+        router.add_api_route(
+            route.path.removeprefix(router.prefix),
+            route.endpoint,
+            methods=["HEAD"],
+            name=route.name,
+            response_model=route.response_model,
+            response_class=route.response_class,
+            status_code=route.status_code,
+            dependencies=route.dependencies,
+            include_in_schema=False,
+        )
+
+
 def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): positional callers must keep working
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
@@ -1048,7 +1135,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     Raises:
         ConfigurationError: If ``groups`` is invalid or its file can't be loaded.
     """
-    router = APIRouter(prefix="/api", tags=["stemtrace"])
+    router = APIRouter(prefix="/api", tags=["stemtrace"], route_class=_ApiRoute)
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)
@@ -1081,4 +1168,5 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    _serve_head_on_get_routes(router)
     return router

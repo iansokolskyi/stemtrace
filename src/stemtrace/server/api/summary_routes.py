@@ -13,6 +13,7 @@ from datetime import (
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
@@ -200,9 +201,19 @@ def _add_timeseries_route(
                 return group_of(record.name).name
 
         try:
-            series = time_series(
-                records, start=window.start, end=now, bucket=size, key_of=key_of
-            )
+            if key_of is None:
+                series = time_series(records, start=window.start, end=now, bucket=size)
+            else:
+                # Resolves every run's group: off the event loop, as the task
+                # list's group filters do (see routes._group_task_names).
+                series = await run_in_threadpool(
+                    time_series,
+                    records,
+                    start=window.start,
+                    end=now,
+                    bucket=size,
+                    key_of=key_of,
+                )
         except ValueError as exc:
             raise _unprocessable(str(exc)) from exc
         # Buckets start on edges, so the series covers from the first edge.

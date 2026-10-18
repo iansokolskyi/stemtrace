@@ -396,6 +396,9 @@ sniffio==1.3.1 \
 starlette==0.38.6 \
     --hash=sha256:4517a1409e2e73ee4951214ba012052b9e16f60e90d73cfb06192c19203bbb05 \
     --hash=sha256:863a1588f5574e70a821dadefb41e4881ea451a47a3cd1b4df359d4ffefe5ead
+tomli==1.2.2 \
+    --hash=sha256:c6ce0015eb38820eaf32b5db832dbc26deb3dd427bd5f6556cf0acac2c214fee \
+    --hash=sha256:f04066f68f5554911363063a30b108d2b5a5b1a010aa8b6132af78489fe3aade
 typer==0.16.0 \
     --hash=sha256:1f79bed11d4d02d4310e3c1b7ba594183bcedb0ac73b27a9e5f28f6fb5b98855 \
     --hash=sha256:af377ffaee1dbe37ae9440cb4e8f11686ea5ce4e9bae01b84ae7c63b87f1dd3b
