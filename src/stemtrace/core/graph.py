@@ -175,10 +175,8 @@ def _run_start(
 ) -> TaskEvent | None:
     """Take the unfinished run an end event (RETRY or final) closes.
 
-    The one on the end's worker; for an end from this release's worker
-    after a STARTED from an older one (mid-upgrade), the run without a
-    worker. An end without a worker (older workers) closes the latest
-    unfinished run, as before runs were paired by worker.
+    The one on the end's worker, else (mid-upgrade) the one without a worker.
+    An end without a worker (older workers) closes the latest unfinished run.
     """
     if hostname is not None:
         if hostname in open_runs:
@@ -359,25 +357,17 @@ class TaskNode(BaseModel):
         return _ms(spans[-1]), _ms(sum(spans, _NO_TIME))
 
     def _runs(self) -> list[tuple[TaskEvent, TaskEvent]] | None:
-        """Each run's STARTED with the RETRY or final event that ended it.
+        """Pair each run's STARTED with the RETRY or final event that ended it.
 
-        Events are taken in ``_precedence`` order (the order that decides the
-        state, so worker clocks can't swap attempts). A run is read on one
-        worker's clock: an end pairs with the open STARTED from its worker
-        (``hostname``), and a worker's new STARTED replaces its unfinished one
-        (a lost run). Events without a hostname (workers before 0.5) pair as
-        before: an end with the latest open STARTED, which may be another
-        worker's under skewed clocks. A run whose end was missed, or that
-        ended in a terminal event that isn't the final one
-        (``self.retry(throw=False)``), is left out. None unless the task
+        Runs are read on one worker's clock (see ``_run_start``), in
+        ``_precedence`` order. Runs whose end was missed, or ended in a terminal
+        event that isn't the final one, are left out. None unless the task
         finished and its last run's STARTED is from the final event's attempt.
-        The exception is a FAILURE with ``retries=0`` from a worker before
-        0.5: Celery reports a hard time limit or lost worker from the
-        worker's main process (celery 5.6.3 worker/request.py
-        ``Request.on_failure``), where the task's request is an empty default
-        (app/task.py ``Task._get_request``), whatever the attempt; this
-        release's workers fill it in (library/signals.py ``_failed_request``).
         """
+        # A FAILURE with retries=0 and no worker comes from an older worker's
+        # main process (celery 5.6.3 worker/request.py Request.on_failure, where
+        # app/task.py Task._get_request is an empty default) and can be any
+        # attempt's; this release's workers fill it in (signals._failed_request).
         final = max(self.events, key=_precedence, default=None)
         if final is None or final.state not in _TERMINAL_STATES:
             return None

@@ -686,13 +686,12 @@ _received_requests_lock = threading.Lock()
 def _on_task_received(*, request: Any, **_: Any) -> None:
     """Remember a received task's attempt, worker and IDs (main process).
 
-    Celery 5.2.2 and 5.6.3 send ``task_received`` from the worker's main
-    process for each task message (worker/strategy.py), with the worker
-    ``Request``. A FAILURE Celery sends from that process (a hard time limit,
-    a lost pool process) has no request of its own (see
-    ``_on_task_failure``); this is where it finds them. Only small fields are
-    kept, never the arguments.
+    A FAILURE Celery sends from the worker's main process has no request of
+    its own; ``_failed_request`` finds these. Only small fields are kept,
+    never the arguments.
     """
+    # Celery 5.2.2 and 5.6.3 send task_received from the main process for each
+    # task message, with the worker Request (worker/strategy.py).
     fields = getattr(request, "request_dict", None)
     if not isinstance(fields, dict) or not isinstance(fields.get("id"), str):
         return
@@ -713,14 +712,14 @@ def _on_task_received(*, request: Any, **_: Any) -> None:
 
 
 def _failed_request(sender: "Task", task_id: str) -> Any:
-    """The request a FAILURE belongs to.
+    """Return the request a FAILURE belongs to.
 
-    ``sender.request`` in the process that ran the task. Celery 5.6.3 and
-    5.2.2 send a hard time limit's or a lost pool process's FAILURE from the
-    worker's main process (worker/request.py ``Request.on_failure``), where
-    ``task.request`` is an empty default (app/task.py ``Task._get_request``):
-    then the request ``task_received`` brought, if remembered.
+    ``sender.request`` in the process that ran the task; for a FAILURE sent
+    from the worker's main process, the remembered received request.
     """
+    # Celery 5.2.2 and 5.6.3 send a hard time limit's or lost pool process's
+    # task_failure from the main process (worker/request.py Request.on_failure),
+    # where task.request is an empty default (app/task.py Task._get_request).
     request = sender.request
     if getattr(request, "id", None) == task_id:
         return request
