@@ -338,6 +338,11 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
         "- A.\n   ## [Unreleased]\n",
         "- A.\n   ### Sneaky\n",
         "- A.\n#### Deeper\n",
+        # CommonMark measures the indent from the list item's content column.
+        "- A.\n    ## [Unreleased]\n",
+        "- A.\n     ### Five\n",
+        "- ## [Unreleased]\n",
+        "- A.\n  - ## Nested\n",
     ],
 )
 def test_check_fragment_with_heading_line_fails(
@@ -348,6 +353,38 @@ def test_check_fragment_with_heading_line_fails(
     assert assemble.main(["--root", str(root), "--check"]) == 1
 
     assert "1.added.md: entry must not contain headings" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- Fixes `#152` and #153.\n",
+        "- A.\n  #152 is the pull request.\n",
+        "- A.\n      # a six-space indented code line\n",
+    ],
+)
+def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
+    tmp_path: Path, body: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["- A.\nlazy continuation\n", "- A.\n\nSeparate paragraph.\n", "- A.\n* Star.\n"],
+)
+def test_check_fragment_with_line_that_is_not_bullet_or_indented_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str
+) -> None:
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 1
+
+    err = capsys.readouterr().err
+    assert "1.added.md: every line must be a '- ' bullet or indented" in err
+    assert body.strip().splitlines()[-1] in err
 
 
 def test_check_fragment_with_utf8_bom_is_valid(tmp_path: Path) -> None:
@@ -395,7 +432,7 @@ def _bump_config_for_changelog(source: Path) -> tuple[str, str]:
     return header + "".join(marker + e for e in kept), match.group(1)
 
 
-def test_assemble_then_bump_with_heading_text_in_fragment_adds_one_version_heading(
+def test_assemble_then_bump_with_quoted_heading_and_link_edits_changelog_once(
     tmp_path: Path,
 ) -> None:
     # bump-my-version 1.6.0 (files.py ConfiguredFile.make_file_change) substitutes
@@ -412,7 +449,11 @@ def test_assemble_then_bump_with_heading_text_in_fragment_adds_one_version_headi
     )
     fragment_dir = tmp_path / "changelog.d"
     fragment_dir.mkdir()
-    bullet = "- A maintainer's release merges entries into `## [Unreleased]`.\n"
+    quoted = f"[unreleased]: {link}/v{current}...HEAD"
+    bullet = (
+        "- A maintainer's release merges entries into `## [Unreleased]`.\n"
+        f"  The footer reads `{quoted}`; this line quotes it too:\n  {quoted}\n"
+    )
     (fragment_dir / "1.changed.md").write_text(bullet, encoding="utf-8")
     assert assemble.main(["--root", str(tmp_path)]) == 0
 
@@ -430,4 +471,7 @@ def test_assemble_then_bump_with_heading_text_in_fragment_adds_one_version_headi
     assert (
         changelog_section.changelog_section(text, new)
         == f"### Changed\n{bullet.strip()}"
+    )
+    assert text.endswith(
+        f"[unreleased]: {link}/v{new}...HEAD\n[{new}]: {link}/v{current}...v{new}\n"
     )

@@ -9,7 +9,9 @@ To add a changelog entry, add a file to this directory in your pull request. Don
    short name (`api-key`). The type is one of `added`, `changed`, `deprecated`, `removed`,
    `fixed` or `security`.
 2. Write the entry as one or more `- ` bullets, exactly as it should appear in the
-   changelog. Indent continuation lines. Don't add headings: the type sets the heading.
+   changelog. Indent continuation lines: `--check` fails on any other line that doesn't
+   start with `- `. Don't add headings: the type sets the heading, and `--check` fails on
+   a line that starts one, even inside a bullet.
 3. Run `uv run python scripts/assemble_changelog.py --check` to validate your fragment.
 
 For example, `changelog.d/152.fixed.md`:
@@ -36,7 +38,9 @@ When a maintainer runs `make release-pr`, `scripts/assemble_changelog.py` merges
 fragments into `## [Unreleased]` in `CHANGELOG.md` and deletes them. It puts each entry under
 the `### <Type>` heading in Keep a Changelog order and sorts entries by file name within a
 type. Text above the first `###` heading in Unreleased, such as a **Highlights:** block,
-stays on top. Text under a `###` heading must be `- ` bullets: the release fails on other
-text there, because it would be filed under that heading.
+stays on top.
 
-CI runs `--check` and fails on a fragment with an invalid name or content.
+CI runs `--check`, which fails on a fragment with an invalid name or content. While
+`changelog.d/` has fragments, `--check` and `make release-pr` also fail on text under a
+`###` heading in Unreleased that isn't a `- ` bullet or an indented continuation, because
+the merge would file that text under the heading.

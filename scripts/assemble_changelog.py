@@ -25,8 +25,9 @@ DESCRIPTION = "Merge changelog fragments into CHANGELOG.md under [Unreleased]."
 _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
-# CommonMark: up to 3 spaces of indent still make an ATX heading.
-_HEADING_LINE = re.compile(r"^ {0,3}#", re.MULTILINE)
+# CommonMark: an ATX heading may be indented up to 3 spaces past its container's content
+# column, which is 2 inside a '- ' item (so 5 here), or follow bullet markers.
+_HEADING_LINE = re.compile(r"^(?: {0,5}| *(?:[-*+] +)+)#{1,6}(?:\s|$)", re.MULTILINE)
 # A column-0 line that isn't a bullet; bullet continuations are indented.
 _NON_BULLET_LINE = re.compile(r"^(?!- |[ \t]|$).+$", re.MULTILINE)
 _LINK_DEFINITIONS = re.compile(
@@ -64,6 +65,9 @@ def _invalid_body(body: str) -> str | None:
         return "entry must start with a '- ' bullet"
     if _HEADING_LINE.search(body):
         return "entry must not contain headings (the file name sets the heading)"
+    prose = _NON_BULLET_LINE.search(body)
+    if prose:
+        return f"every line must be a '- ' bullet or indented, not {prose.group(0)!r}"
     return None
 
 

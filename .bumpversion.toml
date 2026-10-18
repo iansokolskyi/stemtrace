@@ -67,6 +67,9 @@ replace = "[![PyPI version](https://img.shields.io/badge/pypi-v{new_version}-dar
 # CHANGELOG compare links: advance [unreleased], add the new version's link
 [[tool.bumpversion.files]]
 filename = "CHANGELOG.md"
-search = "[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...HEAD"
+# Anchored like the heading entry; {current_version} is re.escape'd in regex mode
+# (bump-my-version 1.6.0, config/models.py get_search_pattern).
+regex = true
+search = '^\[unreleased\]: https://github\.com/iansokolskyi/stemtrace/compare/v{current_version}\.\.\.HEAD$'
 replace = """[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v{new_version}...HEAD
 [{new_version}]: https://github.com/iansokolskyi/stemtrace/compare/v{current_version}...v{new_version}"""
