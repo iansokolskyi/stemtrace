@@ -2,6 +2,7 @@
 
 import inspect
 import logging
+import sys
 import threading
 import time
 import traceback as tb_module
@@ -18,7 +19,6 @@ from celery.signals import (
     task_failure,
     task_postrun,
     task_prerun,
-    task_received,
     task_retry,
     task_revoked,
     worker_process_shutdown,
@@ -50,6 +50,8 @@ from stemtrace.library.scrubbing import (
 )
 
 if TYPE_CHECKING:
+    from types import FrameType
+
     from celery import Task
 
 logger = logging.getLogger(__name__)
@@ -674,58 +676,52 @@ def _runs_again(task: "Task", reject: Any) -> bool:
     )
 
 
-# Each recent task's request as the worker's main process received it (see
-# _on_task_received), by task ID; the oldest are forgotten past the size.
-# Written by the consumer, read by the pool's result handling (another thread
-# under prefork), hence the lock.
-_RECEIVED_REQUESTS_SIZE = 10_000
-_received_requests: OrderedDict[str, Context] = OrderedDict()
-_received_requests_lock = threading.Lock()
-
-
-def _on_task_received(*, request: Any, **_: Any) -> None:
-    """Remember a received task's attempt, worker and IDs (main process).
-
-    A FAILURE Celery sends from the worker's main process has no request of
-    its own; ``_failed_request`` finds these. Only small fields are kept,
-    never the arguments.
-    """
-    # Celery 5.2.2 and 5.6.3 send task_received from the main process for each
-    # task message, with the worker Request (worker/strategy.py).
-    fields = getattr(request, "request_dict", None)
-    if not isinstance(fields, dict) or not isinstance(fields.get("id"), str):
-        return
-    remembered = Context(
-        id=fields["id"],
-        retries=fields.get("retries") or 0,
-        parent_id=fields.get("parent_id"),
-        root_id=fields.get("root_id"),
-        group=fields.get("group"),
-        hostname=getattr(request, "hostname", None),
-        delivery_info=getattr(request, "delivery_info", None),
-    )
-    with _received_requests_lock:
-        _received_requests[fields["id"]] = remembered
-        _received_requests.move_to_end(fields["id"])
-        while len(_received_requests) > _RECEIVED_REQUESTS_SIZE:
-            _received_requests.popitem(last=False)
+# How far up the stack _failed_request looks for Celery's failing Request.
+_REQUEST_FRAME_DEPTH = 12
 
 
 def _failed_request(sender: "Task", task_id: str) -> Any:
     """Return the request a FAILURE belongs to.
 
-    ``sender.request`` in the process that ran the task; for a FAILURE sent
-    from the worker's main process, the remembered received request.
+    ``sender.request`` in the process that ran the task. For a FAILURE sent
+    from the worker's main process, the failing ``Request`` from the caller's
+    stack; ``sender.request`` (empty) if it isn't found.
     """
-    # Celery 5.2.2 and 5.6.3 send a hard time limit's or lost pool process's
-    # task_failure from the main process (worker/request.py Request.on_failure),
-    # where task.request is an empty default (app/task.py Task._get_request).
     request = sender.request
     if getattr(request, "id", None) == task_id:
         return request
-    with _received_requests_lock:
-        remembered = _received_requests.pop(task_id, None)
-    return remembered if remembered is not None else request
+    # Celery 5.2.2 and 5.6.3 send a hard time limit's or lost pool process's
+    # task_failure from the main process inside Request.on_failure
+    # (worker/request.py), with sender=self.task, whose request is an empty
+    # default (app/task.py Task._get_request). The signal doesn't carry the
+    # Request, and the task ID alone can't tell attempts apart (a retry's
+    # message can arrive while the first attempt still runs), so the
+    # Request is read from on_failure's frame: `self`.
+    frame: FrameType | None = sys._getframe(1)
+    for _ in range(_REQUEST_FRAME_DEPTH):
+        if frame is None:
+            break
+        found = _worker_request(frame.f_locals.get("self"), task_id)
+        if found is not None:
+            return found
+        frame = frame.f_back
+    return request
+
+
+def _worker_request(candidate: Any, task_id: str) -> Context | None:
+    """The attempt, worker and IDs of a worker ``Request`` for ``task_id``, else None."""
+    fields = getattr(candidate, "request_dict", None)
+    if not isinstance(fields, dict) or fields.get("id") != task_id:
+        return None
+    return Context(
+        id=task_id,
+        retries=fields.get("retries") or 0,
+        parent_id=fields.get("parent_id"),
+        root_id=fields.get("root_id"),
+        group=fields.get("group"),
+        hostname=getattr(candidate, "hostname", None),
+        delivery_info=getattr(candidate, "delivery_info", None),
+    )
 
 
 def _on_task_failure(
@@ -949,7 +945,6 @@ def connect_signals(transport: EventTransport) -> None:
     _transport = transport
 
     after_task_publish.connect(_on_after_task_publish)
-    task_received.connect(_on_task_received)
     task_prerun.connect(_on_task_prerun)
     task_postrun.connect(_on_task_postrun)
     task_failure.connect(_on_task_failure)
@@ -970,7 +965,6 @@ def disconnect_signals() -> None:
     _transport = None
 
     after_task_publish.disconnect(_on_after_task_publish)
-    task_received.disconnect(_on_task_received)
     task_prerun.disconnect(_on_task_prerun)
     task_postrun.disconnect(_on_task_postrun)
     task_failure.disconnect(_on_task_failure)
@@ -984,8 +978,6 @@ def disconnect_signals() -> None:
 
     # Clear tracking state
     _pending_emitted.clear()
-    with _received_requests_lock:
-        _received_requests.clear()
 
     logger.info("stemtrace signal handlers disconnected")
 
