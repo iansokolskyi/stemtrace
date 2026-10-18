@@ -103,6 +103,7 @@ def _reset_drop_log(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test with no drops counted and no drop logged."""
     monkeypatch.setattr(signals_module, "_reentry_dropped", 0, raising=False)
     monkeypatch.setattr(signals_module, "_reentry_logged_at", None, raising=False)
+    monkeypatch.setattr(signals_module, "_reentry_last", "", raising=False)
 
 
 def test_publish_from_signal_handler_mid_publish_is_dropped(
@@ -302,6 +303,7 @@ def test_drops_are_counted_in_the_handler_and_logged_by_a_later_publish(
     ]
     assert logged_in_handler == []
     assert [d.split(" event(s)")[0] for d in drops] == ["Dropped 1", "Dropped 2"]
+    assert all(d.endswith("the last was cancelled") for d in drops)
     assert {
         r.levelno for r in caplog.records if "signal handler" in r.getMessage()
     } == {logging.DEBUG}
