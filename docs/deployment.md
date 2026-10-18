@@ -163,13 +163,16 @@ and use the built-in login, set the same `STEMTRACE_LOGIN_SECRET` everywhere; se
 On a cold shutdown (SIGQUIT, a second Ctrl+C, or SIGTERM with `REMAP_SIGTERM=SIGQUIT`), Celery 5.5
 and newer cancel running tasks from inside its signal handler, and stemtrace publishes a RETRY
 event for each cancelled task that isn't `acks_late` (those get no RETRY; the broker redelivers
-them). stemtrace makes sure that publish can't wait on one it interrupted: in this
+them).
+
+On prefork, threads and solo workers, that publish can't wait on one it interrupted: in this
 race, the cancelled task's RETRY event is dropped instead.
 
-On gevent and eventlet workers that handler can run inside the cancelled task's own greenlet,
-which Celery has just scheduled to kill, so stemtrace publishes that RETRY from a greenlet of its
-own once the handler has returned (at the latest when the worker exits) and never waits inside
-the handler.
+On gevent and eventlet workers, that handler can run inside the cancelled task's own greenlet,
+which Celery has just scheduled to kill. So stemtrace never waits inside the handler: it
+publishes that RETRY from a greenlet of its own once the handler has returned. If that publish
+hasn't finished when the worker exits, the worker waits for it for up to 2 seconds and then
+exits without it.
 
 Celery itself doesn't finish a cold shutdown that lands while a task's greenlet is running Python
 code (rather than waiting on I/O) on eventlet workers, or on gevent workers with task events
