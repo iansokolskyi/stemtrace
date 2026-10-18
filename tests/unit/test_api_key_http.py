@@ -627,6 +627,14 @@ def test_head_is_authenticated_like_get_in_every_mode(path: str) -> None:
         assert form_and_key.head(path).status_code == 200
 
 
+def test_head_on_the_liveness_probe_stays_public_with_a_key() -> None:
+    """Load balancer and Kubernetes probes may use HEAD; the exemption is by route name."""
+    with TestClient(_app(api_key=KEY)) as key_only:
+        assert key_only.head("/stemtrace/api/health/live").status_code == 200
+    with TestClient(_app(api_key=KEY, **_form_kwargs())) as form_and_key:
+        assert form_and_key.head("/stemtrace/api/health/live").status_code == 200
+
+
 def test_head_body_is_empty_and_headers_match_get() -> None:
     with TestClient(_app(api_key=KEY)) as client:
         get = client.get("/stemtrace/api/health", headers=BEARER)

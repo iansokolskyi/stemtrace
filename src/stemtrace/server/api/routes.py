@@ -137,28 +137,41 @@ def _group_of(
     return group.name, list(group.tags)
 
 
-def _group_task_names(
+async def _filter_task_names(
     store: GraphStore,
     group_of: Callable[[str], ResolvedGroup],
     task_group: str | None,
     tag: str | None,
 ) -> frozenset[str] | None:
+    """Return the stored task names that pass ``task_group`` and ``tag``; None without either.
+
+    Only a filtered request resolves names, in a worker thread (see
+    ``_group_task_names``), so an unfiltered list never waits for a free thread.
+    """
+    if task_group is None and tag is None:
+        return None
+    return await run_in_threadpool(_group_task_names, store, group_of, task_group, tag)
+
+
+def _group_task_names(
+    store: GraphStore,
+    group_of: Callable[[str], ResolvedGroup],
+    task_group: str | None,
+    tag: str | None,
+) -> frozenset[str]:
     """Return the stored task names that pass the ``task_group`` and ``tag`` filters.
 
     ``task_group`` matches the group's name exactly; ``tag`` matches when it
     is one of the group's tags; given both, a name must match both (an empty
     value matches nothing, like the other exact filters). Names are resolved
     here, outside the store lock, once each; a task whose name is first seen
-    after this snapshot is matched from the next request on. None when
-    neither filter is given.
+    after this snapshot is matched from the next request on.
 
     Runs in a worker thread (``run_in_threadpool``): with thousands of
     distinct names it takes long enough (about 128 ms at 7,000) to hold up
     every other request on the event loop. ``group_of``'s cache is
     thread-safe.
     """
-    if task_group is None and tag is None:
-        return None
 
     def accepts(task_name: str) -> bool:
         """Whether tasks named ``task_name`` pass both filters."""
@@ -743,11 +756,7 @@ def _add_task_routes(
                 task_state = TS(state)
 
         group_of = _group_lookup(groups)
-        # Every stored name is resolved: off the event loop (see
-        # _group_task_names).
-        task_names = await run_in_threadpool(
-            _group_task_names, store, group_of, task_group, tag
-        )
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -881,9 +890,7 @@ def _add_graph_routes(
         matches (anywhere in the graph, not only its root).
         """
         group_of = _group_lookup(groups)
-        task_names = await run_in_threadpool(
-            _group_task_names, store, group_of, task_group, tag
-        )
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
