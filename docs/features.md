@@ -202,6 +202,9 @@ Limitations:
   behind, or when the task's own PENDING or STARTED was missed. With Celery's default protocol 2,
   the replacement's events report the task (or a task below it) as their parent, so the task's
   own values are used whatever the clocks.
+- A worker before stemtrace 0.4.0 sends PENDING without a parent ID. If such a worker sent the
+  replacement of a task that replaced itself (same task name) and the task's own PENDING and
+  RECEIVED were both missed, `queue_wait_ms` is 0 instead of empty.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind

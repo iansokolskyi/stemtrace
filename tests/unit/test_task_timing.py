@@ -261,6 +261,16 @@ def _own_until(events: list[TaskEvent]) -> dict[str, int]:
     return cut
 
 
+def _wait(events: list[TaskEvent], eta: datetime | None) -> int | None:
+    """Wait from the first sent event (or ``eta`` if later) to the first STARTED."""
+    sent = [e.timestamp for e in events if e.state in (P, R)]
+    started = [e.timestamp for e in events if e.state == S]
+    if not sent or not started:
+        return None
+    wait_from = min(sent) if eta is None else max(min(sent), eta)
+    return max(0, (min(started) - wait_from) // timedelta(milliseconds=1))
+
+
 REPLACE_DELAYED = [
     "replace_delayed_root",
     "replace_delayed_mid_chain",
@@ -274,6 +284,8 @@ SCENARIOS = [
     "sender-ahead",
     "replacement-behind",
     "no-own-pending",
+    "replacement-received",
+    "both-received",
 ]
 # Protocol 1 messages carry no parent ID: these clock and event cases take the
 # replacement's ETA (docs/features.md, Limitations).
@@ -300,6 +312,19 @@ def _mutate(
         if scenario == "replacement-behind" and not own:
             e = e.model_copy(update={"timestamp": e.timestamp - minute})
         out.append(e)
+        # RECEIVED (publish_received=True) on the replacement's worker only, or on both.
+        received = (scenario == "replacement-received" and not own) or (
+            scenario == "both-received"
+        )
+        if received and e.state == P and e.retries == 0:
+            out.append(
+                e.model_copy(
+                    update={
+                        "state": R,
+                        "timestamp": e.timestamp + timedelta(seconds=0.005),
+                    }
+                )
+            )
     return out
 
 
@@ -409,6 +434,34 @@ class TestEta:
         )
 
         assert (node.eta, node.queue_wait_ms) == (None, 10_000)
+
+    def test_without_parent_ids_a_replacements_received_does_not_count(self) -> None:
+        # Protocol 1: the task's worker has RECEIVED off, the replacement's worker has
+        # it on; the replacement was sent with countdown=58 while the task ran.
+        node = _node(
+            _event(P, 0),
+            _event(S, 1),
+            _event(P, 2, name="app.add", eta=_at(60)),
+            _event(R, 2.01, name="app.add", eta=_at(60)),
+            _event(S, 60.1, name="app.add", eta=_at(60)),
+            _event(OK, 60.2, name="app.add", eta=_at(60)),
+        )
+
+        assert (node.eta, node.queue_wait_ms) == (None, 1000)
+
+    def test_pre_040_replacement_pending_with_own_sent_events_missed(self) -> None:
+        # Documented limit: a worker before stemtrace 0.4.0 sends PENDING without a
+        # parent, so a task replacing itself can't be told from its replacement by
+        # that PENDING; with the task's own PENDING and RECEIVED missed, the wait is
+        # read across the two runs and counts as 0 instead of being empty.
+        node = _node(
+            _event(S, 10, parent_id="parent-1"),
+            _event(P, 11),
+            _event(S, 41.1, parent_id="task-1"),
+            _event(OK, 41.2, parent_id="task-1"),
+        )
+
+        assert (node.eta, node.queue_wait_ms) == (None, 0)
 
     def test_eta_from_received_before_the_task_starts(self) -> None:
         # An older sender (PENDING without eta), a worker that records it on RECEIVED.
@@ -677,6 +730,15 @@ class TestRealCaptures:
                 next(e.timestamp for e in own if e.state == S)
                 - next(e.timestamp for e in own if e.state == P)
             ) // timedelta(milliseconds=1)
+            expected = {
+                "as-captured": wait,
+                "sender-behind": wait + 60_000,
+                "sender-ahead": max(0, wait - 60_000),
+                "replacement-behind": wait,
+                "no-own-pending": None,
+                "replacement-received": wait,
+                "both-received": wait,
+            }
             if protocol == 1 and scenario in PROTOCOL_1_LEAKS:
                 # Documented platform limit (docs/features.md): without parent IDs the
                 # values can come from the replacement instead of the task.
@@ -685,18 +747,18 @@ class TestRealCaptures:
                     None,
                 )
                 assert node.eta in (None, replacement_eta), (task_id, scenario)
-                assert node.queue_wait_ms is not None
-                assert node.queue_wait_ms >= 0
+                # The task's own wait, the replacement's, or a span across the two
+                # (one event of each) that went negative and counts as 0.
+                theirs = [e for e in mutated[cut:] if e.task_id == task_id]
+                assert node.queue_wait_ms in (
+                    expected[scenario],
+                    _wait(theirs, replacement_eta),
+                    0,
+                ), (task_id, scenario)
                 continue
-            expected = {
-                "as-captured": wait,
-                "sender-behind": wait + 60_000,
-                "sender-ahead": max(0, wait - 60_000),
-                "replacement-behind": wait,
-                "no-own-pending": None,
-            }[scenario]
+
             assert node.eta is None, (task_id, scenario)
-            assert node.queue_wait_ms == expected, (task_id, scenario)
+            assert node.queue_wait_ms == expected[scenario], (task_id, scenario)
 
     @pytest.mark.parametrize("flow", REPLACE_DELAYED)
     def test_replacement_eta_never_leaks_while_events_arrive(self, flow: str) -> None:

@@ -312,12 +312,18 @@ class TaskNode(BaseModel):
         if all(e.parent_id is None for e in first):
             # Protocol 1 sends no parent_id (celery 5.6.3 app/amqp.py as_task_v1). A
             # replacement is only sent while the task runs, so the earliest event of
-            # each state is the task's own, as long as the clocks agree.
-            return [
-                min(events, key=lambda e: e.timestamp)
+            # each state is the task's own if the clocks agree; its RECEIVED, stamped
+            # by the worker that runs it, comes before its STARTED.
+            earliest = {
+                state: min(events, key=lambda e: e.timestamp)
                 for state in (TaskState.STARTED, *_PRE_START)
                 if (events := [e for e in first if e.state == state])
-            ]
+            }
+            started = earliest.get(TaskState.STARTED)
+            received = earliest.get(TaskState.RECEIVED)
+            if started and received and received.timestamp > started.timestamp:
+                del earliest[TaskState.RECEIVED]
+            return list(earliest.values())
         # An older sender's PENDING carries no parent.
         return [e for e in first if e.parent_id in (None, self.reported_parent_id)]
 
