@@ -178,7 +178,8 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
 
 
 # Header outcomes after which Celery never runs a chord's callback (see
-# chord_not_run_reasons): a failure fails the chord, a rejection never completes it.
+# chord_not_run_reasons): a failure fails the chord, and a rejection whose
+# message won't run again (the only kind workers report) never completes it.
 _FAILED_HEADER_STATES = frozenset({TaskState.FAILURE, TaskState.REJECTED})
 
 ChordNotRunReason = Literal["header_failed", "header_revoked"]
@@ -2408,8 +2409,10 @@ def chord_not_run_reasons(
     ``on_chord_part_return``, app/builtins.py ``unlock_chord``), so one
     failed or revoked header means the callback won't run, even while other
     headers still run. A rejected header never reports its part
-    (app/trace.py ``handle_reject`` only logs), so the chord never completes
-    and the callback doesn't run either. A header is a task of the chord's
+    (app/trace.py ``handle_reject`` only logs), so unless its message runs
+    again the chord never completes and the callback doesn't run either;
+    workers publish REJECTED only for a message that won't run again (a
+    requeued one publishes nothing). A header is a task of the chord's
     group whose events named a callback. A failed or rejected header wins
     over a revoked one, so a reason can move from ``header_revoked`` to
     ``header_failed``, and it never clears unless a callback is drawn. CHORD
