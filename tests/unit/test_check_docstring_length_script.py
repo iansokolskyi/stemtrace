@@ -5,10 +5,8 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_docstring_length.py"
@@ -144,17 +142,46 @@ def test_run_with_allowlisted_missing_file_reports_stale_entry(
     assert "gone.py: allowlisted but missing" in errors[0]
 
 
-def test_main_on_failing_file_exits_one(
+def test_load_allowlist_with_entry_outside_root_raises(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    allowlist = root / "allow.txt"
+    allowlist.write_text("../outside.py  # escapes the root\n")
+    with pytest.raises(ValueError, match="outside"):
+        check.load_allowlist(allowlist, root)
+
+
+def test_main_with_path_outside_repo_exits_with_usage_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    bad = tmp_path / "bad.py"
-    bad.write_text(_module(9))
-    empty = tmp_path / "allow.txt"
-    empty.write_text("")
-    assert check.main([str(bad), "--allowlist", str(empty)]) == 1
+    outside = tmp_path / "bad.py"
+    outside.write_text(_module(9))
+    with pytest.raises(SystemExit) as exc_info:
+        check.main([str(outside)])
+    assert exc_info.value.code == 2
+    assert f"{outside} is outside {check.REPO_ROOT}" in capsys.readouterr().err
+
+
+def test_main_with_allowlist_option_exits_with_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An in-repo value, so only the unknown option itself can be rejected.
+    with pytest.raises(SystemExit) as exc_info:
+        check.main(["--allowlist", str(check.ALLOWLIST)])
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --allowlist" in capsys.readouterr().err
+
+
+def test_main_on_failing_repo_file_without_allowlist_exits_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(check, "ALLOWLIST", tmp_path / "missing.txt")
+    assert check.main([str(ROOT / "src" / "stemtrace" / "server" / "store.py")]) == 1
     out, err = capsys.readouterr()
-    assert out.strip().endswith("bad.py:1 <module>: 9 prose lines (max 8)")
-    assert err.strip() == ("1 docstring length error(s); see code-quality rule 3.5")
+    assert "store.py:" in out
+    assert err.strip().endswith("docstring length error(s); see code-quality rule 3.5")
 
 
 def test_main_on_repo_with_its_allowlist_passes(

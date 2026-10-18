@@ -18,7 +18,7 @@ from pathlib import Path
 MAX_DEFINITION_PROSE_LINES = 5
 MAX_MODULE_PROSE_LINES = 8
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ALLOWLIST = REPO_ROOT / "scripts" / "docstring_length_allowlist.txt"
+ALLOWLIST = REPO_ROOT / "scripts" / "docstring_length_allowlist.txt"
 
 _SECTION_HEADER = re.compile(
     r"^(Args|Arguments|Returns|Return|Yields|Yield|Raises|Example|Examples|"
@@ -100,10 +100,21 @@ def check_source(source: str, path: Path) -> list[Violation]:
     return sorted(violations, key=lambda v: v.line)
 
 
+def _inside(path: Path, root: Path) -> Path:
+    """Resolve ``path`` and return it, or raise ValueError if it leaves ``root``."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise ValueError(f"{path} is outside {root}")
+    return resolved
+
+
 def load_allowlist(path: Path, root: Path) -> set[Path]:
     """Read allowlisted files, one path relative to ``root`` per line.
 
     ``#`` starts a comment. A missing allowlist file means an empty list.
+
+    Raises:
+        ValueError: An entry points outside ``root``.
     """
     if not path.exists():
         return set()
@@ -111,8 +122,16 @@ def load_allowlist(path: Path, root: Path) -> set[Path]:
     for raw in path.read_text().splitlines():
         entry = raw.split("#", 1)[0].strip()
         if entry:
-            entries.add((root / entry).resolve())
+            entries.add(_inside(root / entry, root))
     return entries
+
+
+def _repo_path(value: str) -> Path:
+    """Parse a CLI path, rejecting anything outside the repository."""
+    try:
+        return _inside(Path(value), REPO_ROOT)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def run(roots: list[Path], allowlist: set[Path]) -> list[str]:
@@ -150,11 +169,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Fail on docstrings longer than code-quality rule 3.5 allows."
     )
     parser.add_argument(
-        "paths", nargs="*", type=Path, default=[REPO_ROOT / "src" / "stemtrace"]
+        "paths",
+        nargs="*",
+        type=_repo_path,
+        default=[REPO_ROOT / "src" / "stemtrace"],
+        help="files or directories inside the repository (default: src/stemtrace)",
     )
-    parser.add_argument("--allowlist", type=Path, default=DEFAULT_ALLOWLIST)
     args = parser.parse_args(argv)
-    errors = run(args.paths, load_allowlist(args.allowlist, REPO_ROOT))
+    # Always the committed allowlist next to this script, never one from argv.
+    errors = run(args.paths, load_allowlist(ALLOWLIST, REPO_ROOT))
     for error in errors:
         print(error)
     if errors:
