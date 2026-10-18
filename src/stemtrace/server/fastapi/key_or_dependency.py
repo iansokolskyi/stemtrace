@@ -4,7 +4,8 @@ FastAPI runs every dependency of a route, so the API routes are served twice: a
 hidden copy behind the key, matched only by a request that presents the key,
 then a copy behind ``auth_dependency`` for every other request. The app's
 dependency keeps FastAPI's own rules (sub-dependencies, ``dependency_overrides``,
-``yield``) and never runs for a key request.
+``yield``) and never runs for a key request. With the login page on, only the key
+skips the session check.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, Final, cast
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers
@@ -21,14 +22,22 @@ from starlette.routing import Match
 
 from stemtrace.server.fastapi.api_key import (
     GATE_SCOPE_KEY,
+    PUBLIC_ROUTE_NAMES,
     ApiKeyGuard,
     KeyStatus,
     api_key_dependency,
     bearer_token,
     too_many_attempts,
 )
+from stemtrace.server.fastapi.form_auth import (
+    SessionStatus,
+    check_session_cookie,
+    warn_session_secret_mismatch,
+)
+from stemtrace.server.fastapi.form_auth_middleware import api_unauthenticated_response
 
 if TYPE_CHECKING:
+    from starlette.responses import Response
     from starlette.types import Message, Receive, Scope, Send
 
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
@@ -42,9 +51,8 @@ _KEY_COPY_STATUSES: Final[frozenset[KeyStatus]] = frozenset(
     {KeyStatus.VALID, KeyStatus.THROTTLED}
 )
 
-#: Responses that mean the app's dependency refused the request's credentials
-#: (422: a required header or query of the dependency is missing).
-_REFUSED: Final[frozenset[int]] = frozenset({401, 403, 422})
+#: The wrong-key attempt of the request, so the admitting dependency can end it.
+ATTEMPT_SCOPE_KEY: Final[str] = "stemtrace.api_key_attempt"
 
 #: ``add_api_route`` options copied from each route, read from the attribute of the same name.
 COPIED_OPTIONS: Final[tuple[str, ...]] = (
@@ -93,24 +101,37 @@ def include_key_or_dependency(
 ) -> None:
     """Include ``api_router`` in ``router`` so the key or ``auth_dependency`` lets a request in.
 
-    A wrong key counts toward the client's lockout only when the dependency
-    refuses the request too, so the app's own Bearer tokens never lock its
-    users out. A token of another length than the key is never a key attempt
-    and goes straight to the dependency.
+    A Bearer token of the key's length counts toward the client's lockout
+    unless the dependency lets the request in. A token of another length is
+    never a key attempt and goes straight to the dependency.
     """
-    key_copies = _copy_routes(api_router, _KeyRoute, guard, in_schema=False)
-    dependency_copies = _copy_routes(api_router, _DependencyRoute, guard)
+
+    def _admitted(request: Request, _result: Any = auth_dependency) -> None:
+        # Runs only after ``auth_dependency`` returned: FastAPI skips a
+        # dependency whose own sub-dependency failed (0.112.1 and 0.143.1,
+        # ``solve_dependencies``), and caches it, so it runs once per request.
+        attempt = request.scope.get(ATTEMPT_SCOPE_KEY)
+        if isinstance(attempt, _WrongKey):
+            attempt.admit()
+
+    key_copies = _copy_routes(
+        api_router, _KeyRoute, guard, form_auth_config, in_schema=False
+    )
+    dependency_copies = _copy_routes(
+        api_router, _DependencyRoute, guard, form_auth_config
+    )
     # Order matters: the router takes the first route that matches.
     router.include_router(
         key_copies, dependencies=[api_key_dependency(guard, form_auth_config)]
     )
-    router.include_router(dependency_copies, dependencies=[auth_dependency])
+    router.include_router(dependency_copies, dependencies=[Depends(_admitted)])
 
 
 class _GuardedRoute(APIRoute):
     """An API route that knows the key guard (set per guard on a subclass)."""
 
     guard: ClassVar[ApiKeyGuard]
+    form_auth: ClassVar[FormAuthConfig | None]
 
 
 class _KeyRoute(_GuardedRoute):
@@ -125,28 +146,57 @@ class _KeyRoute(_GuardedRoute):
 
 
 class _DependencyRoute(_GuardedRoute):
-    """Serves the requests without the key; counts wrong keys the app refuses too."""
+    """Serves the requests without the key; counts wrong keys the app doesn't admit."""
 
     async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle the request, counting a failure if a wrong key is refused."""
+        """Handle the request: the session (login page on), then the dependency."""
         # The form-login middleware lets a Bearer request skip the session
-        # check only if an API route checked it; here the dependency does.
+        # check only if an API route checked it; this route does, below.
         scope[GATE_SCOPE_KEY] = True
-        if _verdict(scope, self.guard) is not KeyStatus.INVALID:
-            await super().handle(scope, receive, send)
-            return
-        attempt = _WrongKey(self.guard, scope, receive, send)
+        attempt = None
+        reply = send
+        if _verdict(scope, self.guard) is KeyStatus.INVALID:
+            attempt = _WrongKey(self.guard, scope, receive, send)
+            scope[ATTEMPT_SCOPE_KEY] = attempt
+            reply = attempt.send
         try:
-            await super().handle(scope, receive, attempt.send)
+            refusal = self._session_refusal(scope)
+            if refusal is None:
+                await super().handle(scope, receive, reply)
+            else:
+                await refusal(scope, receive, reply)
+        except Exception:
+            # An unhandled error in the dependency (a crashing token decoder)
+            # is no admission either; a cancelled request isn't a failure.
+            if attempt is not None:
+                attempt.fail()
+            raise
         finally:
-            attempt.end()
+            if attempt is not None:
+                attempt.end()
+
+    def _session_refusal(self, scope: Scope) -> Response | None:
+        """The 401 for a request without a session, when the login page is on."""
+        if self.form_auth is None or self.name in PUBLIC_ROUTE_NAMES:
+            return None
+        cookie = Request(scope).cookies.get(self.form_auth.cookie_name)
+        status = check_session_cookie(cookie, self.form_auth)
+        if status is SessionStatus.VALID:
+            return None
+        mismatch = status is SessionStatus.SECRET_MISMATCH
+        if mismatch:
+            warn_session_secret_mismatch()
+        return api_unauthenticated_response(
+            secret_mismatch=mismatch, api_key_configured=True
+        )
 
 
 class _WrongKey:
-    """A request with a wrong key of the key's length, which the app's dependency judges.
+    """A request with a wrong key of the key's length, until the app's dependency admits it.
 
-    It is in flight until the response starts. A refusal counts as a failed
-    key, and the failure that locks the client out is answered 429, as in
+    It is in flight until the dependency admits it or its response starts. A
+    response before the admission, whatever its status, counts as a failed
+    key; the failure that locks the client out is answered 429, as in
     key-only mode.
     """
 
@@ -171,12 +221,20 @@ class _WrongKey:
         # (``wrap_app_handling_exceptions``, 0.38.6 and 1.7.0), so a handler's
         # response for any exception type passes through here.
         if self._holding and message["type"] == "http.response.start":
-            wait = self._settle(refused=message["status"] in _REFUSED)
+            wait = self._settle(refused=True)
             if wait:
                 self._replaced = True
                 await self._answer_locked(wait)
                 return
         await self._send(message)
+
+    def admit(self) -> None:
+        """End the attempt: the dependency let the request in, so no failure."""
+        self._settle(refused=False)
+
+    def fail(self) -> None:
+        """Count the failure of a request that ended in an error, if not admitted."""
+        self._settle(refused=True)
 
     def end(self) -> None:
         """Free the in-flight slot, whatever happened to the request."""
@@ -218,6 +276,7 @@ def _copy_routes(
     source: APIRouter,
     kind: type[_GuardedRoute],
     guard: ApiKeyGuard,
+    form_auth_config: FormAuthConfig | None = None,
     *,
     in_schema: bool = True,
 ) -> APIRouter:
@@ -238,7 +297,11 @@ def _copy_routes(
             # type() returns a plain ``type``; the bases make it an APIRoute.
             classes[base] = cast(
                 "type[APIRoute]",
-                type(f"{kind.__name__}{base.__name__}", (kind, base), {"guard": guard}),
+                type(
+                    f"{kind.__name__}{base.__name__}",
+                    (kind, base),
+                    {"guard": guard, "form_auth": form_auth_config},
+                ),
             )
         options = {
             name: getattr(route, name)

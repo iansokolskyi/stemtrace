@@ -74,13 +74,38 @@ async def _rate_limited() -> None:
     raise HTTPException(status_code=429, detail="slow down")
 
 
-# kind -> (dependency, status the dependency answers a wrong key with)
-REFUSALS: dict[str, tuple[Any, int]] = {
-    "fastapi-401": (Depends(_fastapi_refusal), 401),
-    "starlette-401": (Depends(_starlette_refusal), 401),
-    "custom-exception-401": (Depends(_custom_exception_refusal), 401),
-    "403": (Depends(_forbidden), 403),
-    "422": (Depends(_missing_credentials), 422),
+async def _login_redirect() -> None:
+    raise HTTPException(
+        status_code=307, detail="sign in", headers={"Location": "/sign-in"}
+    )
+
+
+async def _bad_request() -> None:
+    raise HTTPException(status_code=400, detail="malformed token")
+
+
+async def _not_found() -> None:
+    raise HTTPException(status_code=404, detail="unknown token")
+
+
+async def _crashing_decoder() -> None:
+    raise RuntimeError("decoder crashed")
+
+
+# kind -> (dependency, what it answers a wrong key with, what the failure that
+# fills the lockout is answered with: 429, but an unhandled exception stays 500)
+REFUSALS: dict[str, tuple[Any, int, int]] = {
+    "fastapi-401": (Depends(_fastapi_refusal), 401, 429),
+    "starlette-401": (Depends(_starlette_refusal), 401, 429),
+    "custom-exception-401": (Depends(_custom_exception_refusal), 401, 429),
+    "403": (Depends(_forbidden), 403, 429),
+    "422": (Depends(_missing_credentials), 422, 429),
+    "307-login-redirect": (Depends(_login_redirect), 307, 429),
+    "400": (Depends(_bad_request), 400, 429),
+    "404": (Depends(_not_found), 404, 429),
+    "5xx": (Depends(_unavailable), 503, 429),
+    "its-own-429": (Depends(_rate_limited), 429, 429),
+    "unhandled-exception": (Depends(_crashing_decoder), 500, 500),
 }
 
 
@@ -110,40 +135,31 @@ def _no_env_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("kind", sorted(REFUSALS))
-def test_wrong_keys_lock_the_key_out_whatever_the_dependency_refuses_with(
+def test_wrong_keys_lock_the_key_out_whatever_the_dependency_answers_with(
     kind: str,
 ) -> None:
-    dependency, refused = REFUSALS[kind]
+    dependency, refused, filling = REFUSALS[kind]
     app, _ = _build(dependency)
 
-    with TestClient(app) as client:
+    with TestClient(app, raise_server_exceptions=False) as client:
         codes = [
-            client.get(API, headers=_wrong_key(i)).status_code for i in range(ATTEMPTS)
+            client.get(API, headers=_wrong_key(i), follow_redirects=False).status_code
+            for i in range(ATTEMPTS)
         ]
         locked = client.get(API, headers=BEARER)
 
     # The failure that fills the lockout is answered 429, as in key-only mode.
-    assert codes == [refused] * (LOGIN_IP_MAX_FAILURES - 1) + [429] * (
-        ATTEMPTS - LOGIN_IP_MAX_FAILURES + 1
+    assert codes == (
+        [refused] * (LOGIN_IP_MAX_FAILURES - 1)
+        + [filling]
+        + [429] * (ATTEMPTS - LOGIN_IP_MAX_FAILURES)
     )
     assert locked.status_code == 429
     assert int(locked.headers["retry-after"]) > 0
 
 
-@pytest.mark.parametrize(
-    ("dependency", "answer"),
-    [
-        (Depends(_admit), 200),
-        (Depends(_unavailable), 503),
-        (Depends(_rate_limited), 429),
-    ],
-    ids=["admits", "5xx", "its-own-429"],
-)
-def test_answers_that_are_no_refusal_of_credentials_never_lock_the_key_out(
-    dependency: Any, answer: int
-) -> None:
-    """An IdP outage, the app's own rate limit and an admitted token say nothing about the key."""
-    app, _ = _build(dependency)
+def test_a_request_the_dependency_admits_never_locks_the_key_out() -> None:
+    app, _ = _build(Depends(_admit))
 
     with TestClient(app) as client:
         codes = {
@@ -151,8 +167,42 @@ def test_answers_that_are_no_refusal_of_credentials_never_lock_the_key_out(
         }
         valid = client.get(API, headers=BEARER)
 
-    assert codes == {answer}
+    assert codes == {200}
     assert valid.status_code == 200
+
+
+def test_an_endpoint_error_after_the_dependency_admitted_is_no_failed_key() -> None:
+    """``limit=0`` is a 422 of the endpoint, not a refusal of the app's token."""
+    app, _ = _build(Depends(_admit))
+
+    with TestClient(app) as client:
+        codes = {
+            client.get(f"{API}?limit=0", headers=_wrong_key(i)).status_code
+            for i in range(ATTEMPTS)
+        }
+        valid = client.get(API, headers=BEARER)
+        own = client.get(API, headers=_wrong_key(1))
+
+    assert codes == {422}
+    assert (valid.status_code, own.status_code) == (200, 200)
+
+
+def test_the_dependency_runs_once_per_request() -> None:
+    """The admission marker shares the dependency's cached result instead of calling it again."""
+    calls: list[str] = []
+
+    async def counted_user(request: Request) -> str:
+        calls.append(request.headers.get("authorization", ""))
+        return "user"
+
+    app, _ = _build(Depends(counted_user))
+    own = _wrong_key(1)
+
+    with TestClient(app) as client:
+        assert client.get(API, headers=own).status_code == 200
+        assert client.get(API, headers={"X-Other": "1"}).status_code == 200
+
+    assert calls == [own["Authorization"], ""]
 
 
 async def test_wrong_keys_in_flight_at_once_never_test_more_keys_than_a_lockout_allows() -> (

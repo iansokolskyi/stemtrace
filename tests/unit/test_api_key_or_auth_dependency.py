@@ -334,8 +334,8 @@ def test_callable_object_dependency_works_with_a_key() -> None:
         assert client.get("/stemtrace/api/tasks").status_code == 401
 
 
-def test_form_login_lets_the_dependency_judge_app_bearer_tokens() -> None:
-    """With form login, a Bearer request skips the session check for the key or the dependency."""
+def test_form_login_lets_only_the_key_skip_the_session_check() -> None:
+    """A request that isn't the key needs a session and the dependency; a 404 means no route checked it."""
     app = FastAPI()
     stemtrace.init_app(
         app,
@@ -350,9 +350,15 @@ def test_form_login_lets_the_dependency_judge_app_bearer_tokens() -> None:
     )
     with TestClient(app) as client:
         assert client.get("/stemtrace/api/tasks", headers=BEARER).status_code == 200
-        assert client.get("/stemtrace/api/tasks", headers=JWT).status_code == 200
+        assert client.get("/stemtrace/api/tasks", headers=JWT).status_code == 401
         assert client.get("/stemtrace/api/tasks", headers=WRONG).status_code == 401
         assert client.get("/stemtrace/api/tasks").status_code == 401
+        client.post(
+            "/stemtrace/login",
+            data={"username": "admin", "password": "secret", "next": "/stemtrace/"},
+            follow_redirects=False,
+        )
+        assert client.get("/stemtrace/api/tasks", headers=JWT).status_code == 200
 
 
 def test_openapi_is_the_same_as_with_the_dependency_alone() -> None:
