@@ -65,8 +65,10 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(signals_module, "_deferred_publishes", [])
     monkeypatch.setattr(signals_module, "_flush_at_exit_registered", False)
     monkeypatch.setattr(signals_module, "_deferred_sleep", _real_sleep_forbidden)
-    # A flush must never wait with time.sleep (see TestFlush); fail fast, not hang.
-    monkeypatch.setattr(time, "sleep", _real_sleep_forbidden)
+    # The flush must never wait with time.sleep (see TestFlush): signals sees a
+    # time module whose sleep fails fast instead of hanging. Only signals' view
+    # is replaced, so other code's threads keep the real time.sleep.
+    _set_clock(monkeypatch, time.monotonic)
     registered: list[Callable[[], None]] = []
     monkeypatch.setattr(signals_module.atexit, "register", registered.append)
     yield
@@ -74,8 +76,17 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     MemoryTransport.clear()
 
 
+def _set_clock(monkeypatch: pytest.MonkeyPatch, monotonic: Callable[[], float]) -> None:
+    fake_time = SimpleNamespace(monotonic=monotonic, sleep=_real_sleep_forbidden)
+    monkeypatch.setattr(signals_module, "time", fake_time)
+
+
 def _real_sleep_forbidden(seconds: float) -> None:
     raise AssertionError("the flush must wait with the green library's sleep")
+
+
+def _green_library_sleep(seconds: float) -> None:
+    """Stands in for gevent.sleep / eventlet.sleep."""
 
 
 def _green_with(spawn: "FakeSpawn") -> _Green:
@@ -100,7 +111,7 @@ class TestGreen:
 
     @pytest.mark.parametrize("patched", [True, False])
     def test_gevent(self, monkeypatch: pytest.MonkeyPatch, patched: bool) -> None:
-        spawn, sleep = FakeSpawn(), _real_sleep_forbidden
+        spawn, sleep = FakeSpawn(), _green_library_sleep
         monkeypatch.setitem(
             sys.modules,
             "gevent.monkey",
@@ -111,11 +122,14 @@ class TestGreen:
         )
         monkeypatch.delitem(sys.modules, "eventlet.patcher", raising=False)
 
-        assert _green() == (_Green(spawn, sleep) if patched else None)
+        green = _green()
+        assert green == (_Green(spawn, sleep) if patched else None)
+        # The library's own sleep, never time.sleep (green or not).
+        assert green is None or green.sleep is _green_library_sleep
 
     @pytest.mark.parametrize("patched", [True, False])
     def test_eventlet(self, monkeypatch: pytest.MonkeyPatch, patched: bool) -> None:
-        spawn, sleep = FakeSpawn(), _real_sleep_forbidden
+        spawn, sleep = FakeSpawn(), _green_library_sleep
         monkeypatch.delitem(sys.modules, "gevent.monkey", raising=False)
         monkeypatch.setitem(
             sys.modules,
@@ -126,7 +140,10 @@ class TestGreen:
             sys.modules, "eventlet", _module("eventlet", spawn=spawn, sleep=sleep)
         )
 
-        assert _green() == (_Green(spawn, sleep) if patched else None)
+        green = _green()
+        assert green == (_Green(spawn, sleep) if patched else None)
+        # The library's own sleep, never time.sleep (green or not).
+        assert green is None or green.sleep is _green_library_sleep
 
 
 def _retry(reason: Any) -> None:
@@ -214,7 +231,7 @@ class TestFlush:
             assert len(sleeps) < 10_000, "flush never gave up"
             now[0] += seconds
 
-        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+        _set_clock(monkeypatch, lambda: now[0])
         monkeypatch.setattr(signals_module, "_deferred_sleep", sleep)
         stuck = FakeGreenlet(print)
         monkeypatch.setattr(signals_module, "_deferred_publishes", [stuck])
@@ -242,7 +259,7 @@ class TestFlush:
             now[0] += seconds
             running.dead = True  # finishes during the first wait
 
-        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+        _set_clock(monkeypatch, lambda: now[0])
         monkeypatch.setattr(signals_module, "_deferred_sleep", sleep)
         monkeypatch.setattr(signals_module, "_deferred_publishes", [done, running])
         caplog.set_level(logging.DEBUG, logger=LOGGER)
@@ -269,7 +286,6 @@ class TestFlush:
         def spawn(fn: Callable[..., Any], *args: Any) -> FakeGreenlet:
             return running
 
-        monkeypatch.setattr(time, "sleep", _real_sleep_forbidden)
         _defer_publish(
             _Green(spawn, green_sleep),
             TaskEvent.model_validate(
