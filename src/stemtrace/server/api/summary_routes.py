@@ -104,9 +104,9 @@ def _add_overview_route(
     ) -> OverviewResponse:
         """KPIs over the last ``within``, each with the window of equal length before it.
 
-        Runs are finished runs (SUCCESS, FAILURE, REVOKED, REJECTED, IGNORED), placed by
-        their latest event. The failure rate is FAILURE runs over finished runs
-        (0 when none finished). Workers are counted from worker events as the
+        Runs are runs with an outcome (SUCCESS, FAILURE, REVOKED, REJECTED; not
+        IGNORED, a task that chose not to run), placed by their latest event.
+        The failure rate is FAILURE runs over those runs (0 with none). Workers are counted from worker events as the
         server last saw them, without asking the workers.
         """
         if from_date is not None:

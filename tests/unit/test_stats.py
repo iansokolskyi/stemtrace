@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from stemtrace.core.events import TaskState
-from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.core.graph import TERMINAL_STATES, NodeType, TaskNode
 from stemtrace.server.stats import (
     FAILURE_SAMPLES,
     MAX_BUCKETS,
+    OUTCOME_STATES,
     RunRecord,
     Window,
     auto_bucket,
@@ -92,7 +93,7 @@ def test_previous_window_is_equal_length_just_before_and_closed() -> None:
 # --- window_stats -----------------------------------------------------------
 
 
-def test_window_stats_counts_finished_runs_and_failures_only() -> None:
+def test_window_stats_counts_runs_with_an_outcome_and_failures_only() -> None:
     window = Window(T0, T0 + timedelta(minutes=10))
     records = [
         _run("a", TaskState.SUCCESS, T0),
@@ -109,9 +110,36 @@ def test_window_stats_counts_finished_runs_and_failures_only() -> None:
 
     stats = window_stats(records, window)
 
-    assert (stats.runs, stats.failures) == (5, 1)
-    assert stats.runs_per_minute == pytest.approx(0.5)
-    assert stats.failure_rate == pytest.approx(0.2)
+    assert (stats.runs, stats.failures) == (4, 1)
+    assert stats.runs_per_minute == pytest.approx(0.4)
+    assert stats.failure_rate == pytest.approx(0.25)
+
+
+def test_failure_rate_ignores_skipped_tasks_in_a_dedup_heavy_window() -> None:
+    """Ignore() means the task chose not to run: 90 of them mustn't dilute 5 failures."""
+    window = Window(T0, T0 + timedelta(minutes=10))
+    states = (
+        [TaskState.IGNORED] * 90 + [TaskState.FAILURE] * 5 + [TaskState.SUCCESS] * 5
+    )
+    records = [
+        _run(f"t{i}", state, T0 + timedelta(seconds=i))
+        for i, state in enumerate(states)
+    ]
+
+    stats = window_stats(records, window)
+
+    assert (stats.runs, stats.failures) == (10, 5)
+    assert stats.failure_rate == pytest.approx(0.5)
+
+
+def test_outcome_states_are_the_terminal_states_but_ignored() -> None:
+    assert {
+        TaskState.SUCCESS,
+        TaskState.FAILURE,
+        TaskState.REVOKED,
+        TaskState.REJECTED,
+    } == OUTCOME_STATES
+    assert TaskState.IGNORED in TERMINAL_STATES
 
 
 def test_window_stats_with_no_runs_has_zero_rates() -> None:

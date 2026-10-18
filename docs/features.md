@@ -217,9 +217,11 @@ overview's baseline is the window before it).
 Every response says which window it covered. A window ending now also takes tasks stamped
 later by a worker whose clock is ahead.
 
-- `GET /api/overview?within=1h` (default `1h`; it takes `within` only): finished runs, failures, runs per minute and the
-  failure rate (FAILURE over finished runs; 0 with none), each with `baseline`, the same value for
-  the window of equal length just before. Finished means SUCCESS, FAILURE, REVOKED, REJECTED or IGNORED.
+- `GET /api/overview?within=1h` (default `1h`; it takes `within` only): runs, failures, runs per minute and the
+  failure rate (FAILURE over runs; 0 with none), each with `baseline`, the same value for the
+  window of equal length just before. Runs are tasks that ended with an outcome: SUCCESS, FAILURE,
+  REVOKED or REJECTED. IGNORED tasks chose not to run (for example a deduplicated task), so they
+  are left out, and a burst of them doesn't hide failures; the time series counts them by state.
   `workers` counts online and known workers from worker events, without asking the workers.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket

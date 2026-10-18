@@ -101,6 +101,26 @@ def test_overview_compares_the_window_with_the_one_before(store: GraphStore) -> 
     assert body["workers"] == {"online": 1, "total": 2}
 
 
+def test_overview_leaves_ignored_tasks_out_of_runs_and_the_failure_rate(
+    store: GraphStore,
+) -> None:
+    """A dedup-heavy app: 90 skipped tasks mustn't dilute 5 failures to 5%."""
+    states = (
+        [TaskState.IGNORED] * 90 + [TaskState.FAILURE] * 5 + [TaskState.SUCCESS] * 5
+    )
+    for i, state in enumerate(states):
+        store.add_event(_event(f"t{i}", state, 1 + i * 0.5))
+    client = _client(store)
+
+    overview = client.get("/api/overview?within=1h").json()
+    series = client.get("/api/stats/timeseries?within=1h&bucket=1h").json()
+
+    assert overview["runs"]["value"] == 10
+    assert overview["failures"]["value"] == 5
+    assert overview["failure_rate"]["value"] == pytest.approx(0.5)
+    assert sum(series["counts"]["IGNORED"]) == 90
+
+
 def test_overview_window_edges(store: GraphStore) -> None:
     store.add_event(_event("at-start", TaskState.SUCCESS, 60))  # 11:00 → window
     store.add_event(_event("future", TaskState.SUCCESS, -3))  # clock ahead → window

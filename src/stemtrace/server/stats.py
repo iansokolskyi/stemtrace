@@ -26,6 +26,12 @@ if TYPE_CHECKING:
     from stemtrace.core.graph import TaskNode
 
 
+#: States that end a run with an outcome: the overview's runs, and what its
+#: failure rate divides by. IGNORED is terminal but left out: ``Ignore()`` means
+#: the task chose not to run (dedup, locks), and counting it would hide real
+#: failures behind skipped work. Time series still count IGNORED by state.
+OUTCOME_STATES: Final[frozenset[TaskState]] = TERMINAL_STATES - {TaskState.IGNORED}
+
 #: Most buckets one time-series request may ask for.
 MAX_BUCKETS: Final[int] = 1440
 
@@ -121,7 +127,7 @@ class Window:
 
 @dataclass(frozen=True, slots=True)
 class WindowStats:
-    """Finished runs in one window."""
+    """Runs with an outcome (``OUTCOME_STATES``) in one window."""
 
     runs: int
     failures: int
@@ -129,20 +135,20 @@ class WindowStats:
 
     @property
     def runs_per_minute(self) -> float:
-        """Finished runs per minute of the window."""
+        """Runs with an outcome per minute of the window."""
         return self.runs / self.minutes if self.minutes > 0 else 0.0
 
     @property
     def failure_rate(self) -> float:
-        """FAILURE runs over finished runs; 0.0 when none finished."""
+        """FAILURE runs over runs with an outcome; 0.0 when there are none."""
         return self.failures / self.runs if self.runs else 0.0
 
 
 def window_stats(records: Iterable[RunRecord], window: Window) -> WindowStats:
-    """Count the finished runs and failures in ``window``."""
+    """Count the runs with an outcome, and the failures, in ``window``."""
     runs = failures = 0
     for record in records:
-        if record.state in TERMINAL_STATES and window.contains(record.last_updated):
+        if record.state in OUTCOME_STATES and window.contains(record.last_updated):
             runs += 1
             failures += record.state == TaskState.FAILURE
     minutes = (window.end - window.start).total_seconds() / 60
