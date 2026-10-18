@@ -11,12 +11,14 @@ from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
 
+from celery.app.task import Context
 from celery.exceptions import Retry
 from celery.signals import (
     after_task_publish,
     task_failure,
     task_postrun,
     task_prerun,
+    task_received,
     task_retry,
     task_revoked,
     worker_process_shutdown,
@@ -672,6 +674,61 @@ def _runs_again(task: "Task", reject: Any) -> bool:
     )
 
 
+# Each recent task's request as the worker's main process received it (see
+# _on_task_received), by task ID; the oldest are forgotten past the size.
+# Written by the consumer, read by the pool's result handling (another thread
+# under prefork), hence the lock.
+_RECEIVED_REQUESTS_SIZE = 10_000
+_received_requests: OrderedDict[str, Context] = OrderedDict()
+_received_requests_lock = threading.Lock()
+
+
+def _on_task_received(*, request: Any, **_: Any) -> None:
+    """Remember a received task's attempt, worker and IDs (main process).
+
+    Celery 5.2.2 and 5.6.3 send ``task_received`` from the worker's main
+    process for each task message (worker/strategy.py), with the worker
+    ``Request``. A FAILURE Celery sends from that process (a hard time limit,
+    a lost pool process) has no request of its own (see
+    ``_on_task_failure``); this is where it finds them. Only small fields are
+    kept, never the arguments.
+    """
+    fields = getattr(request, "request_dict", None)
+    if not isinstance(fields, dict) or not isinstance(fields.get("id"), str):
+        return
+    remembered = Context(
+        id=fields["id"],
+        retries=fields.get("retries") or 0,
+        parent_id=fields.get("parent_id"),
+        root_id=fields.get("root_id"),
+        group=fields.get("group"),
+        hostname=getattr(request, "hostname", None),
+        delivery_info=getattr(request, "delivery_info", None),
+    )
+    with _received_requests_lock:
+        _received_requests[fields["id"]] = remembered
+        _received_requests.move_to_end(fields["id"])
+        while len(_received_requests) > _RECEIVED_REQUESTS_SIZE:
+            _received_requests.popitem(last=False)
+
+
+def _failed_request(sender: "Task", task_id: str) -> Any:
+    """The request a FAILURE belongs to.
+
+    ``sender.request`` in the process that ran the task. Celery 5.6.3 and
+    5.2.2 send a hard time limit's or a lost pool process's FAILURE from the
+    worker's main process (worker/request.py ``Request.on_failure``), where
+    ``task.request`` is an empty default (app/task.py ``Task._get_request``):
+    then the request ``task_received`` brought, if remembered.
+    """
+    request = sender.request
+    if getattr(request, "id", None) == task_id:
+        return request
+    with _received_requests_lock:
+        remembered = _received_requests.pop(task_id, None)
+    return remembered if remembered is not None else request
+
+
 def _on_task_failure(
     *,
     task_id: str,
@@ -691,26 +748,25 @@ def _on_task_failure(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
-    chord_id, chord_callback_id = _extract_chord_info(
-        getattr(sender.request, "chord", None)
-    )
+    request = _failed_request(sender, task_id)
+    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     _publish_event(
         TaskEvent(
             task_id=task_id,
             name=sender.name,
             state=TaskState.FAILURE,
             timestamp=datetime.now(timezone.utc),
-            parent_id=getattr(sender.request, "parent_id", None),
-            root_id=getattr(sender.request, "root_id", None),
-            group_id=getattr(sender.request, "group", None),
+            parent_id=getattr(request, "parent_id", None),
+            root_id=getattr(request, "root_id", None),
+            group_id=getattr(request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
-            retries=sender.request.retries or 0,
+            retries=getattr(request, "retries", 0) or 0,
             exception=_format_exception(exception),
             exception_type=_exception_type(exception),
             traceback=_format_traceback(einfo),
             output=output,
-            **_worker_fields(sender.request),
+            **_worker_fields(request),
         )
     )
 
@@ -894,6 +950,7 @@ def connect_signals(transport: EventTransport) -> None:
     _transport = transport
 
     after_task_publish.connect(_on_after_task_publish)
+    task_received.connect(_on_task_received)
     task_prerun.connect(_on_task_prerun)
     task_postrun.connect(_on_task_postrun)
     task_failure.connect(_on_task_failure)
@@ -914,6 +971,7 @@ def disconnect_signals() -> None:
     _transport = None
 
     after_task_publish.disconnect(_on_after_task_publish)
+    task_received.disconnect(_on_task_received)
     task_prerun.disconnect(_on_task_prerun)
     task_postrun.disconnect(_on_task_postrun)
     task_failure.disconnect(_on_task_failure)
@@ -927,6 +985,8 @@ def disconnect_signals() -> None:
 
     # Clear tracking state
     _pending_emitted.clear()
+    with _received_requests_lock:
+        _received_requests.clear()
 
     logger.info("stemtrace signal handlers disconnected")
 
