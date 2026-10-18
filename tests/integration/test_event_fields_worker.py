@@ -137,6 +137,17 @@ class Run:
 
 
 TERMINAL = {TaskState.SUCCESS, TaskState.FAILURE}
+
+
+def _finished(run: "Run", task: str) -> bool:
+    """Whether ``task`` sent its last event (attempt 0's late FAILURE for one)."""
+    states = {e.state for e in run.task_events(task)}
+    if task == "ef.throw_false_then_hard_limit":
+        attempts = {(e.state, e.retries) for e in run.task_events(task)}
+        return {(TaskState.FAILURE, 0), (TaskState.SUCCESS, 1)} <= attempts
+    return bool(states & TERMINAL)
+
+
 TASKS = [
     "ef.default",
     "ef.routed",
@@ -145,6 +156,8 @@ TASKS = [
     "ef.retries_once",
     "ef.retries_in_except",
     "ef.hard_limit",
+    "ef.retry_then_hard_limit",
+    "ef.throw_false_then_hard_limit",
 ]
 # ef.default sent once more with countdown=3: the worker holds it until its ETA.
 COUNTDOWN = "ef.default countdown=3"
@@ -169,7 +182,7 @@ def _start_worker(run: Run) -> subprocess.Popen[bytes]:
                 APP_MODULE,
                 "worker",
                 "--pool=prefork",
-                "--concurrency=1",
+                "--concurrency=2",
                 f"--hostname={run.nodename}",
                 f"--queues={','.join(queues)}",
                 "--loglevel=INFO",
@@ -234,10 +247,7 @@ def run(
         finally:
             disconnect_signals()
         run.wait(
-            lambda: all(
-                any(e.state in TERMINAL for e in run.task_events(t))
-                for t in run.task_ids
-            ),
+            lambda: all(_finished(run, t) for t in run.task_ids),
             "a terminal event for every task",
         )
         yield run
@@ -316,19 +326,61 @@ def test_retry_inside_except_carries_the_handled_exception(run: Run) -> None:
     assert retry.exception_type == "ConnectionError"
 
 
-def test_failure_from_main_process_has_type_but_no_hostname(run: Run) -> None:
+def test_failure_from_main_process_carries_its_worker(run: Run) -> None:
     # celery 5.6.3 worker/request.py Request.on_failure sends task_failure from
-    # the worker's main process for a hard time limit; task.request is empty
-    # there, so the event has no hostname, but the node keeps STARTED's.
+    # the worker's main process for a hard time limit, where task.request is
+    # empty; stemtrace reads the failing Request from on_failure's frame.
     failure = run.event("ef.hard_limit", TaskState.FAILURE)
-    graph = TaskGraph()
-    for event in run.task_events("ef.hard_limit"):
-        graph.add_event(event)
-    node = graph.nodes[run.task_ids["ef.hard_limit"]]
 
     assert failure.exception_type == "billiard.exceptions.TimeLimitExceeded"
-    assert (failure.hostname, failure.queue, failure.routing_key) == (None, None, None)
-    assert (node.hostname, node.queue) == (run.nodename, run.names.default_queue)
+    assert (failure.hostname, failure.queue, failure.routing_key) == (
+        run.nodename,
+        run.names.default_queue,
+        run.names.default_queue,
+    )
+
+
+def test_main_process_failure_of_a_retry_carries_its_attempt(run: Run) -> None:
+    # Attempt 1 hits the hard time limit: before, its FAILURE said retries=0.
+    [failure] = [
+        e
+        for e in run.task_events("ef.retry_then_hard_limit")
+        if e.state == TaskState.FAILURE
+    ]
+    graph = TaskGraph()
+    for event in run.task_events("ef.retry_then_hard_limit"):
+        graph.add_event(event)
+    node = graph.nodes[run.task_ids["ef.retry_then_hard_limit"]]
+    started_1 = run.event("ef.retry_then_hard_limit", TaskState.STARTED, retries=1)
+
+    assert (failure.retries, failure.hostname) == (1, run.nodename)
+    # The last run is attempt 1's, on one worker's clock (about the 1 s limit).
+    assert node.runtime_ms is not None
+    assert node.runtime_ms == (failure.timestamp - started_1.timestamp) // timedelta(
+        milliseconds=1
+    )
+    assert 900 <= node.runtime_ms <= 5000
+
+
+def test_main_process_failure_of_attempt_zero_after_attempt_one(run: Run) -> None:
+    # self.retry(throw=False): attempt 1 arrives and finishes while attempt 0
+    # still runs; attempt 0 then hits its 15 s hard time limit. Its FAILURE is
+    # attempt 0's, and it ends attempt 0's own run, never attempt 1's.
+    events = run.task_events("ef.throw_false_then_hard_limit")
+    [failure] = [e for e in events if e.state == TaskState.FAILURE]
+    started_0 = run.event("ef.throw_false_then_hard_limit", TaskState.STARTED, 0)
+    success_1 = run.event("ef.throw_false_then_hard_limit", TaskState.SUCCESS, 1)
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    node = graph.nodes[run.task_ids["ef.throw_false_then_hard_limit"]]
+    ms = timedelta(milliseconds=1)
+
+    assert (failure.retries, failure.hostname) == (0, run.nodename)
+    assert success_1.timestamp < failure.timestamp
+    assert node.state == TaskState.FAILURE
+    assert node.runtime_ms == (failure.timestamp - started_0.timestamp) // ms
+    assert node.runtime_ms >= 14000
 
 
 def test_countdown_is_scheduled_not_waiting(run: Run) -> None:

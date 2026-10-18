@@ -187,3 +187,26 @@ def rejected_once(self: Task) -> str:
 def replaced(self: Task) -> None:
     """Replace this task with ``noisy``, which takes over its task ID."""
     self.replace(noisy.si())
+
+
+@app.task(name="output_test.sleepy")
+def sleepy(seconds: float) -> str:
+    """Run for ``seconds``, long enough to stop the worker meanwhile."""
+    time.sleep(seconds)
+    return "slept"
+
+
+@app.task(name="output_test.busy")
+def busy(seconds: float) -> str:
+    """Run Python code for ``seconds`` without yielding to gevent's hub."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        pass
+    return "busy"
+
+
+@app.task(name="output_test.sleepy_late", acks_late=True)
+def sleepy_late(seconds: float) -> str:
+    """Like ``sleepy``, acknowledged only after it finishes (redelivered if lost)."""
+    time.sleep(seconds)
+    return "slept"

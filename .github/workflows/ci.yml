@@ -83,6 +83,18 @@ jobs:
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       STEMTRACE_SKIP_UI_BUILD: "1"
+      REDIS_URL: redis://localhost:6379/15
+    # Without Redis the real-worker integration tests skip with "Redis not available".
+    services:
+      redis:
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -260,6 +272,18 @@ jobs:
     env:
       UV_PYTHON: "3.12"
       STEMTRACE_SKIP_UI_BUILD: "1"
+      REDIS_URL: redis://localhost:6379/15
+    # Without Redis the real-worker integration tests skip with "Redis not available".
+    services:
+      redis:
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

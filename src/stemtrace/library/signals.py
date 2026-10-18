@@ -13,6 +13,7 @@ from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, TypeVar
 
+from celery.app.task import Context
 from celery.exceptions import Retry
 from celery.signals import (
     after_task_publish,
@@ -51,6 +52,8 @@ from stemtrace.library.scrubbing import (
 )
 
 if TYPE_CHECKING:
+    from types import FrameType
+
     from celery import Task
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,10 @@ class _RecentIds:
 
 _pending_emitted = _RecentIds()
 _pending_emitted_lock = threading.RLock()
+# "<parent ID>:<task ID>" for each task this process sent, and for the first
+# step of the chain it carried, kept when they finish: a failed chain step whose
+# next step it already sent didn't stop the chain.
+_published_ids = _RecentIds()
 
 # Guard against overly-large docstrings bloating broker events.
 _MAX_DOCSTRING_CHARS = 4000
@@ -687,6 +694,54 @@ def _runs_again(task: "Task", reject: Any) -> bool:
     )
 
 
+# How far up the stack _failed_request looks for Celery's failing Request.
+_REQUEST_FRAME_DEPTH = 12
+
+
+def _failed_request(sender: "Task", task_id: str) -> Any:
+    """Return the request a FAILURE belongs to.
+
+    ``sender.request`` in the process that ran the task. For a FAILURE sent
+    from the worker's main process, the failing ``Request`` from the caller's
+    stack; ``sender.request`` (empty) if it isn't found.
+    """
+    request = sender.request
+    if getattr(request, "id", None) == task_id:
+        return request
+    # Celery 5.2.2 and 5.6.3 send a hard time limit's or lost pool process's
+    # task_failure from the main process inside Request.on_failure
+    # (worker/request.py), with sender=self.task, whose request is an empty
+    # default (app/task.py Task._get_request). The signal doesn't carry the
+    # Request, and the task ID alone can't tell attempts apart (a retry's
+    # message can arrive while the first attempt still runs), so the
+    # Request is read from on_failure's frame: `self`.
+    frame: FrameType | None = sys._getframe(1)
+    for _ in range(_REQUEST_FRAME_DEPTH):
+        if frame is None:
+            break
+        found = _worker_request(frame.f_locals.get("self"), task_id)
+        if found is not None:
+            return found
+        frame = frame.f_back
+    return request
+
+
+def _worker_request(candidate: Any, task_id: str) -> Context | None:
+    """The attempt, worker and IDs of a worker ``Request`` for ``task_id``, else None."""
+    fields = getattr(candidate, "request_dict", None)
+    if not isinstance(fields, dict) or fields.get("id") != task_id:
+        return None
+    return Context(
+        id=task_id,
+        retries=fields.get("retries") or 0,
+        parent_id=fields.get("parent_id"),
+        root_id=fields.get("root_id"),
+        group=fields.get("group"),
+        hostname=getattr(candidate, "hostname", None),
+        delivery_info=getattr(candidate, "delivery_info", None),
+    )
+
+
 def _on_task_failure(
     *,
     task_id: str,
@@ -706,28 +761,89 @@ def _on_task_failure(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
-    chord_id, chord_callback_id = _extract_chord_info(
-        getattr(sender.request, "chord", None)
-    )
+    request = _failed_request(sender, task_id)
+    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     _publish_event(
         TaskEvent(
             task_id=task_id,
             name=sender.name,
             state=TaskState.FAILURE,
             timestamp=datetime.now(timezone.utc),
-            parent_id=getattr(sender.request, "parent_id", None),
-            root_id=getattr(sender.request, "root_id", None),
-            group_id=getattr(sender.request, "group", None),
+            parent_id=getattr(request, "parent_id", None),
+            root_id=getattr(request, "root_id", None),
+            group_id=getattr(request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
-            retries=sender.request.retries or 0,
+            retries=getattr(request, "retries", 0) or 0,
             exception=_format_exception(exception),
             exception_type=_exception_type(exception),
             traceback=_format_traceback(einfo),
             output=output,
-            **_worker_fields(sender.request),
+            **_worker_fields(request),
         )
     )
+    _publish_unrun_chain_steps(sender.request, task_id, exception)
+
+
+def _sent_already(parent_id: str, step: Any) -> bool:
+    """Whether ``parent_id`` already sent its chain on, with ``step`` next or after."""
+    # Celery sends the next step before storing the result, and an EncodeError
+    # while storing it fails the task afterwards. celery 5.6.3 app/trace.py
+    # leaves the sent step in request.chain; 5.2.2 to 5.6.2 pop() it first, so
+    # request.chain then starts with the sent message's own chain.
+    task_id = _step_task_id(step)
+    if task_id is None:
+        return False
+    with _pending_emitted_lock:
+        return f"{parent_id}:{task_id}" in _published_ids
+
+
+def _step_task_id(step: Any) -> str | None:
+    """A chain step's task ID, if it is a well-formed signature dict."""
+    options = step.get("options") if isinstance(step, dict) else None
+    task_id = options.get("task_id") if isinstance(options, dict) else None
+    return task_id if isinstance(task_id, str) else None
+
+
+def _publish_unrun_chain_steps(
+    request: Any, task_id: str, exception: BaseException
+) -> None:
+    """Publish FAILURE for each chain step a failed task leaves unrun.
+
+    Celery records those steps as failed (and fails a chord they belong to)
+    without running them or sending an event for them.
+    """
+    # celery 5.6.3 backends/base.py mark_as_failure: request.chain holds the
+    # remaining steps, next one last. A group or chord step carries its
+    # group's ID, not a task's (later steps are inside it), so it is skipped.
+    steps = getattr(request, "chain", None)
+    if not isinstance(steps, list) or not steps or _sent_already(task_id, steps[-1]):
+        return
+    parent_id = task_id
+    for step in reversed(steps):
+        options = step.get("options") if isinstance(step, dict) else None
+        if not isinstance(options, dict) or step.get("subtask_type"):
+            continue
+        step_id, name = options.get("task_id"), step.get("task")
+        if not isinstance(step_id, str) or not isinstance(name, str):
+            continue
+        chord_id, chord_callback_id = _extract_chord_info(options.get("chord"))
+        _publish_event(
+            TaskEvent(
+                task_id=step_id,
+                name=name,
+                state=TaskState.FAILURE,
+                timestamp=datetime.now(timezone.utc),
+                parent_id=parent_id,
+                root_id=options.get("root_id") or getattr(request, "root_id", None),
+                group_id=options.get("group_id"),
+                chord_id=chord_id,
+                chord_callback_id=chord_callback_id,
+                exception=_format_exception(exception),
+                exception_type=_exception_type(exception),
+            )
+        )
+        parent_id = step_id
 
 
 def _on_task_retry(
@@ -900,6 +1016,8 @@ def _published_message(
     """
     if headers and headers.get("id"):
         args, kwargs = (body[0], body[1]) if isinstance(body, tuple) else ((), {})
+        embed = body[2] if isinstance(body, tuple) and len(body) > 2 else None
+        chain = embed.get("chain") if isinstance(embed, dict) else None
         return {
             "id": headers["id"],
             "task": headers.get("task"),
@@ -910,6 +1028,9 @@ def _published_message(
             "eta": headers.get("eta"),
             "args": args,
             "kwargs": kwargs,
+            "next_step": _step_task_id(chain[-1])
+            if isinstance(chain, list) and chain
+            else None,
         }
     if isinstance(body, dict) and body.get("id"):
         return {
@@ -922,6 +1043,7 @@ def _published_message(
             "eta": body.get("eta"),
             "args": body.get("args") or (),
             "kwargs": body.get("kwargs") or {},
+            "next_step": None,
         }
     return None
 
@@ -965,6 +1087,11 @@ def _on_after_task_publish(
     # Check-then-add under the lock: concurrent publishes of one task (or a
     # retry re-queue) announce it once.
     with _pending_emitted_lock:
+        parent = message["parent_id"]
+        if parent is not None:
+            _published_ids.add(f"{parent}:{task_id}")
+            if message["next_step"] is not None:
+                _published_ids.add(f"{parent}:{message['next_step']}")
         if task_id in _pending_emitted:
             return
         _pending_emitted.add(task_id)
@@ -1031,6 +1158,7 @@ def disconnect_signals() -> None:
 
     # Clear tracking state
     _pending_emitted.clear()
+    _published_ids.clear()
 
     logger.info("stemtrace signal handlers disconnected")
 
@@ -1251,6 +1379,39 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 
     except Exception as e:
         logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)
+
+
+def on_worker_terminating(sender: Any = None) -> None:
+    """Publish WORKER_TERMINATING: the worker ends without a worker_shutdown.
+
+    Called from ``WorkerTerminatingStep.terminate`` in the worker's main
+    process, outside Celery's signal handler. Never raises.
+    """
+    try:
+        hostname, pid = _get_hostname_and_pid(sender)
+
+        from stemtrace.core.events import WorkerEvent, WorkerEventType
+
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_TERMINATING,
+            hostname=hostname,
+            pid=pid,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if _transport is not None:
+            if not _publish_once(_transport, event):
+                return
+            logger.info(
+                "Worker terminating event sent to transport: %s:%d", hostname, pid
+            )
+        else:
+            logger.warning(
+                "No transport configured, worker_terminating event not published"
+            )
+    except Exception as e:  # fire-and-forget: the cold shutdown must go on
+        logger.warning(
+            "Failed to publish worker_terminating event: %s", e, exc_info=True
+        )
 
 
 def on_worker_process_shutdown(**_: Any) -> None:

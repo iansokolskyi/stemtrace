@@ -181,6 +181,11 @@ runs each without stemtrace, a gevent worker with a result backend never exited,
 events (`-E`) exited twice, and eventlet workers never exited. Send SIGQUIT again or SIGKILL to
 stop such a worker.
 
+On a gevent worker with a result backend, a cold shutdown that lands while the task waits on I/O
+does end, with `worker_shutdown`, but the task gets no RETRY and stays STARTED: Celery stores the
+retry in the result backend before it sends the signal stemtrace publishes from, and that store
+fails inside its handler.
+
 ## Health endpoint
 
 `GET /stemtrace/api/health` (under your mount prefix when embedded) always returns HTTP 200 with:

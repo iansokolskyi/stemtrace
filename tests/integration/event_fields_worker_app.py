@@ -74,6 +74,38 @@ def hard_limit() -> None:
     time.sleep(30)
 
 
+@app.task(
+    name="ef.retry_then_hard_limit",
+    bind=True,
+    time_limit=1,
+    max_retries=1,
+    default_retry_delay=0,
+)
+def retry_then_hard_limit(self: Task) -> None:
+    """Retry once; the second attempt outlives the hard time limit."""
+    if self.request.retries == 0:
+        raise self.retry(exc=PartnerAPIError("try again"))
+    time.sleep(30)
+
+
+@app.task(
+    name="ef.throw_false_then_hard_limit",
+    bind=True,
+    # Long enough that attempt 1 (0.3 s) always finishes first: it waits for a
+    # pool process behind this module's other tasks, whose hard limits each
+    # cost a process respawn (about 7 s in all on a loaded 2-vCPU host).
+    time_limit=15,
+    max_retries=1,
+    default_retry_delay=0,
+)
+def throw_false_then_hard_limit(self: Task) -> None:
+    """Attempt 0 retries without raising and outlives the hard limit; attempt 1 is quick."""
+    if self.request.retries == 0:
+        self.retry(throw=False, countdown=0)
+        time.sleep(60)
+    time.sleep(0.3)
+
+
 @app.task(name="ef.retries_once", bind=True, max_retries=1, default_retry_delay=0)
 def retries_once(self: Task) -> None:
     """Retry once because of a user-defined exception, then succeed."""
