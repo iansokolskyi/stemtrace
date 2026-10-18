@@ -11,6 +11,7 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 - **Arguments & Results**: Inspect inputs, outputs, and exceptions
 - **Task Output**: See what each attempt printed and logged, next to the task (opt-in, see [Task output](configuration.md#task-output-print-and-logging))
 - **Retry Chains**: Understand exactly when and why retries happened
+- **Queue wait and runtime**: How long each task waited before it started and how long it ran, apart from its overall duration ([details](#queue-wait-and-runtime))
 - **Worker, queue and exception type**: Which worker ran each task, which queue it came from, and the exception class of failures, with API filters ([details](#worker-queue-and-exception-type))
 - **Real-time updates**: WebSocket-powered live dashboard
 
@@ -131,3 +132,58 @@ Limitations:
 - `GET /api/tasks` filters on these fields by reading every event of every task, several times
   the cost of a name filter: on a full store of 10,000 tasks (6 events each) a filtered request
   took 40 to 130 ms against 10 to 30 ms for a name filter, on a loaded 2-vCPU host.
+
+## Queue wait and runtime
+
+`duration_ms` runs from a task's first event to its last, so it adds up the time the task waited
+in the queue, the time it ran and any retry countdowns. The API's task and graph node responses
+also split it up:
+
+| Field | From | To |
+|---|---|---|
+| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED) | its first run starting (first STARTED) |
+| `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
+| `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
+
+- `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
+  so it is in `duration_ms` but not here. It is set once the task starts, while it is still
+  running.
+- `runtime_ms` and `total_runtime_ms` are set once the task finishes, and are equal for a task
+  that ran once. A run that Celery started again after losing the broker connection counts in
+  `total_runtime_ms`. Values are whole milliseconds, truncated.
+- Fields are empty when the events they need are missing: `queue_wait_ms` without a PENDING
+  (the code that sent the task doesn't run stemtrace) and without RECEIVED (off by default), or
+  without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
+  before it started. GROUP and CHORD nodes have none.
+- They are computed on the server from the events it already has, so they also appear for tasks
+  recorded by older workers.
+
+Limitations:
+
+- `queue_wait_ms` compares the sending process's clock with the worker's. The sender stamps
+  PENDING just after publishing, so a task a worker starts at once can look like it started
+  first; a negative wait, from that or from a sender clock ahead of the worker's, counts as 0.
+  A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
+  (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
+  earlier.
+- A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
+  in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
+  in the queue.
+- `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
+  running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
+  after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
+  the first worker's by more than the time between the two starts, the lost run's STARTED is
+  taken as the last run's start instead: `runtime_ms` and `total_runtime_ms` come out too short
+  (0 at worst), and `queue_wait_ms` shorter. With `throw=False` and the second worker's clock behind the
+  first's by more than the time between the two runs' ends, the first run's SUCCESS becomes the
+  task's final event, and both fields are empty.
+- A FAILURE Celery reports from the worker's main process (a hard time limit) doesn't say which
+  attempt failed, and neither does the FAILURE of a first attempt that raised after
+  `self.retry(throw=False)`: both carry retry count 0. If the events of the attempts in between were missed, the runtime is counted
+  from the last STARTED the server has, so it can be too long.
+- A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run, or a
+  span read across two workers' clocks (above). When Celery runs the same attempt again on
+  another worker after losing the broker connection, and that worker's clock is behind the
+  first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
+  and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the
+  same-attempt limitation in [Worker, queue and exception type](#worker-queue-and-exception-type)).
