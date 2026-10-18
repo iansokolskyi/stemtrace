@@ -1,6 +1,7 @@
 """A failed chain step publishes FAILURE for the steps it leaves unrun."""
 
 import json
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -291,11 +292,16 @@ def test_real_worker_result_not_stored_leaves_the_sent_steps_running() -> None:
     supported one too): its chain step dispatch, request.chain shape and
     EncodeError path, end to end."""
     app = Celery("chain-worker", broker="memory://", backend="cache+memory://")
+    # Leave logging alone: a hijacked root logger breaks later tests' caplog.
+    app.conf.worker_hijack_root_logger = False
     unstorable = app.task(name="w.unstorable")(_unstorable)
     add = app.task(name="w.add")(_add)
     set_config(StemtraceConfig(transport_url="memory://"))
     MemoryTransport.clear()
     connect_signals(MemoryTransport())
+    # start_worker sets the root logger to its loglevel and adds a handler.
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
     try:
         with start_worker(app, pool="solo", perform_ping_check=False):
             workflow = chain(unstorable.si(), add.si(1, 1), add.si(2, 2), add.si(3, 3))
@@ -305,6 +311,8 @@ def test_real_worker_result_not_stored_leaves_the_sent_steps_running() -> None:
             assert result.result == 6
     finally:
         disconnect_signals()
+        root.setLevel(level)
+        root.handlers[:] = handlers
 
     failures = [(e.name, e.hostname) for e in _failures()]
     assert [name for name, _ in failures] == ["w.unstorable"]
