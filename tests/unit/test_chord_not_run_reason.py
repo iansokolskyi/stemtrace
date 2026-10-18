@@ -297,16 +297,16 @@ def test_chord_not_run_reasons_scans_the_nodes_a_fixed_number_of_times() -> None
 def test_get_graph_reason_follows_the_headers_still_stored(
     kept: TaskState, after: str | None
 ) -> None:
-    """The reason is worked out from the headers still stored: evicting the
-    failed one (oldest first) while the chord stays lowers or clears it."""
-    store = GraphStore(max_nodes=10)
+    """The reason is worked out from the headers still stored. A chord that
+    fits is evicted whole; one too big to keep (over 90% of max_nodes) loses
+    its oldest headers, which lowers or clears the reason."""
+    store = GraphStore(max_nodes=6)
     store.add_event(
         _ev("h0", TaskState.FAILURE, 1, group_id="g", chord_callback_id="cb")
     )
-    for i in range(1, 4):
-        state = kept if i == 2 else TaskState.SUCCESS
+    for i in range(1, 5):
         store.add_event(
-            _ev(f"h{i}", state, 1 + i, group_id="g", chord_callback_id="cb")
+            _ev(f"h{i}", TaskState.SUCCESS, 1 + i, group_id="g", chord_callback_id="cb")
         )
     client = _client(store)
     assert (
@@ -314,9 +314,9 @@ def test_get_graph_reason_follows_the_headers_still_stored(
         == "header_failed"
     )
 
-    for i in range(6):
-        store.add_event(_ev(f"x{i}", TaskState.SUCCESS, 10 + i))
+    # 7 nodes in one unit, more than eviction keeps (5): the two oldest go.
+    store.add_event(_ev("h5", kept, 6, group_id="g", chord_callback_id="cb"))
 
     nodes = client.get("/api/graphs/group:g").json()["nodes"]
-    assert sorted(nodes) == ["group:g", "h2", "h3"]
+    assert sorted(nodes) == ["group:g", "h2", "h3", "h4", "h5"]
     assert nodes["group:g"]["not_run_reason"] == after
