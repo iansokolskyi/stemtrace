@@ -157,10 +157,18 @@ also split it up:
 
 | Field | From | To |
 |---|---|---|
-| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED) | its first run starting (first STARTED) |
+| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED), or its ETA if that is later | its first run starting (first STARTED) |
 | `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
 | `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
 
+- The worker holds a task sent with a `countdown` or `eta` until that time. The time held is
+  scheduled, not waiting, so `queue_wait_ms` counts from the ETA: a task sent with
+  `countdown=60` that starts 0.2 seconds after its ETA waited 200 ms. Task and graph node
+  responses give the first attempt's ETA as `eta` (UTC; empty for a task that can run at
+  once). Each event has its own attempt's ETA as `eta`, so a retry's countdown shows on the
+  retry's events, and a task replaced with `task.replace()` keeps its own ETA and wait: the
+  replacement's countdown shows on the replacement's events (see the protocol 1 limitation
+  below).
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
@@ -172,7 +180,9 @@ also split it up:
   without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
   before it started. GROUP and CHORD nodes have none.
 - They are computed on the server from the events it already has, so they also appear for tasks
-  recorded by older workers.
+  recorded by older workers. The code that sends a task records its ETA on PENDING, and the
+  worker records it on its own events. If neither runs this release, `queue_wait_ms` counts a
+  countdown as waiting, as before.
 
 Limitations:
 
@@ -181,13 +191,32 @@ Limitations:
   first; a negative wait, from that or from a sender clock ahead of the worker's, counts as 0.
   A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
   (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
-  earlier.
-- A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
-  in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
-  in the queue.
+  earlier. Celery computes an ETA from the sending process's clock (now plus the `countdown`),
+  and the worker starts the task when its own clock reaches it. A worker clock behind the
+  sender's starts the task late by the offset, and one ahead starts it early; `queue_wait_ms`
+  counts from the ETA by the worker's clock, so it doesn't show that offset.
 - Each run is read on one worker's clock: its STARTED and the RETRY or final event that ended it
   come from the same worker (`hostname`), so skewed clocks between workers don't shorten or
   empty the runtimes, also when Celery runs the same attempt again on another worker.
+- With Celery's message protocol 1 (`task_protocol = 1`), task messages carry no parent ID
+  (Celery 5.6.3 `app/amqp.py` `as_task_v1`), so the server can't tell a task's events from
+  those of a replacement it started with `task.replace()`. It reads the ETA and the wait from the
+  task's earliest STARTED and earliest sent events instead. For a task replaced by one sent with
+  a `countdown`, `eta` and `queue_wait_ms` can then come from the replacement: when the sending
+  process's clock is ahead of the worker's, when the replacement runs on a worker whose clock is
+  behind, or when the task's own PENDING or STARTED was missed. With Celery's default protocol 2,
+  the replacement's events report the task (or a task below it) as their parent, so the task's
+  own values are used whatever the clocks.
+- A worker before stemtrace 0.4.0 sends PENDING without a parent ID, so a replacement's PENDING
+  that it sent can look like the task's own. If the task has no PENDING or RECEIVED of its own (for
+  example, the code that sent it doesn't call `init_worker` and RECEIVED is off),
+  `queue_wait_ms` is 0 instead of empty for a root task, and for a task that replaced itself. A
+  replacement with another task name then also gives the task that name, and a child task loses
+  its link to its parent.
+- When events carry no parent ID (protocol 1, or a root task), only the task's first run is read.
+  If neither that run's worker nor the code that sent the task recorded the ETA (a release
+  before this one) and the task was redelivered to a worker that did, the countdown counts as
+  waiting.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. When such a first run ends last (its SUCCESS or FAILURE is the
@@ -198,11 +227,13 @@ Limitations:
   Celery ran the first attempt again on a worker whose clock is behind, it can come out shorter,
   by up to that offset.
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run.
+  Without parent IDs, a RECEIVED stamped after the task's first STARTED doesn't count, so a
+  clock stepping back between the two leaves `queue_wait_ms` empty when the task has no PENDING.
 - Workers up to 0.4.0 send no `hostname`, and the main-process FAILURE of workers up to 0.4.1
-  has none and `retries=0` whatever the attempt. For those events, a run's start and end can come from two
-  workers' clocks: with the second worker's clock behind, runtimes can come out too short (0 at
-  worst) or empty, and a hard time limit's FAILURE after missed events can make the runtime too
-  long.
+  has none and `retries=0` whatever the attempt. For those events, a run's start and end can
+  come from two workers' clocks: with the second worker's clock behind, runtimes can come out
+  too short (0 at worst) or empty, and a hard time limit's FAILURE after missed events can make
+  the runtime too long.
 
 ## Summary endpoints
 

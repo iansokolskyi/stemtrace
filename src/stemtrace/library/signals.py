@@ -26,6 +26,7 @@ from celery.signals import (
     worker_shutdown,
 )
 from celery.utils.serialization import UnpickleableExceptionWrapper
+from celery.utils.time import maybe_iso8601
 
 from stemtrace.core.events import (
     RegisteredTaskDefinition,
@@ -495,10 +496,11 @@ class _WorkerFields(TypedDict):
     hostname: str | None
     queue: str | None
     routing_key: str | None
+    eta: datetime | None
 
 
 def _worker_fields(request: Any) -> _WorkerFields:
-    """Hostname, queue and routing key of a worker's task request.
+    """Hostname, queue, routing key and ETA of a worker's task request.
 
     ``request`` is ``task.request`` or the worker's ``Request``: celery 5.6.3
     worker/request.py ``Request.__init__`` gives both the consumer's
@@ -513,6 +515,8 @@ def _worker_fields(request: Any) -> _WorkerFields:
         hostname=None if is_eager else _nodename(request),
         queue=queue,
         routing_key=routing_key,
+        # task.request.eta is the message's string (celery 5.6.3 app/task.py Context).
+        eta=_parse_eta(getattr(request, "eta", None)),
     )
 
 
@@ -839,6 +843,25 @@ def _on_task_revoked(
     )
 
 
+def _parse_eta(value: Any) -> datetime | None:
+    """Read a task message's ``eta`` as an aware UTC datetime, as the worker does.
+
+    None when the message has no ETA or it can't be parsed (the worker rejects
+    such a message; the event just leaves it out).
+    """
+    if not value or not isinstance(value, str | datetime):
+        return None
+    # Celery 5.6.3 and 5.2.2 write an ISO 8601 string (app/amqp.py as_task_v2/v1) and
+    # read it with maybe_iso8601, a naive value as UTC (worker/request.py Request.__init__).
+    try:
+        parsed: datetime = maybe_iso8601(value)  # only falsy values give None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):  # as worker/strategy.py
+        return None
+
+
 def _published_message(
     body: Any, headers: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -857,6 +880,7 @@ def _published_message(
             "group": headers.get("group"),
             "parent_id": headers.get("parent_id"),
             "root_id": headers.get("root_id"),
+            "eta": headers.get("eta"),
             "args": args,
             "kwargs": kwargs,
         }
@@ -868,6 +892,7 @@ def _published_message(
             "group": body.get("taskset"),
             "parent_id": None,
             "root_id": None,
+            "eta": body.get("eta"),
             "args": body.get("args") or (),
             "kwargs": body.get("kwargs") or {},
         }
@@ -935,6 +960,7 @@ def _on_after_task_publish(
             kwargs=_scrub_and_serialize_kwargs(kwargs) if kwargs else None,
             queue=queue,
             routing_key=routing_key,
+            eta=_parse_eta(message["eta"]),
         )
     )
 
