@@ -142,27 +142,32 @@ def _unit_links(graph: TaskGraph) -> list[tuple[str, str]]:
         owners = containers.get(node.group_id or "")
         if node.node_type != NodeType.TASK or owners is None:
             continue
-        links.extend((node.task_id, owner) for owner in owners)
-        links.extend((step, node.task_id) for step in _steps_to(graph, node, owners))
+        steps, above = _path_up(graph, node)
+        # Stamped with this group but drawn inside another container (a
+        # pipeline's last task): the drawn-inside links put it in that one.
+        if above is None or above in owners:
+            links.extend((node.task_id, owner) for owner in owners)
+        links.extend((step, node.task_id) for step in steps)
     return links
 
 
-def _steps_to(graph: TaskGraph, member: TaskNode, owners: set[str]) -> list[str]:
-    """The tasks between ``member`` and the first GROUP/CHORD above it.
+def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
+    """The tasks above ``node`` up to the first GROUP/CHORD, and that container.
 
-    None unless that container is one of ``owners`` (a member drawn elsewhere).
+    ``(no tasks, None)`` when the walk ends without one: at a root, a parent
+    that isn't stored, or a parent loop.
     """
     steps: list[str] = []
-    current = member
+    current = node
     while current.parent_id is not None and current.parent_id not in steps:
         parent = graph.nodes.get(current.parent_id)
         if parent is None:
-            return []
+            break
         if parent.node_type != NodeType.TASK:
-            return steps if parent.task_id in owners else []
+            return steps, parent.task_id
         steps.append(parent.task_id)
         current = parent
-    return []
+    return [], None
 
 
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:

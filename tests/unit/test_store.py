@@ -16,7 +16,7 @@ from stemtrace.server.store import (
     GraphStore,
     WorkerRegistry,
     _eviction_units,
-    _steps_to,
+    _path_up,
 )
 from tests.conftest import InterleavingLock
 from tests.graph_invariants import assert_graph_invariants
@@ -2348,15 +2348,37 @@ def _snapshot(nodes: dict[str, TaskNode]) -> _Snapshot:
     }
 
 
+def _drawn_in(snap: _Snapshot) -> dict[str, str]:
+    """Each task drawn under a GROUP/CHORD (through tasks only) -> that container."""
+    owner: dict[str, str] = {}
+    for node_id, (kind, _, children, _) in snap.items():
+        if kind == NodeType.TASK:
+            continue
+        todo = [c for c in children if c in snap]
+        while todo:
+            current = todo.pop()
+            if snap[current][0] != NodeType.TASK or current in owner:
+                continue
+            owner[current] = node_id
+            todo.extend(c for c in snap[current][2] if c in snap)
+    return owner
+
+
 def _expected_unit(snap: _Snapshot, container: str) -> set[str]:
     """What goes with a GROUP/CHORD, worked out top-down (the store walks up):
     its group's member tasks, its direct children (a nested container with its
     own unit), and the tasks under it on the way down to a member."""
     group_id = snap[container][1]
+    drawn_in = _drawn_in(snap)
+    # A task stamped with this group but drawn inside another container
+    # belongs to that one (Celery stamps a pipeline's last task with its first
+    # group's ID); one drawn at a root still belongs here (a replaced member).
     members = {
         node_id
         for node_id, (kind, group, _, _) in snap.items()
-        if kind == NodeType.TASK and group == group_id
+        if kind == NodeType.TASK
+        and group == group_id
+        and drawn_in.get(node_id, container) == container
     }
 
     def task_children(node_id: str) -> list[str]:
@@ -2437,7 +2459,46 @@ _KINDS = [
     "header",
     "callback",
     "callback_starts_chord",
+    "stamped_callback",
 ]
+
+
+def _chord_events(kind: str, rng: random.Random, i: int, c: int) -> list[TaskEvent]:
+    """A chord step for ``_random_events``."""
+    events: list[TaskEvent]
+    match kind:
+        case "header":
+            events = [
+                _event_at(f"t{i}", i, rng, group_id=f"c{c}", chord_callback_id=f"cb{c}")
+            ]
+        case "callback":
+            events = [_event_at(f"cb{c}", i, rng, group_id=f"c{c}")]
+        case "stamped_callback":
+            # chain(group, task, group, task): the last task is the new chord's
+            # callback, stamped with an earlier chord's group ID.
+            events = [
+                _event_at(
+                    f"t{i}h{n}", i, rng, group_id=f"s{i}", chord_callback_id=f"t{i}cb"
+                )
+                for n in range(2)
+            ]
+            events.append(
+                _event_at(f"t{i}cb", i, rng, group_id=f"c{c}", parent_id=f"t{i}h1")
+            )
+        case "callback_starts_chord":
+            # The callback's workflow: the next chord's headers hang from it.
+            events = [
+                _event_at(
+                    f"t{i}h{n}",
+                    i,
+                    rng,
+                    group_id=f"n{i}",
+                    chord_callback_id=f"ncb{i}",
+                    parent_id=f"cb{c}",
+                )
+                for n in range(2)
+            ]
+    return events
 
 
 def _random_events(rng: random.Random, i: int, ids: list[str]) -> list[TaskEvent]:
@@ -2466,25 +2527,8 @@ def _random_events(rng: random.Random, i: int, ids: list[str]) -> list[TaskEvent
                 _event_at(f"t{i}i{n}", i, rng, group_id=f"in{i}", parent_id=f"t{i}")
                 for n in range(2)
             ]
-        case "header":
-            events = [
-                _event_at(f"t{i}", i, rng, group_id=f"c{c}", chord_callback_id=f"cb{c}")
-            ]
-        case "callback":
-            events = [_event_at(f"cb{c}", i, rng, group_id=f"c{c}")]
-        case "callback_starts_chord":
-            # The callback's workflow: the next chord's headers hang from it.
-            events = [
-                _event_at(
-                    f"t{i}h{n}",
-                    i,
-                    rng,
-                    group_id=f"n{i}",
-                    chord_callback_id=f"ncb{i}",
-                    parent_id=f"cb{c}",
-                )
-                for n in range(2)
-            ]
+        case "header" | "callback" | "stamped_callback" | "callback_starts_chord":
+            events = _chord_events(kind, rng, i, c)
         case _:
             events = [_event_at(f"t{i}", i, rng)]
     return events
@@ -2688,29 +2732,31 @@ def _node(task_id: str, kind: NodeType = NodeType.TASK, **kw: str) -> TaskNode:
     )
 
 
+def _units_of(graph: TaskGraph) -> dict[str, int]:
+    return {n.task_id: i for i, unit in enumerate(_eviction_units(graph)) for n in unit}
+
+
 @pytest.mark.parametrize(
-    ("top", "owners", "steps"),
-    [
-        ("group:g", {"group:g"}, ["s2", "s1"]),
-        # A member drawn inside another group's tree (a replaced task): its
-        # steps belong to that group, not to the member's own.
-        ("group:h", {"group:g"}, []),
-    ],
-    ids=["own_container", "other_container"],
+    "top", ["group:g", "group:h"], ids=["own_group", "other_group"]
 )
-def test_eviction_unit_takes_a_member_s_steps_only_up_to_its_own_group(
-    top: str, owners: set[str], steps: list[str]
-) -> None:
+def test_eviction_unit_of_a_member_is_the_container_it_is_drawn_in(top: str) -> None:
+    """A task of group g drawn (through two chain steps) inside group h's
+    container belongs to h, steps included; inside g's, to g."""
     graph = TaskGraph()
     for node in (
-        _node(top, NodeType.GROUP, group_id=top.removeprefix("group:")),
+        _node("group:g", NodeType.GROUP, group_id="g"),
+        _node("group:h", NodeType.GROUP, group_id="h"),
         _node("s1", parent_id=top),
         _node("s2", parent_id="s1"),
         _node("m", parent_id="s2", group_id="g"),
     ):
         graph.nodes[node.task_id] = node
 
-    assert _steps_to(graph, graph.nodes["m"], owners) == steps
+    assert _path_up(graph, graph.nodes["m"]) == (["s2", "s1"], top)
+    units = _units_of(graph)
+    assert units["m"] == units["s2"] == units["s1"] == units[top]
+    other = "group:h" if top == "group:g" else "group:g"
+    assert units["m"] != units[other]
 
 
 @pytest.mark.parametrize(
@@ -2727,11 +2773,43 @@ def test_eviction_unit_takes_a_member_s_steps_only_up_to_its_own_group(
     ],
     ids=["parent_not_stored", "parent_loop"],
 )
-def test_eviction_unit_takes_no_steps_from_a_member_not_drawn_under_a_group(
+def test_eviction_unit_keeps_a_member_drawn_under_no_container_in_its_group(
     chain: list[TaskNode],
 ) -> None:
     graph = TaskGraph()
     for node in [_node("group:g", NodeType.GROUP, group_id="g"), *chain]:
         graph.nodes[node.task_id] = node
 
-    assert _steps_to(graph, graph.nodes["m"], {"group:g"}) == []
+    assert _path_up(graph, graph.nodes["m"]) == ([], None)
+    units = _units_of(graph)
+    assert units["m"] == units["group:g"]
+    assert units["s1"] != units["group:g"]
+
+
+def test_eviction_unit_of_a_pipeline_s_last_task_is_the_chord_it_is_drawn_in() -> None:
+    """Real capture of chain(group, tsum, group, tsum, group, tsum): Celery
+    stamps the last tsum with the first group's ID, and the graph draws it as
+    the last chord's callback. It belongs to the last chord, so the first and
+    last chords stay separate units."""
+    store = GraphStore()
+    for event in _FLOWS["chain_groups_tasks"]:
+        store.add_event(TaskEvent.model_validate(event))
+    graph = store._graph
+    unit_of = {
+        n.task_id: i for i, unit in enumerate(_eviction_units(graph)) for n in unit
+    }
+    chords = sorted(
+        (n for n in graph.nodes.values() if n.node_type == NodeType.CHORD),
+        key=lambda n: n.first_seen or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    first, last = chords[0], chords[-1]
+    (stamped,) = [
+        n
+        for n in graph.nodes.values()
+        if n.node_type == NodeType.TASK
+        and n.group_id == first.group_id
+        and n.parent_id == last.task_id
+    ]
+
+    assert len({unit_of[c.task_id] for c in chords}) == len(chords)
+    assert unit_of[stamped.task_id] == unit_of[last.task_id]
