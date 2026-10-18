@@ -99,6 +99,7 @@ def test_window_stats_counts_finished_runs_and_failures_only() -> None:
         _run("b", TaskState.FAILURE, T0 + timedelta(minutes=1)),
         _run("c", TaskState.REVOKED, T0 + timedelta(minutes=2)),
         _run("d", TaskState.REJECTED, T0 + timedelta(minutes=3)),
+        _run("d2", TaskState.IGNORED, T0 + timedelta(minutes=3)),
         _run("e", TaskState.STARTED, T0 + timedelta(minutes=4)),
         _run("f", TaskState.RETRY, T0 + timedelta(minutes=5)),
         _run("g", TaskState.PENDING, T0 + timedelta(minutes=6)),
@@ -108,9 +109,9 @@ def test_window_stats_counts_finished_runs_and_failures_only() -> None:
 
     stats = window_stats(records, window)
 
-    assert (stats.runs, stats.failures) == (4, 1)
-    assert stats.runs_per_minute == pytest.approx(0.4)
-    assert stats.failure_rate == pytest.approx(0.25)
+    assert (stats.runs, stats.failures) == (5, 1)
+    assert stats.runs_per_minute == pytest.approx(0.5)
+    assert stats.failure_rate == pytest.approx(0.2)
 
 
 def test_window_stats_with_no_runs_has_zero_rates() -> None:

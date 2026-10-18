@@ -104,7 +104,7 @@ def _add_overview_route(
     ) -> OverviewResponse:
         """KPIs over the last ``within``, each with the window of equal length before it.
 
-        Runs are finished runs (SUCCESS, FAILURE, REVOKED, REJECTED), placed by
+        Runs are finished runs (SUCCESS, FAILURE, REVOKED, REJECTED, IGNORED), placed by
         their final event. The failure rate is FAILURE runs over finished runs
         (0 when none finished). Workers are counted from worker events as the
         server last saw them, without asking the workers.

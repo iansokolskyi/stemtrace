@@ -18,17 +18,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Final
 
 from stemtrace.core.events import TaskState
-from stemtrace.core.graph import NodeType
+from stemtrace.core.graph import TERMINAL_STATES, NodeType
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
     from stemtrace.core.graph import TaskNode
 
-#: States after which a run doesn't change any more.
-TERMINAL_STATES: Final[frozenset[TaskState]] = frozenset(
-    {TaskState.SUCCESS, TaskState.FAILURE, TaskState.REVOKED, TaskState.REJECTED}
-)
 
 #: Most buckets one time-series request may ask for.
 MAX_BUCKETS: Final[int] = 1440

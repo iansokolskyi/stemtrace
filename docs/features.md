@@ -219,7 +219,7 @@ later by a worker whose clock is ahead.
 
 - `GET /api/overview?within=1h` (default `1h`; it takes `within` only): finished runs, failures, runs per minute and the
   failure rate (FAILURE over finished runs; 0 with none), each with `baseline`, the same value for
-  the window of equal length just before. Finished means SUCCESS, FAILURE, REVOKED or REJECTED.
+  the window of equal length just before. Finished means SUCCESS, FAILURE, REVOKED, REJECTED or IGNORED.
   `workers` counts online and known workers from worker events, without asking the workers.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     # Only an annotation: pydantic exports it from 2.11 on, below our minimum.
     from pydantic import ModelWrapValidatorHandler
 
-_TERMINAL_STATES: frozenset[TaskState] = frozenset(
+TERMINAL_STATES: frozenset[TaskState] = frozenset(
     {
         TaskState.SUCCESS,
         TaskState.FAILURE,
@@ -199,7 +199,7 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
         A sortable key; larger means further along.
     """
     tiebreak = _STATE_ORDER[event.state]
-    if event.state in _TERMINAL_STATES:
+    if event.state in TERMINAL_STATES:
         rank = -1 if event.state == TaskState.IGNORED else 0
         return (1, rank, 0, event.timestamp, tiebreak)
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
@@ -356,7 +356,7 @@ class TaskNode(BaseModel):
         (``_announce_revoked``).
         """
         final = max(self.events, key=_precedence, default=None)
-        if final is None or final.state not in _TERMINAL_STATES:
+        if final is None or final.state not in TERMINAL_STATES:
             return None
         ordered = sorted(
             (e for e in self.events if e.state in (TaskState.STARTED, TaskState.RETRY)),
