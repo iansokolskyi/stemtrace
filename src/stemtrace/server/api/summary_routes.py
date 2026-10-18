@@ -169,12 +169,10 @@ def _add_timeseries_route(
     ) -> TimeSeriesResponse:
         """Runs by current state per bucket, from ``within`` or ``from_date`` to now.
 
-        Without either, from the oldest run the server holds, but at most 3650
-        days back (the start is then rounded down to a bucket edge).
-
-        Each run counts in the bucket of its last event. Bucket edges are
-        multiples of the bucket size since the Unix epoch; the last bucket
-        also takes runs stamped after now. At most 1440 buckets.
+        Without either, from the oldest run held, at most 3650 days back. Each
+        run counts in the bucket of its last event; bucket edges are epoch
+        multiples of the bucket size, and the last bucket also takes runs
+        stamped after now. At most 1440 buckets.
         """
         if group_by not in (None, "task_group"):
             raise _unprocessable("group_by must be task_group")
@@ -232,10 +230,9 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
         """Tasks whose current state is FAILURE, grouped by exception class.
 
         Each group lists its count, first and last failure, task names and up
-        to 5 of the latest task IDs. Runs without an exception class (events
-        from older workers) form one group with ``exception_type`` null.
-        Without ``within`` or ``from_date``, from the oldest run the server
-        holds, but at most 3650 days back.
+        to 5 of the latest task IDs; tasks without an exception class form one
+        group with ``exception_type`` null. Without ``within`` or ``from_date``,
+        from the oldest run held, at most 3650 days back.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
