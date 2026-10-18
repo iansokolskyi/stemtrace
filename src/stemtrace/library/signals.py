@@ -13,6 +13,7 @@ from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, TypeVar
 
+from celery.app.task import Context
 from celery.exceptions import Retry
 from celery.signals import (
     after_task_publish,
@@ -51,6 +52,8 @@ from stemtrace.library.scrubbing import (
 )
 
 if TYPE_CHECKING:
+    from types import FrameType
+
     from celery import Task
 
 logger = logging.getLogger(__name__)
@@ -691,6 +694,54 @@ def _runs_again(task: "Task", reject: Any) -> bool:
     )
 
 
+# How far up the stack _failed_request looks for Celery's failing Request.
+_REQUEST_FRAME_DEPTH = 12
+
+
+def _failed_request(sender: "Task", task_id: str) -> Any:
+    """Return the request a FAILURE belongs to.
+
+    ``sender.request`` in the process that ran the task. For a FAILURE sent
+    from the worker's main process, the failing ``Request`` from the caller's
+    stack; ``sender.request`` (empty) if it isn't found.
+    """
+    request = sender.request
+    if getattr(request, "id", None) == task_id:
+        return request
+    # Celery 5.2.2 and 5.6.3 send a hard time limit's or lost pool process's
+    # task_failure from the main process inside Request.on_failure
+    # (worker/request.py), with sender=self.task, whose request is an empty
+    # default (app/task.py Task._get_request). The signal doesn't carry the
+    # Request, and the task ID alone can't tell attempts apart (a retry's
+    # message can arrive while the first attempt still runs), so the
+    # Request is read from on_failure's frame: `self`.
+    frame: FrameType | None = sys._getframe(1)
+    for _ in range(_REQUEST_FRAME_DEPTH):
+        if frame is None:
+            break
+        found = _worker_request(frame.f_locals.get("self"), task_id)
+        if found is not None:
+            return found
+        frame = frame.f_back
+    return request
+
+
+def _worker_request(candidate: Any, task_id: str) -> Context | None:
+    """The attempt, worker and IDs of a worker ``Request`` for ``task_id``, else None."""
+    fields = getattr(candidate, "request_dict", None)
+    if not isinstance(fields, dict) or fields.get("id") != task_id:
+        return None
+    return Context(
+        id=task_id,
+        retries=fields.get("retries") or 0,
+        parent_id=fields.get("parent_id"),
+        root_id=fields.get("root_id"),
+        group=fields.get("group"),
+        hostname=getattr(candidate, "hostname", None),
+        delivery_info=getattr(candidate, "delivery_info", None),
+    )
+
+
 def _on_task_failure(
     *,
     task_id: str,
@@ -710,26 +761,25 @@ def _on_task_failure(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
-    chord_id, chord_callback_id = _extract_chord_info(
-        getattr(sender.request, "chord", None)
-    )
+    request = _failed_request(sender, task_id)
+    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     _publish_event(
         TaskEvent(
             task_id=task_id,
             name=sender.name,
             state=TaskState.FAILURE,
             timestamp=datetime.now(timezone.utc),
-            parent_id=getattr(sender.request, "parent_id", None),
-            root_id=getattr(sender.request, "root_id", None),
-            group_id=getattr(sender.request, "group", None),
+            parent_id=getattr(request, "parent_id", None),
+            root_id=getattr(request, "root_id", None),
+            group_id=getattr(request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
-            retries=sender.request.retries or 0,
+            retries=getattr(request, "retries", 0) or 0,
             exception=_format_exception(exception),
             exception_type=_exception_type(exception),
             traceback=_format_traceback(einfo),
             output=output,
-            **_worker_fields(sender.request),
+            **_worker_fields(request),
         )
     )
     _publish_unrun_chain_steps(sender.request, task_id, exception)

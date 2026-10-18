@@ -178,6 +178,35 @@ def _ms(delta: timedelta) -> int:
     return max(0, delta // _MILLISECOND)
 
 
+# An unfinished run's key: its worker and attempt. Events without a worker
+# (workers up to 0.4.0, and 0.4.1's main-process FAILURE) share one key, so
+# they pair as they always did.
+_RunKey = tuple[str | None, int | None]
+_NO_WORKER: _RunKey = (None, None)
+
+
+def _run_key(event: TaskEvent) -> _RunKey:
+    """The run an event belongs to: its worker and attempt."""
+    return _NO_WORKER if event.hostname is None else (event.hostname, event.retries)
+
+
+def _run_start(open_runs: dict[_RunKey, TaskEvent], end: TaskEvent) -> TaskEvent | None:
+    """Take the unfinished run an end event (RETRY or final) closes.
+
+    The one of the end's worker and attempt; mid-upgrade, the run without a
+    worker. An end without a worker (older workers) closes the run without
+    one, else the latest unfinished run.
+    """
+    key = _run_key(end)
+    if key in open_runs:
+        return open_runs.pop(key)
+    if end.hostname is not None:
+        return open_runs.pop(_NO_WORKER, None)
+    if not open_runs:
+        return None
+    return open_runs.pop(next(reversed(open_runs)))
+
+
 def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     """Total order over a task's events; the maximum decides the node's state.
 
@@ -401,39 +430,57 @@ class TaskNode(BaseModel):
         return _ms(spans[-1]), _ms(sum(spans, _NO_TIME))
 
     def _runs(self) -> list[tuple[TaskEvent, TaskEvent]] | None:
-        """Each run's STARTED with the RETRY or final event that ended it.
+        """Pair each run's STARTED with the RETRY or final event that ended it.
 
-        Events are taken in ``_precedence`` order (the order that decides the
-        state, so worker clocks can't swap attempts): each STARTED pairs with
-        the next RETRY, the last with the final event. A run whose end was
-        missed, or that ended in a terminal event that isn't the final one
-        (``self.retry(throw=False)``), is left out. None unless the task
-        finished and its last run's STARTED is from the final event's attempt.
-        The exception is a FAILURE with ``retries=0``: Celery reports a hard
-        time limit or lost worker from the worker's main process
-        (celery 5.6.3 worker/request.py ``Request.on_failure``), where the
-        task's request is an empty default (app/task.py ``Task._get_request``),
-        whatever the attempt. A REVOKED there carries the request's real count
-        (``_announce_revoked``).
+        Runs are read on one worker's clock (see ``_run_start``), in
+        ``_precedence`` order. Runs whose end was missed, or ended in a terminal
+        event from a worker before the final one, are left out. None unless the
+        task finished and its last run's STARTED is from the final event's
+        attempt.
         """
+        # A FAILURE with retries=0 and no worker comes from an older worker's
+        # main process (celery 5.6.3 worker/request.py Request.on_failure, where
+        # app/task.py Task._get_request is an empty default) and can be any
+        # attempt's; this release's workers fill it in (signals._failed_request).
         final = max(self.events, key=_precedence, default=None)
         if final is None or final.state not in TERMINAL_STATES:
             return None
         ordered = sorted(
-            (e for e in self.events if e.state in (TaskState.STARTED, TaskState.RETRY)),
+            (e for e in self.events if e is not final and e.state != TaskState.PENDING),
             key=_precedence,
         )
         runs: list[tuple[TaskEvent, TaskEvent]] = []
-        started: TaskEvent | None = None
+        # Unfinished run per worker and attempt (see _run_key).
+        open_runs: dict[_RunKey, TaskEvent] = {}
         for event in [*ordered, final]:
             if event.state == TaskState.STARTED:
-                started = event
-            elif started is not None:
+                key = _run_key(event)
+                open_runs.pop(key, None)
+                open_runs[key] = event  # last in insertion order
+                continue
+            if event.state == TaskState.RECEIVED:
+                continue
+            if event is not final and event.state in TERMINAL_STATES:
+                # A run that ended before the final event (retry(throw=False),
+                # or the same attempt's earlier run on this worker): closed and
+                # left out, so the final event never pairs with a finished run's
+                # start. Without a worker (0.4.0 and earlier) the run can't be
+                # told apart.
+                if event.hostname is not None:
+                    open_runs.pop(_run_key(event), None)
+                continue
+            started = _run_start(open_runs, event)
+            if started is not None:
                 runs.append((started, event))
-                started = None
         if not runs or runs[-1][1] is not final:
             return None
-        from_main_process = final.state == TaskState.FAILURE and final.retries == 0
+        # Only an older worker's main-process FAILURE (no worker, retries=0
+        # whatever the attempt): this release's workers give it both.
+        from_main_process = (
+            final.state == TaskState.FAILURE
+            and final.retries == 0
+            and final.hostname is None
+        )
         if final.retries != runs[-1][0].retries and not from_main_process:
             return None
         return runs
