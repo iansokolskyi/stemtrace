@@ -399,6 +399,10 @@ def test_check_fragment_with_heading_line_fails(
         "- A.\n\n  Second paragraph.\n\n  - Nested.\n",
         "- Fixes [#12](https://example.com/12) and <https://example.com> too.\n",
         "- A.\n  [x] is not a definition.\n",
+        "- A reference to a note[^1] without a definition.\n",
+        "- Writes `[^1]: note text` in code.\n",
+        "- A.\n  ```\n  [^1]: note text in a fence\n  ```\n",
+        "- A.\n\n  [^ 1]: a space in the label is not a footnote.\n",
         # A definition can't interrupt a paragraph, so this is plain text.
         "- A.\n  [x]: https://paragraph.example\n",
         "- Writes `<b>` and a < b and 1 > 0 in code and text.\n",
@@ -449,6 +453,12 @@ def test_check_fragment_with_top_level_block_that_is_not_a_dash_list_fails(
             "[unreleased]: https://example.com/compare/v0.4.1...HEAD",
         ),
         ("- A.\n\n[^x]: footnote-style\n", "[^x]: footnote-style"),
+        # A multi-word note isn't a CommonMark definition, but GitHub renders a
+        # footnote, and two fragments that reuse [^1] would overwrite each other.
+        ("- A[^1]\n\n  [^1]: This is the note.\n", "  [^1]: This is the note."),
+        ("- A[^1]\n[^1]: note text\n", "[^1]: note text"),
+        ("- A[^1]\n  [^1]: note text\n", "  [^1]: note text"),
+        ("- A.\n\n[^note-1]: Requires Redis 7.\n", "[^note-1]: Requires Redis 7."),
         ("- A.\n\n  [x]: https://nested.example\n", "  [x]: https://nested.example"),
         ("- [x]: https://example.com\n", "- [x]: https://example.com"),
         ("- A.\n\n[x]: <https://e> 'Title'\n", "[x]: <https://e> 'Title'"),
@@ -543,29 +553,38 @@ def test_check_prose_after_unreleased_subheading_fails(
 
 
 @pytest.mark.parametrize(
-    ("section", "offender"),
+    ("section", "problem"),
     [
         (
             "- Existing.\n\n[0.1.0]: https://evil.example\n",
-            "[0.1.0]: https://evil.example",
+            "must not contain link reference definitions, "
+            "found '[0.1.0]: https://evil.example'",
         ),
-        ("- Existing.\n\n<h2>Top</h2>\n", "<h2>Top</h2>"),
-        ("- Existing <b>bold</b>.\n", "- Existing <b>bold</b>."),
-        ("-\n", "-"),
+        (
+            "- Existing[^1]\n\n  [^1]: A note.\n",
+            "must not contain link reference definitions, found '  [^1]: A note.'",
+        ),
+        (
+            "- Existing.\n\n<h2>Top</h2>\n",
+            "must not contain raw HTML, found '<h2>Top</h2>'",
+        ),
+        (
+            "- Existing <b>bold</b>.\n",
+            "must not contain raw HTML, found '- Existing <b>bold</b>.'",
+        ),
+        ("-\n", "must not contain an empty bullet: '-'"),
+        ("- Existing.\n  ## Nested\n", "must not contain headings: '  ## Nested'"),
     ],
 )
-def test_check_unreleased_section_with_definition_html_or_empty_bullet_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], section: str, offender: str
+def test_check_unreleased_section_with_unsupported_markup_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], section: str, problem: str
 ) -> None:
     root = _project(tmp_path, f"\n### Changed\n{section}", {"1.added.md": "- A.\n"})
 
     assert assemble.main(["--root", str(root), "--check"]) == 1
 
     err = capsys.readouterr().err
-    assert (
-        f"text under '### Changed' in [Unreleased] must be only '- ' bullets, not {offender!r}"
-        in err
-    )
+    assert f"text under '### Changed' in [Unreleased] {problem}" in err
 
 
 def _bump_config_for_changelog(source: Path) -> tuple[str, str]:
@@ -665,7 +684,12 @@ def _oracle_reasons(body: str) -> set[str]:
             t.type == "bullet_list_open" and t.level == 0 and t.markup != "-"
             for t in tokens
         ),
-        "definition": bool(env.get("references")),
+        "definition": bool(env.get("references"))
+        or any(
+            re.search(r"^\[\^[^\]\s]+\]:", t.content, re.MULTILINE)
+            for t in tokens
+            if t.type == "inline"
+        ),
     }
     return {reason for reason, found in checks.items() if found}
 
@@ -680,6 +704,7 @@ def _fuzz_bodies(count: int, seed: int) -> list[str]:
     texts += ["more text", "word # not", "    code", "- B\n  - C", "-", "- "]
     texts += ["<h2>Hi</h2>", "<b>x</b> y", "a < b", "<div>", "[x]: https://e"]
     texts += ["[^x]: note", "[x]", "* B", "+ B", "[x]: https://e 'T'"]
+    texts += ["[^1]: Requires Redis 7.", "A[^1]", "[^ 1]: no"]
     openers = [
         "- A.",
         "- ```",

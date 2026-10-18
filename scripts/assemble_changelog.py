@@ -34,6 +34,9 @@ _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
 _MARKDOWN = MarkdownIt("commonmark")
+# GFM renders `[^1]: note text` as a footnote, but CommonMark only treats it as a link
+# definition when the note is a single word, so it is also matched in paragraph text.
+_FOOTNOTE_DEFINITION = re.compile(r"^\[\^[^\]\s]+\]:", re.MULTILINE)
 _LINK_DEFINITIONS = re.compile(
     r"(?:^\[[^\]\n]+\]:[ \t]+\S+[ \t]*(?:\n|\Z))+\Z", re.MULTILINE
 )
@@ -97,6 +100,15 @@ def _definition_line(doc: _Parsed) -> str | None:
     return None if doc.definition is None else doc.lines[doc.definition]
 
 
+def _footnote_line(doc: _Parsed) -> str | None:
+    """Return the line of the first GFM footnote definition in paragraph text."""
+    for token in doc.tokens:
+        found = _FOOTNOTE_DEFINITION.search(token.content)
+        if token.type == "inline" and token.map and found:
+            return _line_with(doc, token.map, found.group(0))
+    return None
+
+
 def _html_line(doc: _Parsed) -> str | None:
     """Return the line of the first raw HTML block or inline tag."""
     for token in doc.tokens:
@@ -129,6 +141,7 @@ def _block_line(doc: _Parsed) -> str | None:
 _CHECKS = (
     ("heading", _heading_line),
     ("definition", _definition_line),
+    ("definition", _footnote_line),
     ("html", _html_line),
     ("empty", _empty_bullet_line),
     ("block", _block_line),
@@ -150,11 +163,11 @@ def _first_offender(text: str) -> tuple[str, str] | None:
 
 
 _OFFENDER_MESSAGES = {
-    "heading": "entry must not contain headings (the file name sets the heading): {}",
-    "definition": "entry must not contain link reference definitions, found {}",
-    "html": "entry must not contain raw HTML, found {}",
-    "empty": "entry must not contain an empty bullet: {}",
-    "block": "entry must be only '- ' bullets, not {}",
+    "heading": "must not contain headings: {}",
+    "definition": "must not contain link reference definitions, found {}",
+    "html": "must not contain raw HTML, found {}",
+    "empty": "must not contain an empty bullet: {}",
+    "block": "must be only '- ' bullets, not {}",
 }
 
 
@@ -166,7 +179,7 @@ def _invalid_body(body: str) -> str | None:
     if offender is None:
         return None
     kind, line = offender
-    return _OFFENDER_MESSAGES[kind].format(repr(line))
+    return f"entry {_OFFENDER_MESSAGES[kind].format(repr(line))}"
 
 
 def _read_fragment(path: Path) -> Fragment | str:
@@ -229,9 +242,10 @@ def _parse_sections(body: str) -> tuple[str, dict[str, str]]:
         content = body[heading.end() : end].strip()
         offender = _first_offender(content)
         if offender:
+            kind, line = offender
+            problem = _OFFENDER_MESSAGES[kind].format(repr(line))
             raise ChangelogError(
-                f"text under '### {heading.group(1)}' in [Unreleased] must be only "
-                f"'- ' bullets, not {offender[1]!r}; move it above the first '### ' heading"
+                f"text under '### {heading.group(1)}' in [Unreleased] {problem}"
             )
         previous = sections.get(heading.group(1))
         sections[heading.group(1)] = f"{previous}\n{content}" if previous else content

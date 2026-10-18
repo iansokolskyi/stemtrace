@@ -11,7 +11,7 @@ To add a changelog entry, add a file to this directory in your pull request. Don
 2. Write the entry as one or more `- ` bullets, exactly as it should appear in the
    changelog. Indent continuation lines. Don't add headings: the type sets the heading.
    `--check` parses the fragment as CommonMark. It fails on a heading at any depth, a
-   link reference definition (`[label]: url`), raw HTML, an empty bullet, and any
+   link reference or footnote definition (`[label]: url`, `[^1]: note`), raw HTML, an empty bullet, and any
    top-level block other than a list that uses `-` markers. To show a `#` line or a tag,
    put it in a fenced code block or in backticks.
 3. Run `uv run python scripts/assemble_changelog.py --check` to validate your fragment.
