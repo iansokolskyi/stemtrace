@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "assemble_changelog.py"
@@ -343,6 +345,18 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
         "- A.\n     ### Five\n",
         "- ## [Unreleased]\n",
         "- A.\n  - ## Nested\n",
+        "- A.\n\t## Tab\n",
+        "- A.\n  - B.\n      ## Nested six\n",
+        "- A.\n  - B.\n       ## Nested seven\n",
+        "- A.\n  1. ## Ordered\n",
+        "- 1. ## Ordered direct\n",
+        "- A.\n  > ## Quote\n",
+        "- A.\n  >## Quote without space\n",
+        "- A.\n      # Indented code is not told apart from a heading\n",
+        "- A.\n  ---\n",
+        "- A.\n  ===\n",
+        "- A.\n  - B.\n    ----\n",
+        "- A.\n  ```\n  # In a fence\n  ```\n  ## After the fence\n",
     ],
 )
 def test_check_fragment_with_heading_line_fails(
@@ -360,7 +374,7 @@ def test_check_fragment_with_heading_line_fails(
     [
         "- Fixes `#152` and #153.\n",
         "- A.\n  #152 is the pull request.\n",
-        "- A.\n      # a six-space indented code line\n",
+        "- A.\n  A line of text\n  with an = sign and a - dash.\n",
     ],
 )
 def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
@@ -475,3 +489,77 @@ def test_assemble_then_bump_with_quoted_heading_and_link_edits_changelog_once(
     assert text.endswith(
         f"[unreleased]: {link}/v{new}...HEAD\n[{new}]: {link}/v{current}...v{new}\n"
     )
+
+
+FENCED_BODIES = [
+    "- Run:\n  ```sh\n  # install it\n  pip install stemtrace\n  ```\n",
+    "- Run:\n  ~~~sh\n  # install it\n  ~~~\n",
+    "- A.\n  - Nested:\n    ```\n    ## Heading-like\n    ---\n    ```\n",
+    "- A.\n  ```\n  # shorter fence inside\n  ``\n  # still inside\n  ```\n",
+    "- A.\n  ````\n  ```\n  # inside a four-backtick fence\n  ````\n",
+    "- A.\n  ```\n  # unclosed fence runs to the end\n",
+    "- ```\n  # fence opened on the bullet line\n  ```\n",
+    "- A.\n  > ```\n  > # quoted fence\n  > ```\n",
+]
+
+
+def _renders_heading(body: str) -> bool:
+    """Say whether a CommonMark parser (markdown-it-py) renders a heading in body."""
+    return any(t.type == "heading_open" for t in MarkdownIt("commonmark").parse(body))
+
+
+@pytest.mark.parametrize("body", FENCED_BODIES)
+def test_check_fragment_with_hash_lines_in_fenced_code_is_valid(
+    tmp_path: Path, body: str
+) -> None:
+    assert not _renders_heading(body)
+    root = _project(tmp_path, "", {"1.added.md": body})
+
+    assert assemble.main(["--root", str(root), "--check"]) == 0
+
+
+def test_check_fragment_with_heading_after_unmatched_fence_char_fails() -> None:
+    body = "- A.\n  ~~~\n  ```\n  ~~~\n  ## Heading\n"
+
+    assert _renders_heading(body)
+    assert assemble._invalid_body(body) == (
+        "entry must not contain headings (the file name sets the heading)"
+    )
+
+
+def _heading_sweep_bodies() -> list[str]:
+    """Bodies that vary the dimensions a heading detector can get wrong."""
+    openers = [
+        "- A.\n",
+        "- A.\n  - B.\n",
+        "- A.\n  1. B.\n",
+        "- A.\n  > Q\n",
+        "- 1. A\n",
+    ]
+    indents = ["", " ", "  ", "   ", "    ", "     ", "      ", "       ", "        "]
+    indents += ["\t", "  \t", "\t\t"]
+    markers = ["", "- ", "* ", "1. ", "1) ", "> ", ">", "> - ", "- > "]
+    texts = ["# H", "## H", "###### H", "####### H", "#", "#x", "---", "===", "-", "--"]
+    texts += ["text", "``` ", "~~~", "    # code"]
+    singles = [
+        f"{opener}{indent}{marker}{text}\n"
+        for opener, indent, marker, text in itertools.product(
+            openers, indents, markers, texts
+        )
+    ]
+    pieces = ["```", "~~~", "  ```", "  ~~~", "  # H", "    ## H", "  ---", "  > ## H"]
+    pairs = [
+        f"{opener}{first}\n{second}\n"
+        for opener, first, second in itertools.product(openers[:3], pieces, pieces)
+    ]
+    return singles + pairs
+
+
+def test_invalid_body_rejects_every_body_markdown_it_renders_a_heading_for() -> None:
+    missed = [
+        body
+        for body in _heading_sweep_bodies()
+        if _renders_heading(body) and assemble._invalid_body(body.strip()) is None
+    ]
+
+    assert missed == []

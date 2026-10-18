@@ -9,9 +9,12 @@ To add a changelog entry, add a file to this directory in your pull request. Don
    short name (`api-key`). The type is one of `added`, `changed`, `deprecated`, `removed`,
    `fixed` or `security`.
 2. Write the entry as one or more `- ` bullets, exactly as it should appear in the
-   changelog. Indent continuation lines: `--check` fails on any other line that doesn't
-   start with `- `. Don't add headings: the type sets the heading, and `--check` fails on
-   a line that starts one, even inside a bullet.
+   changelog. Indent continuation lines: `--check` fails on a line that starts at the
+   left margin without `- `. Don't add headings: the type sets the heading. `--check`
+   fails on a line outside a fenced code block that starts with one to six `#`
+   characters and a space, or that has only `=` or only `-` characters. It looks past any
+   indent and any `>`, `-`, `*`, `+` or `1.` markers before that text. To show such a
+   line, put it in a fenced code block.
 3. Run `uv run python scripts/assemble_changelog.py --check` to validate your fragment.
 
 For example, `changelog.d/152.fixed.md`:

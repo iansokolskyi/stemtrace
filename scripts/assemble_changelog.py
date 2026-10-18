@@ -25,9 +25,14 @@ DESCRIPTION = "Merge changelog fragments into CHANGELOG.md under [Unreleased]."
 _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
-# CommonMark: an ATX heading may be indented up to 3 spaces past its container's content
-# column, which is 2 inside a '- ' item (so 5 here), or follow bullet markers.
-_HEADING_LINE = re.compile(r"^(?: {0,5}| *(?:[-*+] +)+)#{1,6}(?:\s|$)", re.MULTILINE)
+# What may precede a line's content: indent, '>' and list markers, in any number. Indent
+# depth is ignored, so an indented code line that starts with '#' is flagged too; a
+# fenced block is the way to show one.
+_CONTAINER = r"(?:[ \t]|>|(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$))*"
+_ATX_HEADING = re.compile(rf"^{_CONTAINER}#{{1,6}}(?:[ \t]|$)")
+_SETEXT_UNDERLINE = re.compile(r"^(?:[ \t]|>)*(?:=+|-+)[ \t]*$")
+_FENCE_OPEN = re.compile(rf"^{_CONTAINER}(?P<fence>`{{3,}}|~{{3,}})(?P<info>.*)$")
+_FENCE_CLOSE = re.compile(r"^(?:[ \t]|>)*(?P<fence>`{3,}|~{3,})[ \t]*$")
 # A column-0 line that isn't a bullet; bullet continuations are indented.
 _NON_BULLET_LINE = re.compile(r"^(?!- |[ \t]|$).+$", re.MULTILINE)
 _LINK_DEFINITIONS = re.compile(
@@ -57,13 +62,35 @@ def _invalid_name(name: str) -> str | None:
     return f"name must be <slug>.<type>.md, type one of: {', '.join(TYPES)}"
 
 
+def _has_heading_line(body: str) -> bool:
+    """Say whether a line outside fenced code could render as a heading."""
+    fence: tuple[str, int] | None = None
+    for line in body.split("\n"):
+        if fence:
+            closing = _FENCE_CLOSE.match(line)
+            if (
+                closing
+                and closing["fence"][0] == fence[0]
+                and len(closing["fence"]) >= fence[1]
+            ):
+                fence = None
+            continue
+        opening = _FENCE_OPEN.match(line)
+        # A backtick fence's info string can't contain a backtick (CommonMark).
+        if opening and not (opening["fence"][0] == "`" and "`" in opening["info"]):
+            fence = (opening["fence"][0], len(opening["fence"]))
+        elif _ATX_HEADING.match(line) or _SETEXT_UNDERLINE.match(line):
+            return True
+    return False
+
+
 def _invalid_body(body: str) -> str | None:
     """Return why ``body`` can't be inserted as bullets, or None when it can."""
     if not body:
         return "file is empty"
     if not body.startswith("- "):
         return "entry must start with a '- ' bullet"
-    if _HEADING_LINE.search(body):
+    if _has_heading_line(body):
         return "entry must not contain headings (the file name sets the heading)"
     prose = _NON_BULLET_LINE.search(body)
     if prose:
