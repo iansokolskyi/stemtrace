@@ -31,6 +31,7 @@ lint:
 	uv run ruff check src/ tests/
 	uv run ruff format --check src/ tests/
 	uv run lint-imports
+	uv run python scripts/check_docstring_length.py
 
 format:
 	uv run ruff format src/ tests/

@@ -71,23 +71,14 @@ def _lowercase_patterns(
 def _key_names(key: object) -> list[str]:
     """The names a dict key carries, lowercased.
 
-    A task's dicts can have any hashable key. A str is a name, and so is bytes
-    (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
-    as UTF-8 with replacement so it never raises. A tuple or frozenset key
-    carries the names of its parts. A key that is a str or an int is matched
-    as that str or int, whatever its class: an IntEnum, IntFlag or StrEnum
-    member (or any str- or int-mixin Enum) equals and hashes like its value,
-    and is serialized as it, so ``HTTPStatus.UNAUTHORIZED`` is 401, not a
-    name containing ``auth``. Any other Enum member carries its own name (if
-    it has one) plus its value's names, and any other Flag value the names
-    of all members (aliases and multi-bit members included) whose bits it
-    has, since its own name may be missing (a composite on Python 3.10,
-    unknown bits). Other keys (an int, None, any other object) carry none. ``str(key)`` is
-    never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
-    raise.
+    A str or int key, including an IntEnum, IntFlag or StrEnum member, is
+    matched as that str or int (such a member equals its value). Bytes are
+    decoded leniently, a tuple or frozenset carries its parts' names, another
+    Enum member its name plus its value's, another Flag every member it has.
     """
     names: list[str]
     match key:
+        # str and int before Enum and Flag: a mixin member equals its value.
         case str():
             names = [key.lower()]
         case int():
@@ -108,10 +99,12 @@ def _key_names(key: object) -> list[str]:
             name = [key.name.lower()] if isinstance(key.name, str) else []
             names = [*name, *_key_names(key.value)]
         case bytes():
+            # e.g. redis-py's bytes-keyed dicts without decode_responses.
             names = [key.decode("utf-8", "replace").lower()]
         case tuple() | frozenset():
             names = [name for part in key for name in _key_names(part)]
         case _:
+            # Never str(key): a repr for bytes and tuples, and __str__ can raise.
             names = []
     return names
 
@@ -123,14 +116,10 @@ def _is_sensitive_key(
 ) -> bool:
     """Check if a key matches any sensitive pattern.
 
-    Uses case-insensitive partial matching:
-    - 'user_password' matches 'password'
-    - 'API_KEY' matches 'api_key'
-
-    A key that isn't a str is matched by the names it carries (see
-    ``_key_names``): ``b"password"`` and ``("user", "api_key")`` are
-    sensitive, ``1`` and ``None`` never are. The values under keys that aren't
-    sensitive are still scrubbed.
+    Case-insensitive partial matching ('user_password' matches 'password'). A
+    non-str key is matched by the names it carries (``b"password"`` and
+    ``("user", "api_key")`` are sensitive, ``1`` never is). Values under keys
+    that aren't sensitive are still scrubbed.
 
     Args:
         key: The dict key to check.

@@ -32,8 +32,8 @@ an int matches as that str or int: an `IntEnum`, `IntFlag` or `StrEnum` member (
 int-mixin Enum) equals its value, so `HTTPStatus.UNAUTHORIZED` is the status code 401 and never
 matches, and a `StrEnum` member whose value is `"authorization"` does. Any other Enum member
 matches by its name or its value, and any other Flag value by the members it contains
-(`Perm.READ | Perm.SECRET` matches `secret`). Other keys (ints, `None`, other objects) never match, but dicts inside their values are
-still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a
+(`Perm.READ | Perm.SECRET` matches `secret`). Other keys (ints, `None`, other objects) never
+match, but dicts inside their values are still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a
 cyclic structure, appears as `[Not captured: <error type>]`.
 
 Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, written in any case: both are
@@ -154,7 +154,9 @@ a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) t
 random value everywhere, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 Without it, each process signs sessions with its own random secret, and users get logged out
 at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
-the problem when a session signed by another process is rejected.
+the problem when a session signed by another process is rejected. That explanation is also
+visible to anyone who sends a forged cookie, so without `login_secret` a stranger can learn that
+none is configured (a configuration fact, not a credential).
 
 Failed sign-ins are throttled in memory, per client IP and per username or browser:
 
