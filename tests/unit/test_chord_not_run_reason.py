@@ -19,6 +19,13 @@ _CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
     (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
 )
 _T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+# Captures that hold a chord (replace_group, chain_group_group, ... have no
+# "chord" in their name): their events carry the callback's ID.
+_CHORD_FLOWS = sorted(
+    flow
+    for flow, events in _CAPTURES.items()
+    if any(event.get("chord_callback_id") for event in events)
+)
 
 
 def _orders(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -52,7 +59,7 @@ def _chord_reasons(graph: TaskGraph) -> dict[str, str | None]:
 _REASON_RANK = {None: 0, "header_ignored": 1, "header_revoked": 2, "header_failed": 3}
 
 
-@pytest.mark.parametrize("flow", sorted(f for f in _CAPTURES if "chord" in f))
+@pytest.mark.parametrize("flow", _CHORD_FLOWS)
 def test_chord_not_run_reasons_clear_only_when_a_callback_is_drawn(flow: str) -> None:
     """Celery decides a chord's fate at its first failed header (every chord
     path joins the header results with propagate=True: celery 5.6.3
@@ -115,11 +122,9 @@ def test_chord_not_run_reason_real_header_outcome_in_any_order(
 
 
 @pytest.mark.parametrize(
-    "flow",
-    sorted(f for f in _CAPTURES if "chord" in f and f not in _NOT_RUN),
+    "flow", [flow for flow in _CHORD_FLOWS if flow not in _NOT_RUN]
 )
 def test_chord_not_run_reason_real_chord_whose_callback_ran_has_none(flow: str) -> None:
-    # Some Celery 5.2 captures show a chord as a plain group (no CHORD node).
     assert all(reason is None for reason in _reasons(_CAPTURES[flow]).values())
 
 
@@ -135,7 +140,7 @@ def _ev(task_id: str, state: TaskState, seconds: int = 0, **kwargs: Any) -> Task
 
 def _header(task_id: str, state: TaskState) -> TaskEvent:
     """A header's event as a worker sends it. The sender's PENDING names no
-    group or chord (``after_task_publish`` gets neither: see the PENDING
+    chord callback (``after_task_publish`` doesn't get it: see the PENDING
     events of ``chord_failed_header`` in celery_flows.json)."""
     if state == TaskState.PENDING:
         return _ev(task_id, state)
