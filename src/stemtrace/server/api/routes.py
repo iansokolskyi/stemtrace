@@ -146,7 +146,7 @@ async def _filter_task_names(
     """Return the stored task names that pass ``task_group`` and ``tag``; None without either.
 
     Only a filtered request resolves names, in a worker thread (see
-    ``_group_task_names``), so an unfiltered list never waits for a free thread.
+    ``_group_task_names``); an unfiltered list resolves none, so it doesn't use one.
     """
     if task_group is None and tag is None:
         return None
