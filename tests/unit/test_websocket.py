@@ -231,6 +231,6 @@ class TestApiWebSocketRouter:
         websocket = MagicMock()
         await route.endpoint(websocket)
 
-        ws_manager.connect.assert_awaited_once_with(websocket)
+        ws_manager.connect.assert_awaited_once_with(websocket, subprotocol=None)
         ws_manager.listen.assert_awaited_once_with(websocket)
         ws_manager.disconnect.assert_called_once_with(websocket)
