@@ -16,10 +16,11 @@ from stemtrace.core.groups import GroupConfig
 from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.schemas import TaskEventResponse
+from stemtrace.server.groups import group_lookup
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.conftest import InterleavingLock
 
-_AUTO_GROUP_OF = routes._group_lookup(GroupConfig())
+_AUTO_GROUP_OF = group_lookup(GroupConfig())
 
 
 @pytest.fixture
@@ -2225,6 +2226,9 @@ class TestApiRouteTable:
             "/api/graphs",
             "/api/graphs/{root_id}",
             "/api/groups",
+            "/api/overview",
+            "/api/stats/timeseries",
+            "/api/failures",
             "/api/workers",
             "/api/workers/{hostname}",
         ]

@@ -24,6 +24,7 @@ from stemtrace.library.signals import (
     _delivered_destination,
     _extract_chord_info,
     _nodename,
+    _parse_eta,
 )
 from stemtrace.library.signals import _publish_event as _publish_via_transport
 
@@ -120,6 +121,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         root_id: str | None = None
         group_id: str | None = None
         chord: Any = None
+        eta: Any = None
         retries: int = 0
 
         if isinstance(body, list | tuple) and len(body) >= 3:
@@ -140,6 +142,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
             root_id = body.get("root_id")
             group_id = body.get("group")
             chord = body.get("chord")
+            eta = body.get("eta")
             retries = body.get("retries", 0) or 0
 
         # Fallback to message headers/properties
@@ -151,6 +154,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
             root_id = root_id or headers.get("root_id")
             group_id = group_id or headers.get("group")
             chord = chord or headers.get("chord")
+            eta = eta or headers.get("eta")
             if retries == 0:
                 retries = headers.get("retries", 0) or 0
 
@@ -183,6 +187,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 hostname=self._hostname,
                 queue=queue,
                 routing_key=routing_key,
+                eta=_parse_eta(eta),
             )
         )
         logger.debug("Emitted RECEIVED for task %s", task_id)

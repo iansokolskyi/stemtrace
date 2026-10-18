@@ -80,8 +80,14 @@ class OutputBuffer:
         self._data = bytearray()
         self._truncated = 0
         # Free-threaded builds can inherit the context into threads a task
-        # starts, so two threads may append to one buffer.
-        self._lock = threading.Lock()
+        # starts, so two threads may append to one buffer. Re-entrant: under
+        # gevent/eventlet, Celery's cold-shutdown signal handler can run in
+        # the task's own greenlet while it appends, and reads the buffer for
+        # the cancelled task's RETRY (a plain green Lock would wait on its own
+        # holder: a hang, or a yield that lets Celery's kill abort the
+        # shutdown). A re-entrant read can see an append mid-trim, which only
+        # affects the cancelled attempt's text.
+        self._lock = threading.RLock()
 
     @property
     def size_bytes(self) -> int:

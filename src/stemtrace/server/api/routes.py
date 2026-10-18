@@ -25,6 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from stemtrace.core.graph import NodeType
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
+from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
     ErrorResponse,
     GraphListResponse,
@@ -44,7 +45,9 @@ from stemtrace.server.api.schemas import (
     WorkerListResponse,
     WorkerResponse,
 )
-from stemtrace.server.groups import GroupsInput, build_group_config
+from stemtrace.server.api.summary_routes import add_summary_routes
+from stemtrace.server.groups import GroupsInput, build_group_config, group_lookup
+from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -52,7 +55,7 @@ if TYPE_CHECKING:
     from celery.app.control import Inspect
     from starlette.types import Receive, Scope, Send
 
-    from stemtrace.core.events import TaskEvent, TaskState
+    from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.store import GraphStore, WorkerRegistry
@@ -109,21 +112,6 @@ def _event_to_response(event: TaskEvent, include_output: bool) -> TaskEventRespo
     return response
 
 
-def _group_lookup(groups: GroupConfig) -> Callable[[str], ResolvedGroup]:
-    """Resolve task groups by name, each name once, for building one response.
-
-    A response's nodes share few task names, and matching every node against
-    every rule's globs again made large graphs with many rules slow.
-    """
-
-    @functools.cache
-    def lookup(task_name: str) -> ResolvedGroup:
-        """Return the group of tasks named ``task_name``."""
-        return groups.resolve(TaskAttributes(name=task_name))
-
-    return lookup
-
-
 def _group_of(
     node: TaskNode, group_of: Callable[[str], ResolvedGroup]
 ) -> tuple[str | None, list[str]]:
@@ -137,28 +125,41 @@ def _group_of(
     return group.name, list(group.tags)
 
 
-def _group_task_names(
+async def _filter_task_names(
     store: GraphStore,
     group_of: Callable[[str], ResolvedGroup],
     task_group: str | None,
     tag: str | None,
 ) -> frozenset[str] | None:
+    """Return the stored task names that pass ``task_group`` and ``tag``; None without either.
+
+    Only a filtered request resolves names, in a worker thread (see
+    ``_group_task_names``); an unfiltered list resolves none, so it doesn't use one.
+    """
+    if task_group is None and tag is None:
+        return None
+    return await run_in_threadpool(_group_task_names, store, group_of, task_group, tag)
+
+
+def _group_task_names(
+    store: GraphStore,
+    group_of: Callable[[str], ResolvedGroup],
+    task_group: str | None,
+    tag: str | None,
+) -> frozenset[str]:
     """Return the stored task names that pass the ``task_group`` and ``tag`` filters.
 
     ``task_group`` matches the group's name exactly; ``tag`` matches when it
     is one of the group's tags; given both, a name must match both (an empty
     value matches nothing, like the other exact filters). Names are resolved
     here, outside the store lock, once each; a task whose name is first seen
-    after this snapshot is matched from the next request on. None when
-    neither filter is given.
+    after this snapshot is matched from the next request on.
 
     Runs in a worker thread (``run_in_threadpool``): with thousands of
-    distinct names it takes long enough (about 128 ms at 7,000) to hold up
+    distinct names it takes long enough (about 80 ms at 7,000) to hold up
     every other request on the event loop. ``group_of``'s cache is
     thread-safe.
     """
-    if task_group is None and tag is None:
-        return None
 
     def accepts(task_name: str) -> bool:
         """Whether tasks named ``task_name`` pass both filters."""
@@ -174,6 +175,7 @@ def _node_to_response(
     node: TaskNode,
     *,
     include_output: bool = False,
+    include_events: bool = True,
     group_of: Callable[[str], ResolvedGroup],
 ) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
@@ -183,7 +185,9 @@ def _node_to_response(
         include_output: Keep captured task output on events. Off for list
             responses: output can be up to ``max_output_size`` per attempt and
             only the task detail page shows it.
-        group_of: Task group by task name (see ``_group_lookup``).
+        include_events: Embed the events; off for ``compact=1`` lists, which
+            then carry ``events: null``.
+        group_of: Task group by task name (see ``group_lookup``).
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -209,11 +213,14 @@ def _node_to_response(
         children=node.children,
         task_group=task_group,
         tags=tags,
-        events=[_event_to_response(e, include_output) for e in node.events],
+        events=[_event_to_response(e, include_output) for e in node.events]
+        if include_events
+        else None,
         first_seen=first_seen,
         last_updated=last_updated,
         duration_ms=duration_ms,
         queue_wait_ms=node.queue_wait_ms,
+        eta=node.eta,
         runtime_ms=runtime_ms,
         total_runtime_ms=total_runtime_ms,
         exception_type=node.exception_type,
@@ -273,7 +280,7 @@ def _node_to_graph_response(
         node: Task node from graph store.
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
-        group_of: Task group by task name (see ``_group_lookup``).
+        group_of: Task group by task name (see ``group_lookup``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -325,6 +332,7 @@ def _node_to_graph_response(
         tags=tags,
         duration_ms=duration_ms,
         queue_wait_ms=node.queue_wait_ms,
+        eta=node.eta,
         runtime_ms=runtime_ms,
         total_runtime_ms=total_runtime_ms,
         first_seen=first_seen,
@@ -616,8 +624,10 @@ def _add_health_routes(
     store: GraphStore,
     consumer: AsyncEventConsumer | None,
     ws_manager: WebSocketManager | None,
+    broker_url: str | None,
 ) -> None:
     """Register ``/health`` (full status) and ``/health/live`` (liveness probe)."""
+    broker = broker_kind(broker_url)
 
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -641,6 +651,7 @@ def _add_health_routes(
             consumer_connected=connected,
             websocket_connections=ws_manager.connection_count if ws_manager else 0,
             node_count=store.node_count,
+            broker=broker,
         )
 
     @router.get(
@@ -687,7 +698,15 @@ def _add_task_routes(
         *,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
-        state: Annotated[str | None, Query(description="Filter by task state")] = None,
+        state: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "Filter by state; a comma-separated list matches any "
+                    "(FAILURE,RETRY). Any case; an unknown state is a 422."
+                )
+            ),
+        ] = None,
         name: Annotated[
             str | None, Query(description="Filter by name substring")
         ] = None,
@@ -725,6 +744,13 @@ def _add_task_routes(
             str | None,
             Query(description="Filter by a tag of the task's group"),
         ] = None,
+        within: Annotated[
+            str | None,
+            Query(description="Updated within this long (30s, 15m, 6h, 7d)"),
+        ] = None,
+        compact: Annotated[
+            bool, Query(description="Leave out each task's events (events: null)")
+        ] = False,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -733,28 +759,20 @@ def _add_task_routes(
         ``queue`` and ``exception_type`` match exactly the value from the
         task's furthest-along event that has one (a later retry beats an
         earlier one). ``task_group`` matches the task's group name exactly and
-        ``tag`` one of its group's tags.
+        ``tag`` one of its group's tags. ``within`` is a relative ``from_date``
+        (now minus it); pass one or the other.
         """
-        from stemtrace.core.events import TaskState as TS
-
-        task_state: TaskState | None = None
-        if state is not None:
-            with contextlib.suppress(ValueError):
-                task_state = TS(state)
-
-        group_of = _group_lookup(groups)
-        # Every stored name is resolved: off the event loop (see
-        # _group_task_names).
-        task_names = await run_in_threadpool(
-            _group_task_names, store, group_of, task_group, tag
-        )
+        states = params.parse_states(state)
+        start = params.start_from(within, from_date, params.utcnow())
+        group_of = group_lookup(groups)
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
-            state=task_state,
+            state=states,
             name_contains=name,
             name_exact=name_exact,
-            from_date=from_date,
+            from_date=start,
             to_date=to_date,
             hostname=hostname,
             queue=queue,
@@ -762,7 +780,10 @@ def _add_task_routes(
             task_names=task_names,
         )
         return TaskListResponse(
-            tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
+            tasks=[
+                _node_to_response(n, include_events=not compact, group_of=group_of)
+                for n in nodes
+            ],
             total=total,
             limit=limit,
             offset=offset,
@@ -824,7 +845,7 @@ def _add_task_routes(
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         node, children = found
-        group_of = _group_lookup(groups)
+        group_of = group_lookup(groups)
         return TaskDetailResponse(
             task=_node_to_response(node, include_output=True, group_of=group_of),
             children=[_node_to_response(c, group_of=group_of) for c in children],
@@ -835,15 +856,23 @@ def _add_task_routes(
         response_model=list[TaskNodeResponse],
         responses={404: {"model": ErrorResponse}},
     )
-    async def get_task_children(task_id: str) -> list[TaskNodeResponse]:
+    async def get_task_children(
+        task_id: str,
+        compact: Annotated[
+            bool, Query(description="Leave out each task's events (events: null)")
+        ] = False,
+    ) -> list[TaskNodeResponse]:
         """Get child tasks for a specific task."""
         found = store.get_node_with_children(task_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         _, children = found
-        group_of = _group_lookup(groups)
-        return [_node_to_response(c, group_of=group_of) for c in children]
+        group_of = group_lookup(groups)
+        return [
+            _node_to_response(c, include_events=not compact, group_of=group_of)
+            for c in children
+        ]
 
 
 def _add_graph_routes(
@@ -874,21 +903,25 @@ def _add_graph_routes(
             str | None,
             Query(description="Filter by a tag of the task's group"),
         ] = None,
+        within: Annotated[
+            str | None,
+            Query(description="Updated within this long (30s, 15m, 6h, 7d)"),
+        ] = None,
     ) -> GraphListResponse:
         """List task execution graphs (root tasks) with pagination and filtering.
 
         ``task_group`` and ``tag`` list the graphs with at least one task that
-        matches (anywhere in the graph, not only its root).
+        matches (anywhere in the graph, not only its root). ``within`` is a
+        relative ``from_date`` (now minus it); pass one or the other.
         """
-        group_of = _group_lookup(groups)
-        task_names = await run_in_threadpool(
-            _group_task_names, store, group_of, task_group, tag
-        )
+        start = params.start_from(within, from_date, params.utcnow())
+        group_of = group_lookup(groups)
+        task_names = await _filter_task_names(store, group_of, task_group, tag)
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
-            from_date=from_date,
+            from_date=start,
             to_date=to_date,
             task_names=task_names,
         )
@@ -916,7 +949,7 @@ def _add_graph_routes(
             raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
 
         all_nodes: dict[str, TaskNode] = dict(graph)
-        group_of = _group_lookup(groups)
+        group_of = group_lookup(groups)
         return GraphResponse(
             root_id=root_id,
             nodes={
@@ -1033,23 +1066,14 @@ class _ApiRoute(APIRoute):
     """
 
     async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle the request; on a 405 from a GET route, list HEAD as allowed."""
-        try:
-            await super().handle(scope, receive, send)
-        except StarletteHTTPException as exc:
-            # starlette 0.38-1.7 Route.handle raises the 405 inside an app.
-            if (
-                exc.status_code == 405
-                and exc.headers is not None
-                and self.methods
-                and "GET" in self.methods
-                and scope["method"] not in self.methods
-            ):
-                allow = ", ".join(sorted(self.methods | {"HEAD"}))
-                raise StarletteHTTPException(
-                    status_code=405, headers={**exc.headers, "Allow": allow}
-                ) from exc
-            raise
+        """Handle the request; another method on a GET route gets a 405 naming HEAD."""
+        # starlette 0.38-1.7 Route.handle raises this 405 inside an app, with
+        # only this route's methods in Allow; raising it first adds HEAD.
+        methods = self.methods or set()  # APIRoute always sets them
+        if "GET" in methods and scope["method"] not in methods:
+            allow = ", ".join(sorted(methods | {"HEAD"}))
+            raise StarletteHTTPException(status_code=405, headers={"Allow": allow})
+        await super().handle(scope, receive, send)
 
 
 def _serve_head_on_get_routes(router: APIRouter) -> None:
@@ -1116,7 +1140,13 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)
 
-    _add_health_routes(router, store=store, consumer=consumer, ws_manager=ws_manager)
+    _add_health_routes(
+        router,
+        store=store,
+        consumer=consumer,
+        ws_manager=ws_manager,
+        broker_url=broker_url,
+    )
     group_config = build_group_config(groups)
     _add_task_routes(
         router,
@@ -1132,6 +1162,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         groups=group_config,
     )
     _add_group_routes(
+        router, store=store, worker_registry=worker_registry, groups=group_config
+    )
+    add_summary_routes(
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)

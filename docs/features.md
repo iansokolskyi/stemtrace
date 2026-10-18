@@ -155,10 +155,18 @@ also split it up:
 
 | Field | From | To |
 |---|---|---|
-| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED) | its first run starting (first STARTED) |
+| `queue_wait_ms` | the task being sent (its first PENDING or RECEIVED), or its ETA if that is later | its first run starting (first STARTED) |
 | `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
 | `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
 
+- The worker holds a task sent with a `countdown` or `eta` until that time. The time held is
+  scheduled, not waiting, so `queue_wait_ms` counts from the ETA: a task sent with
+  `countdown=60` that starts 0.2 seconds after its ETA waited 200 ms. Task and graph node
+  responses give the first attempt's ETA as `eta` (UTC; empty for a task that can run at
+  once). Each event has its own attempt's ETA as `eta`, so a retry's countdown shows on the
+  retry's events, and a task replaced with `task.replace()` keeps its own ETA and wait: the
+  replacement's countdown shows on the replacement's events (see the protocol 1 limitation
+  below).
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
@@ -170,7 +178,9 @@ also split it up:
   without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
   before it started. GROUP and CHORD nodes have none.
 - They are computed on the server from the events it already has, so they also appear for tasks
-  recorded by older workers.
+  recorded by older workers. The code that sends a task records its ETA on PENDING, and the
+  worker records it on its own events. If neither runs this release, `queue_wait_ms` counts a
+  countdown as waiting, as before.
 
 Limitations:
 
@@ -179,10 +189,29 @@ Limitations:
   first; a negative wait, from that or from a sender clock ahead of the worker's, counts as 0.
   A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
   (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
-  earlier.
-- A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
-  in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
-  in the queue.
+  earlier. Celery computes an ETA from the sending process's clock (now plus the `countdown`),
+  and the worker starts the task when its own clock reaches it. A worker clock behind the
+  sender's starts the task late by the offset, and one ahead starts it early; `queue_wait_ms`
+  counts from the ETA by the worker's clock, so it doesn't show that offset.
+- With Celery's message protocol 1 (`task_protocol = 1`), task messages carry no parent ID
+  (Celery 5.6.3 `app/amqp.py` `as_task_v1`), so the server can't tell a task's events from
+  those of a replacement it started with `task.replace()`. It reads the ETA and the wait from the
+  task's earliest STARTED and earliest sent events instead. For a task replaced by one sent with
+  a `countdown`, `eta` and `queue_wait_ms` can then come from the replacement: when the sending
+  process's clock is ahead of the worker's, when the replacement runs on a worker whose clock is
+  behind, or when the task's own PENDING or STARTED was missed. With Celery's default protocol 2,
+  the replacement's events report the task (or a task below it) as their parent, so the task's
+  own values are used whatever the clocks.
+- A worker before stemtrace 0.4.0 sends PENDING without a parent ID, so a replacement's PENDING
+  that it sent can look like the task's own. If the task has no PENDING or RECEIVED of its own (for
+  example, the code that sent it doesn't call `init_worker` and RECEIVED is off),
+  `queue_wait_ms` is 0 instead of empty for a root task, and for a task that replaced itself. A
+  replacement with another task name then also gives the task that name, and a child task loses
+  its link to its parent.
+- When events carry no parent ID (protocol 1, or a root task), only the task's first run is read.
+  If neither that run's worker nor the code that sent the task recorded the ETA (a release
+  before this one) and the task was redelivered to a worker that did, the countdown counts as
+  waiting.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
@@ -196,8 +225,58 @@ Limitations:
   `self.retry(throw=False)`: both carry retry count 0. If the events of the attempts in between were missed, the runtime is counted
   from the last STARTED the server has, so it can be too long.
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run, or a
-  span read across two workers' clocks (above). When Celery runs the same attempt again on
+  span read across two workers' clocks (above). Without parent IDs, a RECEIVED stamped after the
+  task's first STARTED doesn't count, so a clock stepping back between the two leaves
+  `queue_wait_ms` empty when the task has no PENDING. When Celery runs the same attempt again on
   another worker after losing the broker connection, and that worker's clock is behind the
   first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
   and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the
   same-attempt limitation in [Worker, queue and exception type](#worker-queue-and-exception-type)).
+
+## Summary endpoints
+
+Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page
+through every task. A task counts at the time of its last event in lifecycle order (a first
+attempt's PENDING or RECEIVED stamped late by a sender whose clock is ahead doesn't move it) and
+under its current state, so a task that failed and then succeeded on retry counts as a SUCCESS.
+Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now, or, on the
+time series and failures, from `from_date` (pass one or the other). A time without a timezone is
+UTC. A date alone (`2026-10-18`) means its UTC midnight on current pydantic (checked with 2.13);
+pydantic 2.4, the oldest supported, rejects it, as on the task list. A start after now is a
+`422`. A window reaches at most 3,650 days back, whatever `from_date` or the oldest task says (a
+time series then starts at the bucket edge at or before that, and the overview's baseline is the
+window before it). Every response says which window it covered. A window ending now also takes
+tasks stamped later by a worker whose clock is ahead.
+
+- `GET /api/overview?within=1h` (default `1h`; it takes `within` only): runs, failures, runs per minute and the
+  failure rate (FAILURE over runs; 0 with none), each with `baseline`, the same value for the
+  window of equal length just before. Runs are tasks that ended with an outcome: SUCCESS, FAILURE,
+  REVOKED or REJECTED. IGNORED tasks chose not to run (for example a deduplicated task), so they
+  are left out, and a burst of them doesn't hide failures; the time series counts them by state.
+  `workers` counts online and known workers from worker events, without asking the workers.
+- `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
+  state (states with no run in range are left out). Bucket edges are multiples of the bucket
+  size since the Unix epoch, so they don't move between requests; the first bucket starts on
+  the edge at or before the window's start, and the response's `window.start` is that edge.
+  Without `within` or `from_date` it covers the last 3,650 days. Without `bucket` it
+  uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
+  that needs more is a `422`. `group_by=task_group` adds the same counts per
+  [task group](configuration.md#task-groups).
+- `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
+  `exception_type`, most failures first. Each group has its count, first and last failure, task
+  names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
+  class form one group with `exception_type: null`.
+
+Each request copies the server's list of task summaries once and computes outside the lock that
+the event consumer uses, so it never holds up incoming events for longer than that copy.
+
+The task list also takes:
+
+- `state=FAILURE,RETRY`: any of several states, in any case. An unknown state is a `422` that
+  lists the valid ones.
+- `within=1h` (also on `GET /api/graphs`), as above.
+- `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
+  task's event list. The task detail always includes them.
+
+`GET /api/health` reports the Celery broker's kind as `broker`: `redis`, `rabbitmq`, `memory`,
+or `null`. Only the URL's scheme is read; the URL itself is never returned.
