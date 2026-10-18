@@ -190,26 +190,19 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 
 
 class WorkerTerminatingStep(bootsteps.StartStopStep):  # type: ignore[misc]
-    """Publish WORKER_TERMINATING when the worker ends through Celery's terminate path.
+    """Publish WORKER_TERMINATING when a worker stops without sending worker_shutdown.
 
-    That path (``WorkController.terminate``, a cold stop such as SIGQUIT that
-    didn't start as a warm one) sends no ``worker_shutdown``, so without this
-    the server keeps the worker online. Celery calls a worker step's
-    ``terminate`` there and ``stop`` on a warm stop (``Blueprint.stop``); the
-    inherited ``stop`` does nothing. It says the process is ending, not
-    which tasks were killed: on Celery 5.5+ the cold-shutdown handler cancels
-    running tasks first, and each gets a RETRY ("cancelled by Celery") except,
-    on 5.6+, ``acks_late`` ones (requeued, no event). With a task running, a
-    cold stop that escalates a warm one (SIGTERM then SIGQUIT, Ctrl+C twice)
-    or fails in Celery (gevent with SIGQUIT, celery 5.6.3) ends with
-    ``worker_shutdown`` instead. Requiring the Pool orders this step after it
-    at start, so before it on terminate.
+    Celery's cold-stop path (``WorkController.terminate``) skips
+    ``worker_shutdown``, so without this the server would keep the worker online.
     """
 
+    # After the Pool at start, so before it on terminate.
     requires: ClassVar[set[str]] = {"celery.worker.components:Pool"}
 
     def terminate(self, worker: Any) -> None:
         """Report that this worker process is ending without worker_shutdown."""
+        # celery 5.6.3 Blueprint.stop calls terminate() on a cold stop and
+        # stop() (inherited, a no-op) on a warm one.
         on_worker_terminating(worker)
 
 

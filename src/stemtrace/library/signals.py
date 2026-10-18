@@ -1152,12 +1152,8 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
 def on_worker_terminating(sender: Any = None) -> None:
     """Publish WORKER_TERMINATING: the worker ends without a worker_shutdown.
 
-    Called from ``WorkerTerminatingStep.terminate`` (see ``bootsteps``) in the
-    worker's main process, after Celery's signal handler returned: the
-    handler sets ``should_terminate``, and the consumer loop then raises
-    ``WorkerTerminate`` and stops the worker blueprint (celery 5.2.2 to 5.6.3
-    ``WorkController.start`` / ``terminate`` / ``_shutdown(warm=False)``).
-    Fire-and-forget, like ``on_worker_shutdown``.
+    Called from ``WorkerTerminatingStep.terminate`` in the worker's main
+    process, outside Celery's signal handler. Never raises.
     """
     try:
         hostname, pid = _get_hostname_and_pid(sender)
