@@ -15,6 +15,8 @@ from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.stats import RunRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent
 
 
@@ -123,6 +125,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Mapping
 
     from stemtrace.core.events import TaskEvent
+
+
+# A worker not seen for this long is shown offline (see remove_stale_workers).
+# Seen means a worker_ready, a task event from its nodename, or an inspect reply.
+WORKER_STALE_TIMEOUT_MINUTES = 3
 
 
 class WorkerRegistry:
@@ -257,6 +264,43 @@ class WorkerRegistry:
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
+
+    def mark_seen(
+        self, hostname: str, timestamp: datetime, *, now: datetime | None = None
+    ) -> None:
+        """Record a task event from ``hostname``: its worker is alive.
+
+        Without this a busy worker went offline ``WORKER_STALE_TIMEOUT_MINUTES``
+        after its worker_ready, since only that and inspect replies moved
+        ``last_seen``. A task event names no pid, so it refreshes the node's
+        live entry, the pid registered last (a nodename has one live process).
+        ``timestamp`` is the event's (the worker's clock), as for worker_ready,
+        so a server reading back an old stream doesn't make a dead worker look
+        alive; a time ahead of the server's clock counts as now (a worker clock
+        running ahead would otherwise keep it online after it stopped), a naive
+        one as UTC, and ``last_seen`` never moves back. The worker comes back
+        online only if that time is within the stale window, and never after it
+        reported worker_shutdown (a task's last events can arrive after it).
+
+        Args:
+            hostname: Worker nodename from the task event.
+            timestamp: The event's time.
+            now: Current time (tests); defaults to now.
+        """
+        with self._lock:
+            live_id = self._newest_by_node.get(hostname)
+            worker = self._workers.get(live_id) if live_id else None
+            if worker is None:
+                return
+            current = now or datetime.now(timezone.utc)
+            seen_at = min(ensure_tz_aware(timestamp), current)
+            if seen_at > worker.last_seen:
+                worker.last_seen = seen_at
+            recent = seen_at >= current - timedelta(
+                minutes=WORKER_STALE_TIMEOUT_MINUTES
+            )
+            if recent and not worker.shutdown_reported:
+                worker.status = WorkerStatus.ONLINE
 
     def mark_offline(self, hostname: str, pid: int) -> None:
         """Mark a worker offline because it stopped answering, not because it said so.
@@ -437,8 +481,10 @@ class WorkerRegistry:
 
     def remove_stale_workers(
         self,
-        stale_timeout_minutes: int = 3,
+        stale_timeout_minutes: int = WORKER_STALE_TIMEOUT_MINUTES,
         cleanup_timeout_minutes: int = 30,
+        *,
+        now: datetime | None = None,
     ) -> None:
         """Mark workers as offline if not seen recently, remove very old ones.
 
@@ -446,9 +492,10 @@ class WorkerRegistry:
             stale_timeout_minutes: Minutes of inactivity before marking stale.
             cleanup_timeout_minutes: Minutes since last seen before removing
                 offline workers entirely (reduces clutter from old sessions).
+            now: Current time (tests); defaults to now.
         """
         with self._lock:
-            now = datetime.now(timezone.utc)
+            now = now or datetime.now(timezone.utc)
             stale_cutoff = now - timedelta(minutes=stale_timeout_minutes)
             cleanup_cutoff = now - timedelta(minutes=cleanup_timeout_minutes)
 
@@ -544,6 +591,7 @@ class GraphStore:
         hostname: str | None = None,
         queue: str | None = None,
         exception_type: str | None = None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Get nodes with optional filtering, most recent first.
 
@@ -557,6 +605,9 @@ class GraphStore:
         ``hostname``, ``queue`` and ``exception_type`` match the node's
         value (see ``TaskNode._latest``) exactly; computing it reads all of
         a node's events, so these cost several times the name filters.
+        ``task_names`` keeps the tasks with one of these names (the API's
+        task group and tag filters resolve names to it beforehand, outside
+        the lock); pass a set for O(1) lookups.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -584,6 +635,8 @@ class GraphStore:
                 nodes = [n for n in nodes if n.queue == queue]
             if exception_type is not None:
                 nodes = [n for n in nodes if n.exception_type == exception_type]
+            if task_names is not None:
+                nodes = [n for n in nodes if n.name in task_names]
             if from_date is not None:
                 from_dt = ensure_tz_aware(from_date)
                 nodes = [
@@ -630,8 +683,12 @@ class GraphStore:
         offset: int = 0,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
         """Get root nodes and their direct children from one consistent snapshot.
+
+        With ``task_names``, only graphs with a task of one of these names
+        (anywhere in the graph, not only the root) are listed.
 
         Returns:
             Tuple of (filtered root nodes, map of task_id to node for the roots
@@ -639,7 +696,11 @@ class GraphStore:
         """
         with self._lock:
             live, total = self._root_nodes_locked(
-                limit=limit, offset=offset, from_date=from_date, to_date=to_date
+                limit=limit,
+                offset=offset,
+                from_date=from_date,
+                to_date=to_date,
+                task_names=task_names,
             )
             roots = [_snapshot(n) for n in live]
             related: dict[str, TaskNode] = {}
@@ -658,6 +719,7 @@ class GraphStore:
         offset: int,
         from_date: datetime | None,
         to_date: datetime | None,
+        task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Filter, sort and page live root nodes. Call with the lock held."""
         root_nodes = [
@@ -665,6 +727,9 @@ class GraphStore:
             for rid in self._graph.root_ids
             if rid in self._graph.nodes
         ]
+        if task_names is not None:
+            matching = self._roots_with_task_locked(task_names)
+            root_nodes = [n for n in root_nodes if n.task_id in matching]
 
         # Date filtering - use child timestamps for synthetic nodes
         if from_date is not None:
@@ -685,6 +750,30 @@ class GraphStore:
         )
         total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
+
+    def _roots_with_task_locked(self, task_names: Collection[str]) -> set[str]:
+        """IDs of the roots whose graph has a task named one of ``task_names``.
+
+        Walks up from each accepted task until a root (every node's parent
+        chain ends at one) or a node an earlier walk passed, whose root is
+        already found; so the whole store costs O(nodes). Call with the lock
+        held.
+        """
+        nodes = self._graph.nodes
+        seen: set[str] = set()
+        found: set[str] = set()
+        for node in nodes.values():
+            if node.node_type != NodeType.TASK or node.name not in task_names:
+                continue
+            current = node
+            while current.task_id not in seen:
+                seen.add(current.task_id)
+                parent = nodes.get(current.parent_id or "")
+                if parent is None:
+                    found.add(current.task_id)
+                    break
+                current = parent
+        return found
 
     def get_node_with_children(
         self, task_id: str

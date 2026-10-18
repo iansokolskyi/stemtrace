@@ -10,6 +10,8 @@ from fastapi import Request  # noqa: TC002
 from fastapi.responses import RedirectResponse
 
 from stemtrace.server.consumer import AsyncEventConsumer
+from stemtrace.server.fastapi.api_key import normalize_api_key
+from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.groups import build_group_config
@@ -42,23 +44,26 @@ async def _null_lifespan(app: Any) -> AsyncIterator[None]:  # noqa: ARG001
 class StemtraceExtension:
     """Complete FastAPI integration: store, consumer, WebSocket, and router.
 
-    Example (recommended):
-        app = FastAPI(lifespan=my_lifespan)
-        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
-        stemtrace.init_app(app)  # Wraps lifespan + adds router
+    Examples:
+        Recommended::
 
-    Example (RabbitMQ broker + Redis event transport):
-        # Celery uses RabbitMQ, but stemtrace events go to Redis for replay across restarts.
-        stemtrace = StemtraceExtension(
-            broker_url="amqp://guest:guest@localhost:5672//",
-            transport_url="redis://localhost:6379/0",
-        )
-        stemtrace.init_app(app)
+            app = FastAPI(lifespan=my_lifespan)
+            stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+            stemtrace.init_app(app)  # Wraps lifespan + adds router
 
-    Example (manual):
-        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
-        app = FastAPI(lifespan=stemtrace.lifespan)
-        app.include_router(stemtrace.router, prefix="/stemtrace")
+        RabbitMQ broker, Redis event transport (replay across restarts)::
+
+            stemtrace = StemtraceExtension(
+                broker_url="amqp://guest:guest@localhost:5672//",
+                transport_url="redis://localhost:6379/0",
+            )
+            stemtrace.init_app(app)
+
+        Manual::
+
+            stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+            app = FastAPI(lifespan=stemtrace.lifespan)
+            app.include_router(stemtrace.router, prefix="/stemtrace")
     """
 
     def __init__(
@@ -75,6 +80,7 @@ class StemtraceExtension:
         form_auth_config: FormAuthConfig | None = None,
         node_alias_from_arguments: str | None = None,
         groups: GroupsInput = None,
+        api_key: str | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -95,9 +101,16 @@ class StemtraceExtension:
                 with the same fields) or a path to a TOML file. First match wins;
                 other tasks get their automatic group. None for automatic only.
                 Unlike ``init_app()``, doesn't read ``STEMTRACE_GROUPS``.
+            api_key: Require ``Authorization: Bearer <key>`` on the JSON API
+                (not the liveness probe) and the WebSocket. With form login, a
+                valid session cookie also passes; with ``auth_dependency``, the
+                JSON API needs both (the WebSocket, which the dependency doesn't
+                cover, needs the key). At least 16 visible ASCII characters. Unlike
+                ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
 
         Raises:
-            ConfigurationError: If ``groups`` is invalid or its file can't be loaded.
+            ConfigurationError: If ``groups`` is invalid or its file can't be
+                loaded, or ``api_key`` is too short or has invalid characters.
         """
         self._broker_url = broker_url
         self._transport_url = transport_url or broker_url
@@ -122,6 +135,10 @@ class StemtraceExtension:
 
         self._node_alias_from_arguments = node_alias_from_arguments
         self._groups = build_group_config(groups)
+        self._api_key = normalize_api_key(api_key)
+        # Counts failed key attempts per IP; init_app and the CLI hand it to
+        # the login router too, so both count against the same IP limit.
+        self._auth_throttle = LoginThrottle() if self._api_key else None
 
         self._store.add_listener(self._ws_manager.queue_event)
 
@@ -134,6 +151,11 @@ class StemtraceExtension:
     def groups(self) -> GroupConfig:
         """The validated task group rules."""
         return self._groups
+
+    @property
+    def auth_throttle(self) -> LoginThrottle | None:
+        """Failed-attempt throttle for the API key, or None without a key."""
+        return self._auth_throttle
 
     @property
     def store(self) -> GraphStore:
@@ -168,6 +190,8 @@ class StemtraceExtension:
             form_auth_config=self._form_auth_config,
             node_alias_from_arguments=self._node_alias_from_arguments,
             groups=self._groups,
+            api_key=self._api_key,
+            auth_throttle=self._auth_throttle,
         )
 
         if self._serve_ui:

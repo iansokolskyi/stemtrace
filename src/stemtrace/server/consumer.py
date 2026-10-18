@@ -222,6 +222,9 @@ class EventConsumer:
         else:
             self._store.add_event(event)
             logger.debug("Consumed task event: %s (%s)", event.task_id, event.state)
+            if self._worker_registry is not None and event.hostname is not None:
+                # A busy worker's task events keep it online (no heartbeat).
+                self._worker_registry.mark_seen(event.hostname, event.timestamp)
 
     def _handle_worker_event(self, event: WorkerEvent) -> None:
         """Handle worker lifecycle events.

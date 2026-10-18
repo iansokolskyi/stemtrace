@@ -15,6 +15,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 FILTERED = "[Filtered]"
+# Start of the text safe_serialize returns instead of a value that is too big.
+TRUNCATED_PREFIX = "[Truncated: "
 
 # Default sensitive key patterns (case-insensitive, partial match)
 DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
@@ -54,22 +56,28 @@ DEFAULT_SENSITIVE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _lowercase_patterns(
+    sensitive_keys: frozenset[str], additional_keys: frozenset[str] | None
+) -> frozenset[str]:
+    """All sensitive patterns, lowercased once per call.
+
+    Keys are lowercased before matching; patterns come from user config as
+    written (``additional_sensitive_keys={"MRN"}``), so they are too.
+    """
+    patterns = sensitive_keys | additional_keys if additional_keys else sensitive_keys
+    return frozenset(pattern.lower() for pattern in patterns)
+
+
 def _key_names(key: object) -> list[str]:
     """The names a dict key carries, lowercased.
 
-    A task's dicts can have any hashable key. A str is a name, and so is bytes
-    (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
-    as UTF-8 with replacement so it never raises. A tuple or frozenset key
-    carries the names of its parts, and an Enum member its own name (if it has
-    one) plus its value's names (checked first: str- and int-mixin members are
-    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
-    carries the names of all members (aliases and multi-bit members included)
-    whose bits it has, since its own name may be missing (a composite on
-    Python 3.10, unknown bits) and its value is an int.
-    Other keys (an int, None, any other object) carry none. ``str(key)`` is
-    never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
-    raise.
+    A str is a name, and so is bytes (decoded leniently, never raising). A tuple
+    or frozenset carries its parts' names, an Enum member its own name plus its
+    value's, a Flag the names of every member whose bits it has. Other keys
+    carry none; ``str(key)`` is never used (a repr, and ``__str__`` can raise).
     """
+    # Enum cases come first: str- and int-mixin members are also str or int
+    # (HTTPStatus.UNAUTHORIZED must match "auth").
     match key:
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
@@ -89,6 +97,7 @@ def _key_names(key: object) -> list[str]:
         case str():
             return [key.lower()]
         case bytes():
+            # e.g. redis-py's bytes-keyed dicts without decode_responses.
             return [key.decode("utf-8", "replace").lower()]
         case tuple() | frozenset():
             return [name for part in key for name in _key_names(part)]
@@ -103,18 +112,15 @@ def _is_sensitive_key(
 ) -> bool:
     """Check if a key matches any sensitive pattern.
 
-    Uses case-insensitive partial matching:
-    - 'user_password' matches 'password'
-    - 'API_KEY' matches 'api_key'
-
-    A key that isn't a str is matched by the names it carries (see
-    ``_key_names``): ``b"password"`` and ``("user", "api_key")`` are
-    sensitive, ``1`` and ``None`` never are. The values under keys that aren't
-    sensitive are still scrubbed.
+    Case-insensitive partial matching ('user_password' matches 'password'). A
+    non-str key is matched by the names it carries (``b"password"`` and
+    ``("user", "api_key")`` are sensitive, ``1`` never is). Values under keys
+    that aren't sensitive are still scrubbed.
 
     Args:
         key: The dict key to check.
-        sensitive_keys: Set of sensitive key patterns.
+        sensitive_keys: Set of sensitive key patterns, lowercase (see
+            ``_lowercase_patterns``).
         safe_keys: Optional set of keys to never scrub.
 
     Returns:
@@ -148,16 +154,23 @@ def scrub_dict(
         >>> scrub_dict({"password": "secret123", "name": "Alice"})
         {'password': '[Filtered]', 'name': 'Alice'}
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
+    return _scrub_dict(
+        data, _lowercase_patterns(sensitive_keys, additional_keys), safe_keys
     )
 
+
+def _scrub_dict(
+    data: dict[Any, Any],
+    patterns: frozenset[str],
+    safe_keys: frozenset[str] | None,
+) -> dict[Any, Any]:
+    """Scrub a dictionary with patterns already lowercased by the entry point."""
     result: dict[Any, Any] = {}
     for key, value in data.items():
-        if _is_sensitive_key(key, all_sensitive, safe_keys):
+        if _is_sensitive_key(key, patterns, safe_keys):
             result[key] = FILTERED
         else:
-            result[key] = _scrub_value(value, all_sensitive, safe_keys)
+            result[key] = _scrub_value(value, patterns, safe_keys)
 
     return result
 
@@ -169,7 +182,7 @@ def _scrub_value(
 ) -> Any:
     """Recursively scrub a value (handles nested dicts and lists)."""
     if isinstance(value, dict):
-        return scrub_dict(value, sensitive_keys, safe_keys=safe_keys)
+        return _scrub_dict(value, sensitive_keys, safe_keys)
     if isinstance(value, list):
         return [_scrub_value(item, sensitive_keys, safe_keys) for item in value]
     if isinstance(value, tuple):
@@ -194,9 +207,7 @@ def scrub_args(
     Returns:
         List of scrubbed arguments.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
     return [_scrub_value(arg, all_sensitive, safe_keys) for arg in args]
 
 
@@ -219,9 +230,7 @@ def safe_serialize(
     Returns:
         JSON-serializable value, or string representation if serialization fails.
     """
-    all_sensitive = (
-        sensitive_keys | additional_keys if additional_keys else sensitive_keys
-    )
+    all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
 
     # First scrub the value
     scrubbed = _scrub_value(value, all_sensitive, safe_keys)
@@ -230,7 +239,7 @@ def safe_serialize(
     try:
         serialized = json.dumps(scrubbed, default=str)
         if len(serialized) > max_size:
-            return f"[Truncated: {len(serialized)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(serialized)} bytes > {max_size} max]"
         # Preserve the original scrubbed shape (not the JSON string).
         return scrubbed
     except (TypeError, ValueError) as e:
@@ -238,5 +247,5 @@ def safe_serialize(
         # Fall back to string representation
         str_repr = str(scrubbed)
         if len(str_repr) > max_size:
-            return f"[Truncated: {len(str_repr)} bytes > {max_size} max]"
+            return f"{TRUNCATED_PREFIX}{len(str_repr)} bytes > {max_size} max]"
         return str_repr

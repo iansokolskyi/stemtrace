@@ -1,15 +1,10 @@
 """RabbitMQ transport using kombu.
 
-This adapter publishes stemtrace events to a durable fanout exchange and consumes
-from a durable queue bound to that exchange.
-
-Design goals:
-- Broker-agnostic event schema (same JSON shape as Redis transport).
-- Fire-and-forget publishing: log errors, never raise, and stay cheap while the
-  broker is down (Celery tasks must not block). Events that can't be published
-  are dropped, never queued. Events go out on one connection per process (see
-  rabbitmq_publisher).
-- Best-effort replay: messages are retained in the queue for up to `ttl` seconds.
+Publishes events to a durable fanout exchange and consumes from a durable queue
+bound to it, with the same JSON shape as the Redis transport. Publishing is
+fire-and-forget and stays cheap while the broker is down: events that can't be
+published are dropped, never queued, and one connection per process is reused (see
+rabbitmq_publisher). The queue retains messages for up to ``ttl`` seconds.
 """
 
 from __future__ import annotations
@@ -133,16 +128,15 @@ def _normalize_prefix(prefix: str) -> str:
 def _resolving_connection_class(connection_cls: type[Any]) -> type[Any]:
     """Subclass kombu's Connection so py-amqp resolves hosts via PUBLISH_RESOLVER.
 
-    py-amqp 5.3 _AbstractTransport._connect() calls socket.getaddrinfo(),
-    which no socket timeout bounds. kombu 5.6 asks get_transport_cls() for
-    the transport class each time it creates a transport (including after
-    switching failover hosts), so overriding it reaches every host. Other
-    transports (e.g. memory://) are returned unchanged.
+    No socket timeout bounds py-amqp's own getaddrinfo(). Other transports (e.g.
+    memory://) are returned unchanged.
     """
 
     class ResolvingConnection(connection_cls):  # type: ignore[misc]  # kombu is untyped
         """kombu Connection whose py-amqp transports resolve hosts boundedly."""
 
+        # kombu 5.6 calls this for every transport it creates, also after a
+        # failover switch, so overriding it reaches every host.
         def get_transport_cls(self) -> Any:
             """The URL's transport, with py-amqp sockets resolved boundedly."""
             return _resolving_transport_class(super().get_transport_cls())
@@ -188,6 +182,8 @@ def _connect_resolved(self: Any, host: str, port: int, timeout: float | None) ->
     entries = PUBLISH_RESOLVER.resolve(
         host,
         port,
+        # getaddrinfo() order, as py-amqp 5.1+; 5.0.x tried IPv4 first, so with
+        # it a dual-stack broker may now be reached over IPv6 first.
         socket.AF_UNSPEC,
         socket.SOCK_STREAM,
         socket.IPPROTO_TCP,
@@ -253,18 +249,14 @@ def _bounded_tls_setup(base_setup: Callable[[Any], None]) -> Callable[[Any], Non
 def _resolving_amqp_connection_class(connection_cls: type[Any]) -> type[Any]:
     """py-amqp Connection whose transports connect to resolved addresses.
 
-    Mirrors py-amqp 5.3 Connection.Transport() and transport.Transport()
-    (SSL when ``ssl`` is set, TCP otherwise), with _connect() taking the
-    addresses from PUBLISH_RESOLVER, which waits at most the connect timeout.
-    Everything else is py-amqp's own: TLS gets SNI and the hostname check
-    from the ``ssl`` options as before, independent of the address used.
-    Addresses are tried in getaddrinfo(AF_UNSPEC) order, as py-amqp 5.1+
-    does; py-amqp 5.0.x (allowed by older kombu) resolved IPv4 first and
-    tried IPv6 only without an IPv4 answer, so with it a dual-stack broker
-    may now be reached over IPv6 first.
+    SSL when ``ssl`` is set, TCP otherwise, with _connect() taking the addresses
+    from PUBLISH_RESOLVER. TLS keeps py-amqp's SNI and hostname check from the
+    ``ssl`` options, independent of the address used.
     """
     from amqp.transport import SSLTransport, TCPTransport
 
+    # Mirrors py-amqp 5.3 Connection.Transport() and transport.Transport();
+    # py-amqp 5.3 _AbstractTransport._connect() calls getaddrinfo() unbounded.
     tcp = type(
         "ResolvingTCPTransport",
         (TCPTransport,),
@@ -415,29 +407,10 @@ class RabbitMQTransport:
     def publish(self, event: StreamEvent) -> None:
         """Publish an event to RabbitMQ.
 
-        Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. The one exception is Celery's control flow, e.g.
-        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
-        propagates and is not counted as a broker failure. Events go out on one connection per process that
-        is kept between publishes. An attempt that has to connect tries each
-        host of the URL once, with CONNECT_TIMEOUT to connect and
-        PUBLISH_IO_TIMEOUT per socket operation after that; a connection the
-        broker closed in the meantime is replaced within the same attempt.
-        While the broker reports the connection blocked (a memory or disk
-        alarm), events are dropped without being sent.
-
-        PUBLISH_FAILURES_TO_OPEN failures in a row (timeouts included) open a
-        circuit breaker; until then a failure loses only its own event. While
-        open, events are dropped without connecting for a cooldown (1s,
-        doubling per failed retry up to 30s, reset by a successful publish),
-        so a broker outage costs tasks about one bounded attempt per cooldown
-        instead of one per event. Only one retry (probe) runs at a time, and
-        failures of attempts that were already in flight don't lengthen the
-        cooldown. Per PUBLISH_FAILURE_LOG_INTERVAL, at most four WARNING
-        lines are written (a failure while closed, an outage starting, an
-        outage ending, and a report of losses still unreported), each with
-        the number of events lost since the previous line; each event dropped
-        while the breaker is open also gets a DEBUG line.
+        Fire-and-forget: events that can't be published are dropped, not queued.
+        Only Celery control flow (e.g. ``SoftTimeLimitExceeded``) propagates, and
+        isn't a broker failure. Attempts are bounded and repeated failures open a
+        circuit breaker; docs/brokers.md has the timeouts and log volume.
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -512,20 +485,10 @@ class RabbitMQTransport:
     def consume(self) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
-        Connection and channel errors never end the iterator: the transport
-        logs a warning (with a traceback only for the first failure in a row),
-        backs off exponentially (capped at RECONNECT_MAX_BACKOFF seconds) and
-        reconnects on a new connection, declaring the exchange and queue
-        again. Each attempt tries every host of a failover URL
-        (``amqp://h1//;amqp://h2//``) once, with CONNECT_TIMEOUT per host, no
-        sleep between hosts, and the stop event checked between hosts. Messages kombu can't decode (e.g. not JSON)
-        are rejected without requeueing and logged once. The backoff
-        resets once a connection has been established and read from (a drain
-        returned or timed out); connections that fail before that keep the
-        delay growing. The iterator ends once a stop event bound with
-        bind_stop_event() is set; that event also interrupts the backoff wait,
-        the stop is noticed within DRAIN_TIMEOUT on a live connection, and the
-        connection is then dropped without the AMQP close handshake.
+        Connection errors never end it: it backs off exponentially (up to
+        RECONNECT_MAX_BACKOFF) and reconnects, trying each failover host once.
+        Undecodable messages are rejected without requeueing. It ends once the
+        event bound with bind_stop_event() is set, within DRAIN_TIMEOUT.
 
         Yields:
             Parsed TaskEvent or WorkerEvent instances.
@@ -625,21 +588,16 @@ class RabbitMQTransport:
         """Yield events from a subscribed connection until a stop is requested.
 
         Returns only once the stop event is set (checked after every drain,
-        so within DRAIN_TIMEOUT); connection errors propagate to consume().
-
-        When the connection negotiated heartbeats (``?heartbeat=N`` in the
-        URL), they are serviced here: drain_events() only reads, so without
-        heartbeat_check() nothing ever sends them and the broker closes the
-        idle consumer after two intervals. heartbeat_check() raises
-        ConnectionForced when the broker's own heartbeats stop, which
-        consume() treats like any dropped connection. It does nothing when
-        heartbeats are off (the default).
+        so within DRAIN_TIMEOUT); connection errors, including missed broker
+        heartbeats, propagate to consume().
         """
         timeout = self._drain_timeout(conn)
         while True:
             # Periodic wakeup to allow outer loops to run.
             with contextlib.suppress(TimeoutError, socket.timeout):
                 conn.drain_events(timeout=timeout)
+            # drain_events() only reads: this sends negotiated heartbeats and
+            # raises ConnectionForced once the broker's stop (no-op when off).
             conn.heartbeat_check()
             self._on_drained(health)
             if self._stopping():
@@ -721,21 +679,15 @@ class RabbitMQTransport:
     def _close_consumer_connection(self, conn: Any, *, healthy: bool) -> None:
         """Close a consumer connection without letting a failure or shutdown hang.
 
-        The AMQP cancel/close handshake is skipped, and the socket dropped
-        instead, when stopping or when ``healthy`` is false (the connection
-        failed: a drain or heartbeat check raised). The handshake waits for
-        the broker's reply with no timeout (amqp ``Connection.close`` sends
-        Close and then ``drain_events(timeout=None)`` for Close-Ok), so a
-        broker that froze with its TCP connection still up (``docker pause``,
-        a proxy with a dead backend) would block the consume loop forever,
-        after the heartbeat check had already given up on it, and stop()
-        couldn't end the thread. The broker discards the consumer when the
-        socket closes. Otherwise (the caller closed the iterator) the
-        connection is closed normally. Errors are logged at debug level and
-        never raised.
+        When stopping or after a failure (``healthy`` false) the socket is
+        dropped without the AMQP close handshake; the broker discards the
+        consumer when it closes. Otherwise the connection is closed normally.
+        Errors are logged at debug level, never raised.
         """
         try:
             if (self._stopping() or not healthy) and conn.connected:
+                # py-amqp 5.3.1 Connection.close() waits for Close-Ok with no
+                # timeout: a frozen broker would block stop() forever.
                 conn.collect()
             else:
                 conn.release()
