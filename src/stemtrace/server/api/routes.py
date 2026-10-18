@@ -168,7 +168,7 @@ def _group_task_names(
     after this snapshot is matched from the next request on.
 
     Runs in a worker thread (``run_in_threadpool``): with thousands of
-    distinct names it takes long enough (about 128 ms at 7,000) to hold up
+    distinct names it takes long enough (about 80 ms at 7,000) to hold up
     every other request on the event loop. ``group_of``'s cache is
     thread-safe.
     """

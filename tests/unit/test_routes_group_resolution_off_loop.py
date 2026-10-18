@@ -1,7 +1,7 @@
 """Group resolution over every stored task name runs off the event loop.
 
-With thousands of distinct names it takes a noticeable time (about 128 ms at
-7,000), so on the loop it held up every other request meanwhile.
+With thousands of distinct names it takes a noticeable time (about 80 ms at
+7,000 with automatic groups), so on the loop it held up every other request.
 """
 
 from __future__ import annotations

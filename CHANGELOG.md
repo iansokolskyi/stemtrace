@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Task group TOML files (`stemtrace server --groups`, `STEMTRACE_GROUPS`, `init_app(groups="file.toml")`) now work on Python 3.10 too: stemtrace depends on `tomli>=1.2.2` there (the standard library's `tomllib` from 3.11 on). They used to stop the server with a `ConfigurationError` on 3.10.
 
 ### Fixed
-- API: the `task_group` and `tag` filters on `/api/tasks` and `/api/graphs`, `GET /api/groups` and the task registry work out the group of every task name in a worker thread instead of on the event loop, where it held up every other request while it ran (about 128 ms with 7,000 distinct names).
+- API: the `task_group` and `tag` filters on `/api/tasks` and `/api/graphs`, `GET /api/groups` and the task registry work out the group of every task name in a worker thread instead of on the event loop, where it held up every other request while it ran (about 80 ms with 7,000 distinct names and automatic groups, more with many group rules).
 - API: every `GET` route under `/api` also answers `HEAD` (headers, no body), authenticated like `GET`. `HEAD` used to get `405`, and with an API key behind the login page a `404`. Other wrong methods get `405` with `Allow: GET, HEAD` once past the login check.
 
 ## [0.4.1] - 2026-10-18
