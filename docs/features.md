@@ -135,10 +135,10 @@ Limitations:
   non-direct exchange) can reach any number of queues, so `queue` is empty and only
   `routing_key` is set. Checked with a topic exchange on real Redis and RabbitMQ workers.
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
-  (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery. stemtrace gives
-  it the attempt's retry count, `hostname`, `queue`, `routing_key` and parent, root and group IDs
-  from when the worker received the message (Celery's `task_received`). Workers from before this
-  release send none of these (and `retries=0`): the task then keeps the values of its
+  (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery's signal.
+  stemtrace takes them from the failing request itself: the attempt's retry count, `hostname`,
+  `queue`, `routing_key` and parent, root and group IDs. Workers from before this release send
+  none of these (and `retries=0`): the task then keeps the values of its
   furthest-along earlier event that has them, which, when a lost broker connection made Celery
   run the same attempt again on a worker whose clock is behind the first one's, can be the first
   worker.
@@ -190,9 +190,9 @@ Limitations:
   empty the runtimes, also when Celery runs the same attempt again on another worker.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
-  after `self.retry(throw=False)`. With `throw=False` and the second worker's clock behind the
-  first's by more than the time between the two runs' ends, the first run's SUCCESS becomes the
-  task's final event, and both fields are empty.
+  after `self.retry(throw=False)`. When such a first run ends last (its SUCCESS or FAILURE is the
+  task's final event), the task reports that run, on its own worker; for events from workers
+  before this release, both fields are empty in that case.
 - `queue_wait_ms` ends at the earliest first-attempt STARTED, whatever worker stamped it: if
   Celery ran the first attempt again on a worker whose clock is behind, it can come out shorter,
   by up to that offset.
