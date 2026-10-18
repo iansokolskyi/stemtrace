@@ -42,6 +42,11 @@ def _sent(app: Celery, sig: Signature) -> list[tuple[dict[str, Any], dict[str, A
     """Send ``sig``; return each task message's headers and embed, as a worker
     gets them (protocol 2: ``request.chain`` is ``embed["chain"]``)."""
     sig.apply_async()
+    return _drain(app)
+
+
+def _drain(app: Celery) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Take every task message off the memory broker's queue."""
     messages = []
     with app.connection_for_read() as conn:
         queue = conn.SimpleQueue("celery")
@@ -145,7 +150,7 @@ def test_failed_head_of_chord_header_chain_fails_its_last_step_as_header(
 
 
 def test_failed_step_skips_unrun_steps_without_a_task(app: Celery) -> None:
-    """A group step has no task ID of its own; Celery skips it too."""
+    """A group step's ID is its group's, not a task's: no node is made for it."""
     ((headers, embed),) = _sent(
         app,
         chain(app.signature("t.a"), group(app.signature("t.b"), app.signature("t.c"))),
@@ -154,6 +159,24 @@ def test_failed_step_skips_unrun_steps_without_a_task(app: Celery) -> None:
     _fail(headers, embed, embed["chain"])
 
     assert [e.name for e in _failures()] == ["t.a"]
+
+
+def test_failed_step_whose_next_step_was_already_sent_publishes_no_more(
+    app: Celery,
+) -> None:
+    """Celery sends the next step before it stores the result, so a result it
+    can't store (EncodeError) fails a task whose chain already moved on
+    (celery 5.6.3 app/trace.py: _dispatch_callbacks_and_chain, then
+    mark_as_done raises, then handle_failure). Those steps run."""
+    names = ["t.a", "t.b", "t.c"]
+    ((headers, embed),) = _sent(app, chain(*(app.signature(n) for n in names)))
+    next_step = embed["chain"][-1]
+    app.signature(next_step).apply_async(chain=embed["chain"][:-1])
+    _drain(app)
+
+    _fail(headers, embed, embed["chain"])
+
+    assert [e.task_id for e in _failures()] == [headers["id"]]
 
 
 def test_failed_task_outside_a_chain_publishes_one_failure(app: Celery) -> None:
@@ -167,6 +190,26 @@ def test_failed_task_outside_a_chain_publishes_one_failure(app: Celery) -> None:
 _CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
     (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
 )
+
+
+def test_real_chain_whose_result_was_not_stored_shows_its_steps_succeeded() -> None:
+    """Real worker capture: chain(unstorable, add, add); the head's result
+    can't be encoded, so it fails after Celery already sent the next step."""
+    graph = TaskGraph()
+    for event in _CAPTURES["chain_head_result_not_stored"]:
+        graph.add_event(TaskEvent.model_validate(event))
+
+    states = sorted((n.name, n.state) for n in graph.nodes.values())
+    assert states == [
+        ("flows.add", TaskState.SUCCESS),
+        ("flows.add", TaskState.SUCCESS),
+        ("flows.unstorable", TaskState.FAILURE),
+    ]
+    assert not [
+        e
+        for e in _CAPTURES["chain_head_result_not_stored"]
+        if e["state"] == "FAILURE" and e["name"] == "flows.add"
+    ]
 
 
 def test_real_failed_chain_shows_each_unrun_step_failed_under_the_last() -> None:

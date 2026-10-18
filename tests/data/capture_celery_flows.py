@@ -178,6 +178,12 @@ def fail() -> int:
     raise ValueError("header failed")
 
 
+@app.task(name="flows.unstorable")
+def unstorable() -> object:
+    """Return a result json can't encode: storing it fails after the chain moved on."""
+    return object()
+
+
 @app.task(bind=True, name="flows.flaky_add", max_retries=2)
 def flaky_add(self: Any, x: int, y: int) -> int:
     """Add, failing (and retrying) once on its first run."""
@@ -224,6 +230,9 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         ),
         "chord_failed_header": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
         "chain_failed_head": lambda: chain(fail.si(), add.s(1), add.s(2)),
+        "chain_head_result_not_stored": lambda: chain(
+            unstorable.si(), add.si(1, 1), add.si(2, 2)
+        ),
         "chord_chain_header_failed_head": lambda: chord(
             [chain(fail.si(), add.s(1)), chain(add.s(1, 1), add.s(1))], tsum.s()
         ),

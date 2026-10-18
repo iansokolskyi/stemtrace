@@ -93,6 +93,9 @@ class _RecentIds:
 
 _pending_emitted = _RecentIds()
 _pending_emitted_lock = threading.RLock()
+# Task IDs this process published, kept when they finish: a failed chain step
+# whose next step was already sent didn't stop the chain.
+_published_ids = _RecentIds()
 
 # Guard against overly-large docstrings bloating broker events.
 _MAX_DOCSTRING_CHARS = 4000
@@ -716,6 +719,16 @@ def _on_task_failure(
     _publish_unrun_chain_steps(sender.request, task_id, exception)
 
 
+def _sent_already(step: Any) -> bool:
+    """Whether this process already published ``step``: the chain went on."""
+    # celery 5.6.3 app/trace.py sends the next step before storing the result;
+    # an EncodeError while storing it fails the task afterwards.
+    options = step.get("options") if isinstance(step, dict) else None
+    task_id = options.get("task_id") if isinstance(options, dict) else None
+    with _pending_emitted_lock:
+        return task_id in _published_ids
+
+
 def _publish_unrun_chain_steps(
     request: Any, task_id: str, exception: BaseException
 ) -> None:
@@ -725,9 +738,10 @@ def _publish_unrun_chain_steps(
     without running them or sending an event for them.
     """
     # celery 5.6.3 backends/base.py mark_as_failure: request.chain holds the
-    # remaining steps, next one last; only plain task signatures have an ID.
+    # remaining steps, next one last. A group or chord step carries its
+    # group's ID, not a task's (later steps are inside it), so it is skipped.
     steps = getattr(request, "chain", None)
-    if not isinstance(steps, list):
+    if not isinstance(steps, list) or not steps or _sent_already(steps[-1]):
         return
     parent_id = task_id
     for step in reversed(steps):
@@ -903,6 +917,7 @@ def _on_after_task_publish(
     # Check-then-add under the lock: concurrent publishes of one task (or a
     # retry re-queue) announce it once.
     with _pending_emitted_lock:
+        _published_ids.add(task_id)
         if task_id in _pending_emitted:
             return
         _pending_emitted.add(task_id)
@@ -968,6 +983,7 @@ def disconnect_signals() -> None:
 
     # Clear tracking state
     _pending_emitted.clear()
+    _published_ids.clear()
 
     logger.info("stemtrace signal handlers disconnected")
 
