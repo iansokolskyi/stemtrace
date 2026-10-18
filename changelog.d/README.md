@@ -9,12 +9,10 @@ To add a changelog entry, add a file to this directory in your pull request. Don
    short name (`api-key`). The type is one of `added`, `changed`, `deprecated`, `removed`,
    `fixed` or `security`.
 2. Write the entry as one or more `- ` bullets, exactly as it should appear in the
-   changelog. Indent continuation lines: `--check` fails on a line that starts at the
-   left margin without `- `. Don't add headings: the type sets the heading. `--check`
-   fails on a line outside a fenced code block that starts with one to six `#`
-   characters and a space, or that has only `=` or only `-` characters. It looks past any
-   indent and any `>`, `-`, `*`, `+` or `1.` markers before that text. To show such a
-   line, put it in a fenced code block.
+   changelog. Indent continuation lines. Don't add headings: the type sets the heading.
+   `--check` parses the fragment as CommonMark and fails on a heading at any depth, and
+   on any top-level block other than a list that uses `-` markers. To show a `#` line,
+   put it in a fenced code block.
 3. Run `uv run python scripts/assemble_changelog.py --check` to validate your fragment.
 
 For example, `changelog.d/152.fixed.md`:
@@ -44,6 +42,6 @@ type. Text above the first `###` heading in Unreleased, such as a **Highlights:*
 stays on top.
 
 CI runs `--check`, which fails on a fragment with an invalid name or content. While
-`changelog.d/` has fragments, `--check` and `make release-pr` also fail on text under a
-`###` heading in Unreleased that isn't a `- ` bullet or an indented continuation, because
-the merge would file that text under the heading.
+`changelog.d/` has fragments, `--check` and `make release-pr` apply the same rule to the
+text under each `###` heading in Unreleased, because the merge would file that text under
+the heading.

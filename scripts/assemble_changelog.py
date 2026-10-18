@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Keep a Changelog order; also the order of the headings in the assembled section.
 TYPES = ("added", "changed", "deprecated", "removed", "fixed", "security")
@@ -25,16 +27,7 @@ DESCRIPTION = "Merge changelog fragments into CHANGELOG.md under [Unreleased]."
 _UNRELEASED = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## \[", re.MULTILINE)
 _SUBHEADING = re.compile(r"^### +(.+?)[ \t]*$", re.MULTILINE)
-# What may precede a line's content: indent, '>' and list markers, in any number. Indent
-# depth is ignored, so an indented code line that starts with '#' is flagged too; a
-# fenced block is the way to show one.
-_CONTAINER = r"(?:[ \t]|>|(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$))*"
-_ATX_HEADING = re.compile(rf"^{_CONTAINER}#{{1,6}}(?:[ \t]|$)")
-_SETEXT_UNDERLINE = re.compile(r"^(?:[ \t]|>)*(?:=+|-+)[ \t]*$")
-_FENCE_OPEN = re.compile(rf"^{_CONTAINER}(?P<fence>`{{3,}}|~{{3,}})(?P<info>.*)$")
-_FENCE_CLOSE = re.compile(r"^(?:[ \t]|>)*(?P<fence>`{3,}|~{3,})[ \t]*$")
-# A column-0 line that isn't a bullet; bullet continuations are indented.
-_NON_BULLET_LINE = re.compile(r"^(?!- |[ \t]|$).+$", re.MULTILINE)
+_MARKDOWN = MarkdownIt("commonmark")
 _LINK_DEFINITIONS = re.compile(
     r"(?:^\[[^\]\n]+\]:[ \t]+\S+[ \t]*(?:\n|\Z))+\Z", re.MULTILINE
 )
@@ -62,40 +55,36 @@ def _invalid_name(name: str) -> str | None:
     return f"name must be <slug>.<type>.md, type one of: {', '.join(TYPES)}"
 
 
-def _has_heading_line(body: str) -> bool:
-    """Say whether a line outside fenced code could render as a heading."""
-    fence: tuple[str, int] | None = None
-    for line in body.split("\n"):
-        if fence:
-            closing = _FENCE_CLOSE.match(line)
-            if (
-                closing
-                and closing["fence"][0] == fence[0]
-                and len(closing["fence"]) >= fence[1]
-            ):
-                fence = None
-            continue
-        opening = _FENCE_OPEN.match(line)
-        # A backtick fence's info string can't contain a backtick (CommonMark).
-        if opening and not (opening["fence"][0] == "`" and "`" in opening["info"]):
-            fence = (opening["fence"][0], len(opening["fence"]))
-        elif _ATX_HEADING.match(line) or _SETEXT_UNDERLINE.match(line):
-            return True
-    return False
+def _first_offender(text: str) -> tuple[str, str] | None:
+    """Return the first heading, or top-level block that isn't a ``-`` list, in ``text``.
+
+    The result is ``("heading" | "block", offending line)``. A CommonMark parser
+    decides what a heading or a top-level block is, so fences, quotes and nesting
+    can't be misread.
+    """
+    tokens = _MARKDOWN.parse(text)
+    lines = text.split("\n")
+    for token in tokens:
+        if token.type == "heading_open" and token.map:
+            return "heading", lines[token.map[1] - 1]
+    for token in tokens:
+        is_dash_list = token.type == "bullet_list_open" and token.markup == "-"
+        if token.level == 0 and token.nesting != -1 and not is_dash_list:
+            return "block", lines[token.map[0]] if token.map else ""
+    return None
 
 
 def _invalid_body(body: str) -> str | None:
     """Return why ``body`` can't be inserted as bullets, or None when it can."""
     if not body:
         return "file is empty"
-    if not body.startswith("- "):
-        return "entry must start with a '- ' bullet"
-    if _has_heading_line(body):
-        return "entry must not contain headings (the file name sets the heading)"
-    prose = _NON_BULLET_LINE.search(body)
-    if prose:
-        return f"every line must be a '- ' bullet or indented, not {prose.group(0)!r}"
-    return None
+    offender = _first_offender(body)
+    if offender is None:
+        return None
+    kind, line = offender
+    if kind == "heading":
+        return f"entry must not contain headings (the file name sets the heading): {line!r}"
+    return f"entry must be only '- ' bullets, not {line!r}"
 
 
 def _read_fragment(path: Path) -> Fragment | str:
@@ -156,11 +145,11 @@ def _parse_sections(body: str) -> tuple[str, dict[str, str]]:
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
         content = body[heading.end() : end].strip()
-        prose = _NON_BULLET_LINE.search(content)
-        if prose:
+        offender = _first_offender(content)
+        if offender:
             raise ChangelogError(
-                f"text under '### {heading.group(1)}' in [Unreleased] must be '- ' "
-                f"bullets, not {prose.group(0)!r}; move it above the first '### ' heading"
+                f"text under '### {heading.group(1)}' in [Unreleased] must be only "
+                f"'- ' bullets, not {offender[1]!r}; move it above the first '### ' heading"
             )
         previous = sections.get(heading.group(1))
         sections[heading.group(1)] = f"{previous}\n{content}" if previous else content

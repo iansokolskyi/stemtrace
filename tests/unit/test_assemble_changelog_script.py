@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
-import itertools
+import random
 import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,18 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
     assert exc.value.code == 2
 
 
+FENCED_BODIES = [
+    "- Run:\n  ```sh\n  # install it\n  pip install stemtrace\n  ```\n",
+    "- Run:\n  ~~~sh\n  # install it\n  ~~~\n",
+    "- A.\n  - Nested:\n    ```\n    ## Heading-like\n    ---\n    ```\n",
+    "- A.\n  ```\n  # shorter fence inside\n  ``\n  # still inside\n  ```\n",
+    "- A.\n  ````\n  ```\n  # inside a four-backtick fence\n  ````\n",
+    "- A.\n  ```\n  # unclosed fence runs to the end\n",
+    "- ```\n  # fence opened on the bullet line\n  ```\n",
+    "- A.\n  > ```\n  > # quoted fence\n  > ```\n",
+]
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -352,11 +365,16 @@ def test_check_and_dry_run_together_are_rejected(tmp_path: Path) -> None:
         "- 1. ## Ordered direct\n",
         "- A.\n  > ## Quote\n",
         "- A.\n  >## Quote without space\n",
-        "- A.\n      # Indented code is not told apart from a heading\n",
         "- A.\n  ---\n",
         "- A.\n  ===\n",
         "- A.\n  - B.\n    ----\n",
         "- A.\n  ```\n  # In a fence\n  ```\n  ## After the fence\n",
+        # A fence ends with its container: these headings are outside it.
+        "- Adds:\n  ```sh\n  pip install x\n- Fixes.\n  ## Installation\n",
+        "- A.\n  ~~~\n- # H\n",
+        "- A.\n  > ```\n  > code\n  ## After the quote\n",
+        "- A.\n  - B.\n    ```\n    code\n  ## After the nested item\n",
+        "- A.\n  ~~~\n  ```\n  ~~~\n  ## Heading\n",
     ],
 )
 def test_check_fragment_with_heading_line_fails(
@@ -375,6 +393,10 @@ def test_check_fragment_with_heading_line_fails(
         "- Fixes `#152` and #153.\n",
         "- A.\n  #152 is the pull request.\n",
         "- A.\n  A line of text\n  with an = sign and a - dash.\n",
+        "- A.\nlazy continuation\n",
+        "- A.\n      # indented code, not a heading\n",
+        "- A.\n\n  Second paragraph.\n\n  - Nested.\n",
+        *FENCED_BODIES,
     ],
 )
 def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
@@ -386,19 +408,28 @@ def test_check_fragment_with_hash_text_that_is_not_a_heading_is_valid(
 
 
 @pytest.mark.parametrize(
-    "body",
-    ["- A.\nlazy continuation\n", "- A.\n\nSeparate paragraph.\n", "- A.\n* Star.\n"],
+    ("body", "offender"),
+    [
+        ("Not a bullet.\n", "Not a bullet."),
+        ("- A.\n\nSeparate paragraph.\n", "Separate paragraph."),
+        ("- A.\n* Star.\n", "* Star."),
+        ("+ Plus.\n", "+ Plus."),
+        ("1. Ordered.\n", "1. Ordered."),
+        ("> Quote.\n", "> Quote."),
+        ("- A.\n\n<div>Raw HTML.</div>\n", "<div>Raw HTML.</div>"),
+        ("- A.\n\n---\n", "---"),
+        ("- A.\n\n```\ncode\n```\n", "```"),
+    ],
 )
-def test_check_fragment_with_line_that_is_not_bullet_or_indented_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str
+def test_check_fragment_with_top_level_block_that_is_not_a_dash_list_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str, offender: str
 ) -> None:
     root = _project(tmp_path, "", {"1.added.md": body})
 
     assert assemble.main(["--root", str(root), "--check"]) == 1
 
     err = capsys.readouterr().err
-    assert "1.added.md: every line must be a '- ' bullet or indented" in err
-    assert body.strip().splitlines()[-1] in err
+    assert f"1.added.md: entry must be only '- ' bullets, not {offender!r}" in err
 
 
 def test_check_fragment_with_utf8_bom_is_valid(tmp_path: Path) -> None:
@@ -491,75 +522,87 @@ def test_assemble_then_bump_with_quoted_heading_and_link_edits_changelog_once(
     )
 
 
-FENCED_BODIES = [
-    "- Run:\n  ```sh\n  # install it\n  pip install stemtrace\n  ```\n",
-    "- Run:\n  ~~~sh\n  # install it\n  ~~~\n",
-    "- A.\n  - Nested:\n    ```\n    ## Heading-like\n    ---\n    ```\n",
-    "- A.\n  ```\n  # shorter fence inside\n  ``\n  # still inside\n  ```\n",
-    "- A.\n  ````\n  ```\n  # inside a four-backtick fence\n  ````\n",
-    "- A.\n  ```\n  # unclosed fence runs to the end\n",
-    "- ```\n  # fence opened on the bullet line\n  ```\n",
-    "- A.\n  > ```\n  > # quoted fence\n  > ```\n",
-]
+class _RenderedTags(HTMLParser):
+    """Record every tag of rendered HTML, and which ones sit at the top level."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.depth = 0
+        self.tags: list[str] = []
+        self.top_level: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: object) -> None:
+        self.tags.append(tag)
+        if self.depth == 0:
+            self.top_level.append(tag)
+        self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        self.depth -= 1
 
 
-def _renders_heading(body: str) -> bool:
-    """Say whether a CommonMark parser (markdown-it-py) renders a heading in body."""
-    return any(t.type == "heading_open" for t in MarkdownIt("commonmark").parse(body))
+def _rendered_html_is_not_only_bullets(body: str) -> bool:
+    """Judge body from its rendered HTML: a heading anywhere, or a top level not all <ul>.
+
+    Walks HTML, not markdown-it tokens, so it checks the validator independently.
+    """
+    parser = _RenderedTags()
+    parser.feed(MarkdownIt("commonmark").render(body))
+    has_heading = any(re.fullmatch(r"h[1-6]", tag) for tag in parser.tags)
+    return has_heading or any(tag != "ul" for tag in parser.top_level)
 
 
-@pytest.mark.parametrize("body", FENCED_BODIES)
-def test_check_fragment_with_hash_lines_in_fenced_code_is_valid(
-    tmp_path: Path, body: str
-) -> None:
-    assert not _renders_heading(body)
-    root = _project(tmp_path, "", {"1.added.md": body})
-
-    assert assemble.main(["--root", str(root), "--check"]) == 0
-
-
-def test_check_fragment_with_heading_after_unmatched_fence_char_fails() -> None:
-    body = "- A.\n  ~~~\n  ```\n  ~~~\n  ## Heading\n"
-
-    assert _renders_heading(body)
-    assert assemble._invalid_body(body) == (
-        "entry must not contain headings (the file name sets the heading)"
-    )
-
-
-def _heading_sweep_bodies() -> list[str]:
-    """Bodies that vary the dimensions a heading detector can get wrong."""
+def _fuzz_bodies(count: int, seed: int) -> list[str]:
+    """Return seeded random bodies that mix indents, containers, fences and dedents."""
+    rng = random.Random(seed)
+    indents = ["", "", " ", "  ", "   ", "    ", "\t", "      "]
+    prefixes = ["", "", "", "- ", "1. ", "> ", ">", "- - ", "> - "]
+    texts = ["# H", "## H", "###### H", "####### H", "#x", "---", "===", "--", "text"]
+    texts += ["```", "```sh", "~~~", "````", "``", "`# x`", "- B", "- # H", "", ""]
+    texts += ["more text", "word # not", "    code", "- B\n  - C"]
     openers = [
-        "- A.\n",
-        "- A.\n  - B.\n",
-        "- A.\n  1. B.\n",
-        "- A.\n  > Q\n",
-        "- 1. A\n",
+        "- A.",
+        "- ```",
+        "- > Q",
+        "- 1. N",
+        "- - N",
+        "- A.\n  ```",
+        "- A.\n  ~~~",
     ]
-    indents = ["", " ", "  ", "   ", "    ", "     ", "      ", "       ", "        "]
-    indents += ["\t", "  \t", "\t\t"]
-    markers = ["", "- ", "* ", "1. ", "1) ", "> ", ">", "> - ", "- > "]
-    texts = ["# H", "## H", "###### H", "####### H", "#", "#x", "---", "===", "-", "--"]
-    texts += ["text", "``` ", "~~~", "    # code"]
-    singles = [
-        f"{opener}{indent}{marker}{text}\n"
-        for opener, indent, marker, text in itertools.product(
-            openers, indents, markers, texts
-        )
-    ]
-    pieces = ["```", "~~~", "  ```", "  ~~~", "  # H", "    ## H", "  ---", "  > ## H"]
-    pairs = [
-        f"{opener}{first}\n{second}\n"
-        for opener, first, second in itertools.product(openers[:3], pieces, pieces)
-    ]
-    return singles + pairs
+    bodies = []
+    for _ in range(count):
+        lines = [rng.choice(openers)]
+        for _ in range(rng.randint(1, 6)):
+            lines.append(rng.choice(indents) + rng.choice(prefixes) + rng.choice(texts))
+        bodies.append("\n".join(lines).strip())
+    return bodies
 
 
-def test_invalid_body_rejects_every_body_markdown_it_renders_a_heading_for() -> None:
-    missed = [
+def test_invalid_body_agrees_with_rendered_html_on_random_bodies() -> None:
+    bodies = _fuzz_bodies(count=4000, seed=20261018)
+
+    disagreements = [
         body
-        for body in _heading_sweep_bodies()
-        if _renders_heading(body) and assemble._invalid_body(body.strip()) is None
+        for body in bodies
+        if (assemble._invalid_body(body) is not None)
+        != _rendered_html_is_not_only_bullets(body)
     ]
 
-    assert missed == []
+    assert disagreements == []
+    rejected = [b for b in bodies if assemble._invalid_body(b) is not None]
+    fenced = [b for b in rejected if "```" in b or "~~~" in b]
+    assert len(rejected) >= 500
+    assert len(bodies) - len(rejected) >= 500
+    assert len(fenced) >= 100
+
+
+def test_released_changelog_sections_and_current_fragments_pass_the_rules() -> None:
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.split(r"^## \[", text, flags=re.MULTILINE)[1:]
+
+    for section in sections:
+        body = assemble._LINK_DEFINITIONS.sub("", section.partition("\n")[2])
+        assemble._parse_sections(body)
+
+    assert len(sections) >= 15
+    assert assemble.main(["--root", str(ROOT), "--check"]) == 0
