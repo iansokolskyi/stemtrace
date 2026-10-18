@@ -58,12 +58,11 @@ def _describe(error: ValidationError) -> str:
 def _toml_loads() -> Callable[[str], dict[str, Any]]:
     """Return the TOML parser: stdlib ``tomllib``, or ``tomli`` before Python 3.11.
 
-    ``tomli`` is the package ``tomllib`` was taken from, with the same
-    ``loads`` and a ``TOMLDecodeError`` that subclasses ValueError; stemtrace
-    depends on it only on Python 3.10. Imported by name: mypy checks against
-    3.10, where ``tomllib`` doesn't exist, while ``tomli`` isn't installed on
-    the newer Pythons the type check runs on.
+    ``tomli`` is the package ``tomllib`` was taken from: the same ``loads``,
+    and a ``TOMLDecodeError`` that subclasses ValueError.
     """
+    # Imported by name: mypy checks against 3.10, where tomllib doesn't exist,
+    # and tomli (a dependency on 3.10 only) isn't installed where it runs.
     module = "tomllib" if sys.version_info >= (3, 11) else "tomli"
     loads: Callable[[str], dict[str, Any]] = importlib.import_module(module).loads
     return loads
