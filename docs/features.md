@@ -81,6 +81,32 @@ pages work even if the server missed `worker_ready` events.
   clock count as now; a `worker_ready` time ahead of it does not, so a worker killed within
   that much time of starting stays online longer. Workers older than 0.4.1 send no worker name
   on task events, so only inspect keeps them online.
+- A worker stopped cold (SIGQUIT) on the prefork pool ends without Celery's `worker_shutdown`.
+  It publishes a `worker_terminating` event instead, and the server marks it offline at once,
+  as for `worker_shutdown`. An idle worker stopped with SIGQUIT sends it on any pool. On Celery 5.5+ a cold stop
+  cancels the running tasks first: each normally shows a RETRY "cancelled by Celery" (see
+  [Stopping workers](deployment.md#stopping-workers) for when it doesn't), except, on Celery
+  5.6+, tasks with `acks_late`, which are requeued and show nothing (they stay STARTED until
+  redelivered). Other cases, with a task running (checked with Celery 5.6.3):
+  - SIGQUIT during a warm stop (SIGTERM, then SIGQUIT; or Ctrl+C twice) cancels the running
+    tasks the same way but ends with `worker_shutdown`. The warm stop starts when the worker
+    next checks for it (about a second after SIGTERM on Redis); a SIGQUIT before that is a
+    plain cold stop.
+  - threads pool: Celery can't cancel running tasks, so a cold stop waits for them like a warm
+    one and ends with `worker_shutdown`.
+  - gevent pool without a result backend or `-E`, a task running Python code: the cold stop
+    completes, as on prefork, and the worker sends `worker_terminating`.
+  - gevent pool without a result backend or `-E`, a task waiting on I/O: Celery's
+    cold-shutdown handler fails (`BlockingSwitchOutError`) after cancelling the tasks, and the
+    worker ends with `worker_shutdown`.
+  - gevent pool with a result backend or `-E`: see
+    [Stopping workers](deployment.md#stopping-workers).
+  - solo pool: SIGQUIT fails the running task (`NotImplementedError`) and the worker keeps
+    running.
+  - eventlet: not checked.
+
+  A worker killed with SIGKILL sends neither event. An older server drops `worker_terminating`
+  with a warning, so upgrade the server first.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and

@@ -1253,6 +1253,39 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
         logger.warning("Failed to publish worker_shutdown event: %s", e, exc_info=True)
 
 
+def on_worker_terminating(sender: Any = None) -> None:
+    """Publish WORKER_TERMINATING: the worker ends without a worker_shutdown.
+
+    Called from ``WorkerTerminatingStep.terminate`` in the worker's main
+    process, outside Celery's signal handler. Never raises.
+    """
+    try:
+        hostname, pid = _get_hostname_and_pid(sender)
+
+        from stemtrace.core.events import WorkerEvent, WorkerEventType
+
+        event = WorkerEvent(
+            event_type=WorkerEventType.WORKER_TERMINATING,
+            hostname=hostname,
+            pid=pid,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if _transport is not None:
+            if not _publish_once(_transport, event):
+                return
+            logger.info(
+                "Worker terminating event sent to transport: %s:%d", hostname, pid
+            )
+        else:
+            logger.warning(
+                "No transport configured, worker_terminating event not published"
+            )
+    except Exception as e:  # fire-and-forget: the cold shutdown must go on
+        logger.warning(
+            "Failed to publish worker_terminating event: %s", e, exc_info=True
+        )
+
+
 def on_worker_process_shutdown(**_: Any) -> None:
     """Handle worker_process_shutdown: close this pool process's publisher connection.
 

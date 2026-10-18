@@ -25,6 +25,7 @@ from stemtrace.library.signals import (
     _extract_chord_info,
     _nodename,
     _parse_eta,
+    on_worker_terminating,
 )
 from stemtrace.library.signals import _publish_event as _publish_via_transport
 
@@ -193,13 +194,32 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
         logger.debug("Emitted RECEIVED for task %s", task_id)
 
 
+class WorkerTerminatingStep(bootsteps.StartStopStep):  # type: ignore[misc]
+    """Publish WORKER_TERMINATING when Celery's cold-stop path runs.
+
+    That path (``WorkController.terminate``) skips ``worker_shutdown``, so
+    without this the server would show the worker online until its stale check.
+    """
+
+    # After the Pool at start, so before it on terminate.
+    requires: ClassVar[set[str]] = {"celery.worker.components:Pool"}
+
+    def terminate(self, worker: Any) -> None:
+        """Report that this worker process is ending without worker_shutdown."""
+        # celery 5.6.3 Blueprint.stop calls terminate() on a cold stop and
+        # stop() (inherited, a no-op) on a warm one.
+        on_worker_terminating(worker)
+
+
 def register_bootsteps(
     app: Any, *, publish: Callable[[TaskEvent], None] | None = None
 ) -> None:
-    """Register the RECEIVED bootstep with the Celery app, if RECEIVED is wanted.
+    """Register stemtrace's bootsteps with the Celery app.
 
-    Registering adds a synchronous publish to the worker's consumer loop for
-    every task message, so nothing is registered unless it was asked for.
+    Once ``init_worker`` ran, ``WorkerTerminatingStep`` is always registered:
+    it does nothing until a cold shutdown. The RECEIVED step adds a
+    synchronous publish to the worker's consumer loop for every task
+    message, so it is registered only when asked for.
 
     Args:
         app: The Celery application instance.
@@ -211,8 +231,11 @@ def register_bootsteps(
             that, this does nothing (as in 0.3.10, where the step never
             published).
     """
+    config = get_config()
+    if config is not None:
+        app.steps["worker"].add(WorkerTerminatingStep)
+        logger.debug("Registered WorkerTerminatingStep bootstep")
     if publish is None:
-        config = get_config()
         if config is None or not config.publish_received:
             return
         publish = _publish_via_transport
