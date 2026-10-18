@@ -235,6 +235,32 @@ test.describe('Task Detail - Mock Scenarios', () => {
     await expect(page.getByText(/^-\d/)).toHaveCount(0)
   })
 
+  test("shows a REJECTED event's reason", async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('test.rejected', null)
+    const base = Date.now() - 10_000
+    const at = (seconds: number) => new Date(base + seconds * 1000).toISOString()
+    const { task_id, name } = task
+    task.events = [
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), retries: 0 }),
+      createMockEvent(task_id, name, 'REJECTED', {
+        timestamp: at(2),
+        retries: 0,
+        exception: 'bad input',
+      }),
+    ]
+    task.state = 'REJECTED'
+    mockApi.addTask(task)
+
+    await page.goto(`/tasks/${task.task_id}`)
+    await page.waitForLoadState('networkidle')
+
+    const rows = page.getByTestId('event-row')
+    await expect(rows).toHaveCount(2)
+    await expect(rows.nth(1)).toContainText('REJECTED')
+    await expect(rows.nth(1)).toContainText('bad input')
+  })
+
   test('puts a PENDING stamped after the task finished first', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const task = createSuccessTask('test.late_pending', 'done')
