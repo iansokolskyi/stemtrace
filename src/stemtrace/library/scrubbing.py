@@ -206,6 +206,9 @@ def _rebuilt(key: tuple[Any, ...] | frozenset[Any]) -> Any:
     if isinstance(key, frozenset):
         return frozenset(parts)
     if hasattr(type(key), "_fields"):  # a namedtuple keeps its type
+        # tuple.__new__ skips the subclass's own __new__, so the copy has no
+        # instance state (it could hold the unscrubbed parts): a __repr__ that
+        # reads such state raises, and the capture falls back to its placeholder.
         return tuple.__new__(type(key), parts)
     return tuple(parts)
 
