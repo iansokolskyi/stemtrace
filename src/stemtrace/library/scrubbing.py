@@ -71,19 +71,13 @@ def _lowercase_patterns(
 def _key_names(key: object) -> list[str]:
     """The names a dict key carries, lowercased.
 
-    A task's dicts can have any hashable key. A str is a name, and so is bytes
-    (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
-    as UTF-8 with replacement so it never raises. A tuple or frozenset key
-    carries the names of its parts, and an Enum member its own name (if it has
-    one) plus its value's names (checked first: str- and int-mixin members are
-    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
-    carries the names of all members (aliases and multi-bit members included)
-    whose bits it has, since its own name may be missing (a composite on
-    Python 3.10, unknown bits) and its value is an int.
-    Other keys (an int, None, any other object) carry none. ``str(key)`` is
-    never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
-    raise.
+    A str is a name, and so is bytes (decoded leniently, never raising). A tuple
+    or frozenset carries its parts' names, an Enum member its own name plus its
+    value's, a Flag the names of every member whose bits it has. Other keys
+    carry none; ``str(key)`` is never used (a repr, and ``__str__`` can raise).
     """
+    # Enum cases come first: str- and int-mixin members are also str or int
+    # (HTTPStatus.UNAUTHORIZED must match "auth").
     match key:
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
@@ -103,6 +97,7 @@ def _key_names(key: object) -> list[str]:
         case str():
             return [key.lower()]
         case bytes():
+            # e.g. redis-py's bytes-keyed dicts without decode_responses.
             return [key.decode("utf-8", "replace").lower()]
         case tuple() | frozenset():
             return [name for part in key for name in _key_names(part)]
@@ -117,14 +112,10 @@ def _is_sensitive_key(
 ) -> bool:
     """Check if a key matches any sensitive pattern.
 
-    Uses case-insensitive partial matching:
-    - 'user_password' matches 'password'
-    - 'API_KEY' matches 'api_key'
-
-    A key that isn't a str is matched by the names it carries (see
-    ``_key_names``): ``b"password"`` and ``("user", "api_key")`` are
-    sensitive, ``1`` and ``None`` never are. The values under keys that aren't
-    sensitive are still scrubbed.
+    Case-insensitive partial matching ('user_password' matches 'password'). A
+    non-str key is matched by the names it carries (``b"password"`` and
+    ``("user", "api_key")`` are sensitive, ``1`` never is). Values under keys
+    that aren't sensitive are still scrubbed.
 
     Args:
         key: The dict key to check.

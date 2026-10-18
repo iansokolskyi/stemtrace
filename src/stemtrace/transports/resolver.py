@@ -1,43 +1,11 @@
 """Host name resolution with a bounded wait, for publishing from task threads.
 
-Socket timeouts don't cover ``socket.getaddrinfo()``: with an unreachable DNS
-resolver a lookup blocks for the resolver's own timeout (glibc: 5s per try and
-server), and redis-py and py-amqp both resolve the broker host on every new
-connection. Publishers run in the Celery task's thread, so they resolve
-through :data:`PUBLISH_RESOLVER` instead: lookups run in the background, the
-caller waits at most its timeout, and answers are cached and refreshed in the
-background, so a task only ever waits on DNS for a host it has no answer for.
-
-Lookups run getaddrinfo() in a background thread, except in a process that
-has forked (the Celery prefork master). glibc's getaddrinfo() takes internal
-locks that fork() doesn't reset (e.g. while sorting several addresses), so a
-child forked while a lookup thread held one deadlocked on its own next lookup
-(reproduced with glibc 2.41: 27 of 1000 children hung). Only a process that
-forks while a lookup runs can cause this, so:
-
-- before every fork, the forking process waits (up to FORK_WAIT) for its
-  in-process lookups that may still finish (see prepare_fork());
-- once a process has forked, its later lookups run in a short-lived helper
-  process instead (the same Python, so the same glibc/NSS, /etc/hosts and
-  resolv.conf): starting a process execs it at once, without calling
-  getaddrinfo() in between, so its forks can't inherit such a lock. Pool
-  children and web workers never fork, so they never start helpers.
-
-The helper is checked once per process before it is used (a check that
-doesn't answer within HELPER_CHECK_TIMEOUT counts as a failure); where it
-can't run this Python (a frozen application, or a sys.executable that isn't a
-Python interpreter), lookups stay in-process and every fork waits for them as
-above (one WARNING says so). A helper is
-never started while the process forks (see _run_helper()). Under uWSGI (the
-``uwsgi`` module is importable), which forks in C without Python's at-fork
-hooks (unless started with --py-call-uwsgi-fork-hooks, which the resolver
-doesn't detect), no fork can wait for lookup threads, so every lookup runs on
-the calling thread, without the wait bound, and invalidate() only marks the
-answer due (see _under_uwsgi()). This holds in every uWSGI process: master or
-not, workers, mules and spoolers; none of them starts a ``stemtrace-dns-*``
-thread or a helper process.
-Once a process uses the helper, a monkeypatched socket.getaddrinfo (e.g. a
-custom resolver shim) is no longer consulted for its lookups.
+Socket timeouts don't cover ``socket.getaddrinfo()``, so publishers resolve through
+:data:`PUBLISH_RESOLVER`: the caller waits at most its timeout, and answers are
+cached and refreshed in the background. A process that forks waits for its lookups
+before each fork, then resolves in a short-lived helper process, so a child never
+inherits a glibc resolver lock. Under uWSGI (forks without Python's hooks) lookups
+run on the calling thread, unbounded. User-facing behavior is in docs/brokers.md.
 """
 
 from __future__ import annotations
@@ -161,13 +129,9 @@ class _State:
 class BoundedResolver:
     """getaddrinfo() with a bounded wait and a per-process cache.
 
-    Thread-safe. Fork-safe: a forked child starts with an empty cache and a
-    fresh lock, and a forking process never lets a child inherit a lookup
-    in glibc's locked code (see the module docstring).
-    At most one lookup per host runs at a time; callers that arrive while it
-    runs wait for it (each up to its own timeout) instead of starting more.
-    Under uWSGI there are no lookup threads and no such deduplication: each
-    caller resolves on its own thread (see _under_uwsgi()).
+    Thread- and fork-safe. At most one lookup per host runs at a time; callers
+    that arrive meanwhile wait for it (each up to its own timeout). Under uWSGI
+    each caller resolves on its own thread, without deduplication.
     """
 
     def __init__(
@@ -200,7 +164,7 @@ class BoundedResolver:
         # Per-process state, by PID, created on first use (see _state()), not
         # here: PUBLISH_RESOLVER is built at import, possibly before gevent
         # patches threading, and a real lock contended by greenlets blocks the
-        # whole hub (reproduced: a deadlock).
+        # whole hub.
         self._states: dict[int, _State] = {}
 
     def _state(self) -> _State:
@@ -228,11 +192,9 @@ class BoundedResolver:
     ) -> list[AddrInfo]:
         """Return getaddrinfo() results for ``host``, waiting at most ``timeout``.
 
-        A cached answer is returned at once (and refreshed in the background
-        once it is older than the TTL). Without one, the caller waits for the
-        lookup up to ``timeout`` seconds; the lookup keeps running after that
-        and fills the cache for later callers. IP addresses are returned
-        without a lookup.
+        A cached answer is returned at once (refreshed in the background past
+        the TTL). Otherwise the caller waits up to ``timeout``; the lookup keeps
+        running and fills the cache. IP addresses are returned without a lookup.
 
         Raises:
             socket.gaierror: The lookup failed, or didn't finish within
@@ -286,18 +248,9 @@ class BoundedResolver:
     ) -> list[AddrInfo]:
         """Resolve on the calling thread, without a wait bound (under uWSGI).
 
-        uWSGI forks in C, without running Python's at-fork hooks, so
-        prepare_fork() can't keep a fork from catching a lookup thread inside
-        glibc, in whichever of its processes forks. A lookup on the calling
-        thread is never running while that thread forks. Answers and failures
-        are cached as in resolve(), but past the TTL the refresh runs here
-        too, so the caller waits for it (falling back to the cached answer if
-        it fails) instead of getting the cached answer while it runs in the
-        background.
-
-        Each caller resolves on its own thread: concurrent callers for one
-        host (app threads) each run a lookup, with no deduplication, as
-        before lookups were cached and bounded.
+        uWSGI forks in C without Python's at-fork hooks, so no fork can wait for
+        a lookup thread. Answers are cached as in resolve(), but refreshes run
+        here too (falling back to the cached answer), without deduplication.
         """
         with state.lock:
             entry = state.entries.setdefault(key, _Entry())
@@ -331,14 +284,10 @@ class BoundedResolver:
     ) -> None:
         """Refresh ``host``'s cached answer now, in the background.
 
-        Called after connecting to every cached address failed, so the next
-        attempt uses the new address if the host moved (e.g. a DNS failover)
-        instead of waiting for the TTL. The cached answer stays in use until
-        the refresh succeeds. Does nothing for a host without an answer.
-
-        Where lookups run on the calling thread (under uWSGI, see _under_uwsgi()),
-        no thread is started: the answer is only marked due, and the next
-        resolve() refreshes it on its calling thread.
+        Called after every cached address failed to connect, so a moved host
+        (DNS failover) is picked up before the TTL. The old answer stays in use
+        until the refresh succeeds; no-op without an answer. Under uWSGI the
+        answer is only marked due for the next resolve().
         """
         state = self._state()
         key = (host, port, family, socktype, proto)
@@ -355,18 +304,10 @@ class BoundedResolver:
     def prepare_fork(self) -> None:
         """Before fork(): switch to the helper, wait for lookups, hold the lock.
 
-        Marks this process as forking, so its later lookups run in the helper
-        process (once checked; see _check_helper()). Then waits up to
-        fork_wait in total while an in-process lookup is in flight that is
-        recent (younger than recent_lookup_age) or that no fork waited for
-        yet, including lookups that start or finish meanwhile; whatever is
-        still in flight when the time is up is marked as waited for. Once the
-        helper is in use there is nothing to wait for. Holding the lock
-        afterwards keeps new lookups from starting until parent_after_fork()
-        or child_after_fork() runs.
-
-        It first takes the helper spawn lock (see _spawn_lock()), so the fork
-        never happens while a helper is being started.
+        Takes the helper spawn lock first, so no helper is starting at fork. Then
+        waits up to ``fork_wait`` for in-process lookups that are recent or not
+        yet waited for, and keeps the lock so none start until
+        parent_after_fork() or child_after_fork(). Later lookups use the helper.
         """
         # No timeout, on purpose: Popen() holds the lock only until the helper
         # has exec'd (normally milliseconds; longer only if exec itself is
@@ -379,6 +320,8 @@ class BoundedResolver:
         state = self._state()
         state.lock.acquire()
         state.held_for_fork = True
+        # glibc's getaddrinfo() takes locks fork() doesn't reset (seen on 2.41):
+        # a child forked mid-lookup can deadlock on its own next lookup.
         state.has_forked = True
         deadline = self._monotonic() + self._fork_wait
         while self._must_wait_for(state):
@@ -628,11 +571,9 @@ def _spawn_lock() -> Any:
 def _run_helper(command: list[str], timeout: float) -> tuple[int, bytes]:
     """Start ``command`` and return its exit code and stdout, within ``timeout``.
 
-    Popen() runs under the spawn lock, which prepare_fork() takes too: a
-    child forked while Popen() runs would inherit the pipes Popen() hasn't
-    closed yet, so Popen() would wait forever for its exec status, or the
-    helper's stdout would never reach EOF (subprocess.run()'s timeout covers
-    only the reading). Reading the output happens outside the lock.
+    Popen() runs under the spawn lock that prepare_fork() also takes: a child
+    forked mid-Popen() would inherit its pipes, and Popen() would wait forever
+    for the exec status. The output is read outside the lock.
 
     Raises:
         subprocess.TimeoutExpired: The helper didn't finish in time; it has
@@ -685,12 +626,10 @@ def _fresh(error: OSError) -> OSError:
 def _under_uwsgi() -> bool:
     """Whether this process runs under uWSGI (or pyuwsgi).
 
-    uWSGI forks in C, without Python's at-fork hooks, in any of its processes
-    (the master, or without ``--master`` the first worker; workers can fork
-    too), so a bare check for its built-in ``uwsgi`` module is used instead of
-    working out which process forks: masterpid(), worker_id() and mule_id()
-    can't tell (a mule and a spooler report worker_id() 0, a no-master
-    process masterpid() 0).
+    Any uWSGI process may fork in C without Python's at-fork hooks, and
+    masterpid(), worker_id() and mule_id() can't tell which (a mule reports
+    worker_id() 0, a no-master process masterpid() 0), so the presence of the
+    ``uwsgi`` module decides.
     """
     return sys.modules.get("uwsgi") is not None
 
