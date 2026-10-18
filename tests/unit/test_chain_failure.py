@@ -179,6 +179,21 @@ def test_failed_step_whose_next_step_was_already_sent_publishes_no_more(
     assert [e.task_id for e in _failures()] == [headers["id"]]
 
 
+def test_failed_step_skips_malformed_unrun_steps(app: Celery) -> None:
+    """A hand-built or foreign chain entry without a task ID or name is
+    skipped; the well-formed steps around it are still published, in order."""
+    names = ["t.a", "t.b", "t.c"]
+    ((headers, embed),) = _sent(app, chain(*(app.signature(n) for n in names)))
+    last, following = embed["chain"]  # next step last
+    malformed = [{"task": "t.x", "options": {}}, {"options": {"task_id": "x"}}, "junk"]
+
+    _fail(headers, embed, [last, *malformed, following])
+
+    events = _failures()
+    assert [e.name for e in events] == names
+    assert events[2].parent_id == events[1].task_id
+
+
 def test_failed_task_outside_a_chain_publishes_one_failure(app: Celery) -> None:
     ((headers, embed),) = _sent(app, app.signature("t.a"))
 
