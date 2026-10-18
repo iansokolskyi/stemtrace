@@ -163,16 +163,23 @@ and use the built-in login, set the same `STEMTRACE_LOGIN_SECRET` everywhere; se
 On a cold shutdown (SIGQUIT, a second Ctrl+C, or SIGTERM with `REMAP_SIGTERM=SIGQUIT`), Celery 5.5
 and newer cancel running tasks from inside its signal handler, and stemtrace publishes a RETRY
 event for each cancelled task that isn't `acks_late` (those get no RETRY; the broker redelivers
-them). stemtrace makes sure that publish can't wait on one it interrupted: in this
+them).
+
+On prefork, threads and solo workers, that publish can't wait on one it interrupted: in this
 race, the cancelled task's RETRY event is dropped instead.
 
-Known limitation (gevent pool): if the cold shutdown lands while a task's greenlet is running
-Python code (CPU work, or anything else that isn't waiting on I/O), the signal handler runs
-inside that greenlet, which Celery has just scheduled to kill. stemtrace's RETRY publish for that
-task then waits for the event broker's reply (and, with `capture_output=True`, can also wait for
-the task's output buffer), which lets the kill run: it interrupts the shutdown, and the worker
-keeps running. Send SIGQUIT again or SIGKILL to stop the worker. Prefork, threads and solo workers aren't affected. Eventlet workers ignore
-a cold shutdown in this situation even without stemtrace.
+On gevent and eventlet workers, that handler can run inside the cancelled task's own greenlet,
+which Celery has just scheduled to kill. So stemtrace never waits inside the handler: it
+publishes that RETRY from a greenlet of its own once the handler has returned. If that publish
+hasn't finished when the worker exits, the worker waits for it for up to 2 seconds and then
+exits without it.
+
+On eventlet workers, and on gevent workers with task events (`-E`) or a result backend, Celery
+itself often doesn't finish a cold shutdown that lands while a task's greenlet is running Python
+code (rather than waiting on I/O): its own handler doesn't get as far as stemtrace's code. In 10
+runs each without stemtrace, a gevent worker with a result backend never exited, one with task
+events (`-E`) exited twice, and eventlet workers never exited. Send SIGQUIT again or SIGKILL to
+stop such a worker.
 
 ## Health endpoint
 

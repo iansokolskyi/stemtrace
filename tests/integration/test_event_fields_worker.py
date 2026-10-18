@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,9 @@ TASKS = [
     "ef.retries_in_except",
     "ef.hard_limit",
 ]
+# ef.default sent once more with countdown=3: the worker holds it until its ETA.
+COUNTDOWN = "ef.default countdown=3"
+COUNTDOWN_SECONDS = 3
 
 
 def _start_worker(run: Run) -> subprocess.Popen[bytes]:
@@ -224,11 +228,15 @@ def run(
         try:
             for task in TASKS:
                 run.task_ids[task] = str(sender.send_task(task).id)
+            run.task_ids[COUNTDOWN] = str(
+                sender.send_task("ef.default", countdown=COUNTDOWN_SECONDS).id
+            )
         finally:
             disconnect_signals()
         run.wait(
             lambda: all(
-                any(e.state in TERMINAL for e in run.task_events(t)) for t in TASKS
+                any(e.state in TERMINAL for e in run.task_events(t))
+                for t in run.task_ids
             ),
             "a terminal event for every task",
         )
@@ -321,3 +329,28 @@ def test_failure_from_main_process_has_type_but_no_hostname(run: Run) -> None:
     assert failure.exception_type == "billiard.exceptions.TimeLimitExceeded"
     assert (failure.hostname, failure.queue, failure.routing_key) == (None, None, None)
     assert (node.hostname, node.queue) == (run.nodename, run.names.default_queue)
+
+
+def test_countdown_is_scheduled_not_waiting(run: Run) -> None:
+    # The sender's PENDING and the worker's RECEIVED/STARTED/SUCCESS all carry the
+    # ETA Celery computed (now + countdown); queue_wait_ms counts from it.
+    events = run.task_events(COUNTDOWN)
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    node = graph.nodes[run.task_ids[COUNTDOWN]]
+    pending = run.event(COUNTDOWN, TaskState.PENDING)
+    received = run.event(COUNTDOWN, TaskState.RECEIVED)
+    started = run.event(COUNTDOWN, TaskState.STARTED)
+
+    assert node.eta is not None
+    assert {e.eta for e in events} == {node.eta}
+    assert node.eta - pending.timestamp > timedelta(seconds=COUNTDOWN_SECONDS - 0.5)
+    # The worker received it at once and held it until the ETA.
+    assert received.timestamp < node.eta <= started.timestamp + timedelta(seconds=0.5)
+    assert node.queue_wait_ms is not None
+    assert node.queue_wait_ms < 1500
+    # Without the ETA the countdown would have been counted as waiting.
+    assert (started.timestamp - pending.timestamp) > timedelta(
+        seconds=COUNTDOWN_SECONDS - 0.5
+    )

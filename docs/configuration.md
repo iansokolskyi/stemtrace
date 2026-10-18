@@ -243,9 +243,9 @@ The rules are checked at startup: an unknown key (`matches`, `tag`), a missing `
 invalid color or two groups with the same name stop the server with a `ConfigurationError`
 (`stemtrace server` exits with a usage error). A `GroupRule(...)` you build yourself is checked
 when you build it and raises pydantic's `ValidationError`. `create_router(groups=...)` takes the
-same values and checks them when the router is created. TOML files need Python 3.11+ (stdlib `tomllib`);
-on Python 3.10, define the groups in code. Groups are a **server** setting, like node aliases;
-workers don't need them.
+same values and checks them when the router is created. TOML files are read with the standard
+library's `tomllib`, or on Python 3.10 with `tomli`, which stemtrace installs there. Groups are a
+**server** setting, like node aliases; workers don't need them.
 
 `GET /stemtrace/api/groups` returns each group's `name`, `source` (`code` or `auto`), `tags`,
 `color` and `task_names`: the task names the server has seen in events or in workers'
@@ -307,7 +307,7 @@ stemtrace.init_app(
 | `STEMTRACE_ROOT_PATH` | Server only: URL prefix stripped by a reverse proxy in front of `stemtrace server` (see [Behind a reverse proxy](deployment.md#behind-a-reverse-proxy-with-a-path-prefix)). Same as `--root-path`. | Unset. |
 | `STEMTRACE_API_KEY` | Server only: require `Authorization: Bearer <key>` on the JSON API and WebSocket (see [Security: API key](security.md#api-key-for-scripts-and-coding-agents)). Same as `--api-key` / `init_app(api_key=...)`. At least 16 characters. | Unset (no key). |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node names from task arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
-| `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. Python 3.11+. | Unset (automatic groups only). |
+| `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. | Unset (automatic groups only). |
 
 `STEMTRACE_LOGIN_SECRET` and `FORWARDED_ALLOW_IPS` are described with the built-in login in
 [Security](security.md#built-in-login-page).
