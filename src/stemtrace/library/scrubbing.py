@@ -71,14 +71,19 @@ def _lowercase_patterns(
 def _key_names(key: object) -> list[str]:
     """The names a dict key carries, lowercased.
 
-    A str is a name, and so is bytes (decoded leniently, never raising). A tuple
-    or frozenset carries its parts' names, an Enum member its own name plus its
-    value's, a Flag the names of every member whose bits it has. Other keys
-    carry none; ``str(key)`` is never used (a repr, and ``__str__`` can raise).
+    A str or int key, including an IntEnum, IntFlag or StrEnum member, is
+    matched as that str or int (such a member equals its value). Bytes are
+    decoded leniently, a tuple or frozenset carries its parts' names, another
+    Enum member its name plus its value's, another Flag every member it has.
     """
-    # Enum cases come first: str- and int-mixin members are also str or int
-    # (HTTPStatus.UNAUTHORIZED must match "auth").
+    names: list[str]
     match key:
+        # str and int before Enum and Flag: a mixin member equals its value.
+        case str():
+            # str.lower, not key.lower: the key's own text, whatever its class.
+            names = [str.lower(key)]
+        case int():
+            names = []
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
             # __members__, not iteration: iteration skips aliases on every
@@ -89,20 +94,20 @@ def _key_names(key: object) -> list[str]:
                 for name, member in type(key).__members__.items()
                 if member.value and key.value & member.value == member.value
             ]
-            return [*own, *members]
+            names = [*own, *members]
         case Enum():
             # A custom Enum can override name; don't call str methods on None.
             name = [key.name.lower()] if isinstance(key.name, str) else []
-            return [*name, *_key_names(key.value)]
-        case str():
-            return [key.lower()]
+            names = [*name, *_key_names(key.value)]
         case bytes():
             # e.g. redis-py's bytes-keyed dicts without decode_responses.
-            return [key.decode("utf-8", "replace").lower()]
+            names = [key.decode("utf-8", "replace").lower()]
         case tuple() | frozenset():
-            return [name for part in key for name in _key_names(part)]
+            names = [name for part in key for name in _key_names(part)]
         case _:
-            return []
+            # Never str(key): a repr for bytes and tuples, and __str__ can raise.
+            names = []
+    return names
 
 
 def _is_sensitive_key(
@@ -167,12 +172,42 @@ def _scrub_dict(
     """Scrub a dictionary with patterns already lowercased by the entry point."""
     result: dict[Any, Any] = {}
     for key, value in data.items():
+        shown = _as_matched(key)
         if _is_sensitive_key(key, patterns, safe_keys):
-            result[key] = FILTERED
+            result[shown] = FILTERED
         else:
-            result[key] = _scrub_value(value, patterns, safe_keys)
+            result[shown] = _scrub_value(value, patterns, safe_keys)
 
     return result
+
+
+def _as_matched(key: Any) -> Any:
+    """A dict key as ``_key_names`` matches it: a str or int as its own value.
+
+    An Enum member that is a str or int otherwise prints as its name
+    (``Field.PASSWORD``), which may look sensitive while its value isn't.
+    """
+    match key:
+        case bool():
+            return key
+        case str():
+            return str.__str__(key)
+        case int():
+            return int.__int__(key)
+        case tuple() | frozenset():
+            return _rebuilt(key)
+        case _:
+            return key
+
+
+def _rebuilt(key: tuple[Any, ...] | frozenset[Any]) -> Any:
+    """``key`` with its parts as matched, of the same kind of container."""
+    parts = [_as_matched(part) for part in key]
+    if isinstance(key, frozenset):
+        return frozenset(parts)
+    if hasattr(type(key), "_fields"):  # a namedtuple keeps its type
+        return tuple.__new__(type(key), parts)
+    return tuple(parts)
 
 
 def _scrub_value(
