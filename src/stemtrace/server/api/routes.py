@@ -145,6 +145,11 @@ def _group_task_names(
     here, outside the store lock, once each; a task whose name is first seen
     after this snapshot is matched from the next request on. None when
     neither filter is given.
+
+    Runs in a worker thread (``asyncio.to_thread``): with thousands of
+    distinct names it takes long enough (about 128 ms at 7,000) to hold up
+    every other request on the event loop. ``group_of``'s cache is
+    thread-safe.
     """
     if task_group is None and tag is None:
         return None
@@ -732,6 +737,11 @@ def _add_task_routes(
                 task_state = TS(state)
 
         group_of = _group_lookup(groups)
+        # Every stored name is resolved: off the event loop (see
+        # _group_task_names).
+        task_names = await asyncio.to_thread(
+            _group_task_names, store, group_of, task_group, tag
+        )
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -743,7 +753,7 @@ def _add_task_routes(
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
-            task_names=_group_task_names(store, group_of, task_group, tag),
+            task_names=task_names,
         )
         return TaskListResponse(
             tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
@@ -783,8 +793,16 @@ def _add_task_routes(
         if refresh and worker_registry is not None:
             await refresher.maybe_refresh()
 
-        tasks = _build_task_registry(
-            store, worker_registry, query=query, status=status, groups=groups
+        # Resolves the group of every known name: off the event loop.
+        tasks = await asyncio.to_thread(
+            functools.partial(
+                _build_task_registry,
+                store,
+                worker_registry,
+                query=query,
+                status=status,
+                groups=groups,
+            )
         )
         return TaskRegistryResponse(tasks=tasks, total=len(tasks))
 
@@ -857,13 +875,16 @@ def _add_graph_routes(
         matches (anywhere in the graph, not only its root).
         """
         group_of = _group_lookup(groups)
+        task_names = await asyncio.to_thread(
+            _group_task_names, store, group_of, task_group, tag
+        )
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=from_date,
             to_date=to_date,
-            task_names=_group_task_names(store, group_of, task_group, tag),
+            task_names=task_names,
         )
         return GraphListResponse(
             graphs=[
@@ -919,8 +940,11 @@ def _add_group_routes(
         listed even before any of their tasks is seen. Sorted by name, with
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
-        members = groups.members(
-            _known_task_names(store, _hostnames_by_registered_task(worker_registry))
+        # Resolves the group of every known name: off the event loop.
+        members = await asyncio.to_thread(
+            lambda: groups.members(
+                _known_task_names(store, _hostnames_by_registered_task(worker_registry))
+            )
         )
         return TaskGroupListResponse(
             groups=[

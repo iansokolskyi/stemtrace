@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- API: the `task_group` and `tag` filters on `/api/tasks` and `/api/graphs`, `GET /api/groups` and the task registry work out the group of every task name in a worker thread instead of on the event loop, where it held up every other request while it ran (about 128 ms with 7,000 distinct names).
 - API: every `GET` route under `/api` also answers `HEAD` (headers, no body), authenticated like `GET`. `HEAD` used to get `405`, and with an API key behind the login page a `404`. Other wrong methods get `405` with `Allow: GET, HEAD` once past the login check.
 
 ## [0.4.1] - 2026-10-18
