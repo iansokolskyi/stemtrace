@@ -74,6 +74,20 @@ def hard_limit() -> None:
     time.sleep(30)
 
 
+@app.task(
+    name="ef.retry_then_hard_limit",
+    bind=True,
+    time_limit=1,
+    max_retries=1,
+    default_retry_delay=0,
+)
+def retry_then_hard_limit(self: Task) -> None:
+    """Retry once; the second attempt outlives the hard time limit."""
+    if self.request.retries == 0:
+        raise self.retry(exc=PartnerAPIError("try again"))
+    time.sleep(30)
+
+
 @app.task(name="ef.retries_once", bind=True, max_retries=1, default_retry_delay=0)
 def retries_once(self: Task) -> None:
     """Retry once because of a user-defined exception, then succeed."""

@@ -144,6 +144,7 @@ TASKS = [
     "ef.retries_once",
     "ef.retries_in_except",
     "ef.hard_limit",
+    "ef.retry_then_hard_limit",
 ]
 
 
@@ -308,16 +309,37 @@ def test_retry_inside_except_carries_the_handled_exception(run: Run) -> None:
     assert retry.exception_type == "ConnectionError"
 
 
-def test_failure_from_main_process_has_type_but_no_hostname(run: Run) -> None:
+def test_failure_from_main_process_carries_its_worker(run: Run) -> None:
     # celery 5.6.3 worker/request.py Request.on_failure sends task_failure from
-    # the worker's main process for a hard time limit; task.request is empty
-    # there, so the event has no hostname, but the node keeps STARTED's.
+    # the worker's main process for a hard time limit, where task.request is
+    # empty; stemtrace fills in what task_received brought.
     failure = run.event("ef.hard_limit", TaskState.FAILURE)
-    graph = TaskGraph()
-    for event in run.task_events("ef.hard_limit"):
-        graph.add_event(event)
-    node = graph.nodes[run.task_ids["ef.hard_limit"]]
 
     assert failure.exception_type == "billiard.exceptions.TimeLimitExceeded"
-    assert (failure.hostname, failure.queue, failure.routing_key) == (None, None, None)
-    assert (node.hostname, node.queue) == (run.nodename, run.names.default_queue)
+    assert (failure.hostname, failure.queue, failure.routing_key) == (
+        run.nodename,
+        run.names.default_queue,
+        run.names.default_queue,
+    )
+
+
+def test_main_process_failure_of_a_retry_carries_its_attempt(run: Run) -> None:
+    # Attempt 1 hits the hard time limit: before, its FAILURE said retries=0.
+    [failure] = [
+        e
+        for e in run.task_events("ef.retry_then_hard_limit")
+        if e.state == TaskState.FAILURE
+    ]
+    graph = TaskGraph()
+    for event in run.task_events("ef.retry_then_hard_limit"):
+        graph.add_event(event)
+    node = graph.nodes[run.task_ids["ef.retry_then_hard_limit"]]
+    started_1 = run.event("ef.retry_then_hard_limit", TaskState.STARTED, retries=1)
+
+    assert (failure.retries, failure.hostname) == (1, run.nodename)
+    # The last run is attempt 1's, on one worker's clock (about the 1 s limit).
+    assert node.runtime_ms is not None
+    assert node.runtime_ms == int(
+        (failure.timestamp - started_1.timestamp).total_seconds() * 1000
+    )
+    assert 900 <= node.runtime_ms <= 5000
