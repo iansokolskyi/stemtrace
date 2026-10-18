@@ -21,7 +21,7 @@ from celery.signals import task_failure
 from celery.worker.request import Request
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
+from stemtrace.library.config import StemtraceConfig, set_config
 from stemtrace.library.signals import connect_signals, disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
 
@@ -50,7 +50,6 @@ def transport() -> Iterator[MemoryTransport]:
     yield transport
     disconnect_signals()
     MemoryTransport.clear()
-    _reset_config()
 
 
 def _request(
