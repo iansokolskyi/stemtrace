@@ -9,6 +9,7 @@ attempt and no worker fields. stemtrace reads the failing ``Request`` from
 a frame whose ``self`` is a real ``celery.worker.request.Request``.
 """
 
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -106,13 +107,27 @@ def test_main_process_failure_carries_its_request() -> None:
     )
 
 
-def test_attempt_zero_failing_after_attempt_one_arrived_is_attempt_zero() -> None:
-    # self.retry(throw=False): attempt 1's message has arrived (and attempt 1
-    # may have finished) when attempt 0 hits its hard time limit.
-    _request("task-1", retries=1)
-    _on_failure(_request("task-1", retries=0), "task-1")
+def test_attempt_zero_failing_while_attempt_one_is_known_is_attempt_zero() -> None:
+    # self.retry(throw=False): attempt 1's Request (another worker here) is
+    # alive, and even on the stack further up, when attempt 0's FAILURE is
+    # sent; the nearest Request, attempt 0's own, is the one read.
+    def outer(self: Any) -> None:
+        _on_failure(_request("task-1", retries=0, hostname="celery@w0"), "task-1")
 
-    assert _failure().retries == 0
+    outer(_request("task-1", retries=1, hostname="celery@w1"))
+
+    event = _failure()
+    assert (event.retries, event.hostname, event.queue) == (0, "celery@w0", "media")
+
+
+def test_shallow_stack_without_a_request_keeps_the_defaults() -> None:
+    # A failure sent from a fresh thread: the stack ends before the search
+    # depth.
+    thread = threading.Thread(target=_send_failure, args=("task-1",))
+    thread.start()
+    thread.join(5)
+
+    assert (_failure().retries, _failure().hostname) == (0, None)
 
 
 def test_request_for_another_task_is_ignored() -> None:
