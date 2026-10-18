@@ -93,6 +93,9 @@ class TaskEvent(BaseModel):
             straight to a queue (the default); None when it went through a
             named exchange, which may route it to any number of queues.
         routing_key: Routing key the task message was published with.
+        eta: When the attempt was scheduled to run (``countdown`` or ``eta``),
+            in UTC; None when it could run at once. A retry's events carry the
+            retry's ETA.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -120,6 +123,7 @@ class TaskEvent(BaseModel):
     hostname: str | None = None
     queue: str | None = None
     routing_key: str | None = None
+    eta: datetime | None = None
 
 
 class WorkerEvent(BaseModel):

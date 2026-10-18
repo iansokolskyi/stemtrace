@@ -154,7 +154,7 @@ def server(
             # tag; "\\[" keeps each bracket literal.
             help=(
                 "TOML file of code-defined task groups (\\[\\[groups]] tables with "
-                "name, match, tags, color). Needs Python 3.11+. Tasks no rule "
+                "name, match, tags, color). Tasks no rule "
                 "matches get their automatic group."
             ),
         ),

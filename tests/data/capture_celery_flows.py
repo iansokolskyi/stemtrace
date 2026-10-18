@@ -187,6 +187,38 @@ def flaky_add(self: Any, x: int, y: int) -> int:
     return x + y
 
 
+_retried_later: set[str] = set()
+
+
+@app.task(bind=True, name="flows.retry_later")
+def retry_later(self: Any, x: int, y: int) -> int:
+    """Add, retrying once with a one-second countdown on its first run."""
+    if self.request.id not in _retried_later:
+        _retried_later.add(self.request.id)
+        raise self.retry(countdown=1)
+    return x + y
+
+
+@app.task(bind=True, name="flows.replace_delayed")
+def replace_delayed(self: Any) -> Any:
+    """Replace this task with a task sent with a one-second countdown."""
+    raise self.replace(add.si(1, 1).set(countdown=1))
+
+
+@app.task(bind=True, name="flows.outer_delayed")
+def outer_delayed(self: Any) -> Any:
+    """Replace this task with a chain whose first task replaces itself with a delay."""
+    raise self.replace(chain(replace_delayed.si(), add.si(2, 2)))
+
+
+@app.task(bind=True, name="flows.page_delayed")
+def page_delayed(self: Any, page: int) -> Any:
+    """Fetch pages 0..2, each next page sent by replacing this task, one second later."""
+    if page < 2:
+        raise self.replace(page_delayed.si(page + 1).set(countdown=1))
+    return page
+
+
 def _flows() -> dict[str, Callable[[], Signature]]:
     return {
         "chain": lambda: chain(add.s(1, 1), add.s(2), add.s(3)),
@@ -306,6 +338,21 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             chain(add.si(1, 1), paginate_to.si(0, 3)), add.si(2, 2)
         ),
         "chain_replace12": lambda: chain(add.s(1, 1), paginate_to.si(0, 12)),
+        # Sent with a countdown: the events carry its ETA (eta is captured from here on).
+        "countdown": lambda: add.s(1, 1).set(countdown=2),
+        "countdown_retry_countdown": lambda: retry_later.s(1, 1).set(countdown=1),
+        # task.replace() with a countdown on the replacement, in each position
+        # (--worker-process): the replacement's ETA is not the task's own.
+        "replace_delayed_root": lambda: replace_delayed.s(),
+        "replace_delayed_mid_chain": lambda: chain(
+            add.s(1, 1), replace_delayed.si(), add.si(7, 7)
+        ),
+        "replace_delayed_header": lambda: chord(
+            [replace_delayed.si(), add.si(1, 1)], tsum.s()
+        ),
+        "replace_delayed_nested": lambda: outer_delayed.s(),
+        "replace_delayed_same_name": lambda: page_delayed.s(0),
+        "delayed_replace_delayed": lambda: replace_delayed.s().set(countdown=1),
     }
 
 
@@ -324,6 +371,7 @@ def _event_dict(event: Any) -> dict[str, Any]:
             "chord_id",
             "chord_callback_id",
             "retries",
+            "eta",
         },
     )
 

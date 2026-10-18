@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -23,9 +22,6 @@ from stemtrace.server.ui import static
 if TYPE_CHECKING:
     from pathlib import Path
 
-needs_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="tomllib is Python 3.11+"
-)
 
 _TOML = '[[groups]]\nname = "money"\nmatch = ["billing.*"]\ntags = ["pci"]\n'
 _OTHER_TOML = '[[groups]]\nname = "other"\nmatch = ["other.*"]\n'
@@ -76,7 +72,6 @@ def _file(tmp_path: Path, name: str, text: str) -> str:
     return str(path)
 
 
-@needs_tomllib
 def test_server_with_groups_flag_loads_file(
     captured_groups: list[GroupConfig], tmp_path: Path
 ) -> None:
@@ -87,7 +82,6 @@ def test_server_with_groups_flag_loads_file(
     assert "Task groups: 1 code-defined" in output
 
 
-@needs_tomllib
 def test_server_with_groups_env_var_loads_file(
     captured_groups: list[GroupConfig], tmp_path: Path
 ) -> None:
@@ -97,7 +91,6 @@ def test_server_with_groups_env_var_loads_file(
     assert [r.name for r in captured_groups[0].rules] == ["money"]
 
 
-@needs_tomllib
 def test_server_with_flag_and_env_var_prefers_flag(
     captured_groups: list[GroupConfig], tmp_path: Path
 ) -> None:
@@ -111,7 +104,6 @@ def test_server_with_flag_and_env_var_prefers_flag(
     assert [r.name for r in captured_groups[0].rules] == ["money"]
 
 
-@needs_tomllib
 def test_server_with_empty_groups_flag_falls_back_to_env_var(
     captured_groups: list[GroupConfig], tmp_path: Path
 ) -> None:
