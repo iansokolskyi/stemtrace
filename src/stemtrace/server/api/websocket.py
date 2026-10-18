@@ -48,13 +48,10 @@ def _authorize(
 ) -> tuple[bool, str | None]:
     """Decide whether to accept the handshake, and with which subprotocol.
 
-    With a key configured, the key comes from the Authorization header or, for
-    browsers (which can't set WebSocket headers), from a
-    ``stemtrace.bearer.<base64url>`` subprotocol; the connection is then
-    accepted with the ``stemtrace`` subprotocol, which the client must offer
-    next to the key's (the key's own is never echoed). A wrong key is refused
-    even with a valid session cookie. Without a key, a valid session cookie is
-    needed when form login is on.
+    With a key configured, it comes from the Authorization header or, for
+    browsers, a ``stemtrace.bearer.<base64url>`` subprotocol; the reply echoes
+    ``stemtrace`` (never the key's), which the client must also offer. A wrong
+    key is refused even with a valid session cookie.
     """
     if api_key_guard is not None:
         offered = list(websocket.scope.get("subprotocols") or [])

@@ -102,6 +102,9 @@ _MAX_DOCSTRING_CHARS = 4000
 # Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
 # with no reason and no einfo; mirror the reason Celery itself records.
 _CANCELLED_RETRY_REASON = "cancelled by Celery"
+# The Ignore message Celery's Task.replace() raises (celery 5.2.2 to 5.6.3); the
+# replacement keeps running under the same task ID.
+_REPLACED_BY_NEW_TASK = "Replaced by new task"
 
 # RETRY publishes handed to their own greenlet (see _defer_publish), and how
 # long the interpreter's exit waits for them.
@@ -578,15 +581,20 @@ def _on_task_postrun(
     state: str,
     **_: Any,
 ) -> None:
-    """Handle task_postrun: publish SUCCESS with the attempt's output.
+    """Handle task_postrun: publish SUCCESS, IGNORED or REJECTED.
 
-    Other states were already published by the failure/retry handlers (which
-    run first); for those, and for REJECTED/IGNORED, this only frees the
-    output buffer.
+    FAILURE and RETRY were already published by their handlers (which run
+    first); for those this only frees the output buffer. Celery's trace
+    (5.2.2 to 5.6.3 ``build_tracer``) ends a task that raised ``Ignore`` or
+    ``Reject`` here with ``state`` IGNORED/REJECTED and the exception as
+    ``retval``, and sends no task_failure.
     """
     del args, kwargs
 
     output = _finish_output_capture(task_id)
+    if state in ("IGNORED", "REJECTED"):
+        _publish_ignored_or_rejected(task_id, task, state, retval, output)
+        return
     if state != "SUCCESS":
         return
 
@@ -612,6 +620,63 @@ def _on_task_postrun(
             output=output,
             **_worker_fields(task.request),
         )
+    )
+
+
+def _publish_ignored_or_rejected(
+    task_id: str, task: "Task", state: str, retval: Any, output: str | None
+) -> None:
+    """Publish the terminal event of a task that raised Ignore or Reject.
+
+    Skipped when the task isn't over: ``Task.replace()`` raises
+    ``Ignore('Replaced by new task')`` (celery 5.2.2 ``replace``, 5.3+
+    ``on_replace``) and the replacement reuses the task ID, and
+    ``Reject(requeue=True)`` on a worker with ``acks_late`` puts the message
+    back to run again. Without ``acks_late`` the worker acknowledged the
+    message before running the task, so the requeue does nothing (celery
+    5.2.2 to 5.6.3 worker/request.py ``on_accepted`` and ``reject``), and an
+    eager ``apply()`` has no message.
+    """
+    if state == "IGNORED" and str(retval) == _REPLACED_BY_NEW_TASK:
+        return
+    if state == "REJECTED" and _runs_again(task, retval):
+        return
+    _pending_emitted.discard(task_id)
+    reason = getattr(retval, "reason", None) if state == "REJECTED" else None
+    exception, exception_type = None, None
+    if isinstance(reason, BaseException):
+        exception, exception_type = _format_exception(reason), _exception_type(reason)
+    elif reason is not None:
+        exception = str(reason)
+    chord_id, chord_callback_id = _extract_chord_info(
+        getattr(task.request, "chord", None)
+    )
+    _publish_event(
+        TaskEvent(
+            task_id=task_id,
+            name=task.name,
+            state=TaskState(state),
+            timestamp=datetime.now(timezone.utc),
+            parent_id=getattr(task.request, "parent_id", None),
+            root_id=getattr(task.request, "root_id", None),
+            group_id=getattr(task.request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
+            retries=task.request.retries or 0,
+            exception=exception,
+            exception_type=exception_type,
+            output=output,
+            **_worker_fields(task.request),
+        )
+    )
+
+
+def _runs_again(task: "Task", reject: Any) -> bool:
+    """Whether a ``Reject`` puts its still-unacknowledged message back."""
+    return (
+        bool(getattr(reject, "requeue", False))
+        and bool(task.acks_late)
+        and getattr(task.request, "is_eager", False) is not True
     )
 
 

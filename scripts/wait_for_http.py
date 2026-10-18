@@ -50,6 +50,7 @@ TASK_STATES = (
     "REVOKED",
     "REJECTED",
     "RETRY",
+    "IGNORED",
 )
 _MISSING = object()
 
