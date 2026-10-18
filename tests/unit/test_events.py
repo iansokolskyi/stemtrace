@@ -24,6 +24,7 @@ class TestTaskState:
             "REVOKED",
             "REJECTED",
             "RETRY",
+            "IGNORED",
         }
         actual_states = {s.value for s in TaskState}
         assert actual_states == expected_states

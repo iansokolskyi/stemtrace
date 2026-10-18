@@ -44,23 +44,26 @@ async def _null_lifespan(app: Any) -> AsyncIterator[None]:  # noqa: ARG001
 class StemtraceExtension:
     """Complete FastAPI integration: store, consumer, WebSocket, and router.
 
-    Example (recommended):
-        app = FastAPI(lifespan=my_lifespan)
-        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
-        stemtrace.init_app(app)  # Wraps lifespan + adds router
+    Examples:
+        Recommended::
 
-    Example (RabbitMQ broker + Redis event transport):
-        # Celery uses RabbitMQ, but stemtrace events go to Redis for replay across restarts.
-        stemtrace = StemtraceExtension(
-            broker_url="amqp://guest:guest@localhost:5672//",
-            transport_url="redis://localhost:6379/0",
-        )
-        stemtrace.init_app(app)
+            app = FastAPI(lifespan=my_lifespan)
+            stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+            stemtrace.init_app(app)  # Wraps lifespan + adds router
 
-    Example (manual):
-        stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
-        app = FastAPI(lifespan=stemtrace.lifespan)
-        app.include_router(stemtrace.router, prefix="/stemtrace")
+        RabbitMQ broker, Redis event transport (replay across restarts)::
+
+            stemtrace = StemtraceExtension(
+                broker_url="amqp://guest:guest@localhost:5672//",
+                transport_url="redis://localhost:6379/0",
+            )
+            stemtrace.init_app(app)
+
+        Manual::
+
+            stemtrace = StemtraceExtension(broker_url="redis://localhost:6379")
+            app = FastAPI(lifespan=stemtrace.lifespan)
+            app.include_router(stemtrace.router, prefix="/stemtrace")
     """
 
     def __init__(

@@ -153,7 +153,9 @@ a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) t
 random value everywhere, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 Without it, each process signs sessions with its own random secret, and users get logged out
 at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
-the problem when a session signed by another process is rejected.
+the problem when a session signed by another process is rejected. That explanation is also
+visible to anyone who sends a forged cookie, so without `login_secret` a stranger can learn that
+none is configured (a configuration fact, not a credential).
 
 Failed sign-ins are throttled in memory, per client IP and per username or browser:
 
