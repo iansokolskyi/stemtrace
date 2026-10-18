@@ -793,17 +793,15 @@ def _on_task_revoked(
 
 
 def _parse_eta(value: Any) -> datetime | None:
-    """When a task message is scheduled to run, in UTC; None if it isn't or can't be read.
+    """Read a task message's ``eta`` as an aware UTC datetime, as the worker does.
 
-    Celery writes ``eta`` (from ``countdown`` or ``eta``) into the message as an ISO 8601
-    string, or None (celery 5.6.3 and 5.2.2 app/amqp.py ``as_task_v2`` and
-    ``as_task_v1``). The worker parses it with ``maybe_iso8601`` and reads a naive value
-    as UTC (celery 5.6.3 worker/request.py ``Request.__init__`` lines 135-142, 5.2.2
-    lines 130-137, through ``maybe_make_aware``), so a naive value is UTC here too. A
-    value the worker can't parse makes it reject the message; here it is left out.
+    None when the message has no ETA or it can't be parsed (the worker rejects
+    such a message; the event just leaves it out).
     """
     if not value or not isinstance(value, str | datetime):
         return None
+    # Celery 5.6.3 and 5.2.2 write an ISO 8601 string (app/amqp.py as_task_v2/v1) and
+    # read it with maybe_iso8601, a naive value as UTC (worker/request.py Request.__init__).
     try:
         parsed: datetime = maybe_iso8601(value)  # only falsy values give None
     except (ValueError, TypeError):

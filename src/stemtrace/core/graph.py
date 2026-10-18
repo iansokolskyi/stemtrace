@@ -294,12 +294,10 @@ class TaskNode(BaseModel):
 
     @property
     def eta(self) -> datetime | None:
-        """When the first attempt was scheduled to run (``countdown``/``eta``), in UTC.
+        """When the first attempt was scheduled to run (``countdown`` or ``eta``), in UTC.
 
-        From the first attempt's events (``retries`` 0), which all carry the
-        same value; the earliest in ``_precedence`` order that has one. A
-        retry's ETA is its own attempt's (see ``TaskEvent.eta``). None when the
-        task could run at once, or no event reported it (older workers).
+        None when the task could run at once or no event reported it. A retry's
+        ETA is on that retry's own events (``TaskEvent.eta``).
         """
         first = (e for e in self.events if e.retries == 0 and e.eta is not None)
         event = min(first, key=_precedence, default=None)
@@ -309,16 +307,10 @@ class TaskNode(BaseModel):
     def queue_wait_ms(self) -> int | None:
         """Milliseconds from sending the task, or its ETA if later, to its first run.
 
-        From the earliest first-attempt PENDING or RECEIVED (or the first
-        attempt's ETA, when that is later) to the earliest first-attempt
-        STARTED; None if the sent or started event is missing (no stemtrace in
-        the sending process and RECEIVED off, or not started yet). Time held
-        for a countdown or ETA is scheduled, not waiting, so it isn't counted.
-        A retry's wait isn't counted either: it includes the retry's countdown.
-        The sender stamps PENDING after publishing, so it can follow STARTED
-        even with exact clocks; that counts as 0, as does a sender clock ahead
-        of the worker's. The ETA is the sender's clock too (now + countdown)
-        while the worker starts the task by its own clock.
+        Counts the first attempt only (a retry's wait includes its countdown).
+        None until the task has a sent event (PENDING or RECEIVED) and a first
+        STARTED. The span crosses the sender's and the worker's clocks, so a
+        negative wait counts as 0.
         """
         sent = [event.timestamp for event in self.events if _is_pre_start(event)]
         started = [

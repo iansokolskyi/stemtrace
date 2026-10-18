@@ -91,9 +91,8 @@ class TaskEvent(BaseModel):
             named exchange, which may route it to any number of queues.
         routing_key: Routing key the task message was published with.
         eta: When the attempt was scheduled to run (``countdown`` or ``eta``),
-            in UTC; None when it could run at once. It is per attempt: a
-            retry's events carry the retry's ETA. Stamped by the clock of the
-            process that sent the task.
+            in UTC; None when it could run at once. A retry's events carry the
+            retry's ETA.
     """
 
     model_config = ConfigDict(frozen=True)

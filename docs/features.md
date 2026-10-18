@@ -159,12 +159,12 @@ also split it up:
 | `runtime_ms` | the last run starting (its STARTED) | the task finishing (SUCCESS, FAILURE, REVOKED or REJECTED) |
 | `total_runtime_ms` | each run's STARTED | that run's RETRY, or the finish for the last run, added up |
 
-- A task sent with a `countdown` or `eta` is held by the worker until then. That time is
+- The worker holds a task sent with a `countdown` or `eta` until that time. The time held is
   scheduled, not waiting, so `queue_wait_ms` counts from the ETA: a task sent with
   `countdown=60` that starts 0.2 seconds after its ETA waited 200 ms. Task and graph node
-  responses give the first attempt's ETA as `eta` (UTC, empty for a task that could run at
-  once), and each event carries its own attempt's ETA as `eta`, so a retry's countdown shows
-  on the retry's events.
+  responses give the first attempt's ETA as `eta` (UTC; empty for a task that can run at
+  once). Each event has its own attempt's ETA as `eta`, so a retry's countdown shows on the
+  retry's events.
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
@@ -176,9 +176,9 @@ also split it up:
   without the first STARTED; `runtime_ms` without the last run's STARTED, or for a task revoked
   before it started. GROUP and CHORD nodes have none.
 - They are computed on the server from the events it already has, so they also appear for tasks
-  recorded by older workers. The ETA is recorded by the code that sends the task (on PENDING)
-  and by the worker (on its events); when neither runs this release, a countdown is counted in
-  `queue_wait_ms` as before.
+  recorded by older workers. The code that sends a task records its ETA on PENDING, and the
+  worker records it on its own events. If neither runs this release, `queue_wait_ms` counts a
+  countdown as waiting, as before.
 
 Limitations:
 
