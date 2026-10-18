@@ -79,14 +79,16 @@ def test_resolving_all_names_leaves_the_loop_free(
             resolving, other = await asyncio.gather(client.get(path), other_request())
             return resolving.status_code, other
 
-    if loop == "uvloop":
-        event_loop = uvloop.new_event_loop()
-        try:
-            result = event_loop.run_until_complete(scenario())
-        finally:
-            event_loop.close()
-    else:
-        result = asyncio.run(scenario())
+    # A loop of its own, never set as current: asyncio.run() would replace the
+    # current loop, which pytest-asyncio 1.1.1 on Python 3.10 leaves set and
+    # never closes, and the replaced loop warns (ResourceWarning) when collected.
+    event_loop = (
+        uvloop.new_event_loop() if loop == "uvloop" else asyncio.new_event_loop()
+    )
+    try:
+        result = event_loop.run_until_complete(scenario())
+    finally:
+        event_loop.close()
 
     assert result == (200, 200)
     assert waits == [True]
