@@ -23,7 +23,7 @@ test.describe('Task Detail Page', () => {
       await setupMockApi(page)
     }
     // Start from tasks list
-    await page.goto('/')
+    await page.goto('/executions')
     await page.waitForLoadState('networkidle')
   })
 
@@ -117,13 +117,12 @@ test.describe('Task Detail Page', () => {
     await taskLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Find back link or tasks nav
-    const backLink = page
-      .locator('a[href="/"], a:has-text("Tasks"), a:has-text("Back"), nav a')
-      .first()
-
-    await backLink.click()
-    await expect(page).toHaveURL(/\/$|\/tasks$/)
+    // The breadcrumb links back to the list.
+    await page
+      .getByRole('navigation', { name: 'Breadcrumb' })
+      .getByRole('link', { name: 'Executions' })
+      .click()
+    await expect(page).toHaveURL(/\/executions$/)
   })
 })
 

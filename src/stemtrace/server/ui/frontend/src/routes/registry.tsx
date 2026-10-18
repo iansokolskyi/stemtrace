@@ -6,6 +6,7 @@ import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/registry')({
   component: RegistryPage,
+  staticData: { crumb: 'Registry' },
 })
 
 type StatusFilter = TaskStatus | undefined
@@ -408,7 +409,7 @@ function TaskCard({ task, shortName }: TaskCardProps) {
           <div className="flex gap-2 pt-2">
             {hasExecutions && (
               <Link
-                to="/"
+                to="/executions"
                 search={{ name_exact: task.name }}
                 className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
               >

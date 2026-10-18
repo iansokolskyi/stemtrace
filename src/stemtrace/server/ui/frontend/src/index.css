@@ -72,6 +72,12 @@ body {
   border-radius: 3px;
 }
 
+/* Selected navigation: ink fill in dark, raised tone in light (--sel-bg / --sel-fg). */
+.nav-item[aria-current="page"] {
+  background: var(--sel-bg);
+  color: var(--sel-fg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

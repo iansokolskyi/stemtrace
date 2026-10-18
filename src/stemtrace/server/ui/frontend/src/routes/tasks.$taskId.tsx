@@ -16,6 +16,7 @@ import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
+  staticData: { section: { label: 'Executions', to: '/executions' } },
 })
 
 function TaskDetailPage() {
@@ -30,8 +31,8 @@ function TaskDetailPage() {
     return (
       <div className="text-center py-12">
         <p className="text-red-400">Failed to load task</p>
-        <Link to="/" className="text-blue-400 hover:underline mt-2 inline-block">
-          Back to tasks
+        <Link to="/executions" className="text-blue-400 hover:underline mt-2 inline-block">
+          Back to executions
         </Link>
       </div>
     )
@@ -46,15 +47,6 @@ function TaskDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb */}
-      <nav className="flex items-center gap-2 text-sm">
-        <Link to="/" className="text-slate-400 hover:text-slate-200">
-          Tasks
-        </Link>
-        <span className="text-slate-600">/</span>
-        <span className="text-slate-200 font-mono">{taskId.slice(0, 8)}</span>
-      </nav>
-
       {/* Task header */}
       <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
         <div className="flex items-start justify-between">
