@@ -35,8 +35,8 @@ stemtrace.init_worker(app)
 Putting it next to the app definition means every process that imports the app runs it, on
 both sides:
 
-- **Workers** publish STARTED, RETRY, SUCCESS/FAILURE and REVOKED events from Celery's task
-  signals (and RECEIVED, if you turn on
+- **Workers** publish STARTED, RETRY, SUCCESS/FAILURE, REVOKED, IGNORED and REJECTED events
+  from Celery's task signals (and RECEIVED, if you turn on
   [`publish_received`](configuration.md#received-events-opt-in)), plus an event when a worker
   starts and when it shuts down.
 - **Senders** publish the PENDING event when a task message is published (Celery's

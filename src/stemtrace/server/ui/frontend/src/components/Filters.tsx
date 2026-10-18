@@ -32,6 +32,8 @@ const STATES = [
   { value: 'FAILURE', label: 'Failure' },
   { value: 'RETRY', label: 'Retry' },
   { value: 'REVOKED', label: 'Revoked' },
+  { value: 'REJECTED', label: 'Rejected' },
+  { value: 'IGNORED', label: 'Ignored' },
 ]
 
 export function Filters({ filters, onFiltersChange }: FiltersProps) {

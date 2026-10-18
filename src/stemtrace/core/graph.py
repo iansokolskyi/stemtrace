@@ -25,7 +25,13 @@ if TYPE_CHECKING:
     from pydantic import ModelWrapValidatorHandler
 
 _TERMINAL_STATES: frozenset[TaskState] = frozenset(
-    {TaskState.SUCCESS, TaskState.FAILURE, TaskState.REVOKED, TaskState.REJECTED}
+    {
+        TaskState.SUCCESS,
+        TaskState.FAILURE,
+        TaskState.REVOKED,
+        TaskState.REJECTED,
+        TaskState.IGNORED,
+    }
 )
 
 # Lifecycle phase of non-terminal states within one attempt. STARTED and RETRY
@@ -51,6 +57,7 @@ _STATE_ORDER: dict[TaskState, int] = {
     TaskState.FAILURE: 5,
     TaskState.REJECTED: 6,
     TaskState.REVOKED: 7,
+    TaskState.IGNORED: 8,
 }
 
 # (pre-start group, pre-start state order, timestamp, state order, content digest)
@@ -69,6 +76,7 @@ _GROUP_STATE_RULES: tuple[tuple[frozenset[TaskState], TaskState], ...] = (
     (frozenset({TaskState.PENDING}), TaskState.PENDING),
     (frozenset({TaskState.RETRY}), TaskState.RETRY),
     (frozenset({TaskState.REVOKED}), TaskState.REVOKED),
+    (frozenset({TaskState.IGNORED}), TaskState.IGNORED),
 )
 
 
@@ -76,7 +84,7 @@ def _aggregate_group_state(states: Collection[TaskState]) -> TaskState:
     """A group's state from its members' states (see ``_GROUP_STATE_RULES``).
 
     Priority: FAILURE > REJECTED > STARTED/RECEIVED > PENDING > RETRY >
-    REVOKED > SUCCESS; a group without known members is PENDING.
+    REVOKED > IGNORED > SUCCESS; a group without known members is PENDING.
     """
     if not states:
         return TaskState.PENDING
@@ -174,7 +182,11 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     * Any terminal state beats any non-terminal state. A terminal's
       ``retries`` is ignored: Celery stamps ``retries=0`` on failures raised
       from the worker main process (hard time limit, lost worker).
-    * Terminal vs terminal: the later timestamp wins.
+    * Terminal vs terminal: the later timestamp wins, except that IGNORED
+      loses to any other terminal state. A replaced task's ID is reused by
+      its replacement, whose outcome must win over an IGNORED from the
+      replaced task (workers don't send one for a replace; this holds even
+      if one arrives).
     * Non-terminal vs non-terminal: a higher ``retries`` is a newer attempt
       (RETRY carries the failing attempt's count; the next STARTED carries
       count + 1). Within one attempt PENDING < RECEIVED < STARTED/RETRY, and
@@ -188,7 +200,8 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     """
     tiebreak = _STATE_ORDER[event.state]
     if event.state in _TERMINAL_STATES:
-        return (1, 0, 0, event.timestamp, tiebreak)
+        rank = -1 if event.state == TaskState.IGNORED else 0
+        return (1, rank, 0, event.timestamp, tiebreak)
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
 
 

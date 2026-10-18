@@ -38,16 +38,27 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension.
 
-    ``groups`` takes code-defined task groups as ``StemtraceExtension`` does
-    (a list of GroupRule or dicts, or a TOML file path); None gives automatic
-    groups only.
+    With ``form_auth_config``, a valid session cookie is accepted instead of the
+    API key. With ``auth_dependency`` too, a JSON API request needs both; the
+    WebSocket (not covered by ``auth_dependency``) needs the key.
 
-    ``api_key`` requires ``Authorization: Bearer <key>`` on the JSON API
-    (except the liveness probe) and the WebSocket; with ``form_auth_config``,
-    a valid session cookie is accepted instead. With ``auth_dependency`` too,
-    a JSON API request needs both; the WebSocket (not covered by
-    ``auth_dependency``) needs the key. ``auth_throttle`` counts failed keys
-    per client IP (a new one if None; pass the login's to share its counts).
+    Args:
+        store: Graph store to serve; a new empty one if None.
+        consumer: Event consumer whose state the health endpoints report.
+        ws_manager: WebSocket manager; a new one if None.
+        worker_registry: Worker registry; a new one if None.
+        broker_url: Celery broker URL for on-demand worker inspection.
+        auth_dependency: FastAPI dependency applied to the JSON API routes.
+        form_auth_config: Cookie-session configuration for the API and WebSocket.
+        node_alias_from_arguments: Key to derive graph node display names from
+            task arguments (digit string for args[index], else kwargs[key]).
+        groups: Code-defined task groups, as for ``StemtraceExtension`` (a list
+            of GroupRule or dicts, or a TOML file path); None gives automatic
+            groups only.
+        api_key: Requires ``Authorization: Bearer <key>`` on the JSON API
+            (except the liveness probe) and the WebSocket.
+        auth_throttle: Counts failed keys per client IP (a new one if None;
+            pass the login's to share its counts).
 
     Raises:
         ConfigurationError: Here, not on the first request, if ``groups`` is

@@ -155,13 +155,8 @@ _XADD_SENT: ContextVar[bool] = ContextVar("stemtrace_redis_xadd_sent", default=F
 def _resolved_connect_mixin() -> type[Any]:
     """A redis-py Connection whose TCP connect resolves via PUBLISH_RESOLVER.
 
-    redis-py 8.1 Connection._connect() calls socket.getaddrinfo() itself, which
-    no socket timeout bounds. This copy of it (same socket options and
-    per-address connect timeout) takes the addresses from PUBLISH_RESOLVER,
-    which waits at most the connect timeout. Only the TCP socket changes:
-    SSLConnection._connect() wraps the returned socket with
-    ``server_hostname=self.host``, so TLS still sends SNI for, and verifies
-    the certificate against, the host name in the URL.
+    Only the TCP socket changes: TLS still sends SNI for, and verifies the
+    certificate against, the host name in the URL.
     """
     from redis.connection import Connection
 
@@ -184,6 +179,9 @@ def _resolved_connect_mixin() -> type[Any]:
                 self.host, self.port, self.socket_type, socket.SOCK_STREAM
             )
 
+        # A copy of redis-py 8.1 Connection._connect() (same socket options),
+        # which calls getaddrinfo() unbounded; SSLConnection._connect() wraps
+        # the returned socket with server_hostname=self.host.
         def _connect(self) -> socket.socket:
             """Connect to the first resolved address that accepts."""
             err: OSError | None = None
@@ -217,19 +215,15 @@ def _resolved_connect_mixin() -> type[Any]:
 def _publish_connection_class(connection_class: type[Any]) -> type[Any]:
     """Subclass the URL's redis-py connection class for publishing.
 
-    TCP and TLS connections resolve the host through PUBLISH_RESOLVER (Unix
-    sockets need no lookup), every connection accepts the pool's keywords on
-    all supported redis-py versions (see _keyword_compatible_init()), and
-    every connection sets _XADD_SENT once an XADD is written: redis-py 8.1
-    Redis._send_command_parse_response() calls
-    ``connection.send_command(command_name, *args)`` and only then reads the
-    reply; send_command() returns once the whole command was written (the
-    handshake commands sent while connecting go through it too, hence the
-    name check).
+    TCP and TLS connections resolve the host through PUBLISH_RESOLVER, every
+    connection accepts the pool's keywords on all supported redis-py versions,
+    and every connection sets _XADD_SENT once an XADD is written in full.
     """
 
     def send_command(self: Any, *args: Any, **kwargs: Any) -> None:
         """Send a command; note an XADD once it was written in full."""
+        # redis-py 8.1 _send_command_parse_response() reads the reply only after
+        # send_command() wrote it all; handshake commands pass here too.
         connection_class.send_command(self, *args, **kwargs)
         if args and args[0] == "XADD":
             _XADD_SENT.set(True)
@@ -266,11 +260,9 @@ def _publish_bases(connection_class: type[Any]) -> tuple[type[Any], ...]:
 def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]:
     """An __init__ that passes on only the keywords the base class takes.
 
-    redis-py 4.x UnixDomainSocketConnection has no socket_connect_timeout
-    parameter (the pool passes it anyway since we set it), and 5.0.0-5.0.6
-    drop socket_timeout for Unix sockets; setting both afterwards keeps
-    publishing bounded on every supported version. Other options the class
-    doesn't take (e.g. a typo in the URL) are logged once, not silently lost.
+    The publish timeouts are set afterwards whether or not the class takes them.
+    Other options the class doesn't take (e.g. a typo in the URL) are logged
+    once, not silently lost.
     """
     accepted = _accepted_init_kwargs(connection_class)
     warned = False
@@ -291,6 +283,8 @@ def _keyword_compatible_init(connection_class: type[Any]) -> Callable[..., None]
                     ", ".join(sorted(dropped)),
                 )
         connection_class.__init__(self, **kwargs_for_base)
+        # redis-py 4.x UnixDomainSocketConnection takes no socket_connect_timeout
+        # and 5.0.0-5.0.6 drop socket_timeout for Unix sockets.
         for name in _TIMEOUTS:
             if name in kwargs:
                 setattr(self, name, kwargs[name])
@@ -329,17 +323,8 @@ def _accepted_init_kwargs(connection_class: type[Any]) -> frozenset[str] | None:
 def _publish_client_from_url(url: str) -> Redis[Any]:
     """Build the client publish() uses: short timeouts, no retries.
 
-    ``retry`` is pinned to zero retries because a ``retry_on_timeout`` URL
-    option would otherwise add one (redis-py 8.1 AbstractConnection.__init__
-    builds ``Retry(NoBackoff(), 1)`` for it), and timeouts in the URL are
-    dropped because they would win over the keyword arguments.
-
-    RedisTransport builds one of these per process (see ``publish_client``).
-    The client doesn't own its pool (``auto_close_connection_pool`` is
-    False), so when a forked child drops the parent's client, garbage
-    collection never closes the inherited pool: closing it would run
-    ConnectionPool.reset(), which takes the pool's lock without a timeout
-    (redis-py 8.1) and hangs if a parent thread held it at fork.
+    Timeouts in the URL are dropped because they would win over the keyword
+    arguments. RedisTransport builds one of these per process.
     """
     from redis import ConnectionPool
     from redis import Redis as RedisClient
@@ -351,10 +336,15 @@ def _publish_client_from_url(url: str) -> Redis[Any]:
         decode_responses=False,
         socket_connect_timeout=PUBLISH_CONNECT_TIMEOUT,
         socket_timeout=PUBLISH_SOCKET_TIMEOUT,
+        # A retry_on_timeout URL option would add one retry (redis-py 8.1
+        # AbstractConnection.__init__ builds Retry(NoBackoff(), 1) for it).
         retry=Retry(NoBackoff(), 0),
     )
     # from_url() picked the class for the scheme (TCP, TLS or Unix socket).
     pool.connection_class = _publish_connection_class(pool.connection_class)
+    # Not owning the pool, a client a forked child drops never closes it:
+    # redis-py 8.1 ConnectionPool.reset() takes the pool lock with no timeout,
+    # which hangs if a parent thread held it at fork.
     return RedisClient(connection_pool=pool)
 
 
@@ -362,20 +352,17 @@ def _reply_lost(exc: Exception) -> bool:
     """Whether a publish error leaves it unknown if Redis applied the command.
 
     Only transport failures do: a socket timeout, or the connection closing or
-    breaking while the reply was awaited. Any error Redis replied with means
-    it rejected the command, including the replies redis-py 8.1 raises as
-    ConnectionError or its subclasses (``-LOADING`` as BusyLoadingError,
-    ``-NOAUTH``/``-WRONGPASS`` as AuthenticationError, "max number of clients
-    reached" as ConnectionError; see redis/_parsers/base.py EXCEPTION_CLASSES).
-    Those carry the server's message, while redis-py's own transport errors
-    use the fixed messages matched here (redis/connection.py read_response(),
-    redis/_parsers/socket.py SERVER_CLOSED_CONNECTION_ERROR).
+    breaking while the reply was awaited. An error Redis replied with means it
+    rejected the command, even when redis-py raises it as a ConnectionError.
     """
     from redis.exceptions import ConnectionError as RedisConnectionError
     from redis.exceptions import TimeoutError as RedisTimeoutError
 
     if isinstance(exc, RedisTimeoutError):
         return True
+    # redis-py 8.1 raises some server replies as ConnectionError or subclasses
+    # (-LOADING, -NOAUTH, max clients; _parsers/base.py EXCEPTION_CLASSES):
+    # they carry the server's message, transport errors the fixed ones below.
     if type(exc) is not RedisConnectionError:
         return False
     message = str(exc)
@@ -384,7 +371,8 @@ def _reply_lost(exc: Exception) -> bool:
     )
 
 
-# redis-py 8.1's messages for a reply lost in transit (see _reply_lost()).
+# redis-py 8.1's messages for a reply lost in transit (connection.py
+# read_response(), _parsers/socket.py SERVER_CLOSED_CONNECTION_ERROR).
 _SERVER_CLOSED_CONNECTION = "Connection closed by server."
 _READ_FAILED_PREFIX = "Error while reading from "
 
@@ -547,11 +535,9 @@ class RedisTransport:
     def publish_client(self) -> Redis[Any]:
         """The Redis client publish() writes with in this process.
 
-        With a ``publish_client_factory``, the client is built on first use
-        and again after a fork (a new PID), like the publish breaker, so a
-        prefork child never uses a connection pool or lock inherited from
-        its parent. Two threads publishing for the first time at once may
-        both build one; the extra client is dropped, which is harmless.
+        With a ``publish_client_factory``, the client is built on first use and
+        again after a fork, so a prefork child never uses its parent's pool or
+        lock. Two threads racing here may both build one; the extra is dropped.
         """
         if self._publish_client_factory is None:
             return self._client
@@ -575,30 +561,10 @@ class RedisTransport:
     def publish(self, event: StreamEvent) -> None:
         """Publish an event to the Redis stream.
 
-        Fire-and-forget: never raises, and events that can't be published are
-        dropped, not queued. The one exception is Celery's control flow, e.g.
-        ``SoftTimeLimitExceeded`` raised into the task while it publishes: it
-        propagates and is not counted as a broker failure. With a transport
-        from from_url(), an attempt
-        takes at most PUBLISH_CONNECT_TIMEOUT to resolve the host when it has
-        no cached address, PUBLISH_CONNECT_TIMEOUT per address to connect,
-        and PUBLISH_SOCKET_TIMEOUT per socket read/write, without retries.
-
-        Any reply slower than PUBLISH_SOCKET_TIMEOUT is a failure. A failure
-        after the XADD was written (a timeout or lost connection) counts the
-        event as sent but unconfirmed, since Redis may still have applied it;
-        other failures count it as dropped. PUBLISH_FAILURES_TO_OPEN failures
-        in a row open a circuit breaker; until then a failure loses only its
-        own event. While open, events are dropped without contacting Redis
-        for a cooldown (1s, doubling per failed retry up to 30s; straight to
-        30s when a retry's reply is lost right after lost replies opened the
-        breaker or failed the previous retry; reset by a successful publish),
-        so an outage costs each process PUBLISH_FAILURES_TO_OPEN bounded
-        attempts (plus any already in flight in its other threads), then
-        about one per cooldown, instead of one per event. Per PUBLISH_FAILURE_LOG_INTERVAL,
-        at most four WARNING lines are written, each with the number of
-        events lost since the previous line; each event dropped while the
-        breaker is open also gets a DEBUG line.
+        Fire-and-forget: events that can't be published are dropped, not queued.
+        Only Celery control flow (e.g. ``SoftTimeLimitExceeded``) propagates. A
+        failure after the XADD was written counts as sent but unconfirmed, and
+        repeated failures open a circuit breaker (details in docs/brokers.md).
 
         Args:
             event: Event to publish (TaskEvent or WorkerEvent).
@@ -649,21 +615,10 @@ class RedisTransport:
     def consume(self, last_id: str | None = None) -> Iterator[StreamEvent]:
         """Blocking iterator that yields events as they arrive.
 
-        Detects event type from JSON and yields appropriate model
-        (TaskEvent or WorkerEvent).
-
-        Connection errors and connect timeouts never end the iterator: the
-        transport logs a warning, backs off exponentially (capped at
-        RECONNECT_MAX_BACKOFF seconds, reset after a successful read) and
-        resumes from the last stream id it saw. An occasional read timeout is
-        retried at once; repeated read timeouts are logged as warnings. An
-        idle read (an empty reply or a read timeout) that returns sooner than
-        MIN_IDLE_READ_SECONDS is followed by a wait for the rest, so a tiny
-        ``socket_timeout`` in the URL doesn't turn the loop into a busy loop;
-        it adds at most that much latency to the next event.
-        Other Redis errors (e.g. WRONGTYPE, NOPERM) propagate to the caller.
-        The iterator ends once a stop event bound with bind_stop_event() is
-        set, and that event also interrupts the backoff wait.
+        Connection errors and timeouts never end it: it backs off exponentially
+        (up to RECONNECT_MAX_BACKOFF) and resumes from the last stream id it saw.
+        Other Redis errors (e.g. WRONGTYPE, NOPERM) propagate. It ends once the
+        event bound with bind_stop_event() is set.
 
         Args:
             last_id: Stream id to read after. Defaults to the last id this
@@ -850,11 +805,9 @@ class RedisTransport:
     def from_url(cls, url: str, prefix: str = "stemtrace", ttl: int = 86400) -> Self:
         """Create transport from Redis URL.
 
-        The consume client keeps redis-py's own timeout defaults; consume()
-        adapts its XREAD block window to them. publish() gets a separate
+        The consume client keeps the URL's timeouts. publish() gets a separate
         client with PUBLISH_CONNECT_TIMEOUT/PUBLISH_SOCKET_TIMEOUT and no
-        retries, overriding any timeouts given in the URL. Neither connects
-        before its first command.
+        retries, whatever the URL says. Neither connects before its first command.
         """
         from redis import Redis as RedisClient
 

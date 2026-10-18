@@ -86,6 +86,20 @@ pages work even if the server missed `worker_ready` events.
   told apart: Celery keeps only the last reply per nodename, so they flip between online and
   offline on every refresh. Give each worker a unique nodename.
 
+## Ignored and rejected tasks
+
+A task that raises Celery's `Ignore` ends as **IGNORED**, and one that raises `Reject` ends as
+**REJECTED**, with the reason as its exception (shown on the task page). Both used to stay
+STARTED, because Celery sends no failure for them. A `Reject(requeue=True)` publishes nothing on
+a task with `acks_late`: the message runs again. Without `acks_late` the worker acknowledged the
+message before the task ran, so the requeue does nothing and the task ends as REJECTED, as it
+does under eager `apply()`. `task.replace()` raises `Ignore` internally, but the replaced task isn't
+IGNORED: the replacement takes over its task ID and reports its own outcome. In a group, an
+ignored task ranks just above SUCCESS and below every other state, so a group whose tasks all
+succeeded or were ignored shows IGNORED. Workers older than this release send neither, and a
+server older than this release drops IGNORED events with a warning per event, so upgrade the
+server first.
+
 ## Worker, queue and exception type
 
 Task events record where a task ran, where it was sent and what it raised. The API's task, graph
@@ -93,10 +107,10 @@ node and event responses include them, with no configuration:
 
 | Field | Example | On events |
 |---|---|---|
-| `hostname` | `celery@media-gpu-1` | RECEIVED, STARTED, SUCCESS, FAILURE, RETRY, REVOKED |
+| `hostname` | `celery@media-gpu-1` | RECEIVED, STARTED, SUCCESS, FAILURE, RETRY, REVOKED, IGNORED, REJECTED |
 | `queue` | `media` | PENDING and the worker's events |
 | `routing_key` | `media` | PENDING and the worker's events |
-| `exception_type` | `ValueError`, `myapp.errors.PartnerAPIError` | FAILURE, RETRY |
+| `exception_type` | `ValueError`, `myapp.errors.PartnerAPIError` | FAILURE, RETRY, REJECTED (when the reason is an exception) |
 
 - `hostname` is the worker's nodename, the same name the Workers page lists (also under
   `celery multi`). Tasks run eagerly with `apply()` have none.
