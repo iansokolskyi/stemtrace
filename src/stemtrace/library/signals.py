@@ -11,7 +11,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, TypeVar
 
 from celery.exceptions import Retry
 from celery.signals import (
@@ -111,6 +111,9 @@ _REPLACED_BY_NEW_TASK = "Replaced by new task"
 _deferred_publishes: list[Any] = []
 _DEFERRED_FLUSH_TIMEOUT_S = 2.0
 _flush_at_exit_registered = False
+# The green sleep of the library they were spawned with: the exit flush waits
+# with it, so the hub runs them even if time.sleep isn't patched.
+_deferred_sleep: Callable[[float], None] = time.sleep
 
 
 def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
@@ -764,29 +767,38 @@ def _on_task_retry(
         output=output,
         **_worker_fields(request),
     )
-    spawn = _green_spawn() if reason is None and einfo is None else None
-    if spawn is None:
+    green = _green() if reason is None and einfo is None else None
+    if green is None:
         _publish_event(event)
     else:
-        _defer_publish(spawn, event)
+        _defer_publish(green, event)
 
 
-def _green_spawn() -> Callable[..., Any] | None:
-    """Return ``gevent.spawn`` or ``eventlet.spawn`` if sockets are green, else None.
+class _Green(NamedTuple):
+    """The green library the worker's sockets use."""
+
+    spawn: Callable[..., Any]
+    sleep: Callable[[float], None]
+
+
+def _green() -> _Green | None:
+    """Return gevent's or eventlet's spawn and sleep if sockets are green, else None.
 
     Read through ``sys.modules``, so nothing is imported unless the worker
     already monkey-patched (Celery does, before importing the app).
     """
     monkey = sys.modules.get("gevent.monkey")
     if monkey is not None and monkey.is_module_patched("socket"):
-        return sys.modules["gevent"].spawn  # type: ignore[no-any-return]  # untyped
+        gevent = sys.modules["gevent"]
+        return _Green(gevent.spawn, gevent.sleep)
     patcher = sys.modules.get("eventlet.patcher")
     if patcher is not None and patcher.is_monkey_patched("socket"):
-        return sys.modules["eventlet"].spawn  # type: ignore[no-any-return]  # untyped
+        eventlet = sys.modules["eventlet"]
+        return _Green(eventlet.spawn, eventlet.sleep)
     return None
 
 
-def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
+def _defer_publish(green: _Green, event: TaskEvent) -> None:
     """Publish ``event`` from a greenlet of its own, after the caller returns.
 
     Used for the RETRY of a task Celery cancels from its cold-shutdown
@@ -798,11 +810,13 @@ def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
     # cancelled task's; celery 5.6.3 concurrency/gevent.py terminate_job
     # schedules its kill (gevent.kill -> hub callback greenlet.throw), and
     # worker/request.py _announce_cancelled then sends task_retry with no
-    # reason and no einfo. The RETRY goes out when the hub next runs, at the
-    # latest at interpreter exit (_flush_deferred_publishes).
-    global _flush_at_exit_registered
+    # reason and no einfo. The RETRY goes out when the hub next runs; at
+    # interpreter exit, _flush_deferred_publishes waits up to
+    # _DEFERRED_FLUSH_TIMEOUT_S for it and then drops it.
+    global _flush_at_exit_registered, _deferred_sleep
+    _deferred_sleep = green.sleep
     _deferred_publishes[:] = [g for g in _deferred_publishes if not g.dead]
-    _deferred_publishes.append(spawn(_publish_event, event))
+    _deferred_publishes.append(green.spawn(_publish_event, event))
     if not _flush_at_exit_registered:
         _flush_at_exit_registered = True
         atexit.register(_flush_deferred_publishes)
@@ -811,11 +825,11 @@ def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
 def _flush_deferred_publishes(timeout_s: float = _DEFERRED_FLUSH_TIMEOUT_S) -> None:
     """Let deferred publishes finish, for at most ``timeout_s`` seconds."""
     # Registered with atexit: a cold shutdown sends no worker_shutdown
-    # (celery 5.6.3 worker/worker.py WorkController.terminate). time.sleep is
-    # green under monkey-patching, so waiting lets the hub run them.
+    # (celery 5.6.3 worker/worker.py WorkController.terminate). Waits with
+    # the green library's own sleep, so the hub runs them.
     deadline = time.monotonic() + timeout_s
     while any(not g.dead for g in _deferred_publishes) and time.monotonic() < deadline:
-        time.sleep(0.01)
+        _deferred_sleep(0.01)
     pending = sum(not g.dead for g in _deferred_publishes)
     if pending:
         logger.debug(
