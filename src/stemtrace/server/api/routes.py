@@ -130,6 +130,34 @@ def _group_of(
     return group.name, list(group.tags)
 
 
+def _group_task_names(
+    store: GraphStore,
+    group_of: Callable[[str], ResolvedGroup],
+    task_group: str | None,
+    tag: str | None,
+) -> frozenset[str] | None:
+    """Return the stored task names that pass the ``task_group`` and ``tag`` filters.
+
+    ``task_group`` matches the group's name exactly; ``tag`` matches when it
+    is one of the group's tags; given both, a name must match both (an empty
+    value matches nothing, like the other exact filters). Names are resolved
+    here, outside the store lock, once each; a task whose name is first seen
+    after this snapshot is matched from the next request on. None when
+    neither filter is given.
+    """
+    if task_group is None and tag is None:
+        return None
+
+    def accepts(task_name: str) -> bool:
+        """Whether tasks named ``task_name`` pass both filters."""
+        group = group_of(task_name)
+        if task_group is not None and group.name != task_group:
+            return False
+        return tag is None or tag in group.tags
+
+    return frozenset(filter(accepts, store.get_unique_task_names()))
+
+
 def _node_to_response(
     node: TaskNode,
     *,
@@ -154,6 +182,7 @@ def _node_to_response(
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+    runtime_ms, total_runtime_ms = node.run_times()
 
     task_group, tags = _group_of(node, group_of)
     return TaskNodeResponse(
@@ -172,6 +201,9 @@ def _node_to_response(
         first_seen=first_seen,
         last_updated=last_updated,
         duration_ms=duration_ms,
+        queue_wait_ms=node.queue_wait_ms,
+        runtime_ms=runtime_ms,
+        total_runtime_ms=total_runtime_ms,
         exception_type=node.exception_type,
         hostname=node.hostname,
         queue=node.queue,
@@ -254,6 +286,7 @@ def _node_to_graph_response(
     duration_ms = None
     if first_seen and last_updated and first_seen != last_updated:
         duration_ms = int((last_updated - first_seen).total_seconds() * 1000)
+    runtime_ms, total_runtime_ms = node.run_times()
 
     # UI traversal is order-sensitive when callbacks can appear as both direct
     # children and CHORD-linked nodes. Prefer TASK children first so callback
@@ -279,6 +312,9 @@ def _node_to_graph_response(
         task_group=task_group,
         tags=tags,
         duration_ms=duration_ms,
+        queue_wait_ms=node.queue_wait_ms,
+        runtime_ms=runtime_ms,
+        total_runtime_ms=total_runtime_ms,
         first_seen=first_seen,
         last_updated=last_updated,
         exception_type=node.exception_type,
@@ -598,6 +634,8 @@ def _add_health_routes(
     @router.get(
         "/health/live",
         response_model=LivenessResponse,
+        # The API key gate exempts this route by name (api_key.PUBLIC_ROUTE_NAMES).
+        name="stemtrace_health_live",
     )
     async def health_live() -> LivenessResponse:
         """Process liveness probe for container health checks.
@@ -667,6 +705,14 @@ def _add_task_routes(
                 )
             ),
         ] = None,
+        task_group: Annotated[
+            str | None,
+            Query(description="Filter by exact task group name"),
+        ] = None,
+        tag: Annotated[
+            str | None,
+            Query(description="Filter by a tag of the task's group"),
+        ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -674,7 +720,8 @@ def _add_task_routes(
         ``name_exact`` is an exact match on the full task name. ``hostname``,
         ``queue`` and ``exception_type`` match exactly the value from the
         task's furthest-along event that has one (a later retry beats an
-        earlier one).
+        earlier one). ``task_group`` matches the task's group name exactly and
+        ``tag`` one of its group's tags.
         """
         from stemtrace.core.events import TaskState as TS
 
@@ -683,6 +730,7 @@ def _add_task_routes(
             with contextlib.suppress(ValueError):
                 task_state = TS(state)
 
+        group_of = _group_lookup(groups)
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -694,8 +742,8 @@ def _add_task_routes(
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
+            task_names=_group_task_names(store, group_of, task_group, tag),
         )
-        group_of = _group_lookup(groups)
         return TaskListResponse(
             tasks=[_node_to_response(n, group_of=group_of) for n in nodes],
             total=total,
@@ -784,6 +832,7 @@ def _add_graph_routes(
 
     @router.get("/graphs", response_model=GraphListResponse)
     async def list_graphs(
+        *,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
         from_date: Annotated[
@@ -792,16 +841,29 @@ def _add_graph_routes(
         to_date: Annotated[
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
+        task_group: Annotated[
+            str | None,
+            Query(description="Filter by exact task group name"),
+        ] = None,
+        tag: Annotated[
+            str | None,
+            Query(description="Filter by a tag of the task's group"),
+        ] = None,
     ) -> GraphListResponse:
-        """List task execution graphs (root tasks) with pagination and date filtering."""
+        """List task execution graphs (root tasks) with pagination and filtering.
+
+        ``task_group`` and ``tag`` list the graphs with at least one task that
+        matches (anywhere in the graph, not only its root).
+        """
+        group_of = _group_lookup(groups)
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=from_date,
             to_date=to_date,
+            task_names=_group_task_names(store, group_of, task_group, tag),
         )
-        group_of = _group_lookup(groups)
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(

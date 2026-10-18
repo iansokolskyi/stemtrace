@@ -8,6 +8,12 @@ from fastapi import APIRouter
 
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.websocket import create_websocket_router
+from stemtrace.server.fastapi.api_key import (
+    ApiKeyGuard,
+    api_key_dependency,
+    normalize_api_key,
+)
+from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.websocket import WebSocketManager
 
@@ -27,13 +33,26 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     form_auth_config: FormAuthConfig | None = None,
     node_alias_from_arguments: str | None = None,
     groups: GroupsInput = None,
+    api_key: str | None = None,
+    auth_throttle: LoginThrottle | None = None,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension.
 
     ``groups`` takes code-defined task groups as ``StemtraceExtension`` does
     (a list of GroupRule or dicts, or a TOML file path); None gives automatic
-    groups only. Invalid groups raise ``ConfigurationError`` here, not on the
-    first request.
+    groups only.
+
+    ``api_key`` requires ``Authorization: Bearer <key>`` on the JSON API
+    (except the liveness probe) and the WebSocket; with ``form_auth_config``,
+    a valid session cookie is accepted instead. With ``auth_dependency`` too,
+    a JSON API request needs both; the WebSocket (not covered by
+    ``auth_dependency``) needs the key. ``auth_throttle`` counts failed keys
+    per client IP (a new one if None; pass the login's to share its counts).
+
+    Raises:
+        ConfigurationError: Here, not on the first request, if ``groups`` is
+            invalid or its file can't be loaded, or ``api_key`` is shorter
+            than 16 characters or has characters other than visible ASCII.
     """
     if store is None:
         store = GraphStore()
@@ -41,6 +60,9 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         ws_manager = WebSocketManager()
     if worker_registry is None:
         worker_registry = WorkerRegistry()
+
+    key = normalize_api_key(api_key)
+    guard = ApiKeyGuard(key, auth_throttle or LoginThrottle()) if key else None
 
     router = APIRouter()
     api_router = create_api_router(
@@ -52,9 +74,13 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         node_alias_from_arguments=node_alias_from_arguments,
         groups=groups,
     )
-    ws_router = create_websocket_router(ws_manager, form_auth_config=form_auth_config)
+    ws_router = create_websocket_router(
+        ws_manager, form_auth_config=form_auth_config, api_key_guard=guard
+    )
 
     dependencies: list[Any] = []
+    if guard is not None:
+        dependencies.append(api_key_dependency(guard, form_auth_config))
     if auth_dependency is not None:
         dependencies.append(auth_dependency)
 
