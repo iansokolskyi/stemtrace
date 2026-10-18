@@ -158,6 +158,22 @@ If you run several processes or replicas anyway, accepting that they can show di
 and use the built-in login, set the same `STEMTRACE_LOGIN_SECRET` everywhere; see
 [Built-in login page](security.md#built-in-login-page).
 
+## Stopping workers
+
+On a cold shutdown (SIGQUIT, a second Ctrl+C, or SIGTERM with `REMAP_SIGTERM=SIGQUIT`), Celery 5.5
+and newer cancel running tasks from inside its signal handler, and stemtrace publishes a RETRY
+event for each cancelled task that isn't `acks_late` (those get no RETRY; the broker redelivers
+them). stemtrace makes sure that publish can't wait on one it interrupted: in this
+race, the cancelled task's RETRY event is dropped instead.
+
+Known limitation (gevent pool): if the cold shutdown lands while a task's greenlet is running
+Python code (CPU work, or anything else that isn't waiting on I/O), the signal handler runs
+inside that greenlet, which Celery has just scheduled to kill. stemtrace's RETRY publish for that
+task then waits for the event broker's reply (and, with `capture_output=True`, can also wait for
+the task's output buffer), which lets the kill run: it interrupts the shutdown, and the worker
+keeps running. Send SIGQUIT again or SIGKILL to stop the worker. Prefork, threads and solo workers aren't affected. Eventlet workers ignore
+a cold shutdown in this situation even without stemtrace.
+
 ## Health endpoint
 
 `GET /stemtrace/api/health` (under your mount prefix when embedded) always returns HTTP 200 with:
