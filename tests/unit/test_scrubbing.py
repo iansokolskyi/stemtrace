@@ -1,5 +1,6 @@
 """Tests for sensitive data scrubbing."""
 
+import collections
 import sys
 from enum import Enum, Flag, IntEnum, IntFlag
 from http import HTTPStatus
@@ -854,3 +855,44 @@ def test_scrub_dict_keeps_a_namedtuple_key_a_namedtuple(
 
     assert out_key == shown
     assert type(out_key) is _Pair
+
+
+def _make_raises(cls: type, iterable: object) -> object:
+    raise RuntimeError("no _make")
+
+
+def _make_relabels(cls: type, iterable: object) -> object:
+    return tuple.__new__(cls, ("password",))
+
+
+class _MakeRaises(
+    collections.namedtuple("_MakeRaisesBase", "a b")
+):  # a real namedtuple subclass
+    """A namedtuple whose _make raises."""
+
+    _make = classmethod(_make_raises)  # type: ignore[assignment]  # the case under test
+
+
+class _MakeRelabels(
+    collections.namedtuple("_MakeRelabelsBase", "a")
+):  # a real namedtuple subclass
+    """A namedtuple whose _make shows another key."""
+
+    _make = classmethod(_make_relabels)  # type: ignore[assignment]  # the case under test
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_MakeRaises("u", _Field.PASSWORD), ("u", "pw")),
+        (_MakeRelabels(_Field.PASSWORD), ("pw",)),
+    ],
+    ids=["make_raises", "make_relabels"],
+)
+def test_scrub_dict_rebuilds_a_namedtuple_key_without_its_make(
+    key: tuple[object, ...], shown: tuple[object, ...]
+) -> None:
+    """The namedtuple keeps its type, but its own _make doesn't decide the key."""
+    ((out_key, value),) = scrub_dict({key: "v"}).items()
+
+    assert (tuple(out_key), type(out_key), value) == (shown, type(key), "v")
