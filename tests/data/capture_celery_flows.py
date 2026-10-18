@@ -179,6 +179,12 @@ def fail() -> int:
     raise ValueError("header failed")
 
 
+@app.task(name="flows.unstorable")
+def unstorable() -> object:
+    """Return a result json can't encode: storing it fails after the chain moved on."""
+    return object()
+
+
 @app.task(name="flows.ignore")
 def ignore() -> int:
     """Raise Ignore: it never reports a chord part, so the chord never completes."""
@@ -275,6 +281,13 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             [spawn_group.s(2), add.s(1, 1)], tsum.s()
         ),
         "chord_failed_header": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
+        "chain_failed_head": lambda: chain(fail.si(), add.s(1), add.s(2)),
+        "chain_head_result_not_stored": lambda: chain(
+            unstorable.si(), add.si(1, 1), add.si(2, 2)
+        ),
+        "chord_chain_header_failed_head": lambda: chord(
+            [chain(fail.si(), add.s(1)), chain(add.s(1, 1), add.s(1))], tsum.s()
+        ),
         "chord_ignored_header": lambda: chord([ignore.s(), add.s(1, 1)], tsum.s()),
         "chord_ignored_header_marked_done": lambda: chord(
             [ignore_done.s(), add.s(1, 1)], tsum.s()
