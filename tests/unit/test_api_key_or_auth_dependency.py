@@ -106,10 +106,12 @@ def test_wrong_key_without_dependency_credentials_is_refused(
 
 
 @pytest.mark.parametrize("kind", sorted(DEPENDENCIES))
-def test_liveness_probe_needs_the_dependency_not_the_key(kind: str) -> None:
+def test_liveness_probe_takes_the_key_or_the_dependency(kind: str) -> None:
     """The key gate exempts the probe; the dependency still covers it."""
     with _client(kind) as client:
         assert client.get("/stemtrace/api/health/live").status_code == 401
+        keyed = client.get("/stemtrace/api/health/live", headers=BEARER)
+        assert keyed.status_code == 200
         own = client.get("/stemtrace/api/health/live", headers=OWN_CREDENTIALS[kind])
         assert own.status_code == 200
 
