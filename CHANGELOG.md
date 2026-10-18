@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Dependency updates. The bundled UI now uses `react` and `react-dom` 19.3.1 (was 19.3.0). The Docker image moves to the `python:3.12.15-slim-trixie` base image (was 3.12.14) and its locked runtime packages to `kombu` 5.6.2, `fastapi` 0.143.1 and `pydantic` 2.14.1 (with `pydantic-core` 2.50.1 and `typing-inspection` 0.4.4). Development only: `ruff` 0.17.0, `bump-my-version` 1.6.0 and, for the frontend E2E tests, Playwright 1.64.1. Installs with pip are unchanged: the minimum versions in `pyproject.toml` did not move.
+- **Behavior change:** when a chain step fails, stemtrace now publishes `FAILURE` for each step after it, which Celery records as failed in its result backend but never runs or reports. A failed chain used to show only its steps up to the failure; it now shows every step, the unrun ones failed with the same exception and no worker. A chord whose header is a chain now shows the header failed when an earlier step of that chain fails. Workers publish these events, so upgrade the workers to see them.
 
 ## [0.4.1] - 2026-10-18
 

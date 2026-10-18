@@ -713,6 +713,47 @@ def _on_task_failure(
             **_worker_fields(sender.request),
         )
     )
+    _publish_unrun_chain_steps(sender.request, task_id, exception)
+
+
+def _publish_unrun_chain_steps(
+    request: Any, task_id: str, exception: BaseException
+) -> None:
+    """Publish FAILURE for each chain step a failed task leaves unrun.
+
+    Celery records those steps as failed (and fails a chord they belong to)
+    without running them or sending an event for them.
+    """
+    # celery 5.6.3 backends/base.py mark_as_failure: request.chain holds the
+    # remaining steps, next one last; only plain task signatures have an ID.
+    steps = getattr(request, "chain", None)
+    if not isinstance(steps, list):
+        return
+    parent_id = task_id
+    for step in reversed(steps):
+        options = step.get("options") if isinstance(step, dict) else None
+        if not isinstance(options, dict) or step.get("subtask_type"):
+            continue
+        step_id, name = options.get("task_id"), step.get("task")
+        if not isinstance(step_id, str) or not isinstance(name, str):
+            continue
+        chord_id, chord_callback_id = _extract_chord_info(options.get("chord"))
+        _publish_event(
+            TaskEvent(
+                task_id=step_id,
+                name=name,
+                state=TaskState.FAILURE,
+                timestamp=datetime.now(timezone.utc),
+                parent_id=parent_id,
+                root_id=options.get("root_id") or getattr(request, "root_id", None),
+                group_id=options.get("group_id"),
+                chord_id=chord_id,
+                chord_callback_id=chord_callback_id,
+                exception=_format_exception(exception),
+                exception_type=_exception_type(exception),
+            )
+        )
+        parent_id = step_id
 
 
 def _on_task_retry(

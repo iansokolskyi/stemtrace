@@ -223,6 +223,10 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             [spawn_group.s(2), add.s(1, 1)], tsum.s()
         ),
         "chord_failed_header": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
+        "chain_failed_head": lambda: chain(fail.si(), add.s(1), add.s(2)),
+        "chord_chain_header_failed_head": lambda: chord(
+            [chain(fail.si(), add.s(1)), chain(add.s(1, 1), add.s(1))], tsum.s()
+        ),
         "chord_failed_header_subtask": lambda: chord(
             [add_with_subtask.s(1, 1), fail.s()], tsum.s()
         ),
