@@ -74,17 +74,24 @@ def _key_names(key: object) -> list[str]:
     A task's dicts can have any hashable key. A str is a name, and so is bytes
     (redis-py returns bytes-keyed dicts without ``decode_responses``), decoded
     as UTF-8 with replacement so it never raises. A tuple or frozenset key
-    carries the names of its parts, and an Enum member its own name (if it has
-    one) plus its value's names (checked first: str- and int-mixin members are
-    str or int, so ``HTTPStatus.UNAUTHORIZED`` matches ``auth``). A Flag value
-    carries the names of all members (aliases and multi-bit members included)
-    whose bits it has, since its own name may be missing (a composite on
-    Python 3.10, unknown bits) and its value is an int.
-    Other keys (an int, None, any other object) carry none. ``str(key)`` is
+    carries the names of its parts. A key that is a str or an int is matched
+    as that str or int, whatever its class: an IntEnum, IntFlag or StrEnum
+    member (or any str- or int-mixin Enum) equals and hashes like its value,
+    and is serialized as it, so ``HTTPStatus.UNAUTHORIZED`` is 401, not a
+    name containing ``auth``. Any other Enum member carries its own name (if
+    it has one) plus its value's names, and any other Flag value the names
+    of all members (aliases and multi-bit members included) whose bits it
+    has, since its own name may be missing (a composite on Python 3.10,
+    unknown bits). Other keys (an int, None, any other object) carry none. ``str(key)`` is
     never used: it is a repr for bytes and tuples, and a key's ``__str__`` can
     raise.
     """
+    names: list[str]
     match key:
+        case str():
+            names = [key.lower()]
+        case int():
+            names = []
         case Flag():
             own = [key.name.lower()] if isinstance(key.name, str) else []
             # __members__, not iteration: iteration skips aliases on every
@@ -95,19 +102,18 @@ def _key_names(key: object) -> list[str]:
                 for name, member in type(key).__members__.items()
                 if member.value and key.value & member.value == member.value
             ]
-            return [*own, *members]
+            names = [*own, *members]
         case Enum():
             # A custom Enum can override name; don't call str methods on None.
             name = [key.name.lower()] if isinstance(key.name, str) else []
-            return [*name, *_key_names(key.value)]
-        case str():
-            return [key.lower()]
+            names = [*name, *_key_names(key.value)]
         case bytes():
-            return [key.decode("utf-8", "replace").lower()]
+            names = [key.decode("utf-8", "replace").lower()]
         case tuple() | frozenset():
-            return [name for part in key for name in _key_names(part)]
+            names = [name for part in key for name in _key_names(part)]
         case _:
-            return []
+            names = []
+    return names
 
 
 def _is_sensitive_key(

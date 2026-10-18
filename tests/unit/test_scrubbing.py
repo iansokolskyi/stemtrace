@@ -1,6 +1,8 @@
 """Tests for sensitive data scrubbing."""
 
+import sys
 from enum import Enum, Flag, IntEnum, IntFlag
+from http import HTTPStatus
 
 import pytest
 
@@ -401,13 +403,14 @@ class _Cred(Enum):
 
 
 class _StrCred(str, Enum):
-    """A str-mixin Enum is a str, but its name is matched too."""
+    """A str-mixin Enum member is a str: equal to its value, and matched by it."""
 
     SECRET = "s"
+    HEADER = "authorization"
 
 
 class _Slot(IntEnum):
-    """An IntEnum is an int, but its members still have names."""
+    """An IntEnum member is an int, equal to its value: matched as an int, never."""
 
     TOKEN = 1
     OTHER = 2
@@ -472,6 +475,9 @@ UNNAMED_KEYS = [
     _StrIsPassword(),
     _Cred.COLOR,
     _Slot.OTHER,
+    _Slot.TOKEN,
+    HTTPStatus.UNAUTHORIZED,
+    _StrCred.SECRET,
     _Perm(0),
     _Perm.READ | _Perm.WRITE,
     _IPerm(0),
@@ -479,6 +485,9 @@ UNNAMED_KEYS = [
     _Mode.READ,
     _Combo.A | _Combo.C,
     _Nameless.A,
+    _IPerm.TOKEN,
+    _IPerm.READ | _IPerm.TOKEN,
+    _IPerm(4) | _IPerm.TOKEN,
 ]
 UNNAMED_KEY_IDS = [
     "int",
@@ -490,13 +499,19 @@ UNNAMED_KEY_IDS = [
     "object",
     "enum",
     "int_enum",
+    "int_enum_sensitive_name",
+    "http_status",
+    "str_enum_sensitive_name",
     "flag_empty",
     "flag_composite",
     "int_flag_empty",
-    "int_flag_unknown_bits",
+    "int_flag_bits_without_member",
     "flag_with_zero_member",
     "flag_without_multi_bit_member",
     "enum_name_none",
+    "int_flag_sensitive_name",
+    "int_flag_composite",
+    "int_flag_unknown_bits",
 ]
 NAMED_KEYS = [
     b"password",
@@ -507,13 +522,10 @@ NAMED_KEYS = [
     frozenset({"secret"}),
     _Cred.PASSWORD,
     _Cred.LOOKUP,
-    _Slot.TOKEN,
-    _StrCred.SECRET,
+    _StrCred.HEADER,
     _Perm.SECRET,
     # Composites have no name on Python 3.10: matched by their members.
     _Perm.READ | _Perm.SECRET,
-    _IPerm.READ | _IPerm.TOKEN,
-    _IPerm(4) | _IPerm.TOKEN,
     _Combo.TOKEN_PAIR | _Combo.C,
     _Alias.READ,
 ]
@@ -526,12 +538,9 @@ NAMED_KEY_IDS = [
     "frozenset",
     "enum_name",
     "enum_value",
-    "int_enum",
-    "str_enum",
+    "str_enum_sensitive_value",
     "flag_member",
     "flag_composite",
-    "int_flag_composite",
-    "int_flag_unknown_bits",
     "flag_multi_bit_member",
     "flag_alias",
 ]
@@ -649,3 +658,71 @@ class TestNonStringKeys:
         value = [{1: "a", "password": "x"}]
 
         assert safe_serialize(value, sensitive_keys=frozenset()) == value
+
+
+class _IntMixin(int, Enum):
+    """Base for int-mixin members made in the sweep below."""
+
+
+class _StrMixin(str, Enum):
+    """Base for str-mixin members made in the sweep below."""
+
+
+_KIND_CASES: list[tuple[str, type[Enum], object, bool]] = [
+    # (kind, enum base, member value, a sensitive value matches)
+    ("int_enum", IntEnum, 1, False),
+    ("int_flag", IntFlag, 1, False),
+    ("int_mixin", _IntMixin, 1, False),
+    ("str_mixin", _StrMixin, "", True),
+    ("enum", Enum, "", True),
+    ("flag", Flag, 1, False),
+]
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+
+    _KIND_CASES.append(("str_enum", StrEnum, "", True))
+
+
+def _member(base: type[Enum], name: str, value: object) -> Enum:
+    """One member of a fresh ``base`` subclass."""
+    return base("_Kind", {name: value})[name]  # type: ignore[call-overload,no-any-return]  # functional API
+
+
+@pytest.mark.parametrize(
+    ("base", "value", "value_matches"),
+    [case[1:] for case in _KIND_CASES],
+    ids=[case[0] for case in _KIND_CASES],
+)
+@pytest.mark.parametrize(
+    ("name", "str_value"),
+    [
+        ("LABEL", "colour"),
+        ("TOKEN", "colour"),
+        ("LABEL", "api_key"),
+        ("TOKEN", "api_key"),
+    ],
+    ids=["plain", "sensitive_name", "sensitive_value", "both"],
+)
+def test_is_sensitive_key_with_enum_member_follows_what_the_key_equals(
+    base: type[Enum], value: object, value_matches: bool, name: str, str_value: str
+) -> None:
+    """A member that is an int or a str (IntEnum, IntFlag, str or int mixins,
+    StrEnum) equals and hashes like its value, so it is matched as that value:
+    an int never, a str by its text. Other members are matched by their name
+    (and a str value)."""
+    member = _member(base, name, str_value if isinstance(value, str) else value)
+    is_int_or_str = isinstance(member, (int, str))
+    expected = (
+        value_matches and str_value == "api_key"
+        if is_int_or_str
+        else name == "TOKEN" or (value_matches and str_value == "api_key")
+    )
+
+    assert _is_sensitive_key(member, DEFAULT_SENSITIVE_KEYS) is expected
+
+
+def test_scrub_dict_with_http_status_key_keeps_its_value() -> None:
+    """HTTPStatus.UNAUTHORIZED (401) is a status code, not a credential."""
+    data = {HTTPStatus.UNAUTHORIZED: "login again", HTTPStatus.OK: "fine"}
+
+    assert scrub_dict(data) == data
