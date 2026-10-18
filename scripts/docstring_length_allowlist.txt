@@ -1,0 +1,8 @@
+# Temporary: files with over-long docstrings that open PRs also touch, so they
+# are shortened after those PRs merge. Paths are relative to the repo root.
+# check_docstring_length.py fails once a listed file passes, so this only shrinks.
+src/stemtrace/core/graph.py  # remove when PRs #135, #136 and #138 merge
+src/stemtrace/library/signals.py  # remove when PRs #136 and #137 merge
+src/stemtrace/server/api/routes.py  # remove when PRs #135 and #138 merge
+src/stemtrace/server/consumer.py  # remove when PR #137 merges
+src/stemtrace/server/store.py  # remove when PR #135 merges

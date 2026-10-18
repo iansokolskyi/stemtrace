@@ -1,6 +1,6 @@
 """stemtrace: A lightweight Celery task flow visualizer.
 
-Usage:
+Example:
     import stemtrace
 
     # Worker instrumentation

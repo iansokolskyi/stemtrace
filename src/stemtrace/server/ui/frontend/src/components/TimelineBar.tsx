@@ -11,9 +11,10 @@ const stateColors: Record<string, string> = {
   RETRY: 'bg-amber-500',
   REVOKED: 'bg-purple-500',
   REJECTED: 'bg-red-600',
+  IGNORED: 'bg-zinc-500',
 }
 
-const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED'])
+const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED', 'IGNORED'])
 
 // Fixed state order for exact timestamp ties. Matches the server's
 // _STATE_ORDER (stemtrace/core/graph.py), so the UI agrees with the API order.
@@ -26,6 +27,7 @@ const STATE_PRIORITY: Record<string, number> = {
   FAILURE: 5,
   REJECTED: 6,
   REVOKED: 7,
+  IGNORED: 8,
 }
 
 const heightClasses = { sm: 'h-6', md: 'h-8', lg: 'h-10' }
@@ -35,6 +37,7 @@ const terminalIcons: Record<string, string> = {
   FAILURE: '×',
   REVOKED: '⊘',
   REJECTED: '⊘',
+  IGNORED: '–',
 }
 
 interface TimelineSegment {

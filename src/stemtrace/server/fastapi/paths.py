@@ -37,12 +37,11 @@ def _resolve_route_path(
 ) -> Callable[[Mapping[str, Any]], str]:
     """Starlette's own ``get_route_path`` if it has one, else the literal copy.
 
-    ``get_route_path`` is private, but present in every supported version
-    (starlette>=0.38.6 through 1.7.0) and it is what routing uses, so it is
-    preferred (see strip_root_path). The fallback keeps ``import stemtrace``
-    working if a future Starlette drops the symbol; it matches what 0.39.2+
-    does.
+    The private ``get_route_path`` is what routing uses, so it is preferred (see
+    strip_root_path); the fallback keeps ``import stemtrace`` working if a
+    future Starlette drops it.
     """
+    # Present in starlette 0.38.6 through 1.7.0; the copy matches 0.39.2+.
     found = getattr(module, "get_route_path", None)
     return found if callable(found) else _literal_route_path
 
@@ -66,14 +65,10 @@ def root_path_of(scope: Mapping[str, Any]) -> str:
 def strip_root_path(path: str, root_path: str) -> str:
     """Remove ``root_path`` from ``path`` exactly as the installed Starlette does.
 
-    Delegates to ``starlette._utils.get_route_path`` when it exists, the function
-    ``Router``/``Mount`` match routes with, so auth decisions always see the
-    path routing sees. Its behavior differs across supported versions:
-    starlette 0.38.6-0.39.1 strip with an unescaped regex (a "." in root_path
-    matches any character), 0.39.2+ (checked up to 1.7.0) strip a literal
-    prefix at a segment boundary. A private copy of either would let a request
-    route to a protected endpoint while the middleware sees another path
-    (e.g. root_path "/api.v1" and path "/apiXv1/stemtrace/api/tasks" on 0.38).
+    Delegates to ``starlette._utils.get_route_path``, which ``Router``/``Mount``
+    match with, so auth decisions see the path routing sees. A private copy
+    could disagree with the installed version and let a request reach a
+    protected route while the middleware sees another path.
 
     Args:
         path: Decoded (or raw) request path from the scope.
@@ -82,6 +77,8 @@ def strip_root_path(path: str, root_path: str) -> str:
     Returns:
         The path routing matches against.
     """
+    # starlette 0.38.6-0.39.1 strip with an unescaped regex ("." matches any
+    # character); 0.39.2+ strip a literal prefix at a segment boundary.
     return _get_route_path({"type": "http", "path": path, "root_path": root_path})
 
 
@@ -118,14 +115,10 @@ def cookie_path_for(scope: Mapping[str, Any], cookie_path: str) -> str:
 def is_misplaced_asset_path(path: str) -> bool:
     """Whether a path reaches into an ``assets`` segment that isn't the bundle's.
 
-    The UI bundle is only served from the UI root's ``assets/`` (e.g.
-    ``/assets/x.js`` for ``stemtrace server``, ``/stemtrace/assets/x.js``
-    embedded); callers check that location first. Any other path with an
-    ``assets`` segment before its last one (``/stemtrace/assets/x.js`` on the
-    CLI, ``/stemtrace/tasks/assets/x.js``) is never a UI page, so it gets a
-    404 rather than the HTML shell or a login redirect, which a browser would
-    try to run as a script or stylesheet. Only apply it to UI/static paths:
-    API paths can legitimately contain "assets" (a task id).
+    Such a path (``/stemtrace/tasks/assets/x.js``) is never a UI page, so it
+    gets a 404 rather than the HTML shell a browser would run as a script.
+    Callers check the bundle's own ``assets/`` first, and must not apply this
+    to API paths (a task id may be "assets").
 
     Args:
         path: UI request path, absolute or relative to the UI root.

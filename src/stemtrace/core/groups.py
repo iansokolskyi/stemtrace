@@ -115,9 +115,8 @@ class ResolvedGroup(BaseModel):
 def automatic_group(task_name: str) -> str:
     """Derive a task's group from its dotted name.
 
-    Only module segments (all but the last, which is the task function) can
-    name a group; otherwise every task would be its own group. Leading generic
-    module segments (:data:`GENERIC_SEGMENTS`) are skipped, so
+    Only module segments (not the last, the task function) can name a group.
+    Leading generic segments (:data:`GENERIC_SEGMENTS`) are skipped, so
     ``tasks.search.reindex`` and ``search.tasks.reindex`` both give ``search``.
     Empty segments and surrounding whitespace are ignored.
 

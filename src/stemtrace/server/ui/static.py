@@ -137,13 +137,10 @@ def _rewrite_html_for_prefix(
 def _contained_frontend_path(path: str) -> str | None:
     """Confine a request path to the frontend directory, lexically.
 
-    The request path is user-controlled. It is joined onto the resolved
-    frontend directory and normalized as a string (dot-segments collapsed,
-    no symlink resolution), then accepted only if the result is still under
-    that directory. The filesystem is never touched for the candidate before
-    this check passes. Symlinks inside the frontend directory are trusted and
-    followed when the file is served (they come from the installed package,
-    e.g. symlink-mode installs), since only the request path is untrusted.
+    The user-controlled path is joined and normalized as a string (no symlink
+    resolution) and accepted only if still under the directory; the filesystem
+    isn't touched before that. Symlinks inside the directory are trusted: they
+    come from the installed package (e.g. symlink-mode installs).
 
     Args:
         path: Path parameter taken from the request URL.
@@ -267,13 +264,10 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
     async def serve_spa(path: str, request: Request) -> FileResponse | HTMLResponse:
         """Serve static files or fall back to index.html for SPA routing.
 
-        Only regular files under the frontend directory are served. Paths
-        that normalize to a location outside of it get a 404, and so do
-        non-file paths under ``assets/`` (served without a session, so they
-        must not return the app shell) and paths with an ``assets`` segment
-        anywhere else (e.g. ``stemtrace/assets/x.js``); any other path that is not a servable
-        file (missing, a directory, or not inspectable) falls back to
-        index.html so client-side routes keep working.
+        Only regular files under the frontend directory are served. Escaping
+        paths, non-file paths under ``assets/`` (served without a session) and
+        misplaced ``assets`` segments get a 404, never the app shell; any other
+        non-file path falls back to index.html for client-side routes.
         """
         file_path = _contained_frontend_path(path)
         if file_path is None:
