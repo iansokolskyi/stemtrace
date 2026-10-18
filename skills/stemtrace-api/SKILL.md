@@ -118,7 +118,8 @@ Registry `status` is `active` (ran and registered), `never_run` or `not_register
   `state=` takes one state or a comma-separated list (`state=FAILURE,RETRY`), in any case. An
   unknown state is a `422` that lists the valid ones.
 - `within=1h` (`30s`, `15m`, `6h`, `7d`) is a shorter way to say "since an hour ago" than
-  `from_date`, on tasks, graphs and the summary endpoints; pass one or the other.
+  `from_date`, on tasks, graphs and the summary endpoints; pass one or the other (the overview
+  takes `within` only).
 - `state` is the task's **current** state: a task that failed and then succeeded on retry is
   `SUCCESS`; one waiting to retry is `RETRY`.
 - `name` is a case-insensitive substring (`name=charge` matches `billing.charge_card`);

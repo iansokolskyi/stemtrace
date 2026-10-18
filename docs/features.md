@@ -205,8 +205,8 @@ Limitations:
 ## Summary endpoints
 
 Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page
-through every task. A task counts at the time of its last event (the final event once it
-finished) and under its current state, so a task that failed and then succeeded on retry counts
+through every task. A task counts at the time of its latest event and under its
+current state, so a task that failed and then succeeded on retry counts
 as a SUCCESS. Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now,
 or, on the time series and failures, from `from_date` (pass one or the other). A time without
 a timezone is UTC. A date alone (`2026-10-18`) means its UTC midnight on current pydantic
