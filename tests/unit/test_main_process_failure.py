@@ -164,3 +164,18 @@ def test_remembered_request_holds_no_arguments() -> None:
 
     assert remembered is not None
     assert getattr(remembered, "args", None) is None
+
+
+@pytest.mark.parametrize(
+    "request_dict",
+    [None, "not-a-dict", {"retries": 1}, {"id": 7, "retries": 1}],
+    ids=["missing", "not-a-dict", "no-id", "non-string-id"],
+)
+def test_request_without_a_usable_id_is_not_remembered(request_dict: object) -> None:
+    # A receiver of task_received from another producer's request shape.
+    request = ReceivedRequest("task-1", retries=3, hostname="celery@w1")
+    request.request_dict = request_dict  # type: ignore[assignment]  # malformed on purpose
+    task_received.send(sender=object(), request=request)
+
+    assert dict(signals_module._received_requests) == {}
+    assert _fail_from_main_process("task-1").retries == 0
