@@ -82,8 +82,9 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   page). Nothing in front of stemtrace (e.g. an auth proxy that forwards its own token) may add
   an `Authorization: Bearer` header: stemtrace treats it as a wrong key, even next to a valid
   session, and wrong keys lock out the proxy's IP, login included.
-- **With a custom `auth_dependency`**, the key *or* the dependency's credentials let a JSON API
-  request in. A request whose Bearer token is the key skips the dependency. Every other request
+- **With a custom `auth_dependency`**, which must be a `Depends(...)` or `Security(...)` (a
+  plain function or other callable raises `ConfigurationError` at setup), the key *or* the
+  dependency's credentials let a JSON API request in. A request whose Bearer token is the key skips the dependency. Every other request
   goes to the dependency, which works as it does without a key (its sub-dependencies,
   `dependency_overrides` and `yield` included), so it can read the `Authorization` header
   itself, for example for OAuth2 Bearer tokens or `require_basic_auth`. The OpenAPI schema (and
@@ -94,7 +95,8 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key
   described here is the one built into the server.
 - **With a custom `auth_dependency` and the login page**, only the key skips the session check.
-  Every other request needs a session cookie *and* the dependency, as without a key, whatever
+  Every other request except the liveness probe needs a session cookie *and* the dependency,
+  as without a key, whatever
   `Authorization` header it carries: a request without a session gets `401`, so
   `require_basic_auth` credentials alone are not enough until the browser has signed in.
 - **Errors.** Without a custom `auth_dependency`, a missing or wrong key gets `401` with
@@ -111,7 +113,9 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   a wrong key unless the dependency lets the request in. Any other answer counts: `401`, `403`,
   `422`, a redirect, `400`, `404`, `5xx`, the dependency's own `429`, and an unhandled error in
   the dependency, so a failing token decoder can't be used to guess keys for free. An error of
-  the endpoint after the dependency admitted the request doesn't count. The trade-off: while the
+  the endpoint after the dependency admitted the request doesn't count, and neither does an
+  error raised after a `yield` dependency has yielded, because that dependency admits at its
+  `yield` (a limit of how FastAPI runs it). The trade-off: while the
   dependency fails (an identity provider outage, say), the app's own tokens that are exactly as
   long as the key count as wrong keys and can lock their IP out. Tokens of any other length
   never count. With the login page on, a wrong key without a session gets `401` and counts too.

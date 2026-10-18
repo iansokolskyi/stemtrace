@@ -153,3 +153,12 @@ def test_a_session_signed_by_another_process_says_why_it_was_refused() -> None:
         "detail": "Authentication required",
         "reason": SESSION_SECRET_MISMATCH_REASON,
     }
+
+
+def test_the_liveness_probe_needs_the_dependency_but_no_session() -> None:
+    live = "/stemtrace/api/health/live"
+    with _client(Depends(_current_user)) as client:
+        assert client.get(live, headers=APP_TOKEN).status_code == 200
+        refused = client.get(live, headers=JUNK)
+        assert (refused.status_code, refused.json()) == (401, {"detail": "Bad token"})
+        assert client.get(live, headers=BEARER).status_code == 200

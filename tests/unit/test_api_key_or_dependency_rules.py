@@ -456,3 +456,22 @@ def test_openapi_keeps_the_hosts_security_schemes_and_hides_the_key_copies() -> 
         for _, _, operation in operations
     )
     assert with_key == baseline
+
+
+def test_an_error_after_a_yield_dependency_yielded_is_no_failed_key() -> None:
+    """The dependency admits at its ``yield``, so a later error isn't a refusal."""
+
+    async def fails_late() -> AsyncIterator[None]:
+        yield
+        raise RuntimeError("cleanup failed")
+
+    app, _ = _build(Depends(fails_late))
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        codes = {
+            client.get(API, headers=_wrong_key(i)).status_code for i in range(ATTEMPTS)
+        }
+        valid = client.get(API, headers=BEARER)
+
+    assert 429 not in codes
+    assert valid.status_code == 200

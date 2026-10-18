@@ -106,7 +106,9 @@ def include_key_or_dependency(
     never a key attempt and goes straight to the dependency.
     """
 
-    def _admitted(request: Request, _result: Any = auth_dependency) -> None:
+    async def _admitted(request: Request, _result: Any = auth_dependency) -> None:
+        # ``auth_dependency`` is a Depends (checked in ``create_router``), or
+        # FastAPI would read the default as a query parameter and never run it.
         # Runs only after ``auth_dependency`` returned: FastAPI skips a
         # dependency whose own sub-dependency failed (0.112.1 and 0.143.1,
         # ``solve_dependencies``), and caches it, so it runs once per request.

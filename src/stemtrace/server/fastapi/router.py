@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, params
 
+from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.websocket import create_websocket_router
 from stemtrace.server.fastapi.api_key import (
@@ -50,7 +51,8 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         ws_manager: WebSocket manager; a new one if None.
         worker_registry: Worker registry; a new one if None.
         broker_url: Celery broker URL for on-demand worker inspection.
-        auth_dependency: FastAPI dependency applied to the JSON API routes.
+        auth_dependency: A ``Depends(...)`` or ``Security(...)`` applied to the
+            JSON API routes.
         form_auth_config: Cookie-session configuration for the API and WebSocket.
         node_alias_from_arguments: Key to derive graph node display names from
             task arguments (digit string for args[index], else kwargs[key]).
@@ -65,8 +67,14 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     Raises:
         ConfigurationError: Here, not on the first request, if ``groups`` is
             invalid or its file can't be loaded, or ``api_key`` is shorter
-            than 16 characters or has characters other than visible ASCII.
+            than 16 characters or has characters other than visible ASCII, or
+            ``auth_dependency`` isn't a ``Depends(...)`` or ``Security(...)``.
     """
+    if auth_dependency is not None and not isinstance(auth_dependency, params.Depends):
+        raise ConfigurationError(
+            "auth_dependency must be a FastAPI dependency: wrap the callable in "
+            "Depends(...), e.g. auth_dependency=Depends(require_admin)."
+        )
     if store is None:
         store = GraphStore()
     if ws_manager is None:
