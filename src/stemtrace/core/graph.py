@@ -305,28 +305,21 @@ class TaskNode(BaseModel):
 
         The replacement reuses the ID with ``retries`` 0 but reports the task, or a
         task below it, as parent; the graph decides the task's own parent regardless
-        of clocks (``reported_parent_id``). Without parent IDs (protocol 1), the
-        task's earliest sent event and STARTED stand for its own.
+        of clocks (``reported_parent_id``). Without parent IDs (protocol 1, or a
+        root task), the task's earliest events stand for its own.
         """
         first = [e for e in self.events if e.retries == 0]
         if all(e.parent_id is None for e in first):
             # Protocol 1 sends no parent_id (celery 5.6.3 app/amqp.py as_task_v1). A
-            # replacement is only sent while the task runs, so before the first
-            # STARTED every event is the task's own; after it, the earliest STARTED
-            # and sent event are, as long as the clocks agree.
-            sent = sorted(
-                (e for e in first if _is_pre_start(e)), key=lambda e: e.timestamp
-            )
-            started = [e for e in first if e.state == TaskState.STARTED]
-            if not started:
-                return sent
-            return [min(started, key=lambda e: e.timestamp), *sent[:1]]
-        own_parent = self.reported_parent_id
-        replaced = any(e.parent_id not in (None, own_parent) for e in first)
-        # An older sender's PENDING carries no parent. Once the ID also carries a
-        # replacement, an unparented event may be the replacement's: leave them out.
-        allowed = (own_parent,) if replaced else (None, own_parent)
-        return [e for e in first if e.parent_id in allowed]
+            # replacement is only sent while the task runs, so the earliest event of
+            # each state is the task's own, as long as the clocks agree.
+            return [
+                min(events, key=lambda e: e.timestamp)
+                for state in (TaskState.STARTED, *_PRE_START)
+                if (events := [e for e in first if e.state == state])
+            ]
+        # An older sender's PENDING carries no parent.
+        return [e for e in first if e.parent_id in (None, self.reported_parent_id)]
 
     @property
     def eta(self) -> datetime | None:

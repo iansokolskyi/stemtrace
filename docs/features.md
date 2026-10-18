@@ -194,15 +194,14 @@ Limitations:
   sender's starts the task late by the offset, and one ahead starts it early; `queue_wait_ms`
   counts from the ETA by the worker's clock, so it doesn't show that offset.
 - With Celery's message protocol 1 (`task_protocol = 1`), task messages carry no parent ID
-  (Celery 5.6.3 `app/amqp.py` `as_task_v1`), and neither do PENDING events from workers before
-  stemtrace 0.4.0. Without parent IDs, the server can't tell a task's events from those of a
-  replacement it started with `task.replace()`, so it reads the ETA and the wait from the task's
-  earliest STARTED and earliest sent event. For a task replaced by one sent with a `countdown`,
-  `eta` and `queue_wait_ms` can then come from the replacement: when the sending process's clock
-  is ahead of the worker's, when the replacement runs on a worker whose clock is behind, or when
-  the task's own PENDING was missed. With Celery's default protocol 2 and stemtrace 0.4.0 or
-  later in the workers and the sending code, events carry parent IDs and the task's own values
-  are used whatever the clocks.
+  (Celery 5.6.3 `app/amqp.py` `as_task_v1`), so the server can't tell a task's events from
+  those of a replacement it started with `task.replace()`. It reads the ETA and the wait from the
+  task's earliest STARTED and earliest sent events instead. For a task replaced by one sent with
+  a `countdown`, `eta` and `queue_wait_ms` can then come from the replacement: when the sending
+  process's clock is ahead of the worker's, when the replacement runs on a worker whose clock is
+  behind, or when the task's own PENDING or STARTED was missed. With Celery's default protocol 2,
+  the replacement's events report the task (or a task below it) as their parent, so the task's
+  own values are used whatever the clocks.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
