@@ -75,8 +75,10 @@ pages work even if the server missed `worker_ready` events.
   all a stopped worker stays online until the next event or inspect. Limitations: a task that
   runs longer than 3 minutes without other events from its worker lets the worker show offline
   until its next event (stemtrace has no worker heartbeat; a solo worker can't answer inspect
-  meanwhile either), and so does a worker clock more than 3 minutes behind the server's. Event
-  times ahead of the server's clock count as now. Workers older than 0.4.1 send no worker name
+  meanwhile either). A worker clock behind the server's shortens the 3-minute window by that
+  much (3 minutes or more: task events don't help). Task event times ahead of the server's
+  clock count as now; a `worker_ready` time ahead of it does not, so a worker killed within
+  that much time of starting stays online longer. Workers older than 0.4.1 send no worker name
   on task events, so only inspect keeps them online.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
