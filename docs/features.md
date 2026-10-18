@@ -173,13 +173,17 @@ also split it up:
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
 - `runtime_ms` and `total_runtime_ms` are set once the task finishes, and are equal for a task
-  that ran once. A run that Celery started again after losing the broker connection counts in
-  `total_runtime_ms`. Values are whole milliseconds, truncated.
+  that ran once. Values are whole milliseconds, truncated.
+- With `worker_cancel_long_running_tasks_on_connection_loss=True`, a run that Celery cancels
+  after losing the broker connection, and starts again, counts in `total_runtime_ms`. With the
+  default (`False`, Celery 5.6.3 `app/defaults.py`), the first run keeps going while the message
+  is delivered again: on the same worker both fields are empty, and on another worker the first
+  run is left out.
 - Fields are empty when the events they need are missing: `queue_wait_ms` without a PENDING
   (the code that sent the task doesn't run stemtrace) and without RECEIVED (off by default), or
   without the first STARTED; `runtime_ms` without the last run's STARTED, for a task revoked
-  before it started, or when the final event's worker already ended that attempt once (see the
-  limitations). GROUP and CHORD nodes have none.
+  before it started, or when the final event's worker already finished that attempt once (see
+  the limitations). GROUP and CHORD nodes have none.
 - They are computed on the server from the events it already has, so they also appear for tasks
   recorded by older workers. The code that sends a task records its ETA on PENDING, and the
   worker records it on its own events. If neither runs this release, `queue_wait_ms` counts a
@@ -231,11 +235,13 @@ Limitations:
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run.
   Without parent IDs, a RECEIVED stamped after the task's first STARTED doesn't count, so a
   clock stepping back between the two leaves `queue_wait_ms` empty when the task has no PENDING.
-- When a worker already ended the final event's attempt once, both runtime fields are empty:
-  the events can't tell which start goes with which end. That happens when Celery delivers a
-  finished attempt to the same worker again (a Redis visibility-timeout redelivery), or
-  announces REVOKED for a run that already finished (`revoke(terminate=True)`). Workers up to
-  0.4.0 send no `hostname`, so their events are paired as before.
+- When a worker already finished the final event's attempt once (SUCCESS, FAILURE, REVOKED,
+  REJECTED or IGNORED; a RETRY doesn't count), both runtime fields are empty: the events can't
+  tell which start goes with which end. That happens when Celery delivers a finished attempt to
+  the same worker again (a Redis visibility-timeout redelivery), or announces REVOKED for a run
+  that already finished (`revoke(terminate=True)`). While the run delivered again is still
+  running, its runtime can be wrong until it ends. Workers up to 0.4.0 send no `hostname`, so
+  their events are paired as before.
 - Workers up to 0.4.0 send no `hostname`, and the main-process FAILURE of workers up to 0.4.1
   has none and `retries=0` whatever the attempt. For those events, a run's start and end can
   come from two workers' clocks: with the second worker's clock behind, runtimes can come out
