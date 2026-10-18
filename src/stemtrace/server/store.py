@@ -115,6 +115,7 @@ def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
     }
 
     def top(node_id: str) -> str:
+        """The outermost container holding ``node_id``, or ``node_id`` itself."""
         seen: set[str] = set()
         while node_id in owner and node_id not in seen:
             seen.add(node_id)
