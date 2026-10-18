@@ -48,7 +48,7 @@ def _chord_reasons(graph: TaskGraph) -> dict[str, str | None]:
 
 
 # A reason only ever appears or moves up this order; it never clears.
-_REASON_RANK = {None: 0, "header_revoked": 1, "header_failed": 2}
+_REASON_RANK = {None: 0, "header_ignored": 1, "header_revoked": 2, "header_failed": 3}
 
 
 @pytest.mark.parametrize("flow", sorted(f for f in _CAPTURES if "chord" in f))
@@ -75,15 +75,25 @@ def test_chord_not_run_reasons_never_clear_while_events_arrive(flow: str) -> Non
                 seen[node_id] = reason
 
 
-@pytest.mark.parametrize("flow", ["chord_failed_header", "chord_failed_header_subtask"])
-def test_chord_not_run_reason_real_failed_header_in_any_order(flow: str) -> None:
+_NOT_RUN = {
+    "chord_failed_header": "header_failed",
+    "chord_failed_header_subtask": "header_failed",
+    "chord_rejected_header": "header_failed",
+    "chord_ignored_header": "header_ignored",
+}
+
+
+@pytest.mark.parametrize(("flow", "expected"), sorted(_NOT_RUN.items()))
+def test_chord_not_run_reason_real_header_outcome_in_any_order(
+    flow: str, expected: str
+) -> None:
     for order in _orders(_CAPTURES[flow]):
-        assert set(_reasons(order).values()) == {"header_failed"}
+        assert set(_reasons(order).values()) == {expected}
 
 
 @pytest.mark.parametrize(
     "flow",
-    sorted(f for f in _CAPTURES if "chord" in f and "failed_header" not in f),
+    sorted(f for f in _CAPTURES if "chord" in f and f not in _NOT_RUN),
 )
 def test_chord_not_run_reason_real_chord_whose_callback_ran_has_none(flow: str) -> None:
     # Some Celery 5.2 captures show a chord as a plain group (no CHORD node).
@@ -116,6 +126,11 @@ def _header(task_id: str, state: TaskState) -> TaskEvent:
         ((TaskState.SUCCESS, TaskState.REJECTED), "header_failed"),
         ((TaskState.REVOKED, TaskState.FAILURE), "header_failed"),
         ((TaskState.FAILURE, TaskState.REVOKED), "header_failed"),
+        ((TaskState.SUCCESS, TaskState.IGNORED), "header_ignored"),
+        ((TaskState.IGNORED, TaskState.REVOKED), "header_revoked"),
+        ((TaskState.REVOKED, TaskState.IGNORED), "header_revoked"),
+        ((TaskState.IGNORED, TaskState.REJECTED), "header_failed"),
+        ((TaskState.FAILURE, TaskState.IGNORED), "header_failed"),
         ((TaskState.SUCCESS, TaskState.REVOKED), "header_revoked"),
         ((TaskState.REVOKED, TaskState.REVOKED), "header_revoked"),
         # the other header hasn't finished, but the callback can't run any more
