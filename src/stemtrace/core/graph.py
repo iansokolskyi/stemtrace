@@ -210,6 +210,10 @@ ChordNotRunReason = Literal["header_failed", "header_revoked", "header_ignored"]
 revoked, or raised ``Ignore``."""
 
 # A header's state -> the reason it gives, and which reason wins (higher).
+# celery 5.6.3: every chord path joins header results with propagate=True
+# (backends redis.py/base.py on_chord_part_return, builtins.py unlock_chord);
+# handle_reject and handle_ignore (app/trace.py) only log, so the chord never
+# completes. Workers publish REJECTED only when the message won't run again.
 _HEADER_REASONS: dict[TaskState, tuple[int, ChordNotRunReason]] = {
     TaskState.FAILURE: (3, "header_failed"),
     TaskState.REJECTED: (3, "header_failed"),
@@ -2520,24 +2524,10 @@ def chord_not_run_reasons(
 ) -> dict[str, ChordNotRunReason]:
     """Why each chord's callback will never run, by CHORD node ID.
 
-    Celery checks a chord's header results with ``propagate=True`` on every
-    path (celery 5.6.3 backends/redis.py and backends/base.py
-    ``on_chord_part_return``, app/builtins.py ``unlock_chord``), so one
-    failed or revoked header means the callback won't run, even while other
-    headers still run. A rejected header never reports its part
-    (app/trace.py ``handle_reject`` only logs), so unless its message runs
-    again the chord never completes and the callback doesn't run either;
-    workers publish REJECTED only for a message that won't run again (a
-    requeued one publishes nothing). A header that raised ``Ignore``
-    doesn't report its part either (app/trace.py ``handle_ignore`` only
-    logs), so the chord never completes, unless the task reported its result
-    itself (``backend.mark_as_done``) first; then the callback runs and is
-    drawn, which clears the reason. A header is a task of the chord's group
-    whose events named a callback. A failed or rejected header wins over a
-    revoked one, and a revoked one over an ignored one, so a reason can move
-    up that order as headers end, and it never clears unless a callback is
-    drawn. CHORD nodes whose callback ran (``chord_id`` set) or that have no
-    such header are left out. ``nodes`` must hold the chord's whole graph.
+    A header (a group task whose events named a callback) that failed, was
+    rejected, revoked or ignored means Celery won't run the callback, even
+    while other headers run; the worst outcome wins and never clears unless a
+    callback is drawn. ``nodes`` must hold the chord's whole graph.
     """
     by_group: dict[str, tuple[int, ChordNotRunReason]] = {}
     for node in nodes.values():
