@@ -2,9 +2,9 @@
 
 One key (``init_app(api_key=...)``, ``--api-key`` or ``STEMTRACE_API_KEY``) lets
 scripts and coding agents read the API without the browser login. With form login,
-a valid session cookie *or* the key passes; with a custom ``auth_dependency``, a
-JSON API request needs both (FastAPI runs every router dependency), while the
-WebSocket needs only the key. Failed attempts are throttled per client IP by the
+a valid session cookie *or* the key passes; with a custom ``auth_dependency``, the
+key or the dependency lets a JSON API request in (see ``key_or_dependency``),
+while the WebSocket needs the key. Failed attempts are throttled per client IP by the
 login's ``LoginThrottle``. The key is never logged. See docs/security.md.
 """
 
@@ -149,7 +149,7 @@ class ApiKeyGuard:
         self._throttle = throttle
 
     def check(self, token: str | None, client_ip: str | None) -> KeyCheck:
-        """Check a presented key.
+        """Check a presented key, counting a wrong one as a failure.
 
         The lockout is checked before the key, as ``POST /login`` does:
         otherwise a locked-out client could still tell right keys from wrong
@@ -161,21 +161,37 @@ class ApiKeyGuard:
             client_ip: Client address; None skips throttling (e.g. a Unix
                 socket), as the login does.
         """
+        result = self.peek(token, client_ip)
+        if result.status is not KeyStatus.INVALID:
+            return result
+        self.record_failure(client_ip)
+        return self.peek(token, client_ip)
+
+    def peek(self, token: str | None, client_ip: str | None) -> KeyCheck:
+        """Check a presented key like :meth:`check`, without counting a failure."""
         if token is None:
             return KeyCheck(KeyStatus.ABSENT)
-        attempt = LoginAttempt(
-            client_ip=client_ip or None, username=None, device_id=None
-        )
-        wait = self._throttle.retry_after(attempt)
+        wait = self._throttle.retry_after(_attempt(client_ip))
         if wait:
             return KeyCheck(KeyStatus.THROTTLED, wait)
         if secrets.compare_digest(token.encode("utf-8"), self._key):
             return KeyCheck(KeyStatus.VALID)
-        self._throttle.record_failure(attempt)
-        wait = self._throttle.retry_after(attempt)
-        if wait:
-            return KeyCheck(KeyStatus.THROTTLED, wait)
         return KeyCheck(KeyStatus.INVALID)
+
+    def record_failure(self, client_ip: str | None) -> None:
+        """Count a wrong key from ``client_ip`` toward its lockout."""
+        self._throttle.record_failure(_attempt(client_ip))
+
+    def could_be_key(self, token: str) -> bool:
+        """Whether ``token`` has the key's length (a token of another length is never it).
+
+        ``compare_digest`` doesn't hide lengths either, so this reveals nothing new.
+        """
+        return len(token.encode("utf-8")) == len(self._key)
+
+
+def _attempt(client_ip: str | None) -> LoginAttempt:
+    return LoginAttempt(client_ip=client_ip or None, username=None, device_id=None)
 
 
 def has_valid_session(cookies: dict[str, str], config: FormAuthConfig | None) -> bool:

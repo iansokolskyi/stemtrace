@@ -13,6 +13,7 @@ from stemtrace.server.fastapi.api_key import (
     api_key_dependency,
     normalize_api_key,
 )
+from stemtrace.server.fastapi.key_or_dependency import include_key_or_dependency
 from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.websocket import WebSocketManager
@@ -39,8 +40,9 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     """Create API router. For embedded consumer, use StemtraceExtension.
 
     With ``form_auth_config``, a valid session cookie is accepted instead of the
-    API key. With ``auth_dependency`` too, a JSON API request needs both; the
-    WebSocket (not covered by ``auth_dependency``) needs the key.
+    API key. With ``auth_dependency`` too, the key or the dependency lets a JSON
+    API request in; the WebSocket (not covered by ``auth_dependency``) needs
+    the key.
 
     Args:
         store: Graph store to serve; a new empty one if None.
@@ -89,13 +91,21 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         ws_manager, form_auth_config=form_auth_config, api_key_guard=guard
     )
 
-    dependencies: list[Any] = []
-    if guard is not None:
-        dependencies.append(api_key_dependency(guard, form_auth_config))
-    if auth_dependency is not None:
-        dependencies.append(auth_dependency)
-
-    router.include_router(api_router, dependencies=dependencies)
+    if guard is not None and auth_dependency is not None:
+        include_key_or_dependency(
+            router,
+            api_router,
+            guard=guard,
+            form_auth_config=form_auth_config,
+            auth_dependency=auth_dependency,
+        )
+    elif guard is not None:
+        router.include_router(
+            api_router, dependencies=[api_key_dependency(guard, form_auth_config)]
+        )
+    else:
+        dependencies = [auth_dependency] if auth_dependency is not None else []
+        router.include_router(api_router, dependencies=dependencies)
     router.include_router(ws_router)
 
     return router
