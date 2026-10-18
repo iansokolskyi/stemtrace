@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType, TaskGraph, chord_not_run_reason
+from stemtrace.core.graph import NodeType, TaskGraph, TaskNode, chord_not_run_reasons
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore
 
@@ -34,11 +34,45 @@ def _reasons(events: list[dict[str, Any]]) -> dict[str, str | None]:
     graph = TaskGraph()
     for event in events:
         graph.add_event(TaskEvent.model_validate(event))
+    return _chord_reasons(graph)
+
+
+def _chord_reasons(graph: TaskGraph) -> dict[str, str | None]:
+    """Every CHORD node's reason, None included."""
+    reasons = chord_not_run_reasons(graph.nodes)
     return {
-        node_id: chord_not_run_reason(node, graph.nodes)
+        node_id: reasons.get(node_id)
         for node_id, node in graph.nodes.items()
         if node.node_type == NodeType.CHORD
     }
+
+
+# A reason only ever appears or moves up this order; it never clears.
+_REASON_RANK = {None: 0, "header_revoked": 1, "header_failed": 2}
+
+
+@pytest.mark.parametrize("flow", sorted(f for f in _CAPTURES if "chord" in f))
+def test_chord_not_run_reasons_never_clear_while_events_arrive(flow: str) -> None:
+    """Celery decides a chord's fate at its first failed header (every chord
+    path joins the header results with propagate=True: celery 5.6.3
+    backends/redis.py and backends/base.py ``on_chord_part_return``,
+    app/builtins.py ``unlock_chord``). Headers still queued have only a
+    PENDING event, which names no chord, so a rule waiting for "every header"
+    showed a reason, cleared it when the next header started, and showed it
+    again."""
+    for order in _orders(_CAPTURES[flow]):
+        graph, seen = TaskGraph(), {}
+        for event in order:
+            graph.add_event(TaskEvent.model_validate(event))
+            for node_id, reason in _chord_reasons(graph).items():
+                before = seen.get(node_id)
+                assert _REASON_RANK[reason] >= _REASON_RANK[before], (
+                    flow,
+                    node_id,
+                    before,
+                    reason,
+                )
+                seen[node_id] = reason
 
 
 @pytest.mark.parametrize("flow", ["chord_failed_header", "chord_failed_header_subtask"])
@@ -67,6 +101,11 @@ def _ev(task_id: str, state: TaskState, seconds: int = 0, **kwargs: Any) -> Task
 
 
 def _header(task_id: str, state: TaskState) -> TaskEvent:
+    """A header's event as a worker sends it. The sender's PENDING names no
+    group or chord (``after_task_publish`` gets neither: see the PENDING
+    events of ``chord_failed_header`` in celery_flows.json)."""
+    if state == TaskState.PENDING:
+        return _ev(task_id, state)
     return _ev(task_id, state, group_id="g", chord_callback_id="cb")
 
 
@@ -76,10 +115,14 @@ def _header(task_id: str, state: TaskState) -> TaskEvent:
         ((TaskState.SUCCESS, TaskState.FAILURE), "header_failed"),
         ((TaskState.SUCCESS, TaskState.REJECTED), "header_failed"),
         ((TaskState.REVOKED, TaskState.FAILURE), "header_failed"),
+        ((TaskState.FAILURE, TaskState.REVOKED), "header_failed"),
         ((TaskState.SUCCESS, TaskState.REVOKED), "header_revoked"),
-        # not over yet: the callback may still run
-        ((TaskState.STARTED, TaskState.FAILURE), None),
-        ((TaskState.PENDING, TaskState.REVOKED), None),
+        ((TaskState.REVOKED, TaskState.REVOKED), "header_revoked"),
+        # the other header hasn't finished, but the callback can't run any more
+        ((TaskState.STARTED, TaskState.FAILURE), "header_failed"),
+        ((TaskState.RETRY, TaskState.REVOKED), "header_revoked"),
+        ((TaskState.STARTED, TaskState.SUCCESS), None),
+        ((TaskState.RETRY, TaskState.SUCCESS), None),
         ((TaskState.SUCCESS, TaskState.SUCCESS), None),
     ],
 )
@@ -90,7 +133,20 @@ def test_chord_not_run_reason_from_header_states(
     for i, state in enumerate(states):
         graph.add_event(_header(f"h{i}", state))
 
-    assert chord_not_run_reason(graph.nodes["group:g"], graph.nodes) == expected
+    assert chord_not_run_reasons(graph.nodes).get("group:g") == expected
+
+
+def test_chord_not_run_reason_with_a_header_still_queued() -> None:
+    """A queued header has only its PENDING, which doesn't make it a header yet."""
+    graph = TaskGraph()
+    for event in (
+        _header("h0", TaskState.PENDING),
+        _header("h1", TaskState.STARTED),
+        _header("h1", TaskState.FAILURE),
+    ):
+        graph.add_event(event)
+
+    assert chord_not_run_reasons(graph.nodes) == {"group:g": "header_failed"}
 
 
 def test_chord_not_run_reason_none_when_callback_drawn() -> None:
@@ -103,7 +159,7 @@ def test_chord_not_run_reason_none_when_callback_drawn() -> None:
         graph.add_event(event)
     assert graph.nodes["group:g"].chord_id == "cb"
 
-    assert chord_not_run_reason(graph.nodes["group:g"], graph.nodes) is None
+    assert chord_not_run_reasons(graph.nodes) == {}
 
 
 def test_chord_not_run_reason_none_for_task_and_group_nodes() -> None:
@@ -115,8 +171,7 @@ def test_chord_not_run_reason_none_for_task_and_group_nodes() -> None:
         graph.add_event(event)
 
     assert graph.nodes["group:g"].node_type == NodeType.GROUP
-    assert chord_not_run_reason(graph.nodes["group:g"], graph.nodes) is None
-    assert chord_not_run_reason(graph.nodes["m0"], graph.nodes) is None
+    assert chord_not_run_reasons(graph.nodes) == {}
 
 
 def _client(store: GraphStore) -> TestClient:
@@ -161,4 +216,60 @@ def test_chord_not_run_reason_counts_only_headers() -> None:
     ):
         graph.add_event(event)
 
-    assert chord_not_run_reason(graph.nodes["group:g"], graph.nodes) is None
+    assert chord_not_run_reasons(graph.nodes) == {}
+
+
+class _CountingNodes(dict[str, TaskNode]):
+    """Node map that counts full scans."""
+
+    scans = 0
+
+    def values(self):  # type: ignore[no-untyped-def,override]  # counting wrapper
+        self.scans += 1
+        return super().values()
+
+    def items(self):  # type: ignore[no-untyped-def,override]  # counting wrapper
+        self.scans += 1
+        return super().items()
+
+
+def test_chord_not_run_reasons_scans_the_nodes_a_fixed_number_of_times() -> None:
+    """One pass for any number of chords, not one per chord."""
+    graph = TaskGraph()
+    for c in range(50):
+        for i, state in enumerate((TaskState.FAILURE, TaskState.SUCCESS)):
+            graph.add_event(
+                _ev(f"c{c}h{i}", state, group_id=f"g{c}", chord_callback_id=f"cb{c}")
+            )
+    nodes = _CountingNodes(graph.nodes)
+
+    reasons = chord_not_run_reasons(nodes)
+
+    assert len(reasons) == 50
+    assert nodes.scans <= 2
+
+
+def test_get_graph_reason_clears_when_the_failed_header_is_evicted() -> None:
+    """Documented limitation: the reason is worked out from the headers still
+    stored, so evicting the failed one (oldest first) while the chord stays
+    clears it."""
+    store = GraphStore(max_nodes=10)
+    store.add_event(
+        _ev("h0", TaskState.FAILURE, 1, group_id="g", chord_callback_id="cb")
+    )
+    for i in range(1, 4):
+        store.add_event(
+            _ev(f"h{i}", TaskState.SUCCESS, 1 + i, group_id="g", chord_callback_id="cb")
+        )
+    client = _client(store)
+    assert (
+        client.get("/api/graphs/group:g").json()["nodes"]["group:g"]["not_run_reason"]
+        == "header_failed"
+    )
+
+    for i in range(6):
+        store.add_event(_ev(f"x{i}", TaskState.SUCCESS, 10 + i))
+
+    nodes = client.get("/api/graphs/group:g").json()["nodes"]
+    assert sorted(nodes) == ["group:g", "h2", "h3"]
+    assert nodes["group:g"]["not_run_reason"] is None

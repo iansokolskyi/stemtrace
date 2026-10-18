@@ -12,12 +12,12 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 
-from stemtrace.core.graph import NodeType, chord_not_run_reason
+from stemtrace.core.graph import ChordNotRunReason, NodeType, chord_not_run_reasons
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api.schemas import (
     ErrorResponse,
@@ -220,7 +220,7 @@ def _node_to_graph_response(
     node_alias_key: str | None = None,
     *,
     group_of: Callable[[str], ResolvedGroup],
-    not_run_reason: Literal["header_failed", "header_revoked"] | None = None,
+    not_run_reason: ChordNotRunReason | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -231,9 +231,9 @@ def _node_to_graph_response(
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
         group_of: Task group by task name (see ``_group_lookup``).
-        not_run_reason: Why a CHORD's callback never ran; only known when
-            the caller has the chord's whole graph (see
-            ``chord_not_run_reason``).
+        not_run_reason: Why a CHORD's callback will never run; only known
+            when the caller has the chord's whole graph (see
+            ``chord_not_run_reasons``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -832,6 +832,10 @@ def _add_graph_routes(
 
         all_nodes: dict[str, TaskNode] = dict(graph)
         group_of = _group_lookup(groups)
+        # The whole graph is here, so every header that has run is known. A
+        # pass over every node and event: off the event loop, like the
+        # registry refresh.
+        not_run = await asyncio.to_thread(chord_not_run_reasons, all_nodes)
         return GraphResponse(
             root_id=root_id,
             nodes={
@@ -840,8 +844,7 @@ def _add_graph_routes(
                     all_nodes,
                     node_alias_key=node_alias_key,
                     group_of=group_of,
-                    # The whole graph is here, so every header is known.
-                    not_run_reason=chord_not_run_reason(n, all_nodes),
+                    not_run_reason=not_run.get(tid),
                 )
                 for tid, n in graph.items()
             },

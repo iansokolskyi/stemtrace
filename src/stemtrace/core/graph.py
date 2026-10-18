@@ -177,8 +177,13 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
 
 
-# Header outcomes that make Celery fail a chord instead of running its callback.
+# Header outcomes after which Celery never runs a chord's callback (see
+# chord_not_run_reasons): a failure fails the chord, a rejection never completes it.
 _FAILED_HEADER_STATES = frozenset({TaskState.FAILURE, TaskState.REJECTED})
+
+ChordNotRunReason = Literal["header_failed", "header_revoked"]
+"""Why a chord's callback will never run: a header failed (or was rejected), or
+headers were only revoked."""
 
 
 class NodeType(str, Enum):
@@ -2393,33 +2398,42 @@ class TaskGraph(BaseModel):
         return list(tally.counted()) if tally is not None else []
 
 
-def chord_not_run_reason(
-    chord: TaskNode, nodes: Mapping[str, TaskNode]
-) -> Literal["header_failed", "header_revoked"] | None:
-    """Why a chord's callback never ran, once that is certain; else None.
+def chord_not_run_reasons(
+    nodes: Mapping[str, TaskNode],
+) -> dict[str, ChordNotRunReason]:
+    """Why each chord's callback will never run, by CHORD node ID.
 
-    Celery runs a chord's callback only when every header succeeded; a
-    failed (or rejected) or revoked header makes it fail the chord instead,
-    once all headers are done. So a CHORD node gets a reason when every
-    header (a task of its group whose events named a callback) has a
-    terminal state, at least one did not succeed, and no callback is drawn.
-    ``nodes`` must hold the chord's whole graph. A failed header wins over a
-    revoked one.
+    Celery checks a chord's header results with ``propagate=True`` on every
+    path (celery 5.6.3 backends/redis.py and backends/base.py
+    ``on_chord_part_return``, app/builtins.py ``unlock_chord``), so one
+    failed or revoked header means the callback won't run, even while other
+    headers still run. A rejected header never reports its part
+    (app/trace.py ``handle_reject`` only logs), so the chord never completes
+    and the callback doesn't run either. A header is a task of the chord's
+    group whose events named a callback. A failed or rejected header wins
+    over a revoked one, so a reason can move from ``header_revoked`` to
+    ``header_failed``, and it never clears unless a callback is drawn. CHORD
+    nodes whose callback ran (``chord_id`` set) or that have no such header
+    are left out. ``nodes`` must hold the chord's whole graph.
     """
-    if chord.node_type != NodeType.CHORD or chord.chord_id is not None:
-        return None
-    headers = [
-        node
-        for node in nodes.values()
-        if node.node_type == NodeType.TASK
-        and node.group_id == chord.group_id
-        and any(event.chord_callback_id is not None for event in node.events)
-    ]
-    if not headers or any(h.state not in _TERMINAL_STATES for h in headers):
-        return None
-    states = {h.state for h in headers}
-    if states & _FAILED_HEADER_STATES:
-        return "header_failed"
-    if TaskState.REVOKED in states:
-        return "header_revoked"
-    return None
+    by_group: dict[str, ChordNotRunReason] = {}
+    for node in nodes.values():
+        if node.node_type != NodeType.TASK or node.group_id is None:
+            continue
+        if node.state in _FAILED_HEADER_STATES:
+            reason: ChordNotRunReason = "header_failed"
+        elif node.state == TaskState.REVOKED:
+            reason = "header_revoked"
+        else:
+            continue
+        if by_group.get(node.group_id) == "header_failed":
+            continue
+        if any(event.chord_callback_id is not None for event in node.events):
+            by_group[node.group_id] = reason
+    return {
+        node_id: by_group[node.group_id]
+        for node_id, node in nodes.items()
+        if node.node_type == NodeType.CHORD
+        and node.chord_id is None
+        and node.group_id in by_group
+    }
