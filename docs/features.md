@@ -229,6 +229,9 @@ Limitations:
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run.
   Without parent IDs, a RECEIVED stamped after the task's first STARTED doesn't count, so a
   clock stepping back between the two leaves `queue_wait_ms` empty when the task has no PENDING.
+- When Celery runs the same attempt twice on one worker (a Redis visibility-timeout redelivery),
+  the events can't tell the two runs apart: the runtime goes from the later STARTED to the last
+  end, so it comes out too short when the earlier run ends last.
 - Workers up to 0.4.0 send no `hostname`, and the main-process FAILURE of workers up to 0.4.1
   has none and `retries=0` whatever the attempt. For those events, a run's start and end can
   come from two workers' clocks: with the second worker's clock behind, runtimes can come out

@@ -368,16 +368,47 @@ class TestTiming:
                 ],
                 (FAIL, 17000, 17000),
             ),
+            # The same attempt run twice on one worker (a visibility-timeout
+            # redelivery): the first run's end is the same worker and attempt
+            # as the final event, so the latest run is the final event's.
+            (
+                [
+                    (S, 0, 0, "a"),
+                    (S, 3600, 0, "a"),
+                    (OK, 4000, 0, "a"),
+                    (OK, 7000, 0, "a"),
+                ],
+                (OK, 3400000, 3400000),
+            ),
+            # revoke(terminate=True) racing a run that already finished: celery
+            # 5.6.3 worker/request.py Request.terminate announces REVOKED once
+            # the run started, whatever the pool process sent.
+            (
+                [(S, 0, 0, "a"), (OK, 5, 0, "a"), (REVOKED, 5.1, 0, "a")],
+                (REVOKED, 5100, 5100),
+            ),
+            (
+                [(S, 0, 0, "a"), (REVOKED, 5, 0, "a"), (OK, 5.1, 0, "a")],
+                (OK, 5100, 5100),
+            ),
         ],
-        ids=["0.4.1-failure-last", "success-last-other-worker", "no-hostnames"],
+        ids=[
+            "0.4.1-failure-last",
+            "success-last-other-worker",
+            "no-hostnames",
+            "redelivered-on-same-worker",
+            "revoked-after-success",
+            "success-after-revoked",
+        ],
     )
     def test_finished_runs_never_end_again(
         self,
         events: list[tuple[TaskState, float, int, str | None]],
         expected: tuple[object, ...],
     ) -> None:
-        # A SUCCESS/FAILURE that isn't the final event closes its own run, so
-        # a later end can't pair with that finished run.
+        # A terminal event that isn't the final one closes its own run, so a
+        # later end can't pair with that finished run, unless both are the
+        # same worker and attempt.
         node = _node(
             *(
                 _event(state, at, retries=retries, hostname=host)

@@ -415,8 +415,8 @@ class TaskNode(BaseModel):
         """Pair each run's STARTED with the RETRY or final event that ended it.
 
         Runs are read on one worker's clock (see ``_run_start``), in
-        ``_precedence`` order. Runs whose end was missed, or ended in a terminal
-        event that isn't the final one, are left out. None unless the task
+        ``_precedence`` order. Runs whose end was missed, or ended in another
+        worker's or attempt's terminal event, are left out. None unless the task
         finished and its last run's STARTED is from the final event's attempt.
         """
         # A FAILURE with retries=0 and no worker comes from an older worker's
@@ -442,11 +442,14 @@ class TaskNode(BaseModel):
             if event.state == TaskState.RECEIVED:
                 continue
             if event is not final and event.state in TERMINAL_STATES:
-                # An attempt that ended in its own SUCCESS/FAILURE before the
-                # final event (retry(throw=False)): closed and left out. Without
+                # A run that ended in its own terminal event before the final
+                # one (retry(throw=False)): closed and left out. Not when it
+                # shares the final event's worker and attempt (a redelivery, or
+                # REVOKED racing SUCCESS): that run is the final event's. Without
                 # a worker (0.4.0 and earlier) the run can't be told apart.
-                if event.hostname is not None:
-                    open_runs.pop(_run_key(event), None)
+                key = _run_key(event)
+                if event.hostname is not None and key != _run_key(final):
+                    open_runs.pop(key, None)
                 continue
             started = _run_start(open_runs, event)
             if started is not None:
