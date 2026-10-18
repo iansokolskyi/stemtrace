@@ -3,6 +3,7 @@
 import sys
 from enum import Enum, Flag, IntEnum, IntFlag
 from http import HTTPStatus
+from typing import NamedTuple
 
 import pytest
 
@@ -769,3 +770,75 @@ def test_scrub_dict_with_http_status_key_keeps_its_value() -> None:
     data = {HTTPStatus.UNAUTHORIZED: "login again", HTTPStatus.OK: "fine"}
 
     assert scrub_dict(data) == data
+
+
+class _IntOverride(int):
+    """An int whose __int__ says another number."""
+
+    def __int__(self) -> int:
+        return 999
+
+
+class _IntRaises(int):
+    """An int whose __int__ raises."""
+
+    def __int__(self) -> int:
+        raise RuntimeError("no int")
+
+
+class _LowerLies(str):
+    """A str whose lower() hides its text."""
+
+    def lower(self) -> str:  # type: ignore[override]  # the case under test
+        return "colour"
+
+
+class _ById(str):
+    """A str equal only to itself."""
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class _Pair(NamedTuple):
+    user: object
+    field: object
+
+
+def test_scrub_dict_shows_an_int_key_by_its_own_value() -> None:
+    """int's own value, not a subclass's __int__: no relabelled or lost keys."""
+    out = scrub_dict({_IntOverride(5): "a", 999: "b", _IntRaises(7): "c"})
+
+    assert out == {5: "a", 999: "b", 7: "c"}
+    assert {type(k) for k in out} == {int}
+
+
+def test_scrub_dict_matches_a_str_key_by_its_text_not_its_lower() -> None:
+    assert scrub_dict({_LowerLies("password"): "hunter2"}) == {"password": FILTERED}
+
+
+def test_scrub_dict_keeps_a_key_whose_plain_value_is_already_a_key() -> None:
+    """A str subclass equal only to itself would collide with its plain text."""
+    out = scrub_dict({_ById("note"): "first", "note": "second"})
+
+    assert sorted(out.values()) == ["first", "second"]
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_Pair("u", "f"), _Pair("u", "f")),
+        (_Pair("u", _Field.PASSWORD), _Pair("u", "pw")),
+    ],
+    ids=["unchanged", "enum_part"],
+)
+def test_scrub_dict_keeps_a_namedtuple_key_a_namedtuple(
+    key: object, shown: object
+) -> None:
+    ((out_key, _),) = scrub_dict({key: "v"}).items()
+
+    assert out_key == shown
+    assert type(out_key) is _Pair

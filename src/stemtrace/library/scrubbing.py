@@ -80,7 +80,8 @@ def _key_names(key: object) -> list[str]:
     match key:
         # str and int before Enum and Flag: a mixin member equals its value.
         case str():
-            names = [key.lower()]
+            # str.lower, not key.lower: the key's own text, whatever its class.
+            names = [str.lower(key)]
         case int():
             names = []
         case Flag():
@@ -172,6 +173,10 @@ def _scrub_dict(
     result: dict[Any, Any] = {}
     for key, value in data.items():
         shown = _as_matched(key)
+        # A key that isn't the same dict key as its plain value (a str subclass
+        # equal only to itself) is kept as is when that value is a key too.
+        if shown in data and key not in {shown}:
+            shown = key
         if _is_sensitive_key(key, patterns, safe_keys):
             result[shown] = FILTERED
         else:
@@ -181,11 +186,10 @@ def _scrub_dict(
 
 
 def _as_matched(key: Any) -> Any:
-    """A dict key as ``_key_names`` matches it: a str or int as its plain value.
+    """A dict key as ``_key_names`` matches it: a str or int as its own value.
 
     An Enum member that is a str or int otherwise prints as its name
-    (``Field.PASSWORD``), which may look sensitive while its value isn't. It
-    equals and hashes like its value, so the dict keeps the same keys.
+    (``Field.PASSWORD``), which may look sensitive while its value isn't.
     """
     match key:
         case bool():
@@ -193,13 +197,20 @@ def _as_matched(key: Any) -> Any:
         case str():
             return str.__str__(key)
         case int():
-            return int(key)
-        case tuple():
-            return tuple(_as_matched(part) for part in key)
-        case frozenset():
-            return frozenset(_as_matched(part) for part in key)
+            return int.__int__(key)
+        case tuple() | frozenset():
+            return _rebuilt(key)
         case _:
             return key
+
+
+def _rebuilt(key: tuple[Any, ...] | frozenset[Any]) -> Any:
+    """``key`` with its parts as matched, of the same kind of container."""
+    parts = [_as_matched(part) for part in key]
+    if isinstance(key, frozenset):
+        return frozenset(parts)
+    make = getattr(type(key), "_make", None)  # a namedtuple keeps its type
+    return make(parts) if make is not None else tuple(parts)
 
 
 def _scrub_value(
