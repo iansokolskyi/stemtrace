@@ -5,7 +5,7 @@ Start with the [project README](../README.md) for what stemtrace is and the quic
 | Page | What's in it |
 |------|--------------|
 | [Adopting stemtrace](adopting.md) | What changes in workers, senders and the broker; running next to Flower |
-| [Features](features.md) | What the dashboard shows, with screenshots; workers and registry |
+| [Features](features.md) | What the dashboard shows, with screenshots; workers and registry; summary API endpoints |
 | [Graphs](graphs.md) | How chains, groups, chords and `task.replace()` are drawn, and the limitations |
 | [Configuration](configuration.md) | Worker and server options, task output, RECEIVED events, task groups, environment variables |
 | [Deployment](deployment.md) | Standalone server, Docker, FastAPI embedding, reverse proxies, health endpoint |

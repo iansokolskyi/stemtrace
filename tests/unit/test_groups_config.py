@@ -1,7 +1,7 @@
 """Tests for loading task groups from code and TOML files (server/groups.py)."""
 
-import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -13,10 +13,6 @@ from stemtrace.server.groups import (
     build_group_config,
     configured_groups,
     load_groups_file,
-)
-
-needs_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="tomllib is Python 3.11+"
 )
 
 _VALID_TOML = """
@@ -46,7 +42,6 @@ def _no_groups_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- TOML files ------------------------------------------------------------
 
 
-@needs_tomllib
 def test_load_groups_file_keeps_file_order(tmp_path: Path) -> None:
     config = load_groups_file(_write(tmp_path, _VALID_TOML))
 
@@ -63,14 +58,12 @@ def test_load_groups_file_keeps_file_order(tmp_path: Path) -> None:
     assert config.resolve(TaskAttributes(name="billing.charge")).name == "everything"
 
 
-@needs_tomllib
 def test_load_groups_file_accepts_str_path(tmp_path: Path) -> None:
     config = load_groups_file(str(_write(tmp_path, _VALID_TOML)))
 
     assert [r.name for r in config.rules] == ["everything", "billing"]
 
 
-@needs_tomllib
 def test_load_groups_file_with_unicode_names(tmp_path: Path) -> None:
     path = _write(tmp_path, '[[groups]]\nname = "платежі"\nmatch = ["платежі.*"]\n')
 
@@ -99,7 +92,6 @@ def test_load_groups_file_not_utf8_raises(tmp_path: Path) -> None:
         load_groups_file(path)
 
 
-@needs_tomllib
 def test_load_groups_file_invalid_toml_raises(tmp_path: Path) -> None:
     path = _write(tmp_path, "[[groups]\nname = ")
 
@@ -107,7 +99,6 @@ def test_load_groups_file_invalid_toml_raises(tmp_path: Path) -> None:
         load_groups_file(path)
 
 
-@needs_tomllib
 @pytest.mark.parametrize(
     ("text", "message"),
     [
@@ -136,25 +127,31 @@ def test_load_groups_file_invalid_groups_raises_with_location(
     assert str(path) in str(info.value)
 
 
-def test_load_groups_file_without_tomllib_explains_python_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("version", "module"), [((3, 10, 14), "tomli"), ((3, 11, 0), "tomllib")]
+)
+def test_toml_parser_is_tomli_before_python_311(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: tuple[int, int, int],
+    module: str,
 ) -> None:
-    """Python 3.10 has no tomllib; a None entry makes the import fail the same way."""
-    monkeypatch.setitem(sys.modules, "tomllib", None)
+    """Python 3.10 has no stdlib tomllib; the tomli backport (same API) reads the file."""
+    parsed: list[str] = []
+    fake = types.ModuleType(module)
 
-    path = _write(tmp_path, _VALID_TOML)
+    def loads(text: str) -> dict[str, object]:
+        parsed.append(module)
+        return {"groups": [{"name": "via", "match": ["*"]}]}
 
-    with pytest.raises(ConfigurationError, match=r"TOML needs Python 3\.11 or newer"):
-        load_groups_file(path)
+    fake.loads = loads  # type: ignore[attr-defined]  # a stand-in module
+    monkeypatch.setitem(sys.modules, module, fake)
+    monkeypatch.setattr(sys, "version_info", version)
 
-    with pytest.raises(ConfigurationError, match=re.escape(str(path))):
-        load_groups_file(path)
+    config = load_groups_file(_write(tmp_path, _VALID_TOML))
 
-
-@pytest.mark.skipif(sys.version_info >= (3, 11), reason="Python 3.10 only")
-def test_load_groups_file_on_python_310_raises(tmp_path: Path) -> None:
-    with pytest.raises(ConfigurationError, match=r"TOML needs Python 3\.11 or newer"):
-        load_groups_file(_write(tmp_path, _VALID_TOML))
+    assert parsed == [module]
+    assert [r.name for r in config.rules] == ["via"]
 
 
 # --- groups= argument ------------------------------------------------------
@@ -211,7 +208,6 @@ def test_build_group_config_invalid_rules_raises(
     assert message in str(info.value)
 
 
-@needs_tomllib
 def test_build_group_config_from_path_loads_file(tmp_path: Path) -> None:
     config = build_group_config(_write(tmp_path, _VALID_TOML))
 
@@ -221,7 +217,6 @@ def test_build_group_config_from_path_loads_file(tmp_path: Path) -> None:
 # --- configured_groups: argument, then STEMTRACE_GROUPS --------------------
 
 
-@needs_tomllib
 def test_configured_groups_without_argument_reads_env_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,7 +227,6 @@ def test_configured_groups_without_argument_reads_env_file(
     assert [r.name for r in config.rules] == ["everything", "billing"]
 
 
-@needs_tomllib
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_configured_groups_blank_argument_falls_back_to_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blank: str

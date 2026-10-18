@@ -6,9 +6,8 @@ description: Answer questions about Celery tasks monitored by stemtrace ("what f
 # Querying stemtrace from the command line
 
 stemtrace keeps recent Celery task events in memory and serves them as JSON. Everything below
-uses `curl` and `jq` against the API that exists today. Compact endpoints made for agents
-(summaries, failures grouped by exception, relative time windows) are planned; until they land,
-use these.
+uses `curl` and `jq`. For totals rather than single tasks, start with the summary endpoints
+(`overview`, `failures`, `stats/timeseries`); then drill into tasks.
 
 ## Setup
 
@@ -47,6 +46,15 @@ st tasks --data-urlencode "state=FAILURE" --data-urlencode "from_date=$SINCE" \
   jq -r '.total as $t | "\($t) failed", (.tasks[] | [.task_id, .name, .last_updated,
     (.hostname // "-"), (.exception_type // "-"),
     ([.events[] | select(.state == "FAILURE") | .exception] | last // "-")] | @tsv)'
+
+# Failures grouped by exception class, computed by the server (count, class, task names)
+st failures --data-urlencode "within=1h" |
+  jq -r '.groups[] | [.count, (.exception_type // "-"), (.task_names | join(","))] | @tsv'
+
+# Runs (SUCCESS/FAILURE/REVOKED/REJECTED, not IGNORED), failure rate and workers for the
+# last hour, against the hour before
+st overview --data-urlencode "within=1h" |
+  jq '{runs, failure_rate, workers}'
 
 # Count failures by exception class and task
 st tasks --data-urlencode "state=FAILURE" --data-urlencode "from_date=$SINCE" \
@@ -107,9 +115,12 @@ Registry `status` is `active` (ran and registered), `never_run` or `not_register
 
 ## Filters and pitfalls
 
-- **States are uppercase**: `PENDING RECEIVED STARTED SUCCESS FAILURE REVOKED REJECTED RETRY IGNORED`.
-  An unknown or lowercase `state` (`state=failure`) is **ignored, not rejected**: you silently
-  get every task. Check that `.tasks[].state` is what you asked for.
+- **States are uppercase** in responses: `PENDING RECEIVED STARTED SUCCESS FAILURE REVOKED REJECTED RETRY IGNORED`.
+  `state=` takes one state or a comma-separated list (`state=FAILURE,RETRY`), in any case. An
+  unknown state is a `422` that lists the valid ones.
+- `within=1h` (`30s`, `15m`, `6h`, `7d`) is a shorter way to say "since an hour ago" than
+  `from_date`, on tasks, graphs and the summary endpoints; pass one or the other (the overview
+  takes `within` only).
 - `state` is the task's **current** state: a task that failed and then succeeded on retry is
   `SUCCESS`; one waiting to retry is `RETRY`.
 - `name` is a case-insensitive substring (`name=charge` matches `billing.charge_card`);

@@ -109,15 +109,16 @@ def _require_api_key_check(
 ) -> Callable[[Request], Awaitable[Response]]:
     """Wrap ``call_next`` so a request no API route key-checked gets a 404.
 
-    A Bearer request is let past the cookie check only for the API key
-    dependency to check it. If the path isn't an API route (``api/tasks/``,
-    ``apix``), something else (e.g. the UI's catch-all) would answer without
-    any check; it gets a 404 instead.
+    A Bearer request skips the cookie check only for the API key dependency
+    to check it; on a path that isn't an API route (``api/tasks/``, ``apix``)
+    something else, such as the UI's catch-all, would answer unchecked.
     """
 
     async def _call(request: Request) -> Response:
         response = await call_next(request)
-        if request.scope.get(GATE_SCOPE_KEY):
+        # A 405 passes: the router rejects a method on an API route before any
+        # dependency runs, with no data, as it does without the login.
+        if request.scope.get(GATE_SCOPE_KEY) or response.status_code == 405:
             return response
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 
