@@ -2216,16 +2216,16 @@ class TestApiRouteTable:
         ]
 
         assert table == [
-            ("/api/health", ["GET"]),
-            ("/api/health/live", ["GET"]),
-            ("/api/tasks", ["GET"]),
-            ("/api/tasks/registry", ["GET"]),
-            ("/api/tasks/{task_id}", ["GET"]),
-            ("/api/tasks/{task_id}/children", ["GET"]),
-            ("/api/graphs", ["GET"]),
-            ("/api/graphs/{root_id}", ["GET"]),
-            ("/api/groups", ["GET"]),
-            ("/api/workers", ["GET"]),
-            ("/api/workers/{hostname}", ["GET"]),
+            ("/api/health", ["GET", "HEAD"]),
+            ("/api/health/live", ["GET", "HEAD"]),
+            ("/api/tasks", ["GET", "HEAD"]),
+            ("/api/tasks/registry", ["GET", "HEAD"]),
+            ("/api/tasks/{task_id}", ["GET", "HEAD"]),
+            ("/api/tasks/{task_id}/children", ["GET", "HEAD"]),
+            ("/api/graphs", ["GET", "HEAD"]),
+            ("/api/graphs/{root_id}", ["GET", "HEAD"]),
+            ("/api/groups", ["GET", "HEAD"]),
+            ("/api/workers", ["GET", "HEAD"]),
+            ("/api/workers/{hostname}", ["GET", "HEAD"]),
         ]
         assert len(table) == len(router.routes)

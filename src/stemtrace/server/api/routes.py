@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.routing import APIRoute
 
 from stemtrace.core.graph import NodeType
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
@@ -994,6 +995,21 @@ def _add_worker_routes(
         )
 
 
+def _serve_head_on_get_routes(router: APIRouter) -> None:
+    """Answer HEAD on every GET route, like GET without a body.
+
+    FastAPI's routes take only the methods they declare, so a HEAD got a 405
+    from the router before any dependency ran: before authentication, and,
+    behind the login, a 404 for Bearer requests (the API key check never
+    ran). As a route method it passes the same dependencies as GET; uvicorn
+    sends the headers without the body (checked with uvicorn 0.40.0, h11 and
+    httptools).
+    """
+    for route in router.routes:
+        if isinstance(route, APIRoute) and route.methods and "GET" in route.methods:
+            route.methods.add("HEAD")
+
+
 def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): positional callers must keep working
     store: GraphStore,
     consumer: AsyncEventConsumer | None = None,
@@ -1047,4 +1063,5 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    _serve_head_on_get_routes(router)
     return router

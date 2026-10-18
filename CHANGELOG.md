@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- API: every `GET` route under `/api` also answers `HEAD` (headers, no body), authenticated like `GET`. `HEAD` used to get `405`, and with an API key behind the login page a `404`. Other wrong methods get `405` with `Allow: GET, HEAD` once past the login check.
+
 ## [0.4.1] - 2026-10-18
 
 **Highlights:**

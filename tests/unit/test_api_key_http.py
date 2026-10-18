@@ -603,3 +603,53 @@ def test_cli_login_failures_count_toward_key_lockout(
                 follow_redirects=False,
             )
         assert client.get("/stemtrace/api/tasks", headers=BEARER).status_code == 429
+
+
+# --- HEAD answers like GET, authentication first ------------------------------
+
+
+@pytest.mark.parametrize(
+    "path", ["/stemtrace/api/tasks", "/stemtrace/api/health", "/stemtrace/api/groups"]
+)
+def test_head_is_authenticated_like_get_in_every_mode(path: str) -> None:
+    """HEAD used to 405 before the key gate ran, and form+key turned that into 404."""
+    with TestClient(_app()) as open_client:
+        assert open_client.head(path).status_code == 200
+    with TestClient(_app(api_key=KEY)) as key_only:
+        assert key_only.head(path).status_code == 401
+        assert key_only.head(path, headers=WRONG).status_code == 401
+        assert key_only.head(path, headers=BEARER).status_code == 200
+    with TestClient(_app(api_key=KEY, **_form_kwargs())) as form_and_key:
+        assert form_and_key.head(path).status_code == 401
+        assert form_and_key.head(path, headers=WRONG).status_code == 401
+        assert form_and_key.head(path, headers=BEARER).status_code == 200
+        _login(form_and_key)
+        assert form_and_key.head(path).status_code == 200
+
+
+def test_head_body_is_empty_and_headers_match_get() -> None:
+    with TestClient(_app(api_key=KEY)) as client:
+        get = client.get("/stemtrace/api/health", headers=BEARER)
+        head = client.head("/stemtrace/api/health", headers=BEARER)
+
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-type"] == get.headers["content-type"]
+
+
+def test_other_methods_are_405_with_allow_in_every_key_mode() -> None:
+    """The router rejects a method before any route dependency runs, so a 405
+    never depends on the key (and carries no data). It used to be a 404 with
+    the login on."""
+    with TestClient(_app(api_key=KEY)) as key_only:
+        for headers in ({}, WRONG, BEARER):
+            resp = key_only.post("/stemtrace/api/tasks", headers=headers)
+            assert resp.status_code == 405
+            assert set(resp.headers["allow"].split(", ")) == {"GET", "HEAD"}
+    with TestClient(_app(api_key=KEY, **_form_kwargs())) as form_and_key:
+        # without credentials the login check answers first, as for any path
+        assert form_and_key.post("/stemtrace/api/tasks").status_code == 401
+        for headers in (WRONG, BEARER):
+            resp = form_and_key.post("/stemtrace/api/tasks", headers=headers)
+            assert resp.status_code == 405
+            assert set(resp.headers["allow"].split(", ")) == {"GET", "HEAD"}
