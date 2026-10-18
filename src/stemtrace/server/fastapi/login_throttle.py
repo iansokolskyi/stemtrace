@@ -1,21 +1,12 @@
 """In-memory throttling of failed sign-in attempts for the built-in login.
 
-Failed attempts are counted per client IP, and per username for browsers
-without a *device cookie*. After too many failures a key is locked out for an
-exponentially growing time, and the login endpoint answers 429 with
-``Retry-After`` (without checking the credentials) until the lock expires.
-
-The device cookie follows OWASP's "device cookie" lockout pattern: a
-successful sign-in sets a long-lived signed cookie naming that browser. A
-browser presenting a valid one for the submitted username is counted under its
-own device key instead of the username, so failures by strangers who know the
-username can't lock its owner out of a browser that has signed in before.
-
-Failures are counted in fixed-size hashed tables (see ``_BucketTable``), so
-memory is constant and no amount of traffic can lower a key's count.
-
-State is per process: with several workers or replicas, each one counts on
-its own, and a restart clears it.
+Failures are counted per client IP, and per username for browsers without a
+*device cookie* (OWASP's device-cookie lockout pattern): a browser that signed in
+before counts under its own device key, so strangers who know the username can't
+lock it out. A locked key gets 429 with ``Retry-After``, without a credential
+check, for an exponentially growing time. Counts live in fixed-size hashed tables,
+so memory is constant; they are per process and a restart clears them. The limits
+users see are in docs/security.md.
 """
 
 from __future__ import annotations
@@ -171,24 +162,10 @@ class LoginAttempt:
 class _BucketTable:
     """Failure counts for one kind of key in a fixed table of hashed buckets.
 
-    Each key maps to two buckets, chosen by a keyed BLAKE2b hash with a random
-    per-process key (attackers can't compute which keys collide). Every
-    bucket holds a failure count, the time of its last failure and the end of
-    its lock, with the same rules a per-key record would follow: a lock once
-    the count reaches the limit, doubling per further failure up to the cap,
-    and a fresh count once ``LOGIN_FAILURE_MEMORY_S`` passed without a
-    failure.
-
-    A key's failures always land in both of its buckets, and other keys can
-    only add to a bucket, so each bucket's count, last failure and lock end
-    are at least the key's own. Taking the *minimum* wait of the two buckets
-    therefore never lets a key through earlier than a per-key record would:
-    collisions can only lock a key early (a false lock), never reset or lower
-    its count. Nothing is ever evicted, so floods can't reset anyone. Two
-    hashes instead of one make a false lock need both buckets taken, which
-    squares the probability (count-min sketch). The only operation that
-    lowers counts is ``reset`` after a successful sign-in, which needs the
-    password.
+    Each key maps to two buckets (keyed BLAKE2b, random per-process key) and
+    waits the *minimum* of their locks. Other keys only add to a bucket, so
+    collisions can lock a key early but never late, and nothing is evicted (a
+    count-min sketch). Only ``reset`` after a successful sign-in lowers counts.
     """
 
     def __init__(
@@ -266,27 +243,10 @@ class _BucketTable:
 class LoginThrottle:
     """Throttle failed sign-ins per client IP, per username and per device.
 
-    - Every failed attempt with a client address counts against that IP
-      (IPv6 addresses by their /64 network, which one client usually holds).
-    - An attempt with a valid device cookie for the submitted username counts
-      against that device; any other attempt counts against the username.
-    - A valid device cookie also skips the IP check (its failures still
-      count), so strangers sharing an IP with the owner (e.g. every request
-      arriving from a proxy whose address isn't trusted) can't lock out a
-      browser that signed in before.
-    - Requests without a client address (e.g. uvicorn ``--uds``) skip the IP
-      limit; only the username/device limits apply to them.
-
-    Execution model: the login handler is ``async`` and calls this without
-    awaiting in between, so on one event loop each check-then-update is
-    atomic. A lock still guards every method, so calls from other threads
-    (e.g. a sync test client or a threaded server) are safe; it is never held
-    across I/O. State is in memory and per process (see the module docstring).
-
-    The client IP is whatever the ASGI server put in ``scope["client"]``.
-    Forwarded headers are never read here: behind a reverse proxy, configure
-    the server to trust that proxy (uvicorn ``--forwarded-allow-ips`` /
-    ``FORWARDED_ALLOW_IPS``), or every user shares the proxy's address.
+    A valid device cookie for the submitted username counts against the device
+    and skips the IP check; other attempts count against the username and the
+    IP (IPv6 by /64; none without a client address). The IP is
+    ``scope["client"]``: forwarded headers are never read here. Thread-safe.
     """
 
     def __init__(
@@ -304,6 +264,9 @@ class LoginThrottle:
             hash_key: Key for the bucket hash; a random per-process key if
                 None. Only tests pass one, for reproducible collisions.
         """
+        # The async login handler is atomic per event loop anyway; the lock is
+        # for other threads (sync test client, threaded server), never held
+        # across I/O.
         self._lock = threading.Lock()
         key = hash_key if hash_key is not None else secrets.token_bytes(32)
         self._by_ip, self._by_username, self._by_device = (

@@ -1,18 +1,11 @@
 """Static API key (``Authorization: Bearer <key>``) for the JSON API and WebSocket.
 
-One key, set with ``init_app(api_key=...)``, ``StemtraceExtension(api_key=...)``,
-``stemtrace server --api-key`` or ``STEMTRACE_API_KEY``. It lets scripts and coding
-agents read the API without the browser login.
-
-With the built-in form login, a request passes with a valid session cookie *or*
-a valid key. With a custom ``auth_dependency``, a JSON API request needs the key
-*and* whatever the dependency checks: FastAPI resolves every router dependency,
-so one can't waive another. The dependency doesn't cover the WebSocket, which
-needs only the key.
-
-Failed key attempts are throttled per client IP by the login's
-:class:`~stemtrace.server.fastapi.login_throttle.LoginThrottle`, sharing its
-counts when the login is enabled. The key is never logged.
+One key (``init_app(api_key=...)``, ``--api-key`` or ``STEMTRACE_API_KEY``) lets
+scripts and coding agents read the API without the browser login. With form login,
+a valid session cookie *or* the key passes; with a custom ``auth_dependency``, a
+JSON API request needs both (FastAPI runs every router dependency), while the
+WebSocket needs only the key. Failed attempts are throttled per client IP by the
+login's ``LoginThrottle``. The key is never logged. See docs/security.md.
 """
 
 from __future__ import annotations
