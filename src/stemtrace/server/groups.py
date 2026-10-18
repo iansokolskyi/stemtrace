@@ -13,6 +13,7 @@ Rules apply in file order; the first match wins.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -22,7 +23,7 @@ from typing import Any, TypeAlias
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from stemtrace.core.exceptions import ConfigurationError
-from stemtrace.core.groups import GroupConfig, GroupRule
+from stemtrace.core.groups import GroupConfig, GroupRule, ResolvedGroup, TaskAttributes
 
 GROUPS_ENV_VAR = "STEMTRACE_GROUPS"
 
@@ -157,3 +158,18 @@ def configured_groups(groups: GroupsInput) -> GroupConfig:
     if groups is None:
         groups = (os.getenv(GROUPS_ENV_VAR) or "").strip() or None
     return build_group_config(groups)
+
+
+def group_lookup(groups: GroupConfig) -> Callable[[str], ResolvedGroup]:
+    """Resolve task groups by name, each name once, for building one response.
+
+    A response's nodes share few task names, and matching every node against
+    every rule's globs again made large graphs with many rules slow.
+    """
+
+    @functools.cache
+    def lookup(task_name: str) -> ResolvedGroup:
+        """Return the group of tasks named ``task_name``."""
+        return groups.resolve(TaskAttributes(name=task_name))
+
+    return lookup

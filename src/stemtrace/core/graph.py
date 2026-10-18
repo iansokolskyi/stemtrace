@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     # Only an annotation: pydantic exports it from 2.11 on, below our minimum.
     from pydantic import ModelWrapValidatorHandler
 
-_TERMINAL_STATES: frozenset[TaskState] = frozenset(
+TERMINAL_STATES: frozenset[TaskState] = frozenset(
     {
         TaskState.SUCCESS,
         TaskState.FAILURE,
@@ -228,7 +228,7 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
         A sortable key; larger means further along.
     """
     tiebreak = _STATE_ORDER[event.state]
-    if event.state in _TERMINAL_STATES:
+    if event.state in TERMINAL_STATES:
         rank = -1 if event.state == TaskState.IGNORED else 0
         return (1, rank, 0, event.timestamp, tiebreak)
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
@@ -381,7 +381,7 @@ class TaskNode(BaseModel):
         # app/task.py Task._get_request is an empty default) and can be any
         # attempt's; this release's workers fill it in (signals._failed_request).
         final = max(self.events, key=_precedence, default=None)
-        if final is None or final.state not in _TERMINAL_STATES:
+        if final is None or final.state not in TERMINAL_STATES:
             return None
         ordered = sorted(
             (e for e in self.events if e is not final and e.state != TaskState.PENDING),
@@ -398,7 +398,7 @@ class TaskNode(BaseModel):
                 continue
             if event.state == TaskState.RECEIVED:
                 continue
-            if event is not final and event.state in _TERMINAL_STATES:
+            if event is not final and event.state in TERMINAL_STATES:
                 # An attempt that ended in its own SUCCESS/FAILURE before the
                 # final event (retry(throw=False)): closed and left out. Without
                 # a worker (0.4.0 and earlier) the run can't be told apart.
@@ -952,6 +952,9 @@ class TaskGraph(BaseModel):
     # Root IDs in the order they became roots: a dict used as an ordered set,
     # so adding and removing a root is O(1). Exposed as ``root_ids``.
     _roots: dict[str, None] = PrivateAttr(default_factory=dict)
+    # Existing tasks whose name changed since the last take_renamed(): a
+    # task.replace() reuse can re-pick a task's name on another task's event.
+    _renamed_ids: set[str] = PrivateAttr(default_factory=set)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
@@ -1252,6 +1255,19 @@ class TaskGraph(BaseModel):
             if not node._is_reused():
                 self._recheck_walkers(task_id)
 
+    def take_renamed(self) -> set[str]:
+        """IDs of existing tasks renamed since the last call, and forget them.
+
+        Every rename of an existing task goes through ``_renamed``; with
+        ``task.replace()`` it can happen on another task's event, or when a
+        node is removed, so a cache keyed by the event's task ID misses it.
+
+        Returns:
+            The renamed task IDs (removed tasks included).
+        """
+        renamed, self._renamed_ids = self._renamed_ids, set()
+        return renamed
+
     def _renamed(self, node: TaskNode, old_name: str) -> None:
         """Re-run what read a task's name after its events gave it another.
 
@@ -1259,6 +1275,7 @@ class TaskGraph(BaseModel):
         a chord's body (the walks in ``_walk_to_body``) and is never a chain
         link (``_can_link``). A ``task.replace()`` reuse can rename a task.
         """
+        self._renamed_ids.add(node.task_id)
         if (old_name == _CHORD_UNLOCK_TASK) == (node.name == _CHORD_UNLOCK_TASK):
             return
         self._rechain_owner_of(node.task_id)  # it may stop being a link
