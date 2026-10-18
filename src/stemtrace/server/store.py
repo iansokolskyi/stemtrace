@@ -102,30 +102,63 @@ def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
 
 
 def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
-    """The graph's nodes, each GROUP/CHORD together with all it contains.
+    """The graph's nodes, each GROUP/CHORD together with all that belongs to it.
 
-    A container's ``children`` are its members (a chord's headers and its
-    callback); a member that is itself a container brings its own members.
+    That is every node drawn under it (a group of chains keeps its chain links,
+    a chord its callback's chain) and every task of its group, even one drawn
+    elsewhere (a replaced member).
     """
-    owner = {
-        child_id: node.task_id
-        for node in graph.nodes.values()
-        if node.node_type != NodeType.TASK
-        for child_id in node.children
-    }
+    root = {node_id: node_id for node_id in graph.nodes}
 
-    def top(node_id: str) -> str:
-        """The outermost container holding ``node_id``, or ``node_id`` itself."""
-        seen: set[str] = set()
-        while node_id in owner and node_id not in seen:
-            seen.add(node_id)
-            node_id = owner[node_id]
+    def find(node_id: str) -> str:
+        """The representative of ``node_id``'s unit."""
+        while root[node_id] != node_id:
+            root[node_id] = root[root[node_id]]
+            node_id = root[node_id]
         return node_id
 
+    for node_id, owner in _unit_links(graph):
+        root[find(node_id)] = find(owner)
     units: dict[str, list[TaskNode]] = {}
     for node in graph.nodes.values():
-        units.setdefault(top(node.task_id), []).append(node)
+        units.setdefault(find(node.task_id), []).append(node)
     return list(units.values())
+
+
+def _unit_links(graph: TaskGraph) -> list[tuple[str, str]]:
+    """Pairs of nodes in one eviction unit: drawn under a container, or its member."""
+    links = [
+        (node_id, top)
+        for node_id, top in _topmost_containers(graph).items()
+        if top is not None
+    ]
+    containers: dict[str, list[str]] = {}
+    for node in graph.nodes.values():
+        if node.node_type != NodeType.TASK and node.group_id is not None:
+            containers.setdefault(node.group_id, []).append(node.task_id)
+    for node in graph.nodes.values():
+        if node.node_type == NodeType.TASK and node.group_id in containers:
+            links.extend((node.task_id, c) for c in containers[node.group_id])
+    return links
+
+
+def _topmost_containers(graph: TaskGraph) -> dict[str, str | None]:
+    """Each node's topmost GROUP/CHORD ancestor (or itself), following parents."""
+    tops: dict[str, str | None] = {}
+    for node in graph.nodes.values():
+        path: list[TaskNode] = []
+        current: TaskNode | None = node
+        while current is not None and current.task_id not in tops:
+            tops[current.task_id] = None  # placeholder: a parent loop stops here
+            path.append(current)
+            parent_id = current.parent_id
+            current = graph.nodes.get(parent_id) if parent_id is not None else None
+        above = tops[current.task_id] if current is not None else None
+        for step in reversed(path):
+            if above is None and step.node_type != NodeType.TASK:
+                above = step.task_id
+            tops[step.task_id] = above
+    return tops
 
 
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:

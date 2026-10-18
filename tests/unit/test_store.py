@@ -1,15 +1,18 @@
 """Tests for GraphStore."""
 
+import json
+import math
 import random
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
-from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.server.store import GraphStore, WorkerRegistry, _eviction_units
 from tests.conftest import InterleavingLock
 from tests.graph_invariants import assert_graph_invariants
 
@@ -2067,6 +2070,25 @@ class TestGraphStoreEvictionGroupLinks:
         assert sorted(store._graph.nodes) == [f"x{i}" for i in range(6)]
         assert_graph_invariants(store._graph)
 
+    def test_eviction_keeps_a_group_of_chains_whole(self) -> None:
+        """group(chain(a, b) ...): Celery stamps the group on each b only, and
+        b hangs under its a. Evicting a failed b alone made the group SUCCESS."""
+        store = GraphStore(max_nodes=10)
+        for i in range(1, 5):
+            store.add_event(self._event(f"a{i}", i))
+        for i in range(1, 5):
+            state = TaskState.FAILURE if i == 1 else TaskState.SUCCESS
+            store.add_event(
+                self._event(f"b{i}", 10 + i, state, group_id="g", parent_id=f"a{i}")
+            )
+        assert store._graph.nodes["group:g"].state == TaskState.FAILURE
+
+        store.add_event(self._event("x0", 100))
+        store.add_event(self._event("x1", 101))  # 11 nodes: the group goes whole
+
+        assert sorted(store._graph.nodes) == ["x0", "x1"]
+        assert_graph_invariants(store._graph)
+
     def test_eviction_of_a_chord_takes_its_callback_with_it(self) -> None:
         """Before, the oldest task (the callback) went alone, leaving the
         chord without it."""
@@ -2310,41 +2332,64 @@ class TestWorkerSeenByTaskEvents:
         assert worker.last_seen == _minutes_ago(1)
 
 
-def _units(nodes: dict[str, TaskNode]) -> dict[str, set[str]]:
-    """Each node's unit: everything reachable from its top container's children."""
-    owner = {
-        child: node.task_id
-        for node in nodes.values()
-        if node.node_type != NodeType.TASK
-        for child in node.children
+_Snapshot = dict[str, tuple[NodeType, str | None, tuple[str, ...]]]
+
+
+def _snapshot(nodes: dict[str, TaskNode]) -> _Snapshot:
+    """Each node's type, group and children, copied (add_event mutates nodes)."""
+    return {
+        node_id: (node.node_type, node.group_id, tuple(node.children))
+        for node_id, node in nodes.items()
     }
 
-    def top(node_id: str) -> str:
+
+def _containers(snap: _Snapshot) -> dict[str, set[str]]:
+    """Each GROUP/CHORD node and its group's member tasks (by ``group_id``).
+
+    Independent of how the store groups nodes for eviction: membership comes
+    from the events, not from the drawn tree.
+    """
+    return {
+        node_id: {
+            other
+            for other, (other_type, other_group, _) in snap.items()
+            if other_type == NodeType.TASK and other_group == group_id
+        }
+        for node_id, (node_type, group_id, _) in snap.items()
+        if node_type != NodeType.TASK
+    }
+
+
+def _largest_group(snap: _Snapshot) -> int:
+    """The most nodes one GROUP/CHORD holds: itself, its members, and all
+    drawn under them, top-down."""
+    largest = 0
+    for container, members in _containers(snap).items():
         seen: set[str] = set()
-        while node_id in owner and node_id not in seen:
-            seen.add(node_id)
-            node_id = owner[node_id]
-        return node_id
+        todo = [container, *members]
+        while todo:
+            current = todo.pop()
+            if current not in seen and current in snap:
+                seen.add(current)
+                todo.extend(snap[current][2])
+        largest = max(largest, len(seen))
+    return largest
 
-    by_top: dict[str, set[str]] = {}
-    for node_id in nodes:
-        by_top.setdefault(top(node_id), set()).add(node_id)
-    return {node_id: unit for unit in by_top.values() for node_id in unit}
+
+def _assert_no_group_split(before: _Snapshot, after: _Snapshot, keep: int) -> None:
+    """Eviction kept or removed each group whole (unless one can't fit)."""
+    if _largest_group(before) + 1 > keep:
+        return  # a group too big to hold whole may be split
+    removed = before.keys() - after.keys()
+    for container, members in _containers(before).items():
+        if container in after:
+            assert not members & removed, (container, sorted(members & removed))
+        else:
+            kept = members & after.keys()
+            assert not kept, (container, sorted(kept))
 
 
-def _random_event(rng: random.Random, i: int, ids: list[str]) -> TaskEvent:
-    kind = rng.choice(["task", "child", "member", "header", "callback"])
-    kw: dict[str, str] = {}
-    task_id = f"t{i}"
-    if kind == "child" and ids:
-        kw["parent_id"] = rng.choice(ids)
-    elif kind == "member":
-        kw["group_id"] = f"g{rng.randrange(3)}"
-    elif kind == "header":
-        c = rng.randrange(2)
-        kw.update(group_id=f"c{c}", chord_callback_id=f"cb{c}")
-    elif kind == "callback":
-        task_id = f"cb{rng.randrange(2)}"
+def _event_at(task_id: str, i: int, rng: random.Random, **kw: str) -> TaskEvent:
     state = rng.choice([TaskState.SUCCESS, TaskState.FAILURE, TaskState.STARTED])
     return TaskEvent(
         task_id=task_id,
@@ -2356,29 +2401,116 @@ def _random_event(rng: random.Random, i: int, ids: list[str]) -> TaskEvent:
     )
 
 
+def _random_events(rng: random.Random, i: int, ids: list[str]) -> list[TaskEvent]:
+    kind = rng.choice(["task", "child", "member", "chain_member", "header", "callback"])
+    kw: dict[str, str] = {}
+    task_id = f"t{i}"
+    head: list[TaskEvent] = []
+    if kind == "child" and ids:
+        kw["parent_id"] = rng.choice(ids)
+    elif kind == "member":
+        kw["group_id"] = f"g{rng.randrange(4)}"
+    elif kind == "chain_member":
+        # group(chain(head, member)): Celery stamps the group on the last step only.
+        head = [_event_at(f"t{i}h", i, rng)]
+        kw.update(group_id=f"g{rng.randrange(4)}", parent_id=f"t{i}h")
+    elif kind == "header":
+        c = rng.randrange(2)
+        kw.update(group_id=f"c{c}", chord_callback_id=f"cb{c}")
+    elif kind == "callback":
+        task_id = f"cb{rng.randrange(2)}"
+    return [*head, _event_at(task_id, i, rng, **kw)]
+
+
 @pytest.mark.parametrize("seed", range(150))
 def test_eviction_never_splits_a_group_that_fits(seed: int) -> None:
-    """Over random stores of tasks, groups and chords: eviction removes a
-    group's (or chord's) members and container together, unless the group is
-    bigger than what eviction keeps (90% of max_nodes)."""
+    """Over random stores of tasks, groups (of plain tasks and of chains) and
+    chords: eviction removes a group's members and container together, unless
+    a group is bigger than what eviction keeps (90% of max_nodes)."""
     rng = random.Random(seed)
-    max_nodes = rng.randrange(4, 25)
+    max_nodes = rng.randrange(8, 40)
     keep = int(max_nodes * 0.9)
     store = GraphStore(max_nodes=max_nodes)
     ids: list[str] = []
     for i in range(80):
-        before = dict(store._graph.nodes)
-        units = _units(before)
-        event = _random_event(rng, i, ids)
-        store.add_event(event)
-        ids.append(event.task_id)
-        after = store._graph.nodes
+        for event in _random_events(rng, i, ids):
+            before = _snapshot(store._graph.nodes)
+            store.add_event(event)
+            ids.append(event.task_id)
 
-        assert len(after) <= max_nodes, seed
-        removed = before.keys() - after.keys()
-        for node_id in removed:
-            unit = units[node_id]
-            # The new event may have joined this unit before the eviction.
-            if len(unit) + 1 <= keep:
-                assert not (unit & after.keys()), (seed, i, node_id, sorted(unit))
-        assert_graph_invariants(store._graph)
+            assert len(store._graph.nodes) <= max_nodes, seed
+            _assert_no_group_split(before, _snapshot(store._graph.nodes), keep)
+            assert_graph_invariants(store._graph)
+
+
+_FLOWS: dict[str, list[dict[str, object]]] = json.loads(
+    (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
+)
+
+
+@pytest.mark.parametrize("flow", sorted(_FLOWS))
+def test_eviction_never_splits_a_real_workflow_group(flow: str) -> None:
+    """Every captured Celery workflow, then newer tasks until it is evicted."""
+    events = [TaskEvent.model_validate(e) for e in _FLOWS[flow]]
+    full = GraphStore()
+    for event in events:
+        full.add_event(event)
+    # Just room for the largest group, so each eviction takes a few nodes.
+    max_nodes = max(
+        10, math.ceil((_largest_group(_snapshot(full._graph.nodes)) + 2) / 0.9)
+    )
+    keep = int(max_nodes * 0.9)
+    store = GraphStore(max_nodes=max_nodes)
+    for event in events:
+        before = _snapshot(store._graph.nodes)
+        store.add_event(event)
+        _assert_no_group_split(before, _snapshot(store._graph.nodes), keep)
+    last = max(e.timestamp for e in events)
+    for i in range(2 * max_nodes):
+        before = _snapshot(store._graph.nodes)
+        store.add_event(
+            TaskEvent(
+                task_id=f"x{i}",
+                name="tests.filler",
+                state=TaskState.SUCCESS,
+                timestamp=last + timedelta(seconds=1 + i),
+            )
+        )
+        _assert_no_group_split(before, _snapshot(store._graph.nodes), keep)
+    assert all(node_id.startswith("x") for node_id in store._graph.nodes)
+
+
+@pytest.mark.parametrize(
+    "flow",
+    [
+        "chord_in_chord_body",
+        "chord_header_fanout_group",
+        "chord_group_body",
+        "chain_group_group",
+        "chord_group_body@celery5.2",
+        "chain_group_group@celery5.2",
+    ],
+)
+def test_eviction_unit_holds_a_nested_group_with_its_outer_one(flow: str) -> None:
+    """A group drawn inside another (a chord's group body, a group of groups)
+    is evicted with the outer one, not on its own."""
+    store = GraphStore()
+    for event in _FLOWS[flow]:
+        store.add_event(TaskEvent.model_validate(event))
+    graph = store._graph
+    unit_of = {
+        n.task_id: i for i, unit in enumerate(_eviction_units(graph)) for n in unit
+    }
+
+    nested = [
+        node
+        for node in graph.nodes.values()
+        if node.node_type != NodeType.TASK and node.parent_id is not None
+    ]
+    assert nested
+    for node in nested:
+        outer = node.parent_id
+        while outer is not None and graph.nodes[outer].node_type == NodeType.TASK:
+            outer = graph.nodes[outer].parent_id
+        if outer is not None:
+            assert unit_of[node.task_id] == unit_of[outer], (flow, node.task_id)

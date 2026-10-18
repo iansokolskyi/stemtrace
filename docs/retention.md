@@ -8,11 +8,12 @@ The store holds at most `max_nodes` tasks: 10,000 for `stemtrace server`, and th
 default for an embedded app, which can change it with `init_app(max_nodes=...)` (see
 [Embedded server options](configuration.md#embedded-server-options-init_app)).
 
-When it is full it evicts the oldest tasks down to 90% of `max_nodes`. A group or chord goes
-with all its members (and a chord with its callback), and is as old as its newest member, so a
-group is never shown with part of its members and a state worked out from them; one eviction
-can then free more than 10%. A group bigger than 90% of `max_nodes` can't be held whole: its
-oldest members are evicted like single tasks, and its state comes from the members still held.
+When it is full it evicts the oldest tasks down to 90% of `max_nodes`. A group or chord goes with
+all its members and everything drawn under it (a chain's earlier steps, a chord's callback and the
+rest of its chain, a group nested in it), and is as old as the newest of them, so a group is never
+shown with part of its members and a state worked out from them; one eviction can then free more
+than 10%. A group bigger than 90% of `max_nodes` can't be held whole: its oldest members are evicted
+like single tasks, and its state comes from the members still held.
 
 ## Redis (Streams)
 
