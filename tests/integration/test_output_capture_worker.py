@@ -398,6 +398,22 @@ def test_reject_without_requeue_publishes_rejected(worker: WorkerRun) -> None:
     assert _final_state(events, task_id) == TaskState.REJECTED
 
 
+def test_requeued_reject_without_acks_late_publishes_rejected(
+    worker: WorkerRun,
+) -> None:
+    """The worker acked the message before the run: the requeue does nothing."""
+    task_id = worker.send("output_test.rejected_requeue_early_ack")
+
+    events = worker.wait_for(task_id, TaskState.REJECTED)
+
+    assert [e.state for e in events if e.state == TaskState.STARTED] == [
+        TaskState.STARTED
+    ]
+    (rejected,) = [e for e in events if e.state == TaskState.REJECTED]
+    assert rejected.exception == "busy"
+    assert _final_state(events, task_id) == TaskState.REJECTED
+
+
 def test_requeued_reject_publishes_nothing_and_the_next_delivery_runs(
     worker: WorkerRun,
 ) -> None:

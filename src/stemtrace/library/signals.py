@@ -533,14 +533,23 @@ def _publish_ignored_or_rejected(
     Skipped when the task isn't over: ``Task.replace()`` raises
     ``Ignore('Replaced by new task')`` (celery 5.2.2 ``replace``, 5.3+
     ``on_replace``) and the replacement reuses the task ID, and
-    ``Reject(requeue=True)`` puts the message back to run again.
+    ``Reject(requeue=True)`` on a worker with ``acks_late`` puts the message
+    back to run again. Without ``acks_late`` the worker acknowledged the
+    message before running the task, so the requeue does nothing (celery
+    5.2.2 to 5.6.3 worker/request.py ``on_accepted`` and ``reject``), and an
+    eager ``apply()`` has no message.
     """
     if state == "IGNORED" and str(retval) == _REPLACED_BY_NEW_TASK:
         return
-    if state == "REJECTED" and getattr(retval, "requeue", False):
+    if state == "REJECTED" and _runs_again(task, retval):
         return
     _pending_emitted.discard(task_id)
     reason = getattr(retval, "reason", None) if state == "REJECTED" else None
+    exception, exception_type = None, None
+    if isinstance(reason, BaseException):
+        exception, exception_type = _format_exception(reason), _exception_type(reason)
+    elif reason is not None:
+        exception = str(reason)
     chord_id, chord_callback_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
@@ -556,10 +565,20 @@ def _publish_ignored_or_rejected(
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
             retries=task.request.retries or 0,
-            exception=str(reason) if reason is not None else None,
+            exception=exception,
+            exception_type=exception_type,
             output=output,
             **_worker_fields(task.request),
         )
+    )
+
+
+def _runs_again(task: "Task", reject: Any) -> bool:
+    """Whether a ``Reject`` puts its still-unacknowledged message back."""
+    return (
+        bool(getattr(reject, "requeue", False))
+        and bool(task.acks_late)
+        and getattr(task.request, "is_eager", False) is not True
     )
 
 

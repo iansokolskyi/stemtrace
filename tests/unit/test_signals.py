@@ -524,13 +524,82 @@ class TestTaskPostrunIgnoredRejected:
         assert event.state == TaskState.REJECTED
         assert event.exception == "bad input"
 
-    def test_reject_with_requeue_emits_nothing(
+    @pytest.mark.parametrize("acks_late", [False, True])
+    @pytest.mark.parametrize("is_eager", [False, True])
+    @pytest.mark.parametrize("requeue", [False, True])
+    def test_reject_emits_rejected_unless_the_message_runs_again(
+        self,
+        transport: MemoryTransport,
+        mock_task: MagicMock,
+        acks_late: bool,
+        is_eager: bool,
+        requeue: bool,
+    ) -> None:
+        """Only an acks_late worker task's message is still unacknowledged
+        when Reject(requeue=True) reaches the worker, so only it runs again
+        (celery 5.6.3 worker/request.py: ``on_accepted`` acks first unless
+        ``acks_late``; ``reject()`` does nothing once acknowledged). An eager
+        apply() has no message at all."""
+        mock_task.acks_late = acks_late
+        mock_task.request.is_eager = is_eager
+
+        self._postrun(mock_task, "REJECTED", Reject("busy", requeue=requeue))
+
+        runs_again = requeue and acks_late and not is_eager
+        assert [e.state for e in MemoryTransport.events] == (
+            [] if runs_again else [TaskState.REJECTED]
+        )
+
+    def test_reject_with_exception_reason_reports_its_class(
         self, transport: MemoryTransport, mock_task: MagicMock
     ) -> None:
-        """A requeued message runs again: its next STARTED follows."""
-        self._postrun(mock_task, "REJECTED", Reject("busy", requeue=True))
+        """Celery's Task.retry raises Reject(exc, requeue=False) when it can't
+        send the retry (celery 5.6.3 app/task.py ``retry``)."""
+        self._postrun(
+            mock_task, "REJECTED", Reject(ConnectionError("no broker"), requeue=False)
+        )
 
-        assert MemoryTransport.events == []
+        (event,) = MemoryTransport.events
+        assert event.exception == "ConnectionError: no broker"
+        assert event.exception_type == "ConnectionError"
+
+    def test_reject_with_text_reason_has_no_exception_type(
+        self, transport: MemoryTransport, mock_task: MagicMock
+    ) -> None:
+        self._postrun(mock_task, "REJECTED", Reject("bad input", requeue=False))
+
+        (event,) = MemoryTransport.events
+        assert (event.exception, event.exception_type) == ("bad input", None)
+
+
+class TestEagerReject:
+    """Reject through Celery's real tracer, via task.apply()."""
+
+    @pytest.fixture
+    def app(self, transport: MemoryTransport) -> Celery:
+        app = Celery("reject-tests", broker="memory://", backend="cache+memory://")
+
+        @app.task(name="tests.requeue_default")
+        def requeue_default() -> None:
+            raise Reject("busy", requeue=True)
+
+        @app.task(name="tests.requeue_late", acks_late=True)
+        def requeue_late() -> None:
+            raise Reject("busy", requeue=True)
+
+        return app
+
+    @pytest.mark.parametrize("name", ["tests.requeue_default", "tests.requeue_late"])
+    def test_eager_requeued_reject_publishes_rejected(
+        self, app: Celery, name: str
+    ) -> None:
+        """apply() runs once whatever acks_late says: nothing requeues it."""
+        app.tasks[name].apply()
+
+        assert [e.state for e in MemoryTransport.events] == [
+            TaskState.STARTED,
+            TaskState.REJECTED,
+        ]
 
 
 class TestTaskFailure:

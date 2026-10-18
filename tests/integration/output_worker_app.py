@@ -168,6 +168,12 @@ def rejected() -> None:
     raise Reject("bad input", requeue=False)
 
 
+@app.task(name="output_test.rejected_requeue_early_ack")
+def rejected_requeue_early_ack() -> None:
+    """Reject with requeue, but the message was acknowledged before the run."""
+    raise Reject("busy", requeue=True)
+
+
 @app.task(name="output_test.rejected_once", bind=True, acks_late=True)
 def rejected_once(self: Task) -> str:
     """Reject with requeue on the first delivery; succeed on the next one."""
