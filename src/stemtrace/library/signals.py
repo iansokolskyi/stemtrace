@@ -804,11 +804,11 @@ def _parse_eta(value: Any) -> datetime | None:
     # read it with maybe_iso8601, a naive value as UTC (worker/request.py Request.__init__).
     try:
         parsed: datetime = maybe_iso8601(value)  # only falsy values give None
-    except (ValueError, TypeError):
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError):  # as worker/strategy.py
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _published_message(

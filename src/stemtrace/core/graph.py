@@ -292,16 +292,39 @@ class TaskNode(BaseModel):
         """Routing key of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.routing_key)
 
+    def _first_run(self) -> tuple[TaskEvent | None, TaskEvent | None]:
+        """The task's earliest first-attempt sent event (PENDING or RECEIVED) and STARTED.
+
+        Earliest by timestamp: ``task.replace()`` reuses the task ID with
+        ``retries`` 0, so a replacement's events also look like first-attempt
+        events, but they come after the task's own.
+        """
+        sent = min(
+            (e for e in self.events if _is_pre_start(e)),
+            key=lambda e: e.timestamp,
+            default=None,
+        )
+        started = min(
+            (e for e in self.events if e.state == TaskState.STARTED and e.retries == 0),
+            key=lambda e: e.timestamp,
+            default=None,
+        )
+        return sent, started
+
     @property
     def eta(self) -> datetime | None:
         """When the first attempt was scheduled to run (``countdown`` or ``eta``), in UTC.
 
         None when the task could run at once or no event reported it. A retry's
-        ETA is on that retry's own events (``TaskEvent.eta``).
+        or a ``replace()`` replacement's ETA is on its own events (``TaskEvent.eta``).
         """
-        first = (e for e in self.events if e.retries == 0 and e.eta is not None)
-        event = min(first, key=_precedence, default=None)
-        return None if event is None else event.eta
+        sent, started = self._first_run()
+        # STARTED first: the worker reads it from the message it ran. PENDING covers a
+        # worker that doesn't record ETAs.
+        for event in (started, sent):
+            if event is not None and event.eta is not None:
+                return event.eta
+        return None
 
     @property
     def queue_wait_ms(self) -> int | None:
@@ -312,19 +335,14 @@ class TaskNode(BaseModel):
         STARTED. The span crosses the sender's and the worker's clocks, so a
         negative wait counts as 0.
         """
-        sent = [event.timestamp for event in self.events if _is_pre_start(event)]
-        started = [
-            event.timestamp
-            for event in self.events
-            if event.state == TaskState.STARTED and event.retries == 0
-        ]
-        if not sent or not started:
+        sent, started = self._first_run()
+        if sent is None or started is None:
             return None
-        wait_from = min(sent)
+        wait_from = sent.timestamp
         eta = self.eta
         if eta is not None:
             wait_from = max(wait_from, eta)
-        return _ms(min(started) - wait_from)
+        return _ms(started.timestamp - wait_from)
 
     @property
     def runtime_ms(self) -> int | None:

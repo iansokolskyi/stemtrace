@@ -265,8 +265,6 @@ class TestEta:
             ([(P, 0, None), (S, 3.5, 3), (OK, 4, 3)], 500),
             # An ETA already past when the task was sent changes nothing.
             ([(P, 2, 1), (S, 3.5, 1), (OK, 4, 1)], 1500),
-            # The worker's clock behind the sender's: started "before" the ETA is 0.
-            ([(P, 0, 3), (S, 2.9, 3), (OK, 3.4, 3)], 0),
             # No ETA anywhere: unchanged.
             ([(P, 0, None), (S, 3.5, None), (OK, 4, None)], 3500),
         ],
@@ -276,7 +274,6 @@ class TestEta:
             "worker-only",
             "started-only",
             "eta-in-the-past",
-            "worker-clock-behind",
             "no-eta",
         ],
     )
@@ -322,6 +319,32 @@ class TestEta:
 
     def test_no_eta(self) -> None:
         assert _node(_event(P, 0), _event(S, 2)).eta is None
+
+    def test_delayed_replacement_is_not_the_first_attempts_eta(self) -> None:
+        # self.replace(add.si(1, 1).set(countdown=2)) after waiting 2.5 s in the queue:
+        # replace() reuses the ID and sends with retries=0 (real worker, celery 5.6.3).
+        node = _node(
+            _event(P, 0),
+            _event(S, 2.493),
+            _event(P, 2.794, eta=_at(4.793)),
+            _event(S, 4.795, eta=_at(4.793)),
+            _event(OK, 4.84, eta=_at(4.793)),
+        )
+
+        assert node.eta is None
+        assert node.queue_wait_ms == 2493
+
+    def test_delayed_task_replaced_by_a_delayed_task_keeps_its_own_eta(self) -> None:
+        node = _node(
+            _event(P, 0, eta=_at(1)),
+            _event(S, 1.2, eta=_at(1)),
+            _event(P, 1.5, eta=_at(3.5)),
+            _event(S, 3.6, eta=_at(3.5)),
+            _event(OK, 3.7, eta=_at(3.5)),
+        )
+
+        assert node.eta == _at(1)
+        assert node.queue_wait_ms == 200
 
 
 SKEWS = (-60, 0, 60)
@@ -485,6 +508,51 @@ class TestRealCaptures:
         assert node.queue_wait_ms == max(
             0, (started - node.eta) // timedelta(milliseconds=1)
         )
+
+    @pytest.mark.parametrize(
+        "flow",
+        [
+            "replace_delayed_root",
+            "replace_delayed_mid_chain",
+            "replace_delayed_header",
+            "replace_delayed_nested",
+            "replace_delayed_same_name",
+        ],
+    )
+    def test_delayed_replacement_never_becomes_the_tasks_eta(self, flow: str) -> None:
+        # No task in these flows was sent with a delay; only replace() replacements were.
+        graph = TaskGraph()
+        for event in _capture(flow):
+            graph.add_event(event)
+        replaced = [
+            n for n in graph.nodes.values() if any(e.eta is not None for e in n.events)
+        ]
+
+        assert replaced
+        for node in graph.nodes.values():
+            assert node.eta is None, node.name
+            sent = [
+                e.timestamp for e in node.events if e.retries == 0 and e.state in (P, R)
+            ]
+            started = [
+                e.timestamp for e in node.events if e.state == S and e.retries == 0
+            ]
+            if sent and started:
+                wait = (min(started) - min(sent)) // timedelta(milliseconds=1)
+                assert node.queue_wait_ms == max(0, wait), node.name
+
+    def test_delayed_task_replaced_with_a_delay_keeps_its_first_eta(self) -> None:
+        graph = TaskGraph()
+        for event in _capture("delayed_replace_delayed"):
+            graph.add_event(event)
+        [node] = graph.nodes.values()
+        first = min((e for e in node.events if e.state == P), key=lambda e: e.timestamp)
+        etas = {e.eta for e in node.events}
+
+        assert len(etas) == 2
+        assert node.eta == first.eta
+        assert node.queue_wait_ms is not None
+        assert node.queue_wait_ms < 100
 
     @pytest.mark.parametrize("flow", sorted(json.loads(FLOWS.read_text())))
     def test_every_captured_task_has_consistent_timing(self, flow: str) -> None:

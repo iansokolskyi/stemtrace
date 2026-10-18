@@ -188,8 +188,9 @@ Limitations:
   A sender clock behind the worker's adds its offset to the wait. Turning on RECEIVED
   (`publish_received=True`) gives a start stamped by the worker's own clock, used when it is
   earlier. Celery computes an ETA from the sending process's clock (now plus the `countdown`),
-  and the worker starts the task when its own clock reaches it, so a worker clock behind the
-  sender's makes the task start "before" its ETA: that wait counts as 0.
+  and the worker starts the task when its own clock reaches it. A worker clock behind the
+  sender's starts the task late by the offset, and one ahead starts it early; `queue_wait_ms`
+  counts from the ETA by the worker's clock, so it doesn't show that offset.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind

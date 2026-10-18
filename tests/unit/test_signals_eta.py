@@ -76,6 +76,10 @@ class TestParseEta:
             (None, None),
             ("", None),
             ("not-a-date", None),
+            # Past the ends of the date range once converted to UTC (Celery's worker
+            # catches OverflowError for the same conversion, worker/strategy.py).
+            ("9999-12-31T23:00:00-05:00", None),
+            ("0001-01-01T00:30:00+01:00", None),
             (12345, None),
         ],
         ids=[
@@ -87,6 +91,8 @@ class TestParseEta:
             "none",
             "empty",
             "garbage",
+            "overflow-max",
+            "overflow-min",
             "number",
         ],
     )
