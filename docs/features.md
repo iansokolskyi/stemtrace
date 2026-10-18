@@ -201,3 +201,51 @@ Limitations:
   first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
   and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the
   same-attempt limitation in [Worker, queue and exception type](#worker-queue-and-exception-type)).
+
+## Summary endpoints
+
+Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page
+through every task. A task counts at the time of its last event in lifecycle order (a first
+attempt's PENDING or RECEIVED stamped late by a sender whose clock is ahead doesn't move it) and
+under its current state, so a task that failed and then succeeded on retry counts as a SUCCESS.
+Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now, or, on the
+time series and failures, from `from_date` (pass one or the other). A time without a timezone is
+UTC. A date alone (`2026-10-18`) means its UTC midnight on current pydantic (checked with 2.13);
+pydantic 2.4, the oldest supported, rejects it, as on the task list. A start after now is a
+`422`. A window reaches at most 3,650 days back, whatever `from_date` or the oldest task says (a
+time series then starts at the bucket edge at or before that, and the overview's baseline is the
+window before it). Every response says which window it covered. A window ending now also takes
+tasks stamped later by a worker whose clock is ahead.
+
+- `GET /api/overview?within=1h` (default `1h`; it takes `within` only): runs, failures, runs per minute and the
+  failure rate (FAILURE over runs; 0 with none), each with `baseline`, the same value for the
+  window of equal length just before. Runs are tasks that ended with an outcome: SUCCESS, FAILURE,
+  REVOKED or REJECTED. IGNORED tasks chose not to run (for example a deduplicated task), so they
+  are left out, and a burst of them doesn't hide failures; the time series counts them by state.
+  `workers` counts online and known workers from worker events, without asking the workers.
+- `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
+  state (states with no run in range are left out). Bucket edges are multiples of the bucket
+  size since the Unix epoch, so they don't move between requests; the first bucket starts on
+  the edge at or before the window's start, and the response's `window.start` is that edge.
+  Without `within` or `from_date` it covers the last 3,650 days. Without `bucket` it
+  uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
+  that needs more is a `422`. `group_by=task_group` adds the same counts per
+  [task group](configuration.md#task-groups).
+- `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
+  `exception_type`, most failures first. Each group has its count, first and last failure, task
+  names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
+  class form one group with `exception_type: null`.
+
+Each request copies the server's list of task summaries once and computes outside the lock that
+the event consumer uses, so it never holds up incoming events for longer than that copy.
+
+The task list also takes:
+
+- `state=FAILURE,RETRY`: any of several states, in any case. An unknown state is a `422` that
+  lists the valid ones.
+- `within=1h` (also on `GET /api/graphs`), as above.
+- `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
+  task's event list. The task detail always includes them.
+
+`GET /api/health` reports the Celery broker's kind as `broker`: `redis`, `rabbitmq`, `memory`,
+or `null`. Only the URL's scheme is read; the URL itself is never returned.
