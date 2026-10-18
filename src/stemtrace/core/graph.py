@@ -207,25 +207,6 @@ def _run_start(open_runs: dict[_RunKey, TaskEvent], end: TaskEvent) -> TaskEvent
     return open_runs.pop(next(reversed(open_runs)))
 
 
-def _ran_twice_on_one_worker(events: Collection[TaskEvent]) -> bool:
-    """Whether a worker started or ended the same attempt more than once.
-
-    A redelivery to the same worker, or a REVOKED Celery announces for a run
-    that already finished: the events can't tell which start goes with which
-    end. Events without a worker are left out (older workers share one key).
-    """
-    starts: Counter[_RunKey] = Counter()
-    ends: Counter[_RunKey] = Counter()
-    for event in events:
-        if event.hostname is None:
-            continue
-        if event.state == TaskState.STARTED:
-            starts[_run_key(event)] += 1
-        elif event.state == TaskState.RETRY or event.state in TERMINAL_STATES:
-            ends[_run_key(event)] += 1
-    return any(n > 1 for n in (*starts.values(), *ends.values()))
-
-
 def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     """Total order over a task's events; the maximum decides the node's state.
 
@@ -435,20 +416,16 @@ class TaskNode(BaseModel):
 
         Runs are read on one worker's clock (see ``_run_start``), in
         ``_precedence`` order. Runs whose end was missed, or ended in a terminal
-        event that isn't the final one, are left out. None unless the task
-        finished and its last run's STARTED is from the final event's attempt,
-        and None when a worker ran the same attempt twice (unknown, not guessed).
+        event from a worker before the final one, are left out. None unless the
+        task finished and its last run's STARTED is from the final event's
+        attempt.
         """
         # A FAILURE with retries=0 and no worker comes from an older worker's
         # main process (celery 5.6.3 worker/request.py Request.on_failure, where
         # app/task.py Task._get_request is an empty default) and can be any
         # attempt's; this release's workers fill it in (signals._failed_request).
         final = max(self.events, key=_precedence, default=None)
-        if (
-            final is None
-            or final.state not in TERMINAL_STATES
-            or _ran_twice_on_one_worker(self.events)
-        ):
+        if final is None or final.state not in TERMINAL_STATES:
             return None
         ordered = sorted(
             (e for e in self.events if e is not final and e.state != TaskState.PENDING),
@@ -466,9 +443,11 @@ class TaskNode(BaseModel):
             if event.state == TaskState.RECEIVED:
                 continue
             if event is not final and event.state in TERMINAL_STATES:
-                # An attempt that ended in its own SUCCESS/FAILURE before the
-                # final event (retry(throw=False)): closed and left out. Without
-                # a worker (0.4.0 and earlier) the run can't be told apart.
+                # A run that ended before the final event (retry(throw=False),
+                # or the same attempt's earlier run on this worker): closed and
+                # left out, so the final event never pairs with a finished run's
+                # start. Without a worker (0.4.0 and earlier) the run can't be
+                # told apart.
                 if event.hostname is not None:
                     open_runs.pop(_run_key(event), None)
                 continue

@@ -396,26 +396,6 @@ class TestTiming:
             [(S, 0, 0, "a"), (OK, 4000, 0, "a"), (S, 5000, 0, "a"), (OK, 7000, 0, "a")],
             # The same, with the second run's STARTED missed.
             [(S, 0, 0, "a"), (OK, 4000, 0, "a"), (OK, 7000, 0, "a")],
-            # A pool process lost mid-run, redelivered to the same worker.
-            [(S, 0, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")],
-            # A cold shutdown's RETRY, redelivered to the same worker.
-            [(S, 0, 0, "a"), (RT, 1, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")],
-            # An earlier attempt run twice, then retried on another worker.
-            [
-                (S, 0, 0, "a"),
-                (S, 5, 0, "a"),
-                (RT, 7, 0, "a"),
-                (S, 8, 1, "b"),
-                (OK, 9, 1, "b"),
-            ],
-            # Two RETRYs of one attempt on one worker, the second STARTED missed.
-            [
-                (S, 0, 0, "a"),
-                (RT, 4000, 0, "a"),
-                (RT, 7000, 0, "a"),
-                (S, 8000, 1, "b"),
-                (OK, 9000, 1, "b"),
-            ],
             # revoke(terminate=True) racing a run that already finished: celery
             # 5.6.3 worker/request.py Request.terminate announces REVOKED once
             # the run started, whatever the pool process sent.
@@ -426,27 +406,75 @@ class TestTiming:
             "overlapping",
             "one-after-the-other",
             "second-started-missed",
-            "lost-run",
-            "cold-shutdown-retry",
-            "earlier-attempt",
-            "retried-twice",
             "revoked-after-success",
             "success-after-revoked",
         ],
     )
-    def test_attempt_run_twice_on_one_worker_has_no_runtimes(
+    def test_earlier_end_of_the_final_attempt_on_its_worker_has_no_runtimes(
         self, events: list[tuple[TaskState, float, int, str]]
     ) -> None:
-        # The events can't tell which start goes with which end: unknown, not
-        # a guess.
+        # The worker ended the final event's attempt before: the events can't
+        # tell which start goes with which end, so unknown, not a guess.
+        assert _runtimes(events) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("events", "expected"),
+        [
+            # A pool process lost mid-run, redelivered to the same worker: the
+            # lost run is left out, as on another worker.
+            ([(S, 0, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")], (2000, 2000)),
+            # A cold shutdown's RETRY, redelivered to the same worker.
+            (
+                [(S, 0, 0, "a"), (RT, 1, 0, "a"), (S, 5, 0, "a"), (OK, 7, 0, "a")],
+                (2000, 3000),
+            ),
+            # An earlier attempt's lost run, then a retry on another worker.
+            (
+                [
+                    (S, 0, 0, "a"),
+                    (S, 5, 0, "a"),
+                    (RT, 7, 0, "a"),
+                    (S, 8, 1, "b"),
+                    (OK, 9, 1, "b"),
+                ],
+                (1000, 3000),
+            ),
+            # Two RETRYs of one attempt, the second run's STARTED missed: that
+            # run is left out.
+            (
+                [
+                    (S, 0, 0, "a"),
+                    (RT, 4000, 0, "a"),
+                    (RT, 7000, 0, "a"),
+                    (S, 8000, 1, "b"),
+                    (OK, 9000, 1, "b"),
+                ],
+                (1000000, 5000000),
+            ),
+        ],
+        ids=["lost-run", "cold-shutdown-retry", "earlier-attempt", "retried-twice"],
+    )
+    def test_attempt_run_again_on_its_worker_pairs_each_run(
+        self,
+        events: list[tuple[TaskState, float, int, str]],
+        expected: tuple[int, int],
+    ) -> None:
+        assert _runtimes(events) == expected
+
+    def test_replacement_on_the_same_worker_has_runtimes(self) -> None:
+        # task.replace(): the replacement keeps the task ID and retries=0, and
+        # names the task as its parent (protocol 2).
+        a = {"hostname": "celery@a"}
+        replacement = {**a, "parent_id": "task-1"}
         node = _node(
-            *(
-                _event(state, at, retries=retries, hostname=host)
-                for state, at, retries, host in events
-            )
+            _event(P, 0),
+            _event(S, 1, **a),
+            _event(P, 1.5, parent_id="task-1"),
+            _event(S, 2, **replacement),
+            _event(OK, 5, **replacement),
         )
 
-        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+        assert (node.runtime_ms, node.total_runtime_ms) == (3000, 3000)
 
     def test_message_received_twice_before_it_started_has_runtimes(self) -> None:
         # A RECEIVED per delivery (publish_received=True): the first delivery
@@ -885,6 +913,27 @@ def test_retry_without_raising_never_pairs_attempts(
         assert (node.runtime_ms, node.total_runtime_ms) == expected
 
 
+def _runtimes(events: list[tuple[TaskState, float, int, str]]) -> tuple[object, ...]:
+    node = _node(
+        *(
+            _event(state, at, retries=retries, hostname=host)
+            for state, at, retries, host in events
+        )
+    )
+    return node.runtime_ms, node.total_runtime_ms
+
+
+def _all_runtimes(events: list[TaskEvent]) -> dict[str, tuple[object, ...]]:
+    graph = TaskGraph()
+    for event in events:
+        graph.add_event(event)
+    return {
+        node_id: (node.runtime_ms, node.total_runtime_ms)
+        for node_id, node in graph.nodes.items()
+        if node.node_type == NodeType.TASK
+    }
+
+
 def _capture(flow: str) -> list[TaskEvent]:
     return [TaskEvent.model_validate(e) for e in json.loads(FLOWS.read_text())[flow]]
 
@@ -1077,6 +1126,21 @@ class TestRealCaptures:
         assert node.eta == first.eta
         assert node.queue_wait_ms is not None
         assert node.queue_wait_ms < 100
+
+    @pytest.mark.parametrize(
+        "flow", sorted(f for f in json.loads(FLOWS.read_text()) if "replace" in f)
+    )
+    def test_replacement_on_the_same_worker_keeps_the_runtimes(self, flow: str) -> None:
+        # The captures predate hostnames; one worker sends every worker event.
+        # A replacement keeps the task ID and retries=0, so it isn't a second
+        # run of the task's attempt.
+        events = _capture(flow)
+        on_one_worker = [
+            e if e.state == P else e.model_copy(update={"hostname": "celery@w1"})
+            for e in events
+        ]
+
+        assert _all_runtimes(on_one_worker) == _all_runtimes(events)
 
     @pytest.mark.parametrize("flow", sorted(json.loads(FLOWS.read_text())))
     def test_every_captured_task_has_consistent_timing(self, flow: str) -> None:
