@@ -1033,23 +1033,14 @@ class _ApiRoute(APIRoute):
     """
 
     async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Handle the request; on a 405 from a GET route, list HEAD as allowed."""
-        try:
-            await super().handle(scope, receive, send)
-        except StarletteHTTPException as exc:
-            # starlette 0.38-1.7 Route.handle raises the 405 inside an app.
-            if (
-                exc.status_code == 405
-                and exc.headers is not None
-                and self.methods
-                and "GET" in self.methods
-                and scope["method"] not in self.methods
-            ):
-                allow = ", ".join(sorted(self.methods | {"HEAD"}))
-                raise StarletteHTTPException(
-                    status_code=405, headers={**exc.headers, "Allow": allow}
-                ) from exc
-            raise
+        """Handle the request; another method on a GET route gets a 405 naming HEAD."""
+        # starlette 0.38-1.7 Route.handle raises this 405 inside an app, with
+        # only this route's methods in Allow; raising it first adds HEAD.
+        methods = self.methods or set()  # APIRoute always sets them
+        if "GET" in methods and scope["method"] not in methods:
+            allow = ", ".join(sorted(methods | {"HEAD"}))
+            raise StarletteHTTPException(status_code=405, headers={"Allow": allow})
+        await super().handle(scope, receive, send)
 
 
 def _serve_head_on_get_routes(router: APIRouter) -> None:
