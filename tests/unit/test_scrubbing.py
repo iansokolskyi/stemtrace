@@ -1,6 +1,10 @@
 """Tests for sensitive data scrubbing."""
 
+import collections
+import sys
 from enum import Enum, Flag, IntEnum, IntFlag
+from http import HTTPStatus
+from typing import NamedTuple
 
 import pytest
 
@@ -401,13 +405,14 @@ class _Cred(Enum):
 
 
 class _StrCred(str, Enum):
-    """A str-mixin Enum is a str, but its name is matched too."""
+    """A str-mixin Enum member is a str: equal to its value, and matched by it."""
 
     SECRET = "s"
+    HEADER = "authorization"
 
 
 class _Slot(IntEnum):
-    """An IntEnum is an int, but its members still have names."""
+    """An IntEnum member is an int, equal to its value: matched as an int, never."""
 
     TOKEN = 1
     OTHER = 2
@@ -472,6 +477,9 @@ UNNAMED_KEYS = [
     _StrIsPassword(),
     _Cred.COLOR,
     _Slot.OTHER,
+    _Slot.TOKEN,
+    HTTPStatus.UNAUTHORIZED,
+    _StrCred.SECRET,
     _Perm(0),
     _Perm.READ | _Perm.WRITE,
     _IPerm(0),
@@ -479,6 +487,9 @@ UNNAMED_KEYS = [
     _Mode.READ,
     _Combo.A | _Combo.C,
     _Nameless.A,
+    _IPerm.TOKEN,
+    _IPerm.READ | _IPerm.TOKEN,
+    _IPerm(4) | _IPerm.TOKEN,
 ]
 UNNAMED_KEY_IDS = [
     "int",
@@ -490,13 +501,19 @@ UNNAMED_KEY_IDS = [
     "object",
     "enum",
     "int_enum",
+    "int_enum_sensitive_name",
+    "http_status",
+    "str_enum_sensitive_name",
     "flag_empty",
     "flag_composite",
     "int_flag_empty",
-    "int_flag_unknown_bits",
+    "int_flag_bits_without_member",
     "flag_with_zero_member",
     "flag_without_multi_bit_member",
     "enum_name_none",
+    "int_flag_sensitive_name",
+    "int_flag_composite",
+    "int_flag_unknown_bits",
 ]
 NAMED_KEYS = [
     b"password",
@@ -507,13 +524,10 @@ NAMED_KEYS = [
     frozenset({"secret"}),
     _Cred.PASSWORD,
     _Cred.LOOKUP,
-    _Slot.TOKEN,
-    _StrCred.SECRET,
+    _StrCred.HEADER,
     _Perm.SECRET,
     # Composites have no name on Python 3.10: matched by their members.
     _Perm.READ | _Perm.SECRET,
-    _IPerm.READ | _IPerm.TOKEN,
-    _IPerm(4) | _IPerm.TOKEN,
     _Combo.TOKEN_PAIR | _Combo.C,
     _Alias.READ,
 ]
@@ -526,12 +540,9 @@ NAMED_KEY_IDS = [
     "frozenset",
     "enum_name",
     "enum_value",
-    "int_enum",
-    "str_enum",
+    "str_enum_sensitive_value",
     "flag_member",
     "flag_composite",
-    "int_flag_composite",
-    "int_flag_unknown_bits",
     "flag_multi_bit_member",
     "flag_alias",
 ]
@@ -649,3 +660,239 @@ class TestNonStringKeys:
         value = [{1: "a", "password": "x"}]
 
         assert safe_serialize(value, sensitive_keys=frozenset()) == value
+
+
+class _IntMixin(int, Enum):
+    """Base for int-mixin members made in the sweep below."""
+
+
+class _StrMixin(str, Enum):
+    """Base for str-mixin members made in the sweep below."""
+
+
+# kind -> (enum base, member value is a str, expected for the member names
+# below: LABEL="colour", TOKEN="colour", LABEL="api_key", TOKEN="api_key").
+_KINDS: dict[str, tuple[type[Enum], bool, tuple[bool, bool, bool, bool]]] = {
+    "int_enum": (IntEnum, False, (False, False, False, False)),
+    "int_flag": (IntFlag, False, (False, False, False, False)),
+    "int_mixin": (_IntMixin, False, (False, False, False, False)),
+    "str_mixin": (_StrMixin, True, (False, False, True, True)),
+    "enum": (Enum, True, (False, True, True, True)),
+    "flag": (Flag, False, (False, True, False, True)),
+}
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+
+    _KINDS["str_enum"] = (StrEnum, True, (False, False, True, True))
+_MEMBERS = [
+    ("LABEL", "colour"),
+    ("TOKEN", "colour"),
+    ("LABEL", "api_key"),
+    ("TOKEN", "api_key"),
+]
+_MEMBER_IDS = ["plain", "sensitive_name", "sensitive_value", "both"]
+
+
+def _member(base: type[Enum], name: str, value: object) -> Enum:
+    """One member of a fresh ``base`` subclass."""
+    return base("_Kind", {name: value})[name]  # type: ignore[call-overload,no-any-return]  # functional API
+
+
+@pytest.mark.parametrize(
+    ("base", "str_valued", "name", "str_value", "expected"),
+    [
+        (base, str_valued, name, str_value, expected[i])
+        for base, str_valued, expected in _KINDS.values()
+        for i, (name, str_value) in enumerate(_MEMBERS)
+    ],
+    ids=[f"{kind}-{member}" for kind in _KINDS for member in _MEMBER_IDS],
+)
+def test_is_sensitive_key_with_enum_member_follows_what_the_key_equals(
+    base: type[Enum], str_valued: bool, name: str, str_value: str, expected: bool
+) -> None:
+    """A member that is an int or a str (IntEnum, IntFlag, str or int mixins,
+    StrEnum) equals and hashes like its value, so it is matched as that value:
+    an int never, a str by its text. Other members are matched by their name
+    (and a str value)."""
+    member = _member(base, name, str_value if str_valued else 1)
+
+    assert _is_sensitive_key(member, DEFAULT_SENSITIVE_KEYS) is expected
+
+
+class _Field(str, Enum):
+    """A str-mixin key named like a credential, valued like nothing."""
+
+    PASSWORD = "pw"
+
+
+class _Slot2(IntEnum):
+    """An int key named like a credential."""
+
+    API_TOKEN = 1
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_Field.PASSWORD, "pw"),
+        (_Slot2.API_TOKEN, 1),
+        (("user", _Field.PASSWORD), ("user", "pw")),
+        (frozenset({_Slot2.API_TOKEN}), frozenset({1})),
+        (True, True),
+        (_Cred.PASSWORD, _Cred.PASSWORD),
+    ],
+    ids=["str_mixin", "int_enum", "tuple_part", "frozenset_part", "bool", "plain_enum"],
+)
+def test_scrub_dict_shows_a_key_as_what_it_was_matched_by(
+    key: object, shown: object
+) -> None:
+    """A key matched as its str or int value is written as that value, the way
+    json writes it, so a value kept under ``Field.PASSWORD`` shows under
+    ``"pw"`` and never under the credential-looking name."""
+    ((out_key, _),) = scrub_dict({key: "v"}).items()
+
+    assert out_key == shown
+    assert type(out_key) is type(shown)
+    if isinstance(shown, tuple | frozenset):
+        assert [type(p) for p in sorted(out_key, key=str)] == [
+            type(p) for p in sorted(shown, key=str)
+        ]
+
+
+def test_safe_serialize_text_fallback_shows_keys_as_matched() -> None:
+    """A dict json can't encode is shown as text: its keys too read as their value."""
+    text = safe_serialize({_Slot2.API_TOKEN: "sk", ("a", "b"): 1}, max_size=10_000)
+
+    assert text == "{1: 'sk', ('a', 'b'): 1}"
+
+
+def test_scrub_dict_with_http_status_key_keeps_its_value() -> None:
+    """HTTPStatus.UNAUTHORIZED (401) is a status code, not a credential."""
+    data = {HTTPStatus.UNAUTHORIZED: "login again", HTTPStatus.OK: "fine"}
+
+    assert scrub_dict(data) == data
+
+
+class _IntOverride(int):
+    """An int whose __int__ says another number."""
+
+    def __int__(self) -> int:
+        return 999
+
+
+class _IntRaises(int):
+    """An int whose __int__ raises."""
+
+    def __int__(self) -> int:
+        raise RuntimeError("no int")
+
+
+class _LowerLies(str):
+    """A str whose lower() hides its text."""
+
+    def lower(self) -> str:  # type: ignore[override]  # the case under test
+        return "colour"
+
+
+class _ById(str):
+    """A str equal only to itself."""
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class _Pair(NamedTuple):
+    user: object
+    field: object
+
+
+def test_scrub_dict_shows_an_int_key_by_its_own_value() -> None:
+    """int's own value, not a subclass's __int__: no relabelled or lost keys."""
+    out = scrub_dict({_IntOverride(5): "a", 999: "b", _IntRaises(7): "c"})
+
+    assert out == {5: "a", 999: "b", 7: "c"}
+    assert {type(k) for k in out} == {int}
+
+
+def test_scrub_dict_matches_a_str_key_by_its_text_not_its_lower() -> None:
+    assert scrub_dict({_LowerLies("password"): "hunter2"}) == {"password": FILTERED}
+
+
+def test_scrub_dict_shows_a_str_subclass_key_as_plain_text() -> None:
+    """Even one equal only to itself: it is shown (and serialized) as its text."""
+    ((key, value),) = scrub_dict({_ById("note"): "first"}).items()
+
+    assert (key, type(key), value) == ("note", str, "first")
+
+
+class _OddMake(tuple[object, ...]):
+    """A tuple subclass with a ``_make`` that isn't namedtuple's."""
+
+    _make = "not callable"
+
+
+def test_scrub_dict_shows_another_tuple_subclass_key_as_a_tuple() -> None:
+    ((key, _),) = scrub_dict({_OddMake(("u", _Field.PASSWORD)): "v"}).items()
+
+    assert (key, type(key)) == (("u", "pw"), tuple)
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_Pair("u", "f"), _Pair("u", "f")),
+        (_Pair("u", _Field.PASSWORD), _Pair("u", "pw")),
+    ],
+    ids=["unchanged", "enum_part"],
+)
+def test_scrub_dict_keeps_a_namedtuple_key_a_namedtuple(
+    key: object, shown: object
+) -> None:
+    ((out_key, _),) = scrub_dict({key: "v"}).items()
+
+    assert out_key == shown
+    assert type(out_key) is _Pair
+
+
+def _make_raises(cls: type, iterable: object) -> object:
+    raise RuntimeError("no _make")
+
+
+def _make_relabels(cls: type, iterable: object) -> object:
+    return tuple.__new__(cls, ("password",))
+
+
+class _MakeRaises(
+    collections.namedtuple("_MakeRaisesBase", "a b")
+):  # a real namedtuple subclass
+    """A namedtuple whose _make raises."""
+
+    _make = classmethod(_make_raises)  # type: ignore[assignment]  # the case under test
+
+
+class _MakeRelabels(
+    collections.namedtuple("_MakeRelabelsBase", "a")
+):  # a real namedtuple subclass
+    """A namedtuple whose _make shows another key."""
+
+    _make = classmethod(_make_relabels)  # type: ignore[assignment]  # the case under test
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (_MakeRaises("u", _Field.PASSWORD), ("u", "pw")),
+        (_MakeRelabels(_Field.PASSWORD), ("pw",)),
+    ],
+    ids=["make_raises", "make_relabels"],
+)
+def test_scrub_dict_rebuilds_a_namedtuple_key_without_its_make(
+    key: tuple[object, ...], shown: tuple[object, ...]
+) -> None:
+    """The namedtuple keeps its type, but its own _make doesn't decide the key."""
+    ((out_key, value),) = scrub_dict({key: "v"}).items()
+
+    assert (tuple(out_key), type(out_key), value) == (shown, type(key), "v")

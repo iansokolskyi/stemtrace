@@ -36,10 +36,11 @@ from typing import Any
 from celery import Celery, chain, chord, group
 from celery.canvas import Signature
 from celery.contrib.testing.worker import start_worker
+from celery.exceptions import Ignore, Reject
 from celery.signals import task_prerun
 
 import stemtrace.library.signals as stemtrace_signals
-from stemtrace.core.events import TaskEvent
+from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.signals import connect_signals, disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
 
@@ -178,6 +179,25 @@ def fail() -> int:
     raise ValueError("header failed")
 
 
+@app.task(name="flows.ignore")
+def ignore() -> int:
+    """Raise Ignore: it never reports a chord part, so the chord never completes."""
+    raise Ignore()
+
+
+@app.task(bind=True, name="flows.ignore_done")
+def ignore_done(self: Any) -> int:
+    """Report its own result, then raise Ignore: the chord still completes."""
+    self.backend.mark_as_done(self.request.id, 5, request=self.request)
+    raise Ignore()
+
+
+@app.task(name="flows.reject")
+def reject() -> int:
+    """Raise Reject without requeue: the message is dropped, the chord never completes."""
+    raise Reject("bad input", requeue=False)
+
+
 @app.task(bind=True, name="flows.flaky_add", max_retries=2)
 def flaky_add(self: Any, x: int, y: int) -> int:
     """Add, failing (and retrying) once on its first run."""
@@ -255,6 +275,11 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             [spawn_group.s(2), add.s(1, 1)], tsum.s()
         ),
         "chord_failed_header": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
+        "chord_ignored_header": lambda: chord([ignore.s(), add.s(1, 1)], tsum.s()),
+        "chord_ignored_header_marked_done": lambda: chord(
+            [ignore_done.s(), add.s(1, 1)], tsum.s()
+        ),
+        "chord_rejected_header": lambda: chord([reject.s(), add.s(1, 1)], tsum.s()),
         "chord_failed_header_subtask": lambda: chord(
             [add_with_subtask.s(1, 1), fail.s()], tsum.s()
         ),
@@ -377,6 +402,11 @@ def _event_dict(event: Any) -> dict[str, Any]:
 
 
 _UNLOCK_FLOWS = ("chord", "chain_a_group_tsum_add", "chord_with_chain_body")
+# Chords Celery never completes: there is no result to wait for.
+_NEVER_COMPLETE = ("chord_ignored_header", "chord_rejected_header")
+_TERMINAL = frozenset(
+    {TaskState.SUCCESS, TaskState.FAILURE, TaskState.IGNORED, TaskState.REJECTED}
+)
 
 
 def _settle() -> None:
@@ -385,6 +415,21 @@ def _settle() -> None:
     while seen != len(MemoryTransport.events):
         seen = len(MemoryTransport.events)
         time.sleep(0.5)
+
+
+def _wait_for_headers(count: int) -> None:
+    """Wait until ``count`` headers have ended (a chord that never completes)."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        ended = {
+            e.task_id
+            for e in MemoryTransport.events
+            if isinstance(e, TaskEvent) and e.state in _TERMINAL
+        }
+        if len(ended) >= count:
+            return
+        time.sleep(0.1)
+    raise TimeoutError(f"{count} headers didn't end within 60s")
 
 
 def _forget_announced(**_: Any) -> None:
@@ -418,7 +463,10 @@ def main() -> None:
             for name, build in flows.items():
                 MemoryTransport.clear()
                 result = build().apply_async()
-                result.get(timeout=60, propagate=False, disable_sync_subtasks=False)
+                if name in _NEVER_COMPLETE:
+                    _wait_for_headers(2)
+                else:
+                    result.get(timeout=60, propagate=False, disable_sync_subtasks=False)
                 _settle()
                 key = f"{name}@chord_unlock" if UNLOCK else f"{name}{suffix}"
                 captures[key] = [

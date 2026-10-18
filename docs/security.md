@@ -25,15 +25,19 @@ Values that aren't dicts, lists or tuples, whether positional arguments or retur
 the password in `login.delay("alice", "hunter2")`), exception messages and tracebacks are shown
 as they are.
 
-Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`). Bytes
-keys (such as redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and matched
-the same way. A tuple or frozenset key matches if any of its parts does, an Enum member by its
-name or its value, and a Flag value by the members it contains (`Perm.READ | Perm.SECRET` matches
-`secret`). Enum matching includes
-`IntEnum` and `StrEnum` members, so `HTTPStatus.UNAUTHORIZED` is filtered like any key containing
-`auth`. Other keys (ints, `None`, other objects) never match, but dicts inside their values are
-still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a
-cyclic structure, appears as `[Not captured: <error type>]`.
+Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`). Bytes keys
+(such as redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and matched the
+same way. A tuple or frozenset key matches if any of its parts does. A key that is a str or an int
+matches as that str or int: an `IntEnum`, `IntFlag` or `StrEnum` member (or any str- or int-mixin
+Enum) equals its value, so `HTTPStatus.UNAUTHORIZED` is the status code 401 and never matches, and a
+`StrEnum` member whose value is `"authorization"` does. Such a key is also shown as that value
+(`"pw"` for `Field.PASSWORD = "pw"`, `401`), never as a member name that looks sensitive. An int key
+never matches, so an `IntEnum` member named like a credential (`Cred.PASSWORD = 2`) isn't filtered,
+and `additional_sensitive_keys` can't change that. Any other Enum member matches by its name or its
+value, and any other Flag value by the members it contains (`Perm.READ | Perm.SECRET` matches
+`secret`). Other keys (ints, `None`, other objects) never match, but dicts inside their values are
+still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a cyclic
+structure, appears as `[Not captured: <error type>]`.
 
 Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, written in any case: both are
 compared with keys after `str.lower()`. An `additional_sensitive_keys` entry matches any key that

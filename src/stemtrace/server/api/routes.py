@@ -23,7 +23,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from stemtrace.core.graph import NodeType
+from stemtrace.core.graph import ChordNotRunReason, NodeType, chord_not_run_reasons
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
@@ -271,6 +271,7 @@ def _node_to_graph_response(
     node_alias_key: str | None = None,
     *,
     group_of: Callable[[str], ResolvedGroup],
+    not_run_reason: ChordNotRunReason | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -281,6 +282,9 @@ def _node_to_graph_response(
         all_nodes: All nodes dict for child lookup.
         node_alias_key: Key to resolve display name from task arguments.
         group_of: Task group by task name (see ``group_lookup``).
+        not_run_reason: Why a CHORD's callback hasn't run; only known
+            when the caller has the chord's whole graph (see
+            ``chord_not_run_reasons``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -341,6 +345,7 @@ def _node_to_graph_response(
         hostname=node.hostname,
         queue=node.queue,
         routing_key=node.routing_key,
+        not_run_reason=not_run_reason,
     )
 
 
@@ -950,11 +955,18 @@ def _add_graph_routes(
 
         all_nodes: dict[str, TaskNode] = dict(graph)
         group_of = group_lookup(groups)
+        # The whole graph is here, so every header that has run is known. A
+        # pass over every node and event: off the event loop.
+        not_run = await run_in_threadpool(chord_not_run_reasons, all_nodes)
         return GraphResponse(
             root_id=root_id,
             nodes={
                 tid: _node_to_graph_response(
-                    n, all_nodes, node_alias_key=node_alias_key, group_of=group_of
+                    n,
+                    all_nodes,
+                    node_alias_key=node_alias_key,
+                    group_of=group_of,
+                    not_run_reason=not_run.get(tid),
                 )
                 for tid, n in graph.items()
             },

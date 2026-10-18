@@ -3,10 +3,10 @@
 import bisect
 import hashlib
 from collections import Counter
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import (
     BaseModel,
@@ -211,6 +211,24 @@ def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
         rank = -1 if event.state == TaskState.IGNORED else 0
         return (1, rank, 0, event.timestamp, tiebreak)
     return (0, event.retries, _PHASE[event.state], event.timestamp, tiebreak)
+
+
+ChordNotRunReason = Literal["header_failed", "header_revoked", "header_ignored"]
+"""Why a chord's callback hasn't run: a header failed (or was rejected), was
+revoked, or raised ``Ignore``."""
+
+# A header's state -> the reason it gives, and which reason wins (higher).
+# celery 5.6.3: every chord path joins header results with propagate=True
+# (backends redis.py/base.py on_chord_part_return, builtins.py unlock_chord);
+# handle_reject and handle_ignore (app/trace.py) only log, so the chord never
+# completes (unless the task called backend.mark_as_done itself). Workers
+# publish REJECTED only when the message won't run again.
+_HEADER_REASONS: dict[TaskState, tuple[int, ChordNotRunReason]] = {
+    TaskState.FAILURE: (3, "header_failed"),
+    TaskState.REJECTED: (3, "header_failed"),
+    TaskState.REVOKED: (2, "header_revoked"),
+    TaskState.IGNORED: (1, "header_ignored"),
+}
 
 
 class NodeType(str, Enum):
@@ -2560,3 +2578,32 @@ class TaskGraph(BaseModel):
         """Get task IDs that belong to a group (a chord's headers)."""
         tally = self._groups.get(group_id)
         return list(tally.counted()) if tally is not None else []
+
+
+def chord_not_run_reasons(
+    nodes: Mapping[str, TaskNode],
+) -> dict[str, ChordNotRunReason]:
+    """Why each chord's callback hasn't run, by CHORD node ID.
+
+    A header (a group task whose events named a callback) that failed, was
+    rejected, revoked or ignored stops Celery running the callback, even while
+    other headers run; the worst outcome wins and clears only once a callback
+    is drawn. ``nodes`` must hold the chord's whole graph.
+    """
+    by_group: dict[str, tuple[int, ChordNotRunReason]] = {}
+    for node in nodes.values():
+        if node.node_type != NodeType.TASK or node.group_id is None:
+            continue
+        ranked = _HEADER_REASONS.get(node.state)
+        current = by_group.get(node.group_id)
+        if ranked is None or (current is not None and ranked[0] <= current[0]):
+            continue
+        if any(event.chord_callback_id is not None for event in node.events):
+            by_group[node.group_id] = ranked
+    return {
+        node_id: by_group[node.group_id][1]
+        for node_id, node in nodes.items()
+        if node.node_type == NodeType.CHORD
+        and node.chord_id is None
+        and node.group_id in by_group
+    }
