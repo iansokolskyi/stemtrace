@@ -107,10 +107,14 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   doesn't clear the count. Requests without a client address (a Unix socket) aren't throttled.
   Counts are per process. With a custom `auth_dependency`, a wrong key counts only when the
   dependency also rejects the request, so a Bearer token the dependency accepts never locks you
-  out, while one it rejects (an expired JWT) counts like a wrong key. While several wrong keys
-  from one IP wait for the dependency's answer, that IP's further keys aren't compared (they get
-  `429` unless the dependency admits them), so a burst can't test more keys than the limit
-  allows. A locked-out client still passes with credentials the dependency accepts.
+  out, while one it rejects with `401`, `403` or `422` (an expired JWT) counts like a wrong key.
+  Other answers of the dependency, such as a `503` while your identity provider is down or its
+  own `429`, pass through uncounted. While several wrong keys from one IP wait for the
+  dependency's answer, that IP's further keys aren't compared: they get `429` with
+  `Retry-After: 1` unless the dependency admits them, so a burst can't test more keys than the
+  limit allows. Behind a proxy that hides client IPs, Bearer requests that the dependency is
+  still checking can briefly cause this for a valid key too. A locked-out client still passes
+  with credentials the dependency accepts.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
   (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes
