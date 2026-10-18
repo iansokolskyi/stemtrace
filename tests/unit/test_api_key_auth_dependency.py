@@ -18,12 +18,18 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import stemtrace
-from stemtrace.server.fastapi.api_key import API_KEY_ENV_VAR
+from stemtrace.server.fastapi.api_key import (
+    API_KEY_BUSY_RETRY_AFTER_S,
+    API_KEY_ENV_VAR,
+)
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.login_throttle import (
     LOGIN_IP_MAX_FAILURES,
     LOGIN_LOCKOUT_BASE_S,
+    LoginThrottle,
 )
+from stemtrace.server.fastapi.router import create_router
+from stemtrace.server.store import GraphStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -394,6 +400,30 @@ def test_key_and_host_broken_dependency_is_a_500_and_never_a_key_failure() -> No
     assert valid == 200
 
 
+def test_key_and_host_outage_and_rate_limit_of_the_dependency_pass_through_uncounted() -> (
+    None
+):
+    def idp_down() -> None:
+        raise HTTPException(
+            status_code=503, detail="idp down", headers={"Retry-After": "5"}
+        )
+
+    def limited() -> None:
+        raise HTTPException(status_code=429, detail="slow down")
+
+    for refusal, expected in ((idp_down, 503), (limited, 429)):
+        app = _app(api_key=KEY, auth_dependency=Depends(refusal))
+        with TestClient(app) as client:
+            codes = [
+                client.get("/stemtrace/api/tasks", headers=WRONG).status_code
+                for _ in range(LOGIN_IP_MAX_FAILURES * 2)
+            ]
+            valid = client.get("/stemtrace/api/tasks", headers=BEARER).status_code
+
+        assert codes == [expected] * (LOGIN_IP_MAX_FAILURES * 2)
+        assert valid == 200
+
+
 # --- concurrency ---------------------------------------------------------------
 
 
@@ -432,8 +462,83 @@ async def test_key_and_host_burst_of_wrong_keys_cannot_find_the_key() -> None:
     assert codes.count(401) == LOGIN_IP_MAX_FAILURES - 1
     assert codes.count(429) == len(codes) - (LOGIN_IP_MAX_FAILURES - 1)
     assert right_response.status_code == 429
-    assert right_response.headers["retry-after"] == str(int(LOGIN_LOCKOUT_BASE_S))
+    assert right_response.headers["retry-after"] == str(API_KEY_BUSY_RETRY_AFTER_S)
+    # The refusals have been counted by now: a real lockout, with its real wait.
     assert after.status_code == 429
+    assert after.headers["retry-after"] == str(int(LOGIN_LOCKOUT_BASE_S))
+
+
+async def test_key_and_host_valid_key_waits_a_second_behind_the_same_ips_slow_bearers() -> (
+    None
+):
+    """Behind a proxy that hides client IPs, in-flight JWTs hold the IP's slots."""
+    entered = 0
+    release = asyncio.Event()
+
+    async def slow_jwt_check(request: Request) -> None:
+        nonlocal entered
+        entered += 1
+        await release.wait()
+        if request.headers.get("authorization") != "Bearer jwt-ok":
+            raise HTTPException(status_code=401, detail="host login required")
+
+    app = _app(api_key=KEY, auth_dependency=Depends(slow_jwt_check))
+    transport = httpx.ASGITransport(app=app, client=("10.0.0.9", 4242))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        jwts = [
+            asyncio.create_task(
+                client.get(
+                    "/stemtrace/api/tasks", headers={"Authorization": "Bearer jwt-ok"}
+                )
+            )
+            for _ in range(LOGIN_IP_MAX_FAILURES)
+        ]
+        for _ in range(10_000):
+            if entered == LOGIN_IP_MAX_FAILURES:
+                break
+            await asyncio.sleep(0)
+        key_user = asyncio.create_task(
+            client.get("/stemtrace/api/tasks", headers=BEARER)
+        )
+        for _ in range(10_000):
+            if entered == LOGIN_IP_MAX_FAILURES + 1:
+                break
+            await asyncio.sleep(0)
+        release.set()
+        jwt_codes = [r.status_code for r in await asyncio.gather(*jwts)]
+        busy = await key_user
+        retried = await client.get("/stemtrace/api/tasks", headers=BEARER)
+
+    assert jwt_codes == [200] * LOGIN_IP_MAX_FAILURES
+    assert busy.status_code == 429
+    assert busy.headers["retry-after"] == str(API_KEY_BUSY_RETRY_AFTER_S)
+    assert retried.status_code == 200
+
+
+async def test_key_and_host_valid_key_works_again_once_the_lockout_ends() -> None:
+    now = [1000.0]
+    app = FastAPI()
+    router = create_router(
+        store=GraphStore(),
+        api_key=KEY,
+        auth_dependency=HostAuth().depends,
+        auth_throttle=LoginThrottle(clock=lambda: now[0]),
+    )
+    app.include_router(router, prefix="/stemtrace")
+    transport = httpx.ASGITransport(app=app, client=("10.0.0.9", 4242))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        for _ in range(LOGIN_IP_MAX_FAILURES):
+            await client.get("/stemtrace/api/tasks", headers=WRONG)
+        locked = await client.get("/stemtrace/api/tasks", headers=BEARER)
+        now[0] += LOGIN_LOCKOUT_BASE_S
+        freed = await client.get("/stemtrace/api/tasks", headers=BEARER)
+
+    assert locked.status_code == 429
+    assert freed.status_code == 200
 
 
 # --- embedded app with a dependency chain -------------------------------------

@@ -36,11 +36,7 @@ from stemtrace.server.fastapi.form_auth import (
     SessionStatus,
     check_session_cookie,
 )
-from stemtrace.server.fastapi.login_throttle import (
-    LOGIN_LOCKOUT_BASE_S,
-    LoginAttempt,
-    LoginThrottle,
-)
+from stemtrace.server.fastapi.login_throttle import LoginAttempt, LoginThrottle
 
 API_KEY_ENV_VAR: Final[str] = "STEMTRACE_API_KEY"
 
@@ -58,6 +54,10 @@ WS_BEARER_PREFIX: Final[str] = "stemtrace.bearer."
 #: Set in the ASGI scope by the key dependency, so the form-login middleware can
 #: tell a request it deferred actually reached the key check.
 GATE_SCOPE_KEY: Final[str] = "stemtrace.api_key_checked"
+
+#: ``Retry-After`` when an IP's in-flight wrong keys already cover its remaining
+#: failures: they resolve as soon as the host dependency answers.
+API_KEY_BUSY_RETRY_AFTER_S: Final[int] = 1
 
 #: Route names the key doesn't guard (the liveness probe, used by container
 #: health checks that carry no credentials).
@@ -161,9 +161,6 @@ class ApiKeyGuard:
         """Hold the configured key and the shared failed-attempt throttle."""
         self._key = api_key.encode("ascii")
         self._throttle = throttle
-        # Wrong keys per client IP still waiting to be counted (see attempt()).
-        # Touched only on the event loop, with no await in between.
-        self._in_flight: dict[str, int] = {}
 
     def check(self, token: str | None, client_ip: str | None) -> KeyCheck:
         """Check a presented key and count a wrong one against the client's IP.
@@ -178,24 +175,39 @@ class ApiKeyGuard:
             client_ip: Client address; None skips throttling (e.g. a Unix
                 socket), as the login does.
         """
-        result = self._compare(token, client_ip, reserve=False)
-        if result.status is KeyStatus.INVALID:
-            wait = self.record_failure(client_ip)
-            if wait:
-                return KeyCheck(KeyStatus.THROTTLED, wait)
-        return result
+        if token is None:
+            return KeyCheck(KeyStatus.ABSENT)
+        locked = self._lockout(client_ip)
+        if locked is not None:
+            return locked
+        if self._matches(token):
+            return KeyCheck(KeyStatus.VALID)
+        wait = self.record_failure(client_ip)
+        if wait:
+            return KeyCheck(KeyStatus.THROTTLED, wait)
+        return KeyCheck(KeyStatus.INVALID)
 
     def attempt(self, token: str | None, client_ip: str | None) -> KeyAttempt:
         """Check a presented key, counting a wrong one only when ``reject()`` is called.
 
-        For requests something else may still admit. A wrong key holds an in-flight
-        slot until the ``with`` block ends; an IP whose slots and counted failures
-        reach the limit gets no more comparisons (reported as throttled), so a
-        burst can't test more keys than the lockout allows.
+        A wrong key holds an in-flight slot until the ``with`` block ends. An IP whose
+        slots cover its remaining failures gets no comparison (throttled, retry after
+        ``API_KEY_BUSY_RETRY_AFTER_S``), so a burst can't test more keys than a lockout allows.
         """
-        return KeyAttempt(
-            self, client_ip or None, self._compare(token, client_ip, True)
-        )
+        ip = client_ip or None
+        if token is None:
+            return KeyAttempt(self, None, KeyCheck(KeyStatus.ABSENT))
+        locked = self._lockout(ip)
+        if locked is not None:
+            return KeyAttempt(self, None, locked)
+        if ip and not self._throttle.reserve_ip_attempt(ip):
+            busy = KeyCheck(KeyStatus.THROTTLED, API_KEY_BUSY_RETRY_AFTER_S)
+            return KeyAttempt(self, None, busy)
+        if self._matches(token):
+            if ip:
+                self._throttle.release_ip_attempt(ip)
+            return KeyAttempt(self, None, KeyCheck(KeyStatus.VALID))
+        return KeyAttempt(self, ip, KeyCheck(KeyStatus.INVALID))
 
     def record_failure(self, client_ip: str | None) -> int:
         """Count a failed key attempt against the IP.
@@ -207,36 +219,17 @@ class ApiKeyGuard:
         self._throttle.record_failure(attempt)
         return self._throttle.retry_after(attempt)
 
-    def _compare(
-        self, token: str | None, client_ip: str | None, reserve: bool
-    ) -> KeyCheck:
-        """Check the lockout, then the key, counting nothing; see ``check``."""
-        if token is None:
-            return KeyCheck(KeyStatus.ABSENT)
-        ip = client_ip or None
-        wait = self._throttle.retry_after(_attempt(ip))
-        if wait:
-            return KeyCheck(KeyStatus.THROTTLED, wait)
-        if (
-            reserve
-            and ip
-            and self._in_flight.get(ip, 0) >= (self._throttle.ip_failures_left(ip))
-        ):
-            # Like a lockout, decided before comparing: the key stays untested.
-            return KeyCheck(KeyStatus.THROTTLED, int(LOGIN_LOCKOUT_BASE_S))
-        if secrets.compare_digest(token.encode("utf-8"), self._key):
-            return KeyCheck(KeyStatus.VALID)
-        if reserve and ip:
-            self._in_flight[ip] = self._in_flight.get(ip, 0) + 1
-        return KeyCheck(KeyStatus.INVALID)
-
     def release(self, client_ip: str) -> None:
-        """Free one in-flight slot taken by ``attempt()`` for the IP."""
-        left = self._in_flight.get(client_ip, 0) - 1
-        if left > 0:
-            self._in_flight[client_ip] = left
-        else:
-            self._in_flight.pop(client_ip, None)
+        """Free the in-flight slot ``attempt()`` took for the IP."""
+        self._throttle.release_ip_attempt(client_ip)
+
+    def _lockout(self, client_ip: str | None) -> KeyCheck | None:
+        """The throttled answer for a locked-out IP, else None (decided before comparing)."""
+        wait = self._throttle.retry_after(_attempt(client_ip))
+        return KeyCheck(KeyStatus.THROTTLED, wait) if wait else None
+
+    def _matches(self, token: str) -> bool:
+        return secrets.compare_digest(token.encode("utf-8"), self._key)
 
 
 class KeyAttempt:
@@ -247,13 +240,12 @@ class KeyAttempt:
     """
 
     def __init__(
-        self, guard: ApiKeyGuard, client_ip: str | None, check: KeyCheck
+        self, guard: ApiKeyGuard, slot_ip: str | None, check: KeyCheck
     ) -> None:
-        """Wrap ``check``, holding a slot if it found a wrong key from an IP."""
+        """Wrap ``check``; ``slot_ip`` is the IP whose in-flight slot this holds."""
         self._guard = guard
-        self._client_ip = client_ip
+        self._slot_ip = slot_ip
         self._check = check
-        self._holds_slot = check.status is KeyStatus.INVALID and client_ip is not None
 
     @property
     def status(self) -> KeyStatus:
@@ -271,8 +263,9 @@ class KeyAttempt:
         Returns:
             Seconds until the IP may try again; 0 if this failure didn't lock it.
         """
+        client_ip = self._slot_ip
         self._free_slot()
-        return self._guard.record_failure(self._client_ip)
+        return self._guard.record_failure(client_ip)
 
     def __enter__(self) -> KeyAttempt:
         """Return the attempt."""
@@ -283,9 +276,9 @@ class KeyAttempt:
         self._free_slot()
 
     def _free_slot(self) -> None:
-        if self._holds_slot and self._client_ip is not None:
-            self._holds_slot = False
-            self._guard.release(self._client_ip)
+        if self._slot_ip is not None:
+            self._guard.release(self._slot_ip)
+            self._slot_ip = None
 
 
 def _attempt(client_ip: str | None) -> LoginAttempt:
@@ -315,6 +308,16 @@ def _too_many_attempts(retry_after: int) -> HTTPException:
         detail="Too many failed API key attempts",
         headers={"Retry-After": str(retry_after)},
     )
+
+
+def _refuses_credentials(exc: Exception) -> bool:
+    """Whether ``exc`` says the request's credentials are wrong (401, 403, 422)."""
+    if isinstance(exc, HTTPException):
+        return exc.status_code in (
+            status.HTTP_401_UNAUTHORIZED,
+            status.HTTP_403_FORBIDDEN,
+        )
+    return isinstance(exc, RequestValidationError)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -393,9 +396,12 @@ def api_key_or_dependency(
                     raise _unauthorized("Authentication required")
                 await runner.run(request, response, background_tasks)
             except (HTTPException, RequestValidationError) as exc:
-                # Always re-raised: this only decides whether the refusal also
-                # counts against the client's key attempts. Other errors (a
-                # broken dependency) pass through uncounted.
+                # Always re-raised: this only decides whether a refusal of the
+                # credentials also counts against the client's key attempts. A
+                # 5xx or the dependency's own 429 (its outage, its rate limit)
+                # and any other error pass through uncounted.
+                if not _refuses_credentials(exc):
+                    raise
                 wait = attempt.retry_after
                 if attempt.status is KeyStatus.INVALID:
                     wait = attempt.reject()

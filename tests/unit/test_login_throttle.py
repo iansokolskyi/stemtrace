@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -686,26 +687,73 @@ class TestLoginEndpointThrottling:
         assert other_client.status_code == (303 if trusted else 429)
 
 
-def test_ip_failures_left_counts_down_to_zero_when_locked() -> None:
-    throttle = LoginThrottle(hash_key=b"stemtrace-test" * 2)
-    attempt = LoginAttempt(client_ip="1.2.3.4", username=None, device_id=None)
+def _ip_throttle(now: list[float] | None = None) -> LoginThrottle:
+    clock = (lambda: now[0]) if now is not None else time.monotonic
+    return LoginThrottle(clock=clock, hash_key=b"stemtrace-test" * 2)
 
-    left = [throttle.ip_failures_left("1.2.3.4")]
+
+def test_reserve_ip_attempt_grants_as_many_slots_as_failures_are_left() -> None:
+    throttle = _ip_throttle()
+    for _ in range(2):
+        throttle.record_failure(
+            LoginAttempt(client_ip=_IP, username=None, device_id=None)
+        )
+
+    grants = [throttle.reserve_ip_attempt(_IP) for _ in range(LOGIN_IP_MAX_FAILURES)]
+
+    assert grants == [True] * (LOGIN_IP_MAX_FAILURES - 2) + [False] * 2
+    assert throttle.reserve_ip_attempt("198.51.100.1") is True
+
+
+def test_reserve_ip_attempt_is_freed_by_release() -> None:
+    throttle = _ip_throttle()
     for _ in range(LOGIN_IP_MAX_FAILURES):
-        throttle.record_failure(attempt)
-        left.append(throttle.ip_failures_left("1.2.3.4"))
+        assert throttle.reserve_ip_attempt(_IP)
+    assert throttle.reserve_ip_attempt(_IP) is False
 
-    assert left == list(range(LOGIN_IP_MAX_FAILURES, -1, -1))
-    assert throttle.ip_failures_left("5.6.7.8") == LOGIN_IP_MAX_FAILURES
+    throttle.release_ip_attempt(_IP)
+
+    assert throttle.reserve_ip_attempt(_IP) is True
 
 
-def test_ip_failures_left_forgets_old_failures() -> None:
+def test_reserve_ip_attempt_grants_one_slot_after_a_lockout_ends() -> None:
+    """Zero failures left with nothing in flight is a lockout that expired, not a cap."""
     now = [1000.0]
-    throttle = LoginThrottle(clock=lambda: now[0], hash_key=b"stemtrace-test" * 2)
-    attempt = LoginAttempt(client_ip="1.2.3.4", username=None, device_id=None)
-    throttle.record_failure(attempt)
-    assert throttle.ip_failures_left("1.2.3.4") == LOGIN_IP_MAX_FAILURES - 1
+    throttle = _ip_throttle(now)
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        throttle.record_failure(
+            LoginAttempt(client_ip=_IP, username=None, device_id=None)
+        )
+    now[0] += LOGIN_LOCKOUT_BASE_S
 
-    now[0] += LOGIN_FAILURE_MEMORY_S
+    assert throttle.reserve_ip_attempt(_IP) is True
+    assert throttle.reserve_ip_attempt(_IP) is False
 
-    assert throttle.ip_failures_left("1.2.3.4") == LOGIN_IP_MAX_FAILURES
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("2001:db8::1", "2001:db8::ffff"),  # one IPv6 /64
+        ("203.0.113.7", "203.0.113.7:51234"),  # a proxy that appends the source port
+        ("203.0.113.7", "::ffff:203.0.113.7"),  # IPv4-mapped IPv6
+    ],
+)
+def test_reserve_ip_attempt_shares_slots_across_spellings_of_one_ip(
+    first: str, second: str
+) -> None:
+    throttle = _ip_throttle()
+    for i in range(LOGIN_IP_MAX_FAILURES):
+        assert throttle.reserve_ip_attempt(first if i % 2 else second)
+
+    assert throttle.reserve_ip_attempt(first) is False
+    assert throttle.reserve_ip_attempt(second) is False
+
+
+def test_release_ip_attempt_forgets_an_ip_with_no_slots_left() -> None:
+    throttle = _ip_throttle()
+    assert throttle.reserve_ip_attempt(_IP)
+
+    throttle.release_ip_attempt(_IP)
+    throttle.release_ip_attempt(_IP)  # an extra release is harmless
+
+    assert throttle.reserve_ip_attempt(_IP) is True

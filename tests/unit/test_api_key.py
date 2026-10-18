@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+from typing import TYPE_CHECKING
 
 import pytest
 
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server.fastapi.api_key import (
+    API_KEY_BUSY_RETRY_AFTER_S,
     API_KEY_ENV_VAR,
     API_KEY_MIN_LENGTH,
     ApiKeyGuard,
@@ -25,6 +27,9 @@ from stemtrace.server.fastapi.login_throttle import (
     LoginAttempt,
     LoginThrottle,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 KEY = "k" * 8 + "0123456789abcdef"  # 24 visible ASCII characters
 
@@ -243,7 +248,9 @@ def test_attempt_reject_counts_and_locks_on_the_last_allowed_failure(
         assert locked.retry_after == int(LOGIN_LOCKOUT_BASE_S)
 
     clock.now += LOGIN_LOCKOUT_BASE_S
-    assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+    # Once the lockout ends the key works again, without any wait for the failure memory.
+    with guard.attempt(KEY, "1.2.3.4") as after:
+        assert after.status is KeyStatus.VALID
 
 
 def test_attempt_stops_comparing_keys_while_wrong_ones_are_in_flight(
@@ -256,7 +263,7 @@ def test_attempt_stops_comparing_keys_while_wrong_ones_are_in_flight(
     # The right key is not compared either, or the burst could find it.
     with guard.attempt(KEY, "1.2.3.4") as capped:
         assert capped.status is KeyStatus.THROTTLED
-        assert capped.retry_after == int(LOGIN_LOCKOUT_BASE_S)
+        assert capped.retry_after == API_KEY_BUSY_RETRY_AFTER_S
     # Other clients are unaffected.
     with guard.attempt(KEY, "5.6.7.8") as other:
         assert other.status is KeyStatus.VALID
@@ -282,6 +289,38 @@ def test_attempt_in_flight_slots_count_with_failures_already_recorded(
         KeyStatus.INVALID,
         KeyStatus.THROTTLED,
     ]
+
+
+def test_attempt_after_a_lockout_ends_compares_one_key_at_a_time(
+    guard: ApiKeyGuard, clock: FakeClock
+) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        guard.record_failure("1.2.3.4")
+    clock.now += LOGIN_LOCKOUT_BASE_S
+
+    first = guard.attempt("wrong", "1.2.3.4")
+    second = guard.attempt("wrong", "1.2.3.4")
+
+    assert (first.status, second.status) == (KeyStatus.INVALID, KeyStatus.THROTTLED)
+    assert second.retry_after == API_KEY_BUSY_RETRY_AFTER_S
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        lambda i: f"2001:db8::{i + 1:x}",  # every address of one IPv6 /64
+        lambda i: f"203.0.113.7:{40000 + i}",  # a proxy that appends the source port
+    ],
+    ids=["ipv6-64", "ip-with-port"],
+)
+def test_attempt_burst_from_one_ip_in_any_spelling_compares_only_the_allowed_keys(
+    guard: ApiKeyGuard, address: Callable[[int], str]
+) -> None:
+    held = [guard.attempt("wrong", address(i)) for i in range(100)]
+
+    statuses = [a.status for a in held]
+    assert statuses.count(KeyStatus.INVALID) == LOGIN_IP_MAX_FAILURES
+    assert statuses.count(KeyStatus.THROTTLED) == 100 - LOGIN_IP_MAX_FAILURES
 
 
 def test_attempt_slot_is_freed_when_the_block_raises(guard: ApiKeyGuard) -> None:

@@ -277,6 +277,8 @@ class LoginThrottle:
         # for other threads (sync test client, threaded server), never held
         # across I/O.
         self._lock = threading.Lock()
+        # In-flight slots per IP key; only entries with a slot held exist.
+        self._ip_in_flight: dict[str, int] = {}
         key = hash_key if hash_key is not None else secrets.token_bytes(32)
         self._by_ip, self._by_username, self._by_device = (
             _BucketTable(
@@ -321,10 +323,30 @@ class LoginThrottle:
                     wait = max(wait, ip_wait)
         return math.ceil(wait)
 
-    def ip_failures_left(self, client_ip: str) -> int:
-        """Failures the IP may still have before it is locked out."""
+    def reserve_ip_attempt(self, client_ip: str) -> bool:
+        """Take an in-flight slot for an attempt whose failure isn't counted yet.
+
+        Refused while the IP's slots already cover the failures it has left
+        before a lockout, so concurrent attempts can't outnumber what the lockout
+        would allow. Always granted when no slot is held.
+        """
+        key = _ip_key(client_ip)
         with self._lock:
-            return self._by_ip.failures_left(_ip_key(client_ip))
+            held = self._ip_in_flight.get(key, 0)
+            if held and held >= self._by_ip.failures_left(key):
+                return False
+            self._ip_in_flight[key] = held + 1
+            return True
+
+    def release_ip_attempt(self, client_ip: str) -> None:
+        """Free a slot taken by :meth:`reserve_ip_attempt`."""
+        key = _ip_key(client_ip)
+        with self._lock:
+            left = self._ip_in_flight.get(key, 0) - 1
+            if left > 0:
+                self._ip_in_flight[key] = left
+            else:
+                self._ip_in_flight.pop(key, None)
 
     def record_failure(self, attempt: LoginAttempt) -> None:
         """Count a failed sign-in against the IP and the device or username."""
