@@ -97,6 +97,8 @@ def test_chord_not_run_reason_ignored_header_that_reported_its_result() -> None:
 
 
 _NOT_RUN = {
+    # A header chain's first step fails: its unrun last step (the header) fails.
+    "chord_chain_header_failed_head": "header_failed",
     "chord_failed_header": "header_failed",
     "chord_failed_header_subtask": "header_failed",
     "chord_rejected_header": "header_failed",
