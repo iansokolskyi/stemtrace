@@ -163,7 +163,7 @@ Limitations:
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
   (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery's signal.
   stemtrace takes them from the failing request itself: the attempt's retry count, `hostname`,
-  `queue`, `routing_key` and parent, root and group IDs. Workers up to 0.4.1 send none of these
+  `queue`, `routing_key` and parent, root, group and chord IDs. Workers up to 0.4.1 send none of these
   on such a FAILURE (and `retries=0`): the task then keeps the values of its
   furthest-along earlier event that has them, which, when a lost broker connection made Celery
   run the same attempt again on a worker whose clock is behind the first one's, can be the first
