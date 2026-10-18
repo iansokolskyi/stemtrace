@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 import pytest
@@ -17,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
-from stemtrace.server.api import routes
+from stemtrace.server.api import routes, summary_routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
@@ -46,6 +47,7 @@ T0 = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
         "/api/graphs?tag=money",
         "/api/groups",
         "/api/tasks/registry?refresh=false",
+        "/api/stats/timeseries?group_by=task_group",
     ],
 )
 def test_resolving_all_names_leaves_the_loop_free(
@@ -109,9 +111,16 @@ def test_resolving_all_names_leaves_the_loop_free(
     assert waits == [True]
 
 
-@pytest.mark.parametrize("path", ["/api/tasks", "/api/graphs"])
+@pytest.mark.parametrize(
+    ("module", "path", "filtered", "work"),
+    [
+        (routes, "/api/tasks", "task_group=billing", "_group_task_names"),
+        (routes, "/api/graphs", "task_group=billing", "_group_task_names"),
+        (summary_routes, "/api/stats/timeseries", "group_by=task_group", "time_series"),
+    ],
+)
 def test_unfiltered_lists_never_wait_for_a_worker_thread(
-    path: str, monkeypatch: pytest.MonkeyPatch
+    module: Any, path: str, filtered: str, work: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With the host app's sync handlers holding every thread, they'd stall."""
     store = GraphStore()
@@ -121,18 +130,18 @@ def test_unfiltered_lists_never_wait_for_a_worker_thread(
         )
     )
     calls: list[str] = []
-    real = routes.run_in_threadpool
+    real = module.run_in_threadpool
 
-    async def counting(func, *args):  # type: ignore[no-untyped-def]  # stand-in
+    async def counting(func, *args, **kwargs):  # type: ignore[no-untyped-def]  # stand-in
         calls.append(func.__name__)
-        return await real(func, *args)
+        return await real(func, *args, **kwargs)
 
-    monkeypatch.setattr(routes, "run_in_threadpool", counting)
+    monkeypatch.setattr(module, "run_in_threadpool", counting)
     app = FastAPI()
     app.include_router(create_api_router(store, worker_registry=WorkerRegistry()))
 
     with TestClient(app) as client:
         assert client.get(path).status_code == 200
         assert calls == []
-        assert client.get(f"{path}?task_group=billing").status_code == 200
-        assert calls == ["_group_task_names"]
+        assert client.get(f"{path}?{filtered}").status_code == 200
+        assert calls == [work]
