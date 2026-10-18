@@ -202,9 +202,13 @@ Limitations:
   behind, or when the task's own PENDING or STARTED was missed. With Celery's default protocol 2,
   the replacement's events report the task (or a task below it) as their parent, so the task's
   own values are used whatever the clocks.
-- A worker before stemtrace 0.4.0 sends PENDING without a parent ID. If such a worker sent the
-  replacement of a task that replaced itself (same task name) and the task's own PENDING and
-  RECEIVED were both missed, `queue_wait_ms` is 0 instead of empty.
+- A worker before stemtrace 0.4.0 sends PENDING without a parent ID, so a replacement's PENDING
+  that it sent can look like the task's own. If the task has no PENDING or RECEIVED of its own (for
+  example, the code that sent it doesn't call `init_worker` and RECEIVED is off),
+  `queue_wait_ms` is 0 instead of empty for a root task, and for a task that replaced itself.
+- When events carry no parent ID (protocol 1, or a root task), only the task's first run is read.
+  If that run's worker didn't record the ETA (a release before this one) and the task was
+  redelivered to a worker that did, the countdown counts as waiting.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
@@ -218,7 +222,9 @@ Limitations:
   `self.retry(throw=False)`: both carry retry count 0. If the events of the attempts in between were missed, the runtime is counted
   from the last STARTED the server has, so it can be too long.
 - A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run, or a
-  span read across two workers' clocks (above). When Celery runs the same attempt again on
+  span read across two workers' clocks (above). Without parent IDs, a RECEIVED stamped after the
+  task's first STARTED doesn't count, so a clock stepping back between the two leaves
+  `queue_wait_ms` empty when the task has no PENDING. When Celery runs the same attempt again on
   another worker after losing the broker connection, and that worker's clock is behind the
   first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
   and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the

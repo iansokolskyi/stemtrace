@@ -312,8 +312,10 @@ class TaskNode(BaseModel):
         if all(e.parent_id is None for e in first):
             # Protocol 1 sends no parent_id (celery 5.6.3 app/amqp.py as_task_v1). A
             # replacement is only sent while the task runs, so the earliest event of
-            # each state is the task's own if the clocks agree; its RECEIVED, stamped
-            # by the worker that runs it, comes before its STARTED.
+            # each state is the task's own if the clocks agree. Within a run, the
+            # worker publishes RECEIVED before STARTED (bootsteps._wrap_strategy runs
+            # before the strategy), so a RECEIVED after the first STARTED is a later
+            # run's: the replacement's or a redelivery's (docs/features.md).
             earliest = {
                 state: min(events, key=lambda e: e.timestamp)
                 for state in (TaskState.STARTED, *_PRE_START)
