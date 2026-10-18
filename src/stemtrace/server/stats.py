@@ -4,9 +4,9 @@ Pure functions over :class:`RunRecord` lists. The store hands out a copy of its
 records (see ``GraphStore.run_records``), so everything here runs outside the
 store lock.
 
-Every aggregate places a run at one time, its ``last_updated`` (the latest
-event, which for a finished run can be a later terminal event that lost to
-its state), and counts it under its current state.
+Every aggregate places a run at one time, its ``last_updated`` (its last event
+in lifecycle order, which can be a later event that lost to its state, terminal
+or not), and counts it under its current state.
 """
 
 from __future__ import annotations

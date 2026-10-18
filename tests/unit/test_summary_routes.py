@@ -121,6 +121,19 @@ def test_overview_leaves_ignored_tasks_out_of_runs_and_the_failure_rate(
     assert sum(series["counts"]["IGNORED"]) == 90
 
 
+def test_overview_places_a_run_at_its_last_event_under_its_state(
+    store: GraphStore,
+) -> None:
+    """A later event that loses to the state still moves the run's time."""
+    store.add_event(_event("a", TaskState.SUCCESS, 61))
+    store.add_event(_event("a", TaskState.IGNORED, 30))
+
+    body = _client(store).get("/api/overview?within=1h").json()
+
+    assert body["runs"] == {"value": 1, "baseline": 0}
+    assert body["failures"] == {"value": 0, "baseline": 0}
+
+
 def test_overview_window_edges(store: GraphStore) -> None:
     store.add_event(_event("at-start", TaskState.SUCCESS, 60))  # 11:00 → window
     store.add_event(_event("future", TaskState.SUCCESS, -3))  # clock ahead → window

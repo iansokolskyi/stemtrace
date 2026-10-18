@@ -105,7 +105,7 @@ def _add_overview_route(
         """KPIs over the last ``within``, each with the window of equal length before it.
 
         Runs are runs with an outcome (SUCCESS, FAILURE, REVOKED, REJECTED; not
-        IGNORED, a task that chose not to run), placed by their latest event.
+        IGNORED, a task that chose not to run), placed by their last event in lifecycle order.
         The failure rate is FAILURE runs over those runs (0 with none). Workers are counted from worker events as the
         server last saw them, without asking the workers.
         """
