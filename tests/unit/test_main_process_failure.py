@@ -53,8 +53,18 @@ def transport() -> Iterator[MemoryTransport]:
     _reset_config()
 
 
-def _request(task_id: str, retries: int, hostname: str = "celery@w1") -> Request:
-    """A worker Request built by Celery from a protocol 2 message."""
+def _request(
+    task_id: str,
+    retries: int,
+    hostname: str = "celery@w1",
+    chord: dict[str, Any] | None = None,
+    chain: list[dict[str, Any]] | None = None,
+) -> Request:
+    """A worker Request built by Celery from a protocol 2 message.
+
+    ``chord`` and ``chain`` travel in the body's embed, not the headers (celery
+    5.6.3 app/amqp.py ``as_task_v2``), as the real worker test shows.
+    """
     message = TaskMessage(
         "app.encode",
         id=task_id,
@@ -62,7 +72,10 @@ def _request(task_id: str, retries: int, hostname: str = "celery@w1") -> Request
         parent_id="parent-1",
         root_id="root-1",
         group="group-1",
+        chain=chain,
     )
+    args, kwargs, embed = message.payload
+    message.payload = (args, kwargs, {**embed, "chord": chord})
     message.delivery_info = {"exchange": "", "routing_key": "media"}
     message.properties = {"priority": 0}
     return Request(message, app=app, hostname=hostname, task=encode)
@@ -81,7 +94,12 @@ def _send_failure(task_id: str, sender: Any = None) -> None:
 
 
 def _on_failure(self: Any, task_id: str, sender: Any = None) -> None:
-    """Like celery 5.6.3 worker/request.py Request.on_failure: sends the signal."""
+    """Like celery 5.6.3 worker/request.py Request.on_failure: sends the signal.
+
+    ``mark_as_failure(request=self._context)`` runs first, and ``_context``
+    merges the message's embed (chord, chain) into ``request_dict``.
+    """
+    _ = self._context
     _send_failure(task_id, sender)
 
 
@@ -177,3 +195,35 @@ def test_failure_in_the_task_process_uses_its_own_request() -> None:
 
     event = _failure()
     assert (event.retries, event.hostname) == (1, "celery@w1")
+
+
+CHORD = {
+    "task": "app.callback",
+    "options": {"task_id": "callback-1", "group_id": "chord-1"},
+}
+
+
+def _step(step_id: str) -> dict[str, Any]:
+    return {"task": "app.encode", "options": {"task_id": step_id}, "subtask_type": None}
+
+
+def test_main_process_failure_carries_its_chord() -> None:
+    _on_failure(_request("task-1", retries=0, chord=CHORD), "task-1")
+
+    event = _failure()
+    assert (event.chord_id, event.chord_callback_id) == ("chord-1", "callback-1")
+
+
+def test_main_process_failure_publishes_the_chain_steps_it_leaves_unrun() -> None:
+    # request.chain holds the steps left, the next one last.
+    chain = [_step("step-3"), _step("step-2")]
+    _on_failure(_request("task-1", retries=0, chain=chain), "task-1")
+
+    events = [e for e in MemoryTransport.events if isinstance(e, TaskEvent)]
+    assert [(e.task_id, e.state, e.parent_id, e.root_id) for e in events] == [
+        ("task-1", TaskState.FAILURE, "parent-1", "root-1"),
+        ("step-2", TaskState.FAILURE, "task-1", "root-1"),
+        ("step-3", TaskState.FAILURE, "step-2", "root-1"),
+    ]
+    assert [e.exception_type for e in events] == ["TimeoutError"] * 3
+    assert [e.hostname for e in events] == ["celery@w1", None, None]
