@@ -183,10 +183,11 @@ class TestTiming:
     def test_redelivery_to_a_worker_whose_clock_is_behind(
         self, behind: float, expected: tuple[int | None, ...]
     ) -> None:
-        # Worker A runs attempt 0 and loses the broker (cancel RETRY); worker B,
-        # its clock `behind` seconds slow, runs it again. Once B's STARTED is
-        # stamped before A's RETRY, B's run sorts first and the final event
-        # ends no run: both fields are empty, and the wait can shrink.
+        # Events without a hostname (workers before this release): worker A runs
+        # attempt 0 and loses the broker (cancel RETRY); worker B, its clock
+        # `behind` seconds slow, runs it again. Once B's STARTED is stamped
+        # before A's RETRY, B's run sorts first and the final event ends no
+        # run: both fields are empty, and the wait can shrink.
         node = _node(
             _event(P, 0),
             _event(S, 10),
@@ -209,10 +210,11 @@ class TestTiming:
     def test_lost_run_redelivered_to_a_worker_whose_clock_is_behind(
         self, behind: float, expected: tuple[int | None, ...]
     ) -> None:
-        # Documented limitation: worker A's pool process is lost after STARTED
-        # (acks_late, no end event); B, `behind` seconds slow, runs it in 2 s.
-        # Once B's STARTED is stamped before A's, A's STARTED starts the last
-        # run, read against B's SUCCESS: too short, 0 at worst.
+        # Events without a hostname (workers before this release): worker A's
+        # pool process is lost after STARTED (acks_late, no end event); B,
+        # `behind` seconds slow, runs it in 2 s. Once B's STARTED is stamped
+        # before A's, A's STARTED starts the last run, read against B's
+        # SUCCESS: too short, 0 at worst.
         node = _node(
             _event(P, 0),
             _event(S, 10),
@@ -221,6 +223,121 @@ class TestTiming:
         )
 
         assert _timing(node) == expected
+
+    @pytest.mark.parametrize("behind", [0, 0.5, 1, 2, 5, 60])
+    def test_redelivery_to_another_worker_pairs_each_run_on_its_worker(
+        self, behind: float
+    ) -> None:
+        # Each run is read on one worker's clock: A's cancelled run (1 s) and
+        # B's run (2 s), whatever B's clock says.
+        a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
+        node = _node(
+            _event(P, 0),
+            _event(S, 10, **a),
+            _event(RT, 11, **a),
+            _event(S, 12 - behind, **b),
+            _event(OK, 14 - behind, **b),
+        )
+        for order in (
+            node.events,
+            node.events[::-1],
+            node.events[1::2] + node.events[::2],
+        ):
+            node = _node(*order)
+            assert (node.runtime_ms, node.total_runtime_ms) == (2000, 3000)
+
+    @pytest.mark.parametrize("behind", [0, 5, 6, 8, 20, 60])
+    def test_lost_run_is_left_out_whatever_the_clocks(self, behind: float) -> None:
+        # A's pool process is lost after STARTED (no end); B runs it in 2 s.
+        a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
+        node = _node(
+            _event(P, 0),
+            _event(S, 10, **a),
+            _event(S, 15 - behind, **b),
+            _event(OK, 17 - behind, **b),
+        )
+        for order in (
+            node.events,
+            node.events[::-1],
+            node.events[1::2] + node.events[::2],
+        ):
+            node = _node(*order)
+            assert (node.runtime_ms, node.total_runtime_ms) == (2000, 2000)
+
+    def test_main_process_failure_with_its_worker_pairs_on_that_worker(
+        self,
+    ) -> None:
+        # This release's workers give a hard time limit's FAILURE (sent from
+        # the worker's main process) its attempt and worker: it ends B's run
+        # even with A's clock ahead.
+        a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
+        node = _node(
+            _event(S, 70, **a),
+            _event(RT, 71, **a),
+            _event(S, 12, retries=1, **b),
+            _event(FAIL, 15, retries=1, **b),
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (3000, 4000)
+
+    def test_first_attempt_failing_after_retry_without_raising_pairs_on_its_worker(
+        self,
+    ) -> None:
+        # self.retry(throw=False), then attempt 0 raises late: its FAILURE
+        # (retries=0, from the task's own process, so with its worker) is the
+        # final event. It ends attempt 0's run on A, not attempt 1's on B.
+        a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
+        node = _node(
+            _event(S, 1, **a),
+            _event(S, 3, retries=1, **b),
+            _event(OK, 5, retries=1, **b),
+            _event(FAIL, 20, **a),
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (19000, 19000)
+
+    def test_retries_zero_failure_with_a_worker_is_not_from_an_older_main_process(
+        self,
+    ) -> None:
+        # Only an older worker's main-process FAILURE has retries=0 whatever
+        # the attempt (and no worker); this release's FAILURE(0) on B with B's
+        # STARTED(1) missing ends no run.
+        b = {"hostname": "celery@b"}
+        node = _node(_event(S, 1, retries=1, hostname="celery@a"), _event(FAIL, 4, **b))
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+
+    def test_late_failure_of_attempt_zero_never_ends_attempt_one_on_one_worker(
+        self,
+    ) -> None:
+        # Both attempts on worker A (throw=False); attempt 0's FAILURE comes
+        # last and carries its worker, so it isn't an older main-process one.
+        a = {"hostname": "celery@a"}
+        node = _node(
+            _event(S, 1, **a), _event(S, 3, retries=1, **a), _event(FAIL, 20, **a)
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (None, None)
+
+    def test_end_without_worker_closes_the_latest_run(self) -> None:
+        # A FAILURE without a worker (from an older worker's main process)
+        # closes the latest unfinished run: A's second run, not B's.
+        a, b = {"hostname": "celery@a"}, {"hostname": "celery@b"}
+        node = _node(
+            _event(S, 1, **a),
+            _event(S, 2, **b),
+            _event(S, 3, **a),
+            _event(FAIL, 5),
+        )
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (2000, 2000)
+
+    def test_end_from_this_release_pairs_with_an_older_workers_start(self) -> None:
+        # Mid-upgrade: STARTED from an older worker (no hostname), SUCCESS
+        # from this release's.
+        node = _node(_event(S, 10), _event(OK, 12, hostname="celery@a"))
+
+        assert (node.runtime_ms, node.total_runtime_ms) == (2000, 2000)
 
     def test_clock_stepped_back_mid_run_counts_as_zero(self) -> None:
         # One worker's clock stepped back (NTP) between STARTED and SUCCESS.
@@ -250,7 +367,11 @@ PRE_START = ("pending", "received", "both", "none")
 
 
 def _history(
-    skews: tuple[int, ...], ending: str, pre_start: str, sender_skew: int
+    skews: tuple[int, ...],
+    ending: str,
+    pre_start: str,
+    sender_skew: int,
+    with_hostnames: bool = False,
 ) -> tuple[list[TaskEvent], tuple[int | None, int, int]]:
     """A task run ``len(skews)`` times, attempt ``n`` on worker ``n`` (clock off by ``skews[n]``).
 
@@ -268,14 +389,18 @@ def _history(
     start = 2.0
     last = len(skews) - 1
     for n, skew in enumerate(skews):
-        events.append(_event(S, start + skew, retries=n))
+        # This release's workers put their nodename on every worker event,
+        # and the attempt and nodename on a main-process FAILURE.
+        on = {"hostname": f"celery@w{n}"} if with_hostnames else {}
+        events.append(_event(S, start + skew, retries=n, **on))
         end = start + run[n]
         if n < last:
-            events.append(_event(RT, end + skew, retries=n))
+            events.append(_event(RT, end + skew, retries=n, **on))
         elif ending == "main-process-failure":
-            events.append(_event(FAIL, end + skew))
+            failed = {"retries": n, **on} if with_hostnames else {}
+            events.append(_event(FAIL, end + skew, **failed))
         else:
-            events.append(_event(TaskState[ending], end + skew, retries=n))
+            events.append(_event(TaskState[ending], end + skew, retries=n, **on))
         start = end + 10
     starts = []
     if pre_start in ("pending", "both"):
@@ -298,14 +423,21 @@ def _sweep() -> list[tuple[tuple[int, ...], str]]:
 class TestTimingSweep:
     """Worker clocks, sender clock, pre-start events and arrival order don't matter."""
 
+    @pytest.mark.parametrize(
+        "with_hostnames", [False, True], ids=["older-workers", "this-release"]
+    )
     @pytest.mark.parametrize(("skews", "ending"), _sweep())
-    def test_timing(self, skews: tuple[int, ...], ending: str) -> None:
+    def test_timing(
+        self, skews: tuple[int, ...], ending: str, with_hostnames: bool
+    ) -> None:
         rng = random.Random(f"{skews}{ending}")
         for pre_start in PRE_START:
             # The sender's clock only matters when there is a PENDING.
             sender_skews = SKEWS if pre_start in ("pending", "both") else (0,)
             for sender_skew in sender_skews:
-                events, expected = _history(skews, ending, pre_start, sender_skew)
+                events, expected = _history(
+                    skews, ending, pre_start, sender_skew, with_hostnames
+                )
                 orders = [events, events[::-1], rng.sample(events, len(events))]
                 for order in orders:
                     assert _timing(_node(*order)) == expected, (pre_start, sender_skew)

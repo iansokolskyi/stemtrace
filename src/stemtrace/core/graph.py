@@ -170,6 +170,25 @@ def _ms(delta: timedelta) -> int:
     return max(0, delta // _MILLISECOND)
 
 
+def _run_start(
+    open_runs: dict[str | None, TaskEvent], hostname: str | None
+) -> TaskEvent | None:
+    """Take the unfinished run an end event (RETRY or final) closes.
+
+    The one on the end's worker; for an end from this release's worker
+    after a STARTED from an older one (mid-upgrade), the run without a
+    worker. An end without a worker (older workers) closes the latest
+    unfinished run, as before runs were paired by worker.
+    """
+    if hostname is not None:
+        if hostname in open_runs:
+            return open_runs.pop(hostname)
+        return open_runs.pop(None, None)
+    if not open_runs:
+        return None
+    return open_runs.pop(next(reversed(open_runs)))
+
+
 def _precedence(event: TaskEvent) -> tuple[int, int, int, datetime, int]:
     """Total order over a task's events; the maximum decides the node's state.
 
@@ -343,17 +362,21 @@ class TaskNode(BaseModel):
         """Each run's STARTED with the RETRY or final event that ended it.
 
         Events are taken in ``_precedence`` order (the order that decides the
-        state, so worker clocks can't swap attempts): each STARTED pairs with
-        the next RETRY, the last with the final event. A run whose end was
-        missed, or that ended in a terminal event that isn't the final one
+        state, so worker clocks can't swap attempts). A run is read on one
+        worker's clock: an end pairs with the open STARTED from its worker
+        (``hostname``), and a worker's new STARTED replaces its unfinished one
+        (a lost run). Events without a hostname (workers before 0.5) pair as
+        before: an end with the latest open STARTED, which may be another
+        worker's under skewed clocks. A run whose end was missed, or that
+        ended in a terminal event that isn't the final one
         (``self.retry(throw=False)``), is left out. None unless the task
         finished and its last run's STARTED is from the final event's attempt.
-        The exception is a FAILURE with ``retries=0``: Celery reports a hard
-        time limit or lost worker from the worker's main process
-        (celery 5.6.3 worker/request.py ``Request.on_failure``), where the
-        task's request is an empty default (app/task.py ``Task._get_request``),
-        whatever the attempt. A REVOKED there carries the request's real count
-        (``_announce_revoked``).
+        The exception is a FAILURE with ``retries=0`` from a worker before
+        0.5: Celery reports a hard time limit or lost worker from the
+        worker's main process (celery 5.6.3 worker/request.py
+        ``Request.on_failure``), where the task's request is an empty default
+        (app/task.py ``Task._get_request``), whatever the attempt; this
+        release's workers fill it in (library/signals.py ``_failed_request``).
         """
         final = max(self.events, key=_precedence, default=None)
         if final is None or final.state not in _TERMINAL_STATES:
@@ -363,16 +386,25 @@ class TaskNode(BaseModel):
             key=_precedence,
         )
         runs: list[tuple[TaskEvent, TaskEvent]] = []
-        started: TaskEvent | None = None
+        # Unfinished run per worker (None: an event without a hostname).
+        open_runs: dict[str | None, TaskEvent] = {}
         for event in [*ordered, final]:
             if event.state == TaskState.STARTED:
-                started = event
-            elif started is not None:
+                open_runs.pop(event.hostname, None)
+                open_runs[event.hostname] = event  # last in insertion order
+                continue
+            started = _run_start(open_runs, event.hostname)
+            if started is not None:
                 runs.append((started, event))
-                started = None
         if not runs or runs[-1][1] is not final:
             return None
-        from_main_process = final.state == TaskState.FAILURE and final.retries == 0
+        # Only an older worker's main-process FAILURE: this release's workers
+        # give it its attempt and worker.
+        from_main_process = (
+            final.state == TaskState.FAILURE
+            and final.retries == 0
+            and final.hostname is None
+        )
         if final.retries != runs[-1][0].retries and not from_main_process:
             return None
         return runs
