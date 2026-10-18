@@ -2,7 +2,8 @@
 
 import json
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -287,6 +288,24 @@ def _add(x: int, y: int) -> int:
     return x + y
 
 
+def _successes(name: str) -> list[str]:
+    return [
+        e.task_id
+        for e in MemoryTransport.events
+        if isinstance(e, TaskEvent) and e.name == name and e.state == TaskState.SUCCESS
+    ]
+
+
+def _wait_for(check: Callable[[], bool], timeout_s: float = 30) -> bool:
+    """Poll ``check`` until it holds or ``timeout_s`` passes."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.05)
+    return check()
+
+
 def test_real_worker_result_not_stored_leaves_the_sent_steps_running() -> None:
     """A real worker of whichever Celery is installed (CI runs the oldest
     supported one too): its chain step dispatch, request.chain shape and
@@ -305,10 +324,10 @@ def test_real_worker_result_not_stored_leaves_the_sent_steps_running() -> None:
     try:
         with start_worker(app, pool="solo", perform_ping_check=False):
             workflow = chain(unstorable.si(), add.si(1, 1), add.si(2, 2), add.si(3, 3))
-            result = workflow.apply_async()
-            # propagate=False: get() would also raise the head's EncodeError.
-            result.get(timeout=30, propagate=False)
-            assert result.result == 6
+            workflow.apply_async()
+            # Not result.get(): Celery stores FAILURE for the later steps when
+            # the head fails, before they run, so get() can return early.
+            assert _wait_for(lambda: len(_successes("w.add")) == 3), _successes("w.add")
     finally:
         disconnect_signals()
         root.setLevel(level)
