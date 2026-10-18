@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Dependency updates. The bundled UI now uses `react` and `react-dom` 19.3.1 (was 19.3.0). The Docker image moves to the `python:3.12.15-slim-trixie` base image (was 3.12.14) and its locked runtime packages to `kombu` 5.6.2, `fastapi` 0.143.1 and `pydantic` 2.14.1 (with `pydantic-core` 2.50.1 and `typing-inspection` 0.4.4). Development only: `ruff` 0.17.0, `bump-my-version` 1.6.0 and, for the frontend E2E tests, Playwright 1.64.1. Installs with pip are unchanged: the minimum versions in `pyproject.toml` did not move.
 
+### Fixed
+- Runtimes are read on one worker's clock: `runtime_ms` and `total_runtime_ms` pair each run's STARTED with the RETRY or final event from the same worker. When Celery runs a task again on a worker whose clock is behind the first one's (a lost pool process with `acks_late`, a lost broker connection), they were too short (0 at worst) or empty. Workers now also give a FAILURE that Celery sends from their main process (a hard time limit, a lost pool process) its retry count, worker, queue and parent, root and group IDs, which it lacked (it said `retries=0` whatever the attempt). Workers record them when they receive each task (Celery's `task_received`, a small bounded record without the arguments). Events from older workers are read as before. See [Queue wait and runtime](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md#queue-wait-and-runtime).
+
 ## [0.4.1] - 2026-10-18
 
 **Highlights:**

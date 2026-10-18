@@ -135,11 +135,13 @@ Limitations:
   non-direct exchange) can reach any number of queues, so `queue` is empty and only
   `routing_key` is set. Checked with a topic exchange on real Redis and RabbitMQ workers.
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
-  (`billiard.exceptions.TimeLimitExceeded`), carries no `hostname`, `queue` or `routing_key`,
-  like its parent and root IDs. The task keeps the values of its furthest-along earlier event
-  that has them, normally the STARTED of the run that failed. Within one attempt (the same
-  retry count), events are ordered by time: when a lost broker connection makes Celery run the same attempt again on
-  another worker whose clock is behind the first one's, the task can name the first worker.
+  (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery. stemtrace gives
+  it the attempt's retry count, `hostname`, `queue`, `routing_key` and parent, root and group IDs
+  from when the worker received the message (Celery's `task_received`). Workers from before this
+  release send none of these (and `retries=0`): the task then keeps the values of its
+  furthest-along earlier event that has them, which, when a lost broker connection made Celery
+  run the same attempt again on a worker whose clock is behind the first one's, can be the first
+  worker.
 - Run eagerly (`task_always_eager`) from inside an `except` block, a task's bare
   `raise self.retry()` reports the caller's exception being handled, since it runs on the
   caller's stack.
@@ -183,21 +185,20 @@ Limitations:
 - A first attempt sent with a `countdown` or `eta` waits for it on the worker, and that wait is
   in `queue_wait_ms`: events don't record the ETA, so the server can't tell it from time spent
   in the queue.
+- Each run is read on one worker's clock: its STARTED and the RETRY or final event that ended it
+  come from the same worker (`hostname`), so skewed clocks between workers don't shorten or
+  empty the runtimes, also when Celery runs the same attempt again on another worker.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
-  after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind
-  the first worker's by more than the time between the two starts, the lost run's STARTED is
-  taken as the last run's start instead: `runtime_ms` and `total_runtime_ms` come out too short
-  (0 at worst), and `queue_wait_ms` shorter. With `throw=False` and the second worker's clock behind the
+  after `self.retry(throw=False)`. With `throw=False` and the second worker's clock behind the
   first's by more than the time between the two runs' ends, the first run's SUCCESS becomes the
   task's final event, and both fields are empty.
-- A FAILURE Celery reports from the worker's main process (a hard time limit) doesn't say which
-  attempt failed, and neither does the FAILURE of a first attempt that raised after
-  `self.retry(throw=False)`: both carry retry count 0. If the events of the attempts in between were missed, the runtime is counted
-  from the last STARTED the server has, so it can be too long.
-- A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run, or a
-  span read across two workers' clocks (above). When Celery runs the same attempt again on
-  another worker after losing the broker connection, and that worker's clock is behind the
-  first worker's by about the gap between them, the runs can't be put in order: `runtime_ms`
-  and `total_runtime_ms` are empty, and `queue_wait_ms` can come out shorter, by up to that offset (see the
-  same-attempt limitation in [Worker, queue and exception type](#worker-queue-and-exception-type)).
+- `queue_wait_ms` ends at the earliest first-attempt STARTED, whatever worker stamped it: if
+  Celery ran the first attempt again on a worker whose clock is behind, it can come out shorter,
+  by up to that offset.
+- A span is counted as 0 when it would be negative: a worker's clock stepping back mid-run.
+- Events from workers before this release have no `hostname`, and their main-process FAILURE
+  has `retries=0` whatever the attempt. For those, a run's start and end can come from two
+  workers' clocks: with the second worker's clock behind, runtimes can come out too short (0 at
+  worst) or empty, and a hard time limit's FAILURE after missed events can make the runtime too
+  long.
