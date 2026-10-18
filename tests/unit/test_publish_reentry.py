@@ -13,6 +13,7 @@ import logging
 import signal
 import threading
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar, Token, copy_context
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -202,32 +203,105 @@ def test_failed_publish_does_not_block_later_ones(transport: LockedTransport) ->
     assert [e.task_id for e in transport.events if isinstance(e, TaskEvent)] == ["next"]
 
 
-def test_drops_are_logged_at_most_once_per_interval(
+class _RaiseAfterSet:
+    """Stands in for ``_publishing``: raises right after the flag is set.
+
+    As a signal handler that raises (billiard's soft time limit handler
+    raises SoftTimeLimitExceeded) can, at the first bytecode after the set.
+    """
+
+    def __init__(self, var: ContextVar[bool]) -> None:
+        """Wrap the real flag."""
+        self._var = var
+        self.raised = False
+
+    def get(self) -> bool:
+        """The real flag's value."""
+        return self._var.get()
+
+    def set(self, value: bool) -> Token[bool]:
+        """Set the real flag, then raise once."""
+        token = self._var.set(value)
+        if value and not self.raised:
+            self.raised = True
+            raise RuntimeError("signal handler raised right after the set")
+        return token
+
+    def reset(self, token: Token[bool]) -> None:
+        """Reset the real flag."""
+        self._var.reset(token)
+
+
+def test_exception_right_after_the_flag_is_set_does_not_leave_it_set(
+    transport: LockedTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flag = _RaiseAfterSet(signals_module._publishing)
+    monkeypatch.setattr(signals_module, "_publishing", flag)
+
+    def scenario() -> None:
+        _publish_event(_event("interrupted"))
+        _publish_event(_event("next"))
+
+    # Its own context: a flag left set must not leak into other tests.
+    copy_context().run(scenario)
+
+    assert flag.raised is True
+    assert [e.task_id for e in transport.events if isinstance(e, TaskEvent)] == ["next"]
+
+
+def test_drops_are_counted_in_the_handler_and_logged_by_a_later_publish(
     transport: LockedTransport,
     on_sigusr1: Callable[[Callable[[], None]], None],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # Nothing is logged in signal context (a logging handler's own plain lock,
+    # e.g. QueueHandler's queue mutex, could be held by the interrupted code);
+    # the next publish outside a handler logs the count, at most once per
+    # interval.
     now = [100.0]
+    in_handler = [False]
+    logged_in_handler: list[str] = []
     monkeypatch.setattr(signals_module, "_monotonic", lambda: now[0])
-    on_sigusr1(lambda: _publish_event(_event("cancelled", TaskState.RETRY)))
-    caplog.set_level(logging.DEBUG, logger=LOGGER)
 
-    def publish_interrupted(at: float) -> None:
+    def handler() -> None:
+        in_handler[0] = True
+        try:
+            _publish_event(_event("cancelled", TaskState.RETRY))
+        finally:
+            in_handler[0] = False
+
+    class Spy(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if in_handler[0]:
+                logged_in_handler.append(record.getMessage())
+
+    on_sigusr1(handler)
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    spy = Spy()
+    logging.getLogger(LOGGER).addHandler(spy)
+
+    def publish(at: float, *, interrupted: bool) -> None:
         now[0] = at
-        transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
+        if interrupted:
+            transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
         _publish_event(_event(f"outer-{at}"))
 
-    for at in (100.0, 110.0, 120.0):  # within one interval
-        publish_interrupted(at)
-    publish_interrupted(100.0 + signals_module._REENTRY_LOG_INTERVAL_S)
+    try:
+        publish(100.0, interrupted=True)  # drop 1
+        publish(101.0, interrupted=False)  # logs 1
+        publish(110.0, interrupted=True)  # drop
+        publish(120.0, interrupted=True)  # drop, within the interval
+        publish(130.0, interrupted=False)  # within the interval: no log
+        publish(101.0 + signals_module._REENTRY_LOG_INTERVAL_S, interrupted=False)
+    finally:
+        logging.getLogger(LOGGER).removeHandler(spy)
 
     drops = [
         r.getMessage() for r in caplog.records if "signal handler" in r.getMessage()
     ]
-    assert len(drops) == 2
-    assert drops[0].startswith("Dropped 1 event(s)")
-    assert drops[1].startswith("Dropped 3 event(s)")
+    assert logged_in_handler == []
+    assert [d.split(" event(s)")[0] for d in drops] == ["Dropped 1", "Dropped 2"]
     assert {
         r.levelno for r in caplog.records if "signal handler" in r.getMessage()
     } == {logging.DEBUG}

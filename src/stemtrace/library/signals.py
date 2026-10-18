@@ -7,7 +7,7 @@ import time
 import traceback as tb_module
 from collections import OrderedDict
 from collections.abc import Callable
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
 
@@ -142,14 +142,18 @@ def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
 # was mid-publish, holding a lock on the publish path (the breaker's, the DNS
 # resolver's), publishing again would wait for that lock forever. A
 # ContextVar, not a thread-local: greenlet (>=0.4.17, used by gevent and
-# eventlet) gives each greenlet its own context.
+# eventlet) gives each greenlet its own context. It is only ever set inside a
+# copied context (see _publish_once), so it can't be left set.
 _publishing: ContextVar[bool] = ContextVar("stemtrace_publishing", default=False)
 
-# Events dropped that way since the last log line, and when it was written.
-# Updated inside signal handlers, so without a lock (a lock here could hang
-# the same way); a race can only miscount the log line.
+# Events dropped that way and not reported yet, the last one's ID, and when
+# the last report was written. Signal handlers only store to these (no lock,
+# no logging: a lock there, including a logging handler's, could be held by
+# the interrupted code); a later publish reports them. A race can only
+# miscount the report.
 _REENTRY_LOG_INTERVAL_S = 60.0
 _reentry_dropped = 0
+_reentry_last = ""
 _reentry_logged_at: float | None = None
 _monotonic = time.monotonic
 
@@ -160,22 +164,40 @@ def _publish_once(transport: EventTransport, event: TaskEvent | WorkerEvent) -> 
     Re-entry only happens from a signal handler that interrupted a publish
     (see ``_publishing``): the event is dropped, never waited for. What the
     transport raises propagates.
+
+    The publish runs in a copy of the current context with the flag set:
+    CPython restores the caller's context when ``Context.run`` returns or
+    raises, so an exception a signal handler raises anywhere in it (Celery's
+    soft time limit) can't leave the flag set for later publishes.
     """
     if _publishing.get():
         _note_reentrant_drop(event)
         return False
-    token = _publishing.set(True)
-    try:
-        transport.publish(event)
-    finally:
-        _publishing.reset(token)
+    _report_reentrant_drops()
+    copy_context().run(_publish_flagged, transport, event)
     return True
 
 
+def _publish_flagged(transport: EventTransport, event: TaskEvent | WorkerEvent) -> None:
+    """Set the flag and publish (only called in a copied context)."""
+    _publishing.set(True)
+    transport.publish(event)
+
+
 def _note_reentrant_drop(event: TaskEvent | WorkerEvent) -> None:
-    """Count an event dropped on re-entry; log at most once per interval (debug)."""
-    global _reentry_dropped, _reentry_logged_at
+    """Count an event dropped on re-entry. Signal context: stores only."""
+    global _reentry_dropped, _reentry_last
     _reentry_dropped += 1
+    _reentry_last = (
+        event.task_id if isinstance(event, TaskEvent) else event.event_type.value
+    )
+
+
+def _report_reentrant_drops() -> None:
+    """Log dropped re-entrant events (debug), at most once per interval."""
+    global _reentry_dropped, _reentry_logged_at
+    if not _reentry_dropped:
+        return
     now = _monotonic()
     last = _reentry_logged_at
     if last is not None and now - last < _REENTRY_LOG_INTERVAL_S:
@@ -186,7 +208,7 @@ def _note_reentrant_drop(event: TaskEvent | WorkerEvent) -> None:
         "Dropped %d event(s) published from a signal handler while this thread "
         "was already publishing (e.g. Celery's cold shutdown); the last was %s",
         dropped,
-        event.task_id if isinstance(event, TaskEvent) else event.event_type.value,
+        _reentry_last,
     )
 
 
