@@ -21,9 +21,11 @@ import { defineConfig, devices } from '@playwright/test'
  *   E2E_MODE=real npm test      # Real mode (requires Docker and seeded tasks; prefer
  *                               # `make e2e-playwright-real`, which seeds first)
  *   npx playwright test --ui    # Interactive mode
+ *   npm run test:visual         # Visual snapshots, inside the pinned Playwright image
  */
 
 const isRealMode = process.env.E2E_MODE === 'real'
+const isVisual = process.env.PW_VISUAL === '1' && !isRealMode
 
 // In mock mode, use Vite dev server (5173, or E2E_PORT when another checkout
 // already serves 5173: the run would otherwise reuse that checkout's server)
@@ -44,13 +46,24 @@ export default defineConfig({
     baseURL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    contextOptions: { reducedMotion: 'reduce' },
+  },
+
+  // Visual snapshots: compared only in the pinned Playwright image (npm run test:visual, and
+  // the ui-mock-e2e CI job), where fonts render the same as when the baselines were made.
+  expect: {
+    toHaveScreenshot: { maxDiffPixelRatio: 0.01, animations: 'disabled' },
   },
 
   projects: [
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: /visual\.spec\.ts/,
     },
+    ...(isVisual
+      ? [{ name: 'visual', use: { ...devices['Desktop Chrome'] }, testMatch: /visual\.spec\.ts/ }]
+      : []),
   ],
 
   // In mock mode, start Vite dev server

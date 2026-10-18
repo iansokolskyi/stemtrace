@@ -1,11 +1,11 @@
 /**
- * Simple tooltip component with instant hover display.
- * Supports different placements to avoid going out of bounds.
+ * Simple tooltip with instant hover display, in the raised tone with the tinted pop shadow.
+ * Placements keep it inside the viewport next to edges.
  */
 
 import type { ReactNode } from 'react'
 
-type TooltipPlacement = 'top' | 'bottom' | 'bottom-end' | 'left' | 'right'
+type TooltipPlacement = 'top' | 'top-start' | 'bottom' | 'bottom-end' | 'left' | 'right'
 
 interface TooltipProps {
   content: string
@@ -13,46 +13,25 @@ interface TooltipProps {
   children: ReactNode
 }
 
-const placementStyles: Record<TooltipPlacement, { container: string; arrow: string }> = {
-  top: {
-    container: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
-    arrow:
-      'top-full left-1/2 -translate-x-1/2 border-t-slate-800 border-x-transparent border-b-transparent',
-  },
-  bottom: {
-    container: 'top-full left-1/2 -translate-x-1/2 mt-2',
-    arrow:
-      'bottom-full left-1/2 -translate-x-1/2 border-b-slate-800 border-x-transparent border-t-transparent',
-  },
+const placementStyles: Record<TooltipPlacement, string> = {
+  top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
+  // Left-aligned above the trigger: for triggers near the left edge (the sidebar footer)
+  'top-start': 'bottom-full left-0 mb-2',
+  bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
   // Right-aligned below the trigger: for triggers near the right edge
-  'bottom-end': {
-    container: 'top-full right-0 mt-2',
-    arrow: 'bottom-full right-3 border-b-slate-800 border-x-transparent border-t-transparent',
-  },
-  left: {
-    container: 'right-full top-1/2 -translate-y-1/2 mr-2',
-    arrow:
-      'left-full top-1/2 -translate-y-1/2 border-l-slate-800 border-y-transparent border-r-transparent',
-  },
-  right: {
-    container: 'left-full top-1/2 -translate-y-1/2 ml-2',
-    arrow:
-      'right-full top-1/2 -translate-y-1/2 border-r-slate-800 border-y-transparent border-l-transparent',
-  },
+  'bottom-end': 'top-full right-0 mt-2',
+  left: 'right-full top-1/2 -translate-y-1/2 mr-2',
+  right: 'left-full top-1/2 -translate-y-1/2 ml-2',
 }
 
 export function Tooltip({ content, placement = 'bottom', children }: TooltipProps) {
-  const styles = placementStyles[placement]
-
   return (
     <div className="relative group">
       {children}
       <div
-        className={`absolute ${styles.container} px-2 py-1 text-xs text-slate-200 bg-slate-800 rounded shadow-lg w-max max-w-64 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 pointer-events-none z-50`}
+        className={`absolute ${placementStyles[placement]} pointer-events-none invisible z-50 w-max max-w-64 rounded-lg bg-raised px-2.5 py-1.5 text-xs font-normal text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover:visible group-hover:opacity-100`}
       >
         {content}
-        {/* Arrow */}
-        <div className={`absolute ${styles.arrow} border-4`} />
       </div>
     </div>
   )

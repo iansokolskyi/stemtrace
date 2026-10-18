@@ -11,10 +11,10 @@ export function ThemeToggle(): ReactElement {
       type="button"
       onClick={() => setTheme(next)}
       aria-label={`Switch to ${next} theme`}
-      title={`Switch to ${next} theme`}
-      className="inline-flex size-8 flex-none items-center justify-center rounded-[3px] bg-raised text-ink hover:bg-press"
+      className="inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press active:translate-y-px"
     >
-      <Icon name={next === 'dark' ? 'moon' : 'sun'} size={16} />
+      <Icon name={next === 'dark' ? 'moon' : 'sun'} />
+      {next === 'dark' ? 'Dark' : 'Light'}
     </button>
   )
 }

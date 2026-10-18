@@ -301,21 +301,31 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return apiFetch(`${API_BASE}/health`, 'Failed to fetch health')
 }
 
+/** `refresh: false` skips the server's Celery inspect call, which blocks while the broker is slow. */
+export interface InspectOptions {
+  refresh?: boolean
+}
+
 export async function fetchTaskRegistry(
   query?: string,
   status?: TaskStatus,
+  { refresh = true }: InspectOptions = {},
 ): Promise<TaskRegistryResponse> {
   const searchParams = new URLSearchParams()
   if (query) searchParams.set('query', query)
   if (status) searchParams.set('status', status)
+  if (!refresh) searchParams.set('refresh', 'false')
 
   const url = `${API_BASE}/tasks/registry${searchParams.toString() ? `?${searchParams}` : ''}`
   return apiFetch(url, 'Failed to fetch task registry')
 }
 
-export async function fetchWorkers(hostname?: string): Promise<WorkerListResponse> {
-  const url = hostname
+export async function fetchWorkers(
+  hostname?: string,
+  { refresh = true }: InspectOptions = {},
+): Promise<WorkerListResponse> {
+  const base = hostname
     ? `${API_BASE}/workers/${encodeURIComponent(hostname)}`
     : `${API_BASE}/workers`
-  return apiFetch(url, 'Failed to fetch workers')
+  return apiFetch(refresh ? base : `${base}?refresh=false`, 'Failed to fetch workers')
 }

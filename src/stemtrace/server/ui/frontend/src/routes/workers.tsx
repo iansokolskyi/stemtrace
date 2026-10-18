@@ -6,6 +6,7 @@ import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/workers')({
   component: WorkersPage,
+  staticData: { crumb: 'Workers' },
 })
 
 function WorkersPage() {
