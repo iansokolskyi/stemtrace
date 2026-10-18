@@ -2711,3 +2711,27 @@ def test_eviction_unit_takes_a_member_s_steps_only_up_to_its_own_group(
         graph.nodes[node.task_id] = node
 
     assert _steps_to(graph, graph.nodes["m"], owners) == steps
+
+
+@pytest.mark.parametrize(
+    "chain",
+    [
+        # s1's parent isn't stored (evicted, or never seen).
+        [_node("s1", parent_id="gone"), _node("m", parent_id="s1", group_id="g")],
+        # Malformed parents that loop back: the walk stops.
+        [
+            _node("s1", parent_id="s2"),
+            _node("s2", parent_id="s1"),
+            _node("m", parent_id="s2", group_id="g"),
+        ],
+    ],
+    ids=["parent_not_stored", "parent_loop"],
+)
+def test_eviction_unit_takes_no_steps_from_a_member_not_drawn_under_a_group(
+    chain: list[TaskNode],
+) -> None:
+    graph = TaskGraph()
+    for node in [_node("group:g", NodeType.GROUP, group_id="g"), *chain]:
+        graph.nodes[node.task_id] = node
+
+    assert _steps_to(graph, graph.nodes["m"], {"group:g"}) == []
