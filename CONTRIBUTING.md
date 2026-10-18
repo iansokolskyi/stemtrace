@@ -134,6 +134,8 @@ uv lock --upgrade
    - Follow the code style guidelines
    - Add tests for new functionality
    - Update documentation if needed
+   - For a user-visible change, add a changelog fragment in `changelog.d/` instead of editing
+     `CHANGELOG.md` (see [`changelog.d/README.md`](changelog.d/README.md))
 
 3. **Run Checks**
    ```bash
@@ -173,9 +175,11 @@ uv lock --upgrade
 
 Every release goes through a pull request into `main` and is published by CI from a tag on `main`.
 
-1. Add user-facing entries under `## [Unreleased]` in `CHANGELOG.md`.
-2. `make release-pr BUMP=patch|minor|major` runs the checks, creates `release/vX.Y.Z`, bumps the
-   version and opens a PR whose description is the changelog section.
+1. Check that the changelog fragments in `changelog.d/` cover the release. Put any
+   **Highlights:** block under `## [Unreleased]` in `CHANGELOG.md`.
+2. `make release-pr BUMP=patch|minor|major` runs the checks, creates `release/vX.Y.Z`, merges the
+   fragments into `## [Unreleased]` (and deletes them), bumps the version and opens a PR whose
+   description is the changelog section.
 3. When CI is green, merge the PR with a merge commit (not squash or rebase).
 4. `make release-tag` tags the merge on `main`. The tag triggers the Release workflow, which
    publishes to PyPI and GHCR and creates the GitHub Release from the changelog section. It

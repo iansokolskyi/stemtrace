@@ -118,8 +118,10 @@ build:
 # Full pre-release checklist
 release-check:
 	@echo "=== Pre-release Checklist ==="
-	@echo "0. Checking CHANGELOG.md has [Unreleased] entries..."
-	@uv run python scripts/changelog_section.py Unreleased > /dev/null
+	@echo "0. Checking the changelog has entries (fragments in changelog.d/ or [Unreleased] text)..."
+	@uv run python scripts/assemble_changelog.py --check
+	@test -n "$$(find changelog.d -type f ! -name README.md -print -quit 2>/dev/null)" \
+		|| uv run python scripts/changelog_section.py Unreleased > /dev/null
 	@echo "1. Running all checks..."
 	$(MAKE) check
 	@echo ""
@@ -169,7 +171,8 @@ release:
 	@echo "Releases go through a PR: make release-pr BUMP=patch|minor|major, then make release-tag."
 	@exit 1
 
-# Open a release PR: preflight, checks, release/vX.Y.Z branch, version bump, PR with notes.
+# Open a release PR: preflight, checks, release/vX.Y.Z branch, changelog assembled from
+# changelog.d/ fragments, version bump, PR with notes.
 # Usage: make release-pr BUMP=patch|minor|major
 release-pr:
 	@set -e; \
@@ -185,6 +188,9 @@ release-pr:
 	! git rev-parse -q --verify "refs/tags/v$$NEW" >/dev/null || { echo "❌ Tag v$$NEW exists"; exit 1; }; \
 	$(MAKE) release-check; \
 	git switch -c "release/v$$NEW"; \
+	uv run python scripts/assemble_changelog.py; \
+	git add -A CHANGELOG.md changelog.d; \
+	git diff --cached --quiet || git commit -q -m "docs: assemble changelog for v$$NEW"; \
 	uv run bump-my-version bump $(BUMP); \
 	NOTES=$$(mktemp); trap 'rm -f "$$NOTES"' EXIT; \
 	uv run python scripts/changelog_section.py "$$NEW" > "$$NOTES"; \

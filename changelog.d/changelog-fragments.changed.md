@@ -1,0 +1,1 @@
+- Contributing: changelog entries are now one file per entry in `changelog.d/`, so pull requests no longer conflict on `CHANGELOG.md`. A maintainer's `make release-pr` merges them into `## [Unreleased]`. See `changelog.d/README.md`.
