@@ -19,7 +19,7 @@ FLOWS = Path(__file__).parents[1] / "data" / "celery_flows.json"
 def _event(state: TaskState, at: float, retries: int = 0, **fields: Any) -> TaskEvent:
     return TaskEvent(
         task_id="task-1",
-        name="app.encode",
+        name=fields.pop("name", "app.encode"),
         state=state,
         timestamp=T0 + timedelta(seconds=at),
         retries=retries,
@@ -249,6 +249,39 @@ def _at(seconds: float) -> datetime:
     return T0 + timedelta(seconds=seconds)
 
 
+def _own_until(events: list[TaskEvent]) -> dict[str, int]:
+    """Replaced task ID -> arrival index of its replacement's PENDING (its second)."""
+    seen: dict[str, int] = {}
+    cut: dict[str, int] = {}
+    for i, e in enumerate(events):
+        if e.state == P and e.retries == 0:
+            seen[e.task_id] = seen.get(e.task_id, 0) + 1
+            if seen[e.task_id] == 2:
+                cut.setdefault(e.task_id, i)
+    return cut
+
+
+def _mutate(
+    events: list[TaskEvent], own_until: dict[str, int], scenario: str
+) -> list[TaskEvent]:
+    """Drop or shift the replaced tasks' events as ``scenario`` says."""
+    out: list[TaskEvent] = []
+    minute = timedelta(seconds=60)
+    for i, e in enumerate(events):
+        if e.task_id not in own_until:
+            out.append(e)
+            continue
+        own = i < own_until[e.task_id]
+        if scenario == "no-own-pending" and own and e.state == P:
+            continue
+        if scenario == "sender-ahead" and own and e.state == P:
+            e = e.model_copy(update={"timestamp": e.timestamp + minute})
+        if scenario == "replacement-behind" and not own:
+            e = e.model_copy(update={"timestamp": e.timestamp - minute})
+        out.append(e)
+    return out
+
+
 class TestEta:
     """A first attempt sent with a countdown or ETA: the wait starts at the ETA."""
 
@@ -320,27 +353,36 @@ class TestEta:
     def test_no_eta(self) -> None:
         assert _node(_event(P, 0), _event(S, 2)).eta is None
 
+    def test_eta_from_received_before_the_task_starts(self) -> None:
+        # An older sender (PENDING without eta), a worker that records it on RECEIVED.
+        node = _node(_event(P, 0), _event(R, 0.1, eta=_at(3)))
+
+        assert node.eta == _at(3)
+
     def test_delayed_replacement_is_not_the_first_attempts_eta(self) -> None:
         # self.replace(add.si(1, 1).set(countdown=2)) after waiting 2.5 s in the queue:
-        # replace() reuses the ID and sends with retries=0 (real worker, celery 5.6.3).
+        # replace() reuses the ID, sends with retries=0 and the task as the parent
+        # (real worker, celery 5.6.3).
+        replacement = {"name": "app.add", "parent_id": "task-1", "eta": _at(4.793)}
         node = _node(
             _event(P, 0),
             _event(S, 2.493),
-            _event(P, 2.794, eta=_at(4.793)),
-            _event(S, 4.795, eta=_at(4.793)),
-            _event(OK, 4.84, eta=_at(4.793)),
+            _event(P, 2.794, **replacement),
+            _event(S, 4.795, **replacement),
+            _event(OK, 4.84, **replacement),
         )
 
         assert node.eta is None
         assert node.queue_wait_ms == 2493
 
     def test_delayed_task_replaced_by_a_delayed_task_keeps_its_own_eta(self) -> None:
+        replacement = {"name": "app.add", "parent_id": "task-1", "eta": _at(3.5)}
         node = _node(
             _event(P, 0, eta=_at(1)),
             _event(S, 1.2, eta=_at(1)),
-            _event(P, 1.5, eta=_at(3.5)),
-            _event(S, 3.6, eta=_at(3.5)),
-            _event(OK, 3.7, eta=_at(3.5)),
+            _event(P, 1.5, **replacement),
+            _event(S, 3.6, **replacement),
+            _event(OK, 3.7, **replacement),
         )
 
         assert node.eta == _at(1)
@@ -540,6 +582,49 @@ class TestRealCaptures:
             if sent and started:
                 wait = (min(started) - min(sent)) // timedelta(milliseconds=1)
                 assert node.queue_wait_ms == max(0, wait), node.name
+
+    @pytest.mark.parametrize(
+        "flow",
+        [
+            "replace_delayed_root",
+            "replace_delayed_mid_chain",
+            "replace_delayed_header",
+            "replace_delayed_nested",
+            "replace_delayed_same_name",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "scenario",
+        ["as-captured", "no-own-pending", "sender-ahead", "replacement-behind"],
+    )
+    def test_replacement_eta_never_leaks_whatever_the_clocks(
+        self, flow: str, scenario: str
+    ) -> None:
+        # Oracle from arrival order, not from TaskNode: a replaced task's own events
+        # are those that arrived before its second attempt-0 PENDING (the replacement's).
+        events = _capture(flow)
+        own_until = _own_until(events)
+        assert own_until
+        mutated = _mutate(events, own_until, scenario)
+        graph = TaskGraph()
+        for event in mutated:
+            graph.add_event(event)
+
+        for task_id, cut in own_until.items():
+            node = graph.nodes[task_id]
+            own = [e for e in events[:cut] if e.task_id == task_id]
+            wait = (
+                next(e.timestamp for e in own if e.state == S)
+                - next(e.timestamp for e in own if e.state == P)
+            ) // timedelta(milliseconds=1)
+            expected = {
+                "as-captured": wait,
+                "no-own-pending": None,
+                "sender-ahead": max(0, wait - 60_000),
+                "replacement-behind": wait,
+            }[scenario]
+            assert node.eta is None, (task_id, scenario)
+            assert node.queue_wait_ms == expected, (task_id, scenario)
 
     def test_delayed_task_replaced_with_a_delay_keeps_its_first_eta(self) -> None:
         graph = TaskGraph()

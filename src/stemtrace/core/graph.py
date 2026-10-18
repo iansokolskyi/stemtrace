@@ -117,6 +117,9 @@ def _with_aware_timestamp(event: TaskEvent) -> TaskEvent:
     )
 
 
+_PRE_START = (TaskState.PENDING, TaskState.RECEIVED)
+
+
 def _is_pre_start(event: TaskEvent) -> bool:
     """Whether the event belongs before the first run of the task.
 
@@ -292,24 +295,19 @@ class TaskNode(BaseModel):
         """Routing key of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.routing_key)
 
-    def _first_run(self) -> tuple[TaskEvent | None, TaskEvent | None]:
-        """The task's earliest first-attempt sent event (PENDING or RECEIVED) and STARTED.
+    def _own_first_attempt(self) -> list[TaskEvent]:
+        """The task's own first-attempt events, without a ``task.replace()`` replacement's.
 
-        Earliest by timestamp: ``task.replace()`` reuses the task ID with
-        ``retries`` 0, so a replacement's events also look like first-attempt
-        events, but they come after the task's own.
+        The replacement reuses the ID with ``retries`` 0 but reports the task, or a
+        task below it, as parent. The graph decides the task's own parent regardless
+        of clocks (``reported_parent_id``, see ``TaskGraph._replacement_check``); an
+        older sender's PENDING reports none.
         """
-        sent = min(
-            (e for e in self.events if _is_pre_start(e)),
-            key=lambda e: e.timestamp,
-            default=None,
-        )
-        started = min(
-            (e for e in self.events if e.state == TaskState.STARTED and e.retries == 0),
-            key=lambda e: e.timestamp,
-            default=None,
-        )
-        return sent, started
+        return [
+            e
+            for e in self.events
+            if e.retries == 0 and e.parent_id in (None, self.reported_parent_id)
+        ]
 
     @property
     def eta(self) -> datetime | None:
@@ -318,13 +316,7 @@ class TaskNode(BaseModel):
         None when the task could run at once or no event reported it. A retry's
         or a ``replace()`` replacement's ETA is on its own events (``TaskEvent.eta``).
         """
-        sent, started = self._first_run()
-        # STARTED first: the worker reads it from the message it ran. PENDING covers a
-        # worker that doesn't record ETAs.
-        for event in (started, sent):
-            if event is not None and event.eta is not None:
-                return event.eta
-        return None
+        return next((e.eta for e in self._own_first_attempt() if e.eta), None)
 
     @property
     def queue_wait_ms(self) -> int | None:
@@ -335,14 +327,14 @@ class TaskNode(BaseModel):
         STARTED. The span crosses the sender's and the worker's clocks, so a
         negative wait counts as 0.
         """
-        sent, started = self._first_run()
-        if sent is None or started is None:
+        own = self._own_first_attempt()
+        sent = [e.timestamp for e in own if e.state in _PRE_START]
+        started = [e.timestamp for e in own if e.state == TaskState.STARTED]
+        if not sent or not started:
             return None
-        wait_from = sent.timestamp
-        eta = self.eta
-        if eta is not None:
-            wait_from = max(wait_from, eta)
-        return _ms(started.timestamp - wait_from)
+        eta = next((e.eta for e in own if e.eta), None)
+        wait_from = min(sent) if eta is None else max(min(sent), eta)
+        return _ms(min(started) - wait_from)
 
     @property
     def runtime_ms(self) -> int | None:

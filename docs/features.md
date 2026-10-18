@@ -164,7 +164,8 @@ also split it up:
   `countdown=60` that starts 0.2 seconds after its ETA waited 200 ms. Task and graph node
   responses give the first attempt's ETA as `eta` (UTC; empty for a task that can run at
   once). Each event has its own attempt's ETA as `eta`, so a retry's countdown shows on the
-  retry's events.
+  retry's events, and a task replaced with `task.replace()` keeps its own ETA and wait: the
+  replacement's countdown shows on the replacement's events.
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
