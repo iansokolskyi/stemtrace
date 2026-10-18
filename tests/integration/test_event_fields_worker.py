@@ -323,7 +323,7 @@ def test_retry_inside_except_carries_the_handled_exception(run: Run) -> None:
 def test_failure_from_main_process_carries_its_worker(run: Run) -> None:
     # celery 5.6.3 worker/request.py Request.on_failure sends task_failure from
     # the worker's main process for a hard time limit, where task.request is
-    # empty; stemtrace fills in what task_received brought.
+    # empty; stemtrace reads the failing Request from on_failure's frame.
     failure = run.event("ef.hard_limit", TaskState.FAILURE)
 
     assert failure.exception_type == "billiard.exceptions.TimeLimitExceeded"
@@ -358,25 +358,20 @@ def test_main_process_failure_of_a_retry_carries_its_attempt(run: Run) -> None:
 
 def test_main_process_failure_of_attempt_zero_after_attempt_one(run: Run) -> None:
     # self.retry(throw=False): attempt 1 arrives and finishes while attempt 0
-    # still runs; attempt 0 then hits the hard time limit. Its FAILURE is
-    # attempt 0's, and attempt 1's run gets no runtime it never had.
+    # still runs; attempt 0 then hits its 15 s hard time limit. Its FAILURE is
+    # attempt 0's, and it ends attempt 0's own run, never attempt 1's.
     events = run.task_events("ef.throw_false_then_hard_limit")
     [failure] = [e for e in events if e.state == TaskState.FAILURE]
     started_0 = run.event("ef.throw_false_then_hard_limit", TaskState.STARTED, 0)
-    started_1 = run.event("ef.throw_false_then_hard_limit", TaskState.STARTED, 1)
     success_1 = run.event("ef.throw_false_then_hard_limit", TaskState.SUCCESS, 1)
     graph = TaskGraph()
     for event in events:
         graph.add_event(event)
     node = graph.nodes[run.task_ids["ef.throw_false_then_hard_limit"]]
+    ms = timedelta(milliseconds=1)
 
     assert (failure.retries, failure.hostname) == (0, run.nodename)
-    ms = timedelta(milliseconds=1)
-    if success_1.timestamp < failure.timestamp:
-        # The usual order: attempt 0's FAILURE is the final event and ends
-        # attempt 0's own run (about the 3 s limit), never attempt 1's.
-        assert node.runtime_ms == (failure.timestamp - started_0.timestamp) // ms
-        assert node.runtime_ms >= 2900
-    else:
-        # Attempt 1 waited for a free pool process: its SUCCESS is final.
-        assert node.runtime_ms == (success_1.timestamp - started_1.timestamp) // ms
+    assert success_1.timestamp < failure.timestamp
+    assert node.state == TaskState.FAILURE
+    assert node.runtime_ms == (failure.timestamp - started_0.timestamp) // ms
+    assert node.runtime_ms >= 14000
