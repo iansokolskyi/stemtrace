@@ -43,6 +43,7 @@ from stemtrace.library.signals import (
     on_worker_process_shutdown,
     on_worker_ready,
     on_worker_shutdown,
+    on_worker_terminating,
 )
 from stemtrace.transports.memory import MemoryTransport
 
@@ -1744,6 +1745,34 @@ class TestWorkerLifecycleEdgeCases:
 
         on_worker_shutdown(sender=sender, sig=15)
         assert "Failed to publish worker_shutdown event" in caplog.text
+
+    def test_on_worker_terminating_logs_and_suppresses_publish_errors(
+        self, caplog: Any
+    ) -> None:
+        """A cold stop goes on when publishing worker_terminating fails."""
+        broken_transport = MagicMock()
+        broken_transport.publish.side_effect = RuntimeError("publish failed")
+        connect_signals(broken_transport)
+
+        on_worker_terminating(SimpleNamespace(hostname="worker-1"))
+
+        assert broken_transport.publish.call_count == 1
+        assert "Failed to publish worker_terminating event: publish failed" in (
+            caplog.text
+        )
+
+    def test_on_worker_terminating_without_transport_warns_and_publishes_nothing(
+        self, caplog: Any
+    ) -> None:
+        disconnect_signals()
+
+        on_worker_terminating(SimpleNamespace(hostname="worker-1"))
+
+        assert MemoryTransport.events == []
+        assert (
+            "No transport configured, worker_terminating event not published"
+            in caplog.text
+        )
 
 
 class _StrRaisesValueError:
