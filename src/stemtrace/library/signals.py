@@ -816,6 +816,11 @@ def _flush_deferred_publishes(timeout_s: float = _DEFERRED_FLUSH_TIMEOUT_S) -> N
     deadline = time.monotonic() + timeout_s
     while any(not g.dead for g in _deferred_publishes) and time.monotonic() < deadline:
         time.sleep(0.01)
+    pending = sum(not g.dead for g in _deferred_publishes)
+    if pending:
+        logger.debug(
+            "Gave up on %d deferred event(s) at exit after %gs", pending, timeout_s
+        )
     _deferred_publishes.clear()
 
 
