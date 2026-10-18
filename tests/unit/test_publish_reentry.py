@@ -24,6 +24,7 @@ from stemtrace.library.signals import (
     _publish_event,
     connect_signals,
     disconnect_signals,
+    on_worker_ready,
     on_worker_shutdown,
 )
 
@@ -144,6 +145,25 @@ def test_worker_event_from_signal_handler_mid_publish_is_dropped(
 
     assert transport.reentered is False
     assert [type(e) for e in transport.events] == [TaskEvent]
+
+
+def test_worker_ready_from_signal_handler_mid_publish_is_dropped(
+    transport: LockedTransport,
+    on_sigusr1: Callable[[Callable[[], None]], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    worker = SimpleNamespace(hostname="celery@w1", app=SimpleNamespace(tasks={}))
+    on_sigusr1(lambda: on_worker_ready(sender=worker))
+    transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
+    caplog.set_level(logging.INFO, logger=LOGGER)
+
+    _publish_event(_event("outer"))
+
+    assert transport.reentered is False
+    assert [type(e) for e in transport.events] == [TaskEvent]
+    assert not [
+        r for r in caplog.records if "Worker ready event sent" in r.getMessage()
+    ]
 
 
 def test_other_threads_publish_while_one_is_publishing(
