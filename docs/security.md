@@ -91,7 +91,10 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   does; a dependency that checks Bearer JWTs works too). With the login page also on, a request
   without a valid key needs a session cookie and the dependency. The dependency doesn't cover
   the WebSocket, as without a key, so the WebSocket needs the key (or a session cookie, with the
-  login page). `require_api_key` is a separate, older helper for embedded
+  login page). While a key is set, the dependency's security scheme and parameters don't show
+  in the OpenAPI schema of the stemtrace routes, because FastAPI builds the schema from the
+  dependencies it resolves up front; the dependency still applies. `require_api_key` is a
+  separate, older helper for embedded
   apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key described
   here is the one built into the server.
 - **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
@@ -104,7 +107,10 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   doesn't clear the count. Requests without a client address (a Unix socket) aren't throttled.
   Counts are per process. With a custom `auth_dependency`, a wrong key counts only when the
   dependency also rejects the request, so a Bearer token the dependency accepts never locks you
-  out. A locked-out client still passes with credentials the dependency accepts.
+  out, while one it rejects (an expired JWT) counts like a wrong key. While several wrong keys
+  from one IP wait for the dependency's answer, that IP's further keys aren't compared (they get
+  `429` unless the dependency admits them), so a burst can't test more keys than the limit
+  allows. A locked-out client still passes with credentials the dependency accepts.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
   (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes
