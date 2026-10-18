@@ -27,6 +27,7 @@ from stemtrace.library.signals import (
     disconnect_signals,
     on_worker_ready,
     on_worker_shutdown,
+    on_worker_terminating,
 )
 
 LOGGER = "stemtrace.library.signals"
@@ -141,6 +142,34 @@ def test_worker_event_from_signal_handler_mid_publish_is_dropped(
     on_sigusr1: Callable[[Callable[[], None]], None],
 ) -> None:
     on_sigusr1(lambda: on_worker_shutdown(sender=SimpleNamespace(hostname="celery@w1")))
+    transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
+
+    _publish_event(_event("outer"))
+
+    assert transport.reentered is False
+    assert [type(e) for e in transport.events] == [TaskEvent]
+
+
+def test_publish_from_signal_handler_mid_worker_terminating_is_dropped(
+    transport: LockedTransport,
+    on_sigusr1: Callable[[Callable[[], None]], None],
+) -> None:
+    """The cold-stop publish is guarded like the others: a handler's publish
+    that interrupts it is dropped, not sent while it holds the transport."""
+    on_sigusr1(lambda: _publish_event(_event("cancelled", TaskState.RETRY)))
+    transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
+
+    on_worker_terminating(SimpleNamespace(hostname="celery@w1"))
+
+    assert transport.reentered is False
+    assert [type(e) for e in transport.events] == [WorkerEvent]
+
+
+def test_worker_terminating_from_signal_handler_mid_publish_is_dropped(
+    transport: LockedTransport,
+    on_sigusr1: Callable[[Callable[[], None]], None],
+) -> None:
+    on_sigusr1(lambda: on_worker_terminating(SimpleNamespace(hostname="celery@w1")))
     transport.during_publish = lambda: signal.raise_signal(signal.SIGUSR1)
 
     _publish_event(_event("outer"))

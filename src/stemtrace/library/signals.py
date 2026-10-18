@@ -1167,7 +1167,8 @@ def on_worker_terminating(sender: Any = None) -> None:
             timestamp=datetime.now(timezone.utc),
         )
         if _transport is not None:
-            _transport.publish(event)
+            if not _publish_once(_transport, event):
+                return
             logger.info(
                 "Worker terminating event sent to transport: %s:%d", hostname, pid
             )
