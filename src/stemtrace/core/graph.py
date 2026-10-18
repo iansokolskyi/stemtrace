@@ -127,7 +127,12 @@ def _is_pre_start(event: TaskEvent) -> bool:
     after the worker already started or even finished the task, so its
     timestamp can't place it.
     """
-    return event.retries == 0 and event.state in (TaskState.PENDING, TaskState.RECEIVED)
+    return event.retries == 0 and event.state in _PRE_START
+
+
+def _first_eta(events: list[TaskEvent]) -> datetime | None:
+    """The ETA the first of ``events`` that carries one reports (they share one message)."""
+    return next((e.eta for e in events if e.eta is not None), None)
 
 
 def _digest(event: TaskEvent) -> bytes:
@@ -299,15 +304,29 @@ class TaskNode(BaseModel):
         """The task's own first-attempt events, without a ``task.replace()`` replacement's.
 
         The replacement reuses the ID with ``retries`` 0 but reports the task, or a
-        task below it, as parent. The graph decides the task's own parent regardless
-        of clocks (``reported_parent_id``, see ``TaskGraph._replacement_check``); an
-        older sender's PENDING reports none.
+        task below it, as parent; the graph decides the task's own parent regardless
+        of clocks (``reported_parent_id``). Without parent IDs (protocol 1), the
+        task's earliest sent event and STARTED stand for its own.
         """
-        return [
-            e
-            for e in self.events
-            if e.retries == 0 and e.parent_id in (None, self.reported_parent_id)
-        ]
+        first = [e for e in self.events if e.retries == 0]
+        if all(e.parent_id is None for e in first):
+            # Protocol 1 sends no parent_id (celery 5.6.3 app/amqp.py as_task_v1). A
+            # replacement is only sent while the task runs, so before the first
+            # STARTED every event is the task's own; after it, the earliest STARTED
+            # and sent event are, as long as the clocks agree.
+            sent = sorted(
+                (e for e in first if _is_pre_start(e)), key=lambda e: e.timestamp
+            )
+            started = [e for e in first if e.state == TaskState.STARTED]
+            if not started:
+                return sent
+            return [min(started, key=lambda e: e.timestamp), *sent[:1]]
+        own_parent = self.reported_parent_id
+        replaced = any(e.parent_id not in (None, own_parent) for e in first)
+        # An older sender's PENDING carries no parent. Once the ID also carries a
+        # replacement, an unparented event may be the replacement's: leave them out.
+        allowed = (own_parent,) if replaced else (None, own_parent)
+        return [e for e in first if e.parent_id in allowed]
 
     @property
     def eta(self) -> datetime | None:
@@ -316,7 +335,7 @@ class TaskNode(BaseModel):
         None when the task could run at once or no event reported it. A retry's
         or a ``replace()`` replacement's ETA is on its own events (``TaskEvent.eta``).
         """
-        return next((e.eta for e in self._own_first_attempt() if e.eta), None)
+        return _first_eta(self._own_first_attempt())
 
     @property
     def queue_wait_ms(self) -> int | None:
@@ -328,11 +347,11 @@ class TaskNode(BaseModel):
         negative wait counts as 0.
         """
         own = self._own_first_attempt()
-        sent = [e.timestamp for e in own if e.state in _PRE_START]
+        sent = [e.timestamp for e in own if _is_pre_start(e)]
         started = [e.timestamp for e in own if e.state == TaskState.STARTED]
         if not sent or not started:
             return None
-        eta = next((e.eta for e in own if e.eta), None)
+        eta = _first_eta(own)
         wait_from = min(sent) if eta is None else max(min(sent), eta)
         return _ms(min(started) - wait_from)
 

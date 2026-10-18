@@ -165,7 +165,8 @@ also split it up:
   responses give the first attempt's ETA as `eta` (UTC; empty for a task that can run at
   once). Each event has its own attempt's ETA as `eta`, so a retry's countdown shows on the
   retry's events, and a task replaced with `task.replace()` keeps its own ETA and wait: the
-  replacement's countdown shows on the replacement's events.
+  replacement's countdown shows on the replacement's events (see the protocol 1 limitation
+  below).
 - `queue_wait_ms` covers the first attempt only: a retry's wait includes the retry's countdown,
   so it is in `duration_ms` but not here. It is set once the task starts, while it is still
   running.
@@ -192,6 +193,16 @@ Limitations:
   and the worker starts the task when its own clock reaches it. A worker clock behind the
   sender's starts the task late by the offset, and one ahead starts it early; `queue_wait_ms`
   counts from the ETA by the worker's clock, so it doesn't show that offset.
+- With Celery's message protocol 1 (`task_protocol = 1`), task messages carry no parent ID
+  (Celery 5.6.3 `app/amqp.py` `as_task_v1`), and neither do PENDING events from workers before
+  stemtrace 0.4.0. Without parent IDs, the server can't tell a task's events from those of a
+  replacement it started with `task.replace()`, so it reads the ETA and the wait from the task's
+  earliest STARTED and earliest sent event. For a task replaced by one sent with a `countdown`,
+  `eta` and `queue_wait_ms` can then come from the replacement: when the sending process's clock
+  is ahead of the worker's, when the replacement runs on a worker whose clock is behind, or when
+  the task's own PENDING was missed. With Celery's default protocol 2 and stemtrace 0.4.0 or
+  later in the workers and the sending code, events carry parent IDs and the task's own values
+  are used whatever the clocks.
 - `total_runtime_ms` leaves out runs whose end wasn't reported: a pool process lost while
   running (the task is redelivered with `acks_late`), or a run that ended in its own SUCCESS
   after `self.retry(throw=False)`. If the worker that runs a lost run again has a clock behind

@@ -261,6 +261,28 @@ def _own_until(events: list[TaskEvent]) -> dict[str, int]:
     return cut
 
 
+def _earliest_run(events: list[TaskEvent]) -> tuple[datetime | None, int | None]:
+    """ETA and wait read from the earliest first-attempt STARTED and sent event."""
+    first = [e for e in events if e.retries == 0]
+    started = min((e for e in first if e.state == S), key=lambda e: e.timestamp)
+    sent = min((e for e in first if e.state in (P, R)), key=lambda e: e.timestamp)
+    eta = started.eta or sent.eta
+    wait_from = sent.timestamp if eta is None else max(sent.timestamp, eta)
+    return eta, max(0, (started.timestamp - wait_from) // timedelta(milliseconds=1))
+
+
+SCENARIOS = [
+    "as-captured",
+    "sender-behind",
+    "sender-ahead",
+    "replacement-behind",
+    "no-own-pending",
+]
+# Protocol 1 messages carry no parent ID: these clock and event cases take the
+# replacement's ETA (docs/features.md, Limitations).
+PROTOCOL_1_LEAKS = {"sender-ahead", "replacement-behind", "no-own-pending"}
+
+
 def _mutate(
     events: list[TaskEvent], own_until: dict[str, int], scenario: str
 ) -> list[TaskEvent]:
@@ -276,6 +298,8 @@ def _mutate(
             continue
         if scenario == "sender-ahead" and own and e.state == P:
             e = e.model_copy(update={"timestamp": e.timestamp + minute})
+        if scenario == "sender-behind" and own and e.state == P:
+            e = e.model_copy(update={"timestamp": e.timestamp - minute})
         if scenario == "replacement-behind" and not own:
             e = e.model_copy(update={"timestamp": e.timestamp - minute})
         out.append(e)
@@ -352,6 +376,28 @@ class TestEta:
 
     def test_no_eta(self) -> None:
         assert _node(_event(P, 0), _event(S, 2)).eta is None
+
+    def test_older_senders_unparented_pending_counts(self) -> None:
+        # A sender before stemtrace 0.4.0 sent PENDING without the parent ID.
+        node = _node(
+            _event(P, 0),
+            _event(S, 5, parent_id="parent-1", eta=_at(3)),
+        )
+
+        assert (node.eta, node.queue_wait_ms) == (_at(3), 2000)
+
+    def test_unparented_pending_of_a_replacement_does_not_count(self) -> None:
+        # The task's own PENDING was missed; a worker before 0.4.0 sent the
+        # replacement's PENDING (the task replacing itself, a page of a paginated
+        # fetch) without a parent, while the replacement's STARTED reports the task.
+        node = _node(
+            _event(S, 2, parent_id="parent-1"),
+            _event(P, 2.5, eta=_at(4)),
+            _event(S, 4.1, parent_id="task-1", eta=_at(4)),
+            _event(OK, 4.2, parent_id="task-1", eta=_at(4)),
+        )
+
+        assert (node.eta, node.queue_wait_ms) == (None, None)
 
     def test_eta_from_received_before_the_task_starts(self) -> None:
         # An older sender (PENDING without eta), a worker that records it on RECEIVED.
@@ -593,12 +639,10 @@ class TestRealCaptures:
             "replace_delayed_same_name",
         ],
     )
-    @pytest.mark.parametrize(
-        "scenario",
-        ["as-captured", "no-own-pending", "sender-ahead", "replacement-behind"],
-    )
+    @pytest.mark.parametrize("scenario", SCENARIOS)
+    @pytest.mark.parametrize("protocol", [1, 2])
     def test_replacement_eta_never_leaks_whatever_the_clocks(
-        self, flow: str, scenario: str
+        self, flow: str, scenario: str, protocol: int
     ) -> None:
         # Oracle from arrival order, not from TaskNode: a replaced task's own events
         # are those that arrived before its second attempt-0 PENDING (the replacement's).
@@ -606,6 +650,11 @@ class TestRealCaptures:
         own_until = _own_until(events)
         assert own_until
         mutated = _mutate(events, own_until, scenario)
+        if protocol == 1:  # celery 5.6.3 as_task_v1 sends no parent_id or root_id
+            mutated = [
+                e.model_copy(update={"parent_id": None, "root_id": None})
+                for e in mutated
+            ]
         graph = TaskGraph()
         for event in mutated:
             graph.add_event(event)
@@ -617,11 +666,19 @@ class TestRealCaptures:
                 next(e.timestamp for e in own if e.state == S)
                 - next(e.timestamp for e in own if e.state == P)
             ) // timedelta(milliseconds=1)
+            if protocol == 1 and scenario in PROTOCOL_1_LEAKS:
+                # Documented platform limit: no parent IDs, so the task's earliest
+                # STARTED and sent event stand for its own, here the replacement's.
+                assert (node.eta, node.queue_wait_ms) == _earliest_run(
+                    [e for e in mutated if e.task_id == task_id]
+                )
+                continue
             expected = {
                 "as-captured": wait,
-                "no-own-pending": None,
+                "sender-behind": wait + 60_000,
                 "sender-ahead": max(0, wait - 60_000),
                 "replacement-behind": wait,
+                "no-own-pending": None,
             }[scenario]
             assert node.eta is None, (task_id, scenario)
             assert node.queue_wait_ms == expected, (task_id, scenario)
