@@ -3,9 +3,11 @@
 import inspect
 import logging
 import threading
+import time
 import traceback as tb_module
 from collections import OrderedDict
 from collections.abc import Callable
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
 
@@ -23,7 +25,12 @@ from celery.signals import (
 )
 from celery.utils.serialization import UnpickleableExceptionWrapper
 
-from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent, TaskState
+from stemtrace.core.events import (
+    RegisteredTaskDefinition,
+    TaskEvent,
+    TaskState,
+    WorkerEvent,
+)
 from stemtrace.core.exceptions import is_task_interrupt
 from stemtrace.core.ports import ClosableTransport, EventTransport
 from stemtrace.library.config import get_config
@@ -34,6 +41,7 @@ from stemtrace.library.output_capture import (
 )
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
+    TRUNCATED_PREFIX,
     safe_serialize,
     scrub_args,
     scrub_dict,
@@ -92,6 +100,9 @@ _MAX_DOCSTRING_CHARS = 4000
 # Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
 # with no reason and no einfo; mirror the reason Celery itself records.
 _CANCELLED_RETRY_REASON = "cancelled by Celery"
+# The Ignore message Celery's Task.replace() raises (celery 5.2.2 to 5.6.3); the
+# replacement keeps running under the same task ID.
+_REPLACED_BY_NEW_TASK = "Replaced by new task"
 
 
 def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
@@ -126,18 +137,98 @@ def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
     return group_id, callback_id
 
 
+# Set while this thread (greenlet, under gevent/eventlet) publishes an event.
+# Celery 5.6.3's cold shutdown publishes from its SIGQUIT handler
+# (apps/worker.py on_cold_shutdown -> Consumer.cancel_active_requests ->
+# Request._announce_cancelled sends task_retry), and a Python signal handler
+# runs on the main thread in that thread's current context: if the main thread
+# was mid-publish, holding a lock on the publish path (the breaker's, the DNS
+# resolver's), publishing again would wait for that lock forever. A
+# ContextVar, not a thread-local: greenlet (>=0.4.17, used by gevent and
+# eventlet) gives each greenlet its own context. It is only ever set inside a
+# copied context (see _publish_once), so it can't be left set.
+_publishing: ContextVar[bool] = ContextVar("stemtrace_publishing", default=False)
+
+# Events dropped that way and not reported yet, the last one's ID, and when
+# the last report was written. Signal handlers only store to these (no lock,
+# no logging: a lock there, including a logging handler's, could be held by
+# the interrupted code); a later publish reports them. A race can only
+# miscount the report.
+_REENTRY_LOG_INTERVAL_S = 60.0
+_reentry_dropped = 0
+_reentry_last = ""
+_reentry_logged_at: float | None = None
+_monotonic = time.monotonic
+
+
+def _publish_once(transport: EventTransport, event: TaskEvent | WorkerEvent) -> bool:
+    """Publish unless this thread is already publishing; return whether it did.
+
+    Re-entry only happens from a signal handler that interrupted a publish
+    (see ``_publishing``): the event is dropped, never waited for. What the
+    transport raises propagates.
+
+    The publish runs in a copy of the current context with the flag set:
+    CPython restores the caller's context when ``Context.run`` returns or
+    raises, so an exception a signal handler raises anywhere in it (Celery's
+    soft time limit) can't leave the flag set for later publishes.
+    """
+    if _publishing.get():
+        _note_reentrant_drop(event)
+        return False
+    _report_reentrant_drops()
+    copy_context().run(_publish_flagged, transport, event)
+    return True
+
+
+def _publish_flagged(transport: EventTransport, event: TaskEvent | WorkerEvent) -> None:
+    """Set the flag and publish (only called in a copied context)."""
+    _publishing.set(True)
+    transport.publish(event)
+
+
+def _note_reentrant_drop(event: TaskEvent | WorkerEvent) -> None:
+    """Count an event dropped on re-entry. Signal context: stores only."""
+    global _reentry_dropped, _reentry_last
+    _reentry_dropped += 1
+    _reentry_last = (
+        event.task_id if isinstance(event, TaskEvent) else event.event_type.value
+    )
+
+
+def _report_reentrant_drops() -> None:
+    """Log dropped re-entrant events (debug), at most once per interval."""
+    global _reentry_dropped, _reentry_logged_at
+    if not _reentry_dropped:
+        return
+    now = _monotonic()
+    last = _reentry_logged_at
+    if last is not None and now - last < _REENTRY_LOG_INTERVAL_S:
+        return
+    _reentry_logged_at = now
+    dropped, _reentry_dropped = _reentry_dropped, 0
+    logger.debug(
+        "Dropped %d event(s) published from a signal handler while this thread "
+        "was already publishing (e.g. Celery's cold shutdown); the last was %s",
+        dropped,
+        _reentry_last,
+    )
+
+
 def _publish_event(event: TaskEvent) -> None:
     """Publish event via transport. Fire-and-forget: logs errors, never raises.
 
     The exception is Celery's own control flow (see ``is_task_interrupt``),
-    which propagates.
+    which propagates. An event published from a signal handler that
+    interrupted another publish on this thread is dropped (see
+    ``_publish_once``).
     """
     if _transport is None:
         logger.warning("stemtrace not initialized, event dropped: %s", event.task_id)
         return
 
     try:
-        _transport.publish(event)
+        _publish_once(_transport, event)
     except Exception as exc:
         if is_task_interrupt(exc):
             # Celery's control flow (a soft time limit raised into the task
@@ -283,14 +374,16 @@ def _capture_kwargs(kwargs: Any) -> dict[str, Any] | None:
         scrubbed = dict(kwargs)
 
     result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
-    # safe_serialize may return truncation message string or the dict
+    # safe_serialize returns the dict, or text: its truncation message, or the
+    # str() of a dict json can't encode (which starts with "{", never with
+    # TRUNCATED_PREFIX).
     if isinstance(result, dict):
         # TaskEvent.kwargs has str keys. celery 5.6.3 send_task() doesn't check
         # keyword types (Task.apply_async does), so {1: ...} can get here; the
         # json transports would turn the key into "1" anyway.
         return {str(key): value for key, value in result.items()}
-    # If truncated, wrap message in dict
-    return {"_truncated": result} if result is not None else scrubbed
+    label = "_truncated" if result.startswith(TRUNCATED_PREFIX) else "_as_text"
+    return {label: result}
 
 
 def _capture_result(result: Any) -> Any | None:
@@ -480,15 +573,20 @@ def _on_task_postrun(
     state: str,
     **_: Any,
 ) -> None:
-    """Handle task_postrun: publish SUCCESS with the attempt's output.
+    """Handle task_postrun: publish SUCCESS, IGNORED or REJECTED.
 
-    Other states were already published by the failure/retry handlers (which
-    run first); for those, and for REJECTED/IGNORED, this only frees the
-    output buffer.
+    FAILURE and RETRY were already published by their handlers (which run
+    first); for those this only frees the output buffer. Celery's trace
+    (5.2.2 to 5.6.3 ``build_tracer``) ends a task that raised ``Ignore`` or
+    ``Reject`` here with ``state`` IGNORED/REJECTED and the exception as
+    ``retval``, and sends no task_failure.
     """
     del args, kwargs
 
     output = _finish_output_capture(task_id)
+    if state in ("IGNORED", "REJECTED"):
+        _publish_ignored_or_rejected(task_id, task, state, retval, output)
+        return
     if state != "SUCCESS":
         return
 
@@ -514,6 +612,63 @@ def _on_task_postrun(
             output=output,
             **_worker_fields(task.request),
         )
+    )
+
+
+def _publish_ignored_or_rejected(
+    task_id: str, task: "Task", state: str, retval: Any, output: str | None
+) -> None:
+    """Publish the terminal event of a task that raised Ignore or Reject.
+
+    Skipped when the task isn't over: ``Task.replace()`` raises
+    ``Ignore('Replaced by new task')`` (celery 5.2.2 ``replace``, 5.3+
+    ``on_replace``) and the replacement reuses the task ID, and
+    ``Reject(requeue=True)`` on a worker with ``acks_late`` puts the message
+    back to run again. Without ``acks_late`` the worker acknowledged the
+    message before running the task, so the requeue does nothing (celery
+    5.2.2 to 5.6.3 worker/request.py ``on_accepted`` and ``reject``), and an
+    eager ``apply()`` has no message.
+    """
+    if state == "IGNORED" and str(retval) == _REPLACED_BY_NEW_TASK:
+        return
+    if state == "REJECTED" and _runs_again(task, retval):
+        return
+    _pending_emitted.discard(task_id)
+    reason = getattr(retval, "reason", None) if state == "REJECTED" else None
+    exception, exception_type = None, None
+    if isinstance(reason, BaseException):
+        exception, exception_type = _format_exception(reason), _exception_type(reason)
+    elif reason is not None:
+        exception = str(reason)
+    chord_id, chord_callback_id = _extract_chord_info(
+        getattr(task.request, "chord", None)
+    )
+    _publish_event(
+        TaskEvent(
+            task_id=task_id,
+            name=task.name,
+            state=TaskState(state),
+            timestamp=datetime.now(timezone.utc),
+            parent_id=getattr(task.request, "parent_id", None),
+            root_id=getattr(task.request, "root_id", None),
+            group_id=getattr(task.request, "group", None),
+            chord_id=chord_id,
+            chord_callback_id=chord_callback_id,
+            retries=task.request.retries or 0,
+            exception=exception,
+            exception_type=exception_type,
+            output=output,
+            **_worker_fields(task.request),
+        )
+    )
+
+
+def _runs_again(task: "Task", reject: Any) -> bool:
+    """Whether a ``Reject`` puts its still-unacknowledged message back."""
+    return (
+        bool(getattr(reject, "requeue", False))
+        and bool(task.acks_late)
+        and getattr(task.request, "is_eager", False) is not True
     )
 
 
@@ -941,7 +1096,8 @@ def on_worker_ready(sender: Any, **_: Any) -> None:
         )
 
         if _transport is not None:
-            _transport.publish(event)
+            if not _publish_once(_transport, event):
+                return
             logger.info(
                 "Worker ready event sent to transport: %s:%d (%d tasks)",
                 hostname,
@@ -981,7 +1137,8 @@ def on_worker_shutdown(sender: Any = None, sig: int | None = None, **_: Any) -> 
         )
 
         if _transport is not None:
-            _transport.publish(event)
+            if not _publish_once(_transport, event):
+                return
             logger.info("Worker shutdown event sent to transport: %s:%d", hostname, pid)
         else:
             logger.warning(

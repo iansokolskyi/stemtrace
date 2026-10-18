@@ -4,6 +4,7 @@ from enum import Enum, Flag, IntEnum, IntFlag
 
 import pytest
 
+from stemtrace.library import scrubbing
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     FILTERED,
@@ -285,6 +286,93 @@ class TestDefaultSensitiveKeys:
         data = {key: "sensitive_value"}
         result = scrub_dict(data)
         assert result[key] == FILTERED
+
+
+PATTERN_CASES = ["mrn", "MRN", "Mrn"]
+KEYS_FOR_MRN = ["mrn", "MRN", "patient_Mrn"]
+
+
+class TestPatternCase:
+    """Patterns match whatever case the user wrote them in."""
+
+    @pytest.mark.parametrize("key", KEYS_FOR_MRN)
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_scrub_dict_with_sensitive_key_in_any_case_filters(
+        self, pattern: str, key: str
+    ) -> None:
+        result = scrub_dict({key: 1, "name": "alice"}, frozenset({pattern}))
+
+        assert result == {key: FILTERED, "name": "alice"}
+
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_scrub_dict_with_additional_key_in_any_case_filters(
+        self, pattern: str
+    ) -> None:
+        data = dict.fromkeys(KEYS_FOR_MRN, 1) | {"name": "alice"}
+
+        result = scrub_dict(data, additional_keys=frozenset({pattern}))
+
+        assert result == dict.fromkeys(KEYS_FOR_MRN, FILTERED) | {"name": "alice"}
+
+    @pytest.mark.parametrize("pattern", PATTERN_CASES)
+    def test_scrub_args_and_safe_serialize_with_sensitive_key_in_any_case_filter(
+        self, pattern: str
+    ) -> None:
+        value = [{"MRN": 1, "nested": {"mrn": 2}}]
+        expected = [{"MRN": FILTERED, "nested": {"mrn": FILTERED}}]
+
+        assert scrub_args(tuple(value), frozenset({pattern})) == expected
+        assert safe_serialize(value, sensitive_keys=frozenset({pattern})) == expected
+
+    def test_safe_key_in_any_case_still_overrides_pattern_in_any_case(self) -> None:
+        data = {"MRN_PUBLIC": 1, "mrn": 2}
+
+        result = scrub_dict(
+            data,
+            additional_keys=frozenset({"MRN"}),
+            safe_keys=frozenset({"Mrn_Public"}),
+        )
+
+        assert result == {"MRN_PUBLIC": 1, "mrn": FILTERED}
+
+
+class TestPatternsLoweredOncePerCall:
+    """Each entry point lowercases its patterns once, however deep the data."""
+
+    @pytest.fixture
+    def lowercase_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        calls: list[int] = []
+        real = scrubbing._lowercase_patterns
+
+        def counting(
+            sensitive_keys: frozenset[str], additional_keys: frozenset[str] | None
+        ) -> frozenset[str]:
+            calls.append(1)
+            return real(sensitive_keys, additional_keys)
+
+        monkeypatch.setattr(scrubbing, "_lowercase_patterns", counting)
+        return calls
+
+    def test_scrub_dict_with_nested_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        scrub_dict({"a": {"b": {"c": 1}}, "d": [{"e": 1}, {"f": 2}]})
+
+        assert len(lowercase_calls) == 1
+
+    def test_scrub_args_with_many_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        scrub_args(([{"a": i} for i in range(50)],))
+
+        assert len(lowercase_calls) == 1
+
+    def test_safe_serialize_with_many_dicts_lowercases_once(
+        self, lowercase_calls: list[int]
+    ) -> None:
+        safe_serialize([{"a": {"b": i}} for i in range(50)])
+
+        assert len(lowercase_calls) == 1
 
 
 # Dict keys that aren't strings: Celery's after_task_publish gets the body before

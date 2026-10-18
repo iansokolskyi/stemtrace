@@ -30,9 +30,11 @@ class WebSocketManager:
         """Number of active connections."""
         return len(self._connections)
 
-    async def connect(self, websocket: WebSocket) -> None:
-        """Accept and register a WebSocket."""
-        await websocket.accept()
+    async def connect(
+        self, websocket: WebSocket, *, subprotocol: str | None = None
+    ) -> None:
+        """Accept and register a WebSocket, selecting ``subprotocol`` if given."""
+        await websocket.accept(subprotocol=subprotocol)
         self._connections.add(websocket)
         logger.debug("WebSocket connected, total: %d", len(self._connections))
 

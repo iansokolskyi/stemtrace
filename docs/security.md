@@ -4,6 +4,7 @@ What stemtrace does with sensitive task data, and how to keep the dashboard priv
 
 - [Sensitive data scrubbing](#sensitive-data-scrubbing)
 - [Protecting the standalone server](#protecting-the-standalone-server)
+- [API key for scripts and coding agents](#api-key-for-scripts-and-coding-agents)
 - [Protecting an embedded dashboard](#protecting-an-embedded-dashboard)
   - [Custom authentication](#custom-authentication)
   - [Built-in login page](#built-in-login-page)
@@ -24,17 +25,21 @@ Values that aren't dicts, lists or tuples, whether positional arguments or retur
 the password in `login.delay("alice", "hunter2")`), exception messages and tracebacks are shown
 as they are.
 
-Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`); give
-`additional_sensitive_keys` in lowercase. Bytes keys (such as redis-py's `hgetall()` without
-`decode_responses`) are decoded as UTF-8 and matched the same way. A tuple or frozenset key
-matches if any of its parts does, an Enum member by its name or its value, and a Flag value by
-the members it contains (`Perm.READ | Perm.SECRET` matches `secret`). Enum matching includes
+Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`). Bytes
+keys (such as redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and matched
+the same way. A tuple or frozenset key matches if any of its parts does, an Enum member by its
+name or its value, and a Flag value by the members it contains (`Perm.READ | Perm.SECRET` matches
+`secret`). Enum matching includes
 `IntEnum` and `StrEnum` members, so `HTTPStatus.UNAUTHORIZED` is filtered like any key containing
 `auth`. Other keys (ints, `None`, other objects) never match, but dicts inside their values are
 still scrubbed. Task data stemtrace can't capture, such as a value whose `str()` raises or a
 cyclic structure, appears as `[Not captured: <error type>]`.
 
-Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, or turn scrubbing off with
+Add or exempt keys with `additional_sensitive_keys` and `safe_keys`, written in any case: both are
+compared with keys after `str.lower()`. An `additional_sensitive_keys` entry matches any key that
+contains it (`MRN` matches `mrn` and `patient_Mrn`); a `safe_keys` entry exempts only a key, or a
+part of a tuple or frozenset key, equal to it (`MRN` exempts `mrn` and `("MRN", "x")`, not
+`patient_Mrn`). Or turn scrubbing off with
 `scrub_sensitive_data=False` (see [Worker options](configuration.md#worker-options)). Task output
 (`capture_output`) is free text and is not scrubbed; see
 [Task output](configuration.md#task-output-print-and-logging).
@@ -55,6 +60,57 @@ only work within a single process and are lost on restart. Failed sign-ins are t
 and per username or browser; see [Built-in login page](#built-in-login-page)
 for the limits and the proxy setting (`FORWARDED_ALLOW_IPS`, set to your proxies' addresses,
 never `*`) that keeps client IPs correct.
+
+## API key for scripts and coding agents
+
+Give scripts and coding agents read access to the JSON API and the WebSocket with one static
+key, sent as `Authorization: Bearer <key>`:
+
+```bash
+export STEMTRACE_API_KEY="$(openssl rand -hex 32)"
+stemtrace server --broker-url redis://myredis:6379/0   # or --api-key, or init_app(api_key=...)
+
+curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
+  "http://localhost:8000/stemtrace/api/tasks?state=FAILURE&limit=20"
+```
+
+- **Which requests need it.** Every JSON API route except the liveness probe
+  (`/api/health/live`), plus the WebSocket. The UI pages and assets stay as they are. With only
+  a key, the UI shell loads but its data calls get `401`, so enable the login page for browsers.
+- **With the [login page](#built-in-login-page)** (`--login-username`/`--login-password`), a request passes with a
+  session cookie *or* the key. A Bearer header on a UI page is ignored (you still get the login
+  page). Nothing in front of stemtrace (e.g. an auth proxy that forwards its own token) may add
+  an `Authorization: Bearer` header: stemtrace treats it as a wrong key, even next to a valid
+  session, and wrong keys lock out the proxy's IP, login included.
+- **With a custom `auth_dependency`**, a JSON API request needs the key *and* whatever the
+  dependency checks (FastAPI runs every router dependency; one can't waive another), so the
+  dependency mustn't use the `Authorization` header itself (`require_basic_auth` does;
+  `require_api_key`, which reads `X-API-Key`, doesn't). The dependency doesn't cover the
+  WebSocket, as without a key, so the WebSocket needs only the key; the liveness probe needs the
+  dependency's credentials but not the key. Browsers
+  never send the key, so with a key the dashboard stops working for users of the custom auth;
+  enable the login page for them. `require_api_key` is a separate, older helper for embedded
+  apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key described
+  here is the one built into the server.
+- **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
+  redirect. A wrong key is refused even if a valid session cookie comes with it.
+- **Throttling.** Wrong keys count per client IP in the login's failed-attempt throttle, so
+  failed sign-ins and wrong keys from one IP add up: after 5, that IP gets `429` with
+  `Retry-After` (30 seconds, doubling up to 15 minutes), even with the right key. A valid key
+  doesn't clear the count. Requests without a client address (a Unix socket) aren't throttled.
+  Counts are per process.
+- **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
+  so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
+  (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes
+  only as a subprotocol, without `stemtrace` next to it, the connection is refused, since a
+  browser would drop one accepted without a subprotocol it offered. The key is never
+  accepted as a query parameter, because uvicorn's access log prints query strings.
+- **The key** must be at least 16 visible ASCII characters (`openssl rand -hex 32` makes a good
+  one). Surrounding whitespace is dropped, and a blank value means no key. stemtrace never logs
+  it; `stemtrace server` prints `API key: set`. Prefer the env var to `--api-key`, since
+  command-line flags show up in process lists. Changing the key needs a restart.
+- **For agents:** [`skills/stemtrace-api/SKILL.md`](../skills/stemtrace-api/SKILL.md) teaches a
+  coding agent to answer "what failed in the last hour and why" with `curl` and `jq`.
 
 ## Protecting an embedded dashboard
 
@@ -97,7 +153,9 @@ a load balancer), set `login_secret` (or the `STEMTRACE_LOGIN_SECRET` env var) t
 random value everywhere, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 Without it, each process signs sessions with its own random secret, and users get logged out
 at random. stemtrace logs a warning at startup in that case, and the login page and UI explain
-the problem when a session signed by another process is rejected.
+the problem when a session signed by another process is rejected. That explanation is also
+visible to anyone who sends a forged cookie, so without `login_secret` a stranger can learn that
+none is configured (a configuration fact, not a credential).
 
 Failed sign-ins are throttled in memory, per client IP and per username or browser:
 

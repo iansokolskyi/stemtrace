@@ -18,6 +18,8 @@ class TaskState(str, Enum):
     REVOKED = "REVOKED"
     REJECTED = "REJECTED"
     RETRY = "RETRY"
+    # The task raised Celery's Ignore (not a replace): it ended without a result.
+    IGNORED = "IGNORED"
 
 
 class WorkerEventType(str, Enum):
@@ -75,13 +77,16 @@ class TaskEvent(BaseModel):
         args: Positional arguments passed to the task (scrubbed).
         kwargs: Keyword arguments passed to the task (scrubbed).
         result: Return value of the task (SUCCESS state only).
-        exception: Exception message (FAILURE/RETRY states).
-        exception_type: Exception class (FAILURE/RETRY states): ``module.Class``,
-            or just ``Class`` for builtins (e.g. ``ValueError``). For a retry,
-            the exception that caused it.
+        exception: Exception message (FAILURE/RETRY states), or the reason a
+            task gave ``Reject`` (REJECTED).
+        exception_type: Exception class (FAILURE/RETRY states, and REJECTED
+            when the reason is an exception): ``module.Class``, or just
+            ``Class`` for builtins (e.g. ``ValueError``). For a retry, the
+            exception that caused it.
         traceback: Full traceback string (FAILURE/RETRY states).
         output: What the attempt printed and logged, in order (SUCCESS,
-            FAILURE and RETRY events, when output capture is enabled).
+            FAILURE, RETRY, IGNORED and REJECTED events, when output capture
+            is enabled).
         hostname: Nodename of the worker that handled the task (``name@host``,
             as in ``WorkerEvent.hostname``). Worker events only.
         queue: Queue the task message was sent to, when Celery published it

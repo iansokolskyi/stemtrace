@@ -20,6 +20,7 @@ import time
 
 import redis
 from celery import Celery, Task
+from celery.exceptions import Ignore, Reject
 from celery.signals import setup_logging, task_postrun
 from celery.utils.log import get_task_logger
 
@@ -152,6 +153,40 @@ def soft_limited() -> str:
         output_capture._record_being_emitted = original
     print("the soft time limit was swallowed")
     return "finished"
+
+
+@app.task(name="output_test.ignored")
+def ignored() -> None:
+    """Print, then end through Celery's Ignore (no task_failure)."""
+    print("about to ignore")
+    raise Ignore()
+
+
+@app.task(name="output_test.rejected")
+def rejected() -> None:
+    """End through Reject without requeue: the message is dropped."""
+    raise Reject("bad input", requeue=False)
+
+
+@app.task(name="output_test.rejected_requeue_early_ack")
+def rejected_requeue_early_ack() -> None:
+    """Reject with requeue, but the message was acknowledged before the run."""
+    raise Reject("busy", requeue=True)
+
+
+@app.task(name="output_test.rejected_once", bind=True, acks_late=True)
+def rejected_once(self: Task) -> str:
+    """Reject with requeue on the first delivery; succeed on the next one."""
+    marker = f"output_test:rejected_once:{self.request.id}"
+    if redis.from_url(REDIS_URL).set(marker, "1", nx=True, ex=300):
+        raise Reject("try again", requeue=True)
+    return "second delivery"
+
+
+@app.task(name="output_test.replaced", bind=True)
+def replaced(self: Task) -> None:
+    """Replace this task with ``noisy``, which takes over its task ID."""
+    self.replace(noisy.si())
 
 
 @app.task(name="output_test.sleepy")

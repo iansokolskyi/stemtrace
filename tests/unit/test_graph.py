@@ -3,6 +3,7 @@
 from collections.abc import ItemsView, Iterator, ValuesView
 from datetime import datetime, timedelta, timezone
 from itertools import permutations
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -3474,3 +3475,57 @@ class TestDerivedFactsFollowTheirInputs:
 
         assert graph._chord_by_callback == {}
         assert graph._groups == {}
+
+
+def _timed(task_id: str, state: TaskState, seconds: float, **kwargs: Any) -> TaskEvent:
+    return TaskEvent(
+        task_id=task_id,
+        name="myapp.tasks.process",
+        state=state,
+        timestamp=_BASE_TIME + timedelta(seconds=seconds),
+        **kwargs,
+    )
+
+
+class TestIgnoredState:
+    """IGNORED (a task that raised Celery's Ignore) is a terminal state."""
+
+    def test_add_event_ignored_ends_task_in_any_order(self) -> None:
+        events = [
+            _timed("t", TaskState.PENDING, 0),
+            _timed("t", TaskState.STARTED, 1),
+            _timed("t", TaskState.IGNORED, 2),
+        ]
+        for order in permutations(events):
+            assert _build(*order).nodes["t"].state == TaskState.IGNORED
+
+    @pytest.mark.parametrize(
+        "other",
+        [TaskState.SUCCESS, TaskState.FAILURE, TaskState.REVOKED, TaskState.REJECTED],
+    )
+    def test_add_event_other_terminal_beats_ignored_whatever_the_time(
+        self, other: TaskState
+    ) -> None:
+        """A replaced task's ID is reused by its replacement, whose own outcome
+        must win over an IGNORED the replaced task might report."""
+        events = [_timed("t", TaskState.IGNORED, 10), _timed("t", other, 5)]
+        for order in permutations(events):
+            assert _build(*order).nodes["t"].state == other
+
+    @pytest.mark.parametrize(
+        ("states", "expected"),
+        [
+            ((TaskState.SUCCESS, TaskState.IGNORED), TaskState.IGNORED),
+            ((TaskState.REVOKED, TaskState.IGNORED), TaskState.REVOKED),
+            ((TaskState.FAILURE, TaskState.IGNORED), TaskState.FAILURE),
+            ((TaskState.STARTED, TaskState.IGNORED), TaskState.STARTED),
+        ],
+    )
+    def test_add_event_group_with_ignored_member_ranks_it_lowest(
+        self, states: tuple[TaskState, TaskState], expected: TaskState
+    ) -> None:
+        graph = _build(
+            *(_timed(f"m{i}", state, i, group_id="g") for i, state in enumerate(states))
+        )
+
+        assert graph.nodes["group:g"].state == expected

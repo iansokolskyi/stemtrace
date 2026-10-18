@@ -158,7 +158,8 @@ function TaskDetailPage() {
 function EventRow({ event }: { event: TaskEvent }) {
   const [expanded, setExpanded] = useState(false)
   const hasTraceback = event.state === 'FAILURE' || event.state === 'RETRY'
-  const showError = hasTraceback && event.exception
+  // A REJECTED event carries Reject's reason as its exception, without a traceback.
+  const showError = (hasTraceback || event.state === 'REJECTED') && event.exception
 
   const rowContent = (
     <>

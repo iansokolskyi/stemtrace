@@ -222,6 +222,45 @@ class TestWorkerEventHandling:
             assert workers[0].registered_tasks == ["tasks.add", "tasks.multiply"]
             assert workers[0].status == WorkerStatus.ONLINE
 
+    @pytest.mark.parametrize(
+        ("hostname", "refreshed"), [("celery@w1", True), (None, False)]
+    )
+    def test_task_event_refreshes_its_worker_last_seen(
+        self, store: GraphStore, hostname: str | None, refreshed: bool
+    ) -> None:
+        """A busy worker's task events keep it online; an older worker's
+        events (no hostname) change nothing."""
+        worker_registry = WorkerRegistry()
+        started = datetime.now(timezone.utc) - timedelta(minutes=10)
+        worker_registry.register_worker(
+            "celery@w1", 12345, ["tasks.add"], event_timestamp=started
+        )
+        recent = datetime.now(timezone.utc)
+        fake = FakeTransport(
+            [
+                TaskEvent(
+                    task_id="t1",
+                    name="tasks.add",
+                    state=TaskState.STARTED,
+                    timestamp=recent,
+                    hostname=hostname,
+                )
+            ]
+        )
+
+        with patch("stemtrace.server.consumer.get_transport", return_value=fake):
+            consumer = EventConsumer(
+                "memory://", store, worker_registry=worker_registry
+            )
+            consumer.start()
+            _wait_until(lambda: store.get_node("t1") is not None)
+            fake.stop()
+            consumer.stop(timeout=1.0)
+
+        worker = worker_registry.get_worker("celery@w1", 12345)
+        assert worker is not None
+        assert worker.last_seen == (recent if refreshed else started)
+
     def test_worker_shutdown_marks_offline(self, store: GraphStore) -> None:
         """Worker shutdown event should mark worker offline."""
         worker_registry = WorkerRegistry()
