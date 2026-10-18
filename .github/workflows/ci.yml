@@ -44,6 +44,9 @@ jobs:
       - name: Check import contracts
         run: uv run --locked --no-build lint-imports
 
+      - name: Check docstring length
+        run: uv run --locked --no-build python scripts/check_docstring_length.py
+
   type-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
