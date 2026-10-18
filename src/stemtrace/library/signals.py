@@ -1,7 +1,9 @@
 """Celery signal handlers for task lifecycle events."""
 
+import atexit
 import inspect
 import logging
+import sys
 import threading
 import time
 import traceback as tb_module
@@ -100,6 +102,12 @@ _MAX_DOCSTRING_CHARS = 4000
 # Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
 # with no reason and no einfo; mirror the reason Celery itself records.
 _CANCELLED_RETRY_REASON = "cancelled by Celery"
+
+# RETRY publishes handed to their own greenlet (see _defer_publish), and how
+# long the interpreter's exit waits for them.
+_deferred_publishes: list[Any] = []
+_DEFERRED_FLUSH_TIMEOUT_S = 2.0
+_flush_at_exit_registered = False
 
 
 def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
@@ -674,25 +682,81 @@ def _on_task_retry(
     chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
     # Use current retry count (not +1) so RETRY groups with the STARTED that failed
     # Timeline: STARTED(0) → RETRY(0) → STARTED(1) → RETRY(1) → ...
-    _publish_event(
-        TaskEvent(
-            task_id=request.id,
-            name=sender.name,
-            state=TaskState.RETRY,
-            timestamp=datetime.now(timezone.utc),
-            parent_id=getattr(request, "parent_id", None),
-            root_id=getattr(request, "root_id", None),
-            group_id=getattr(request, "group", None),
-            chord_id=chord_id,
-            chord_callback_id=chord_callback_id,
-            retries=request.retries or 0,
-            exception=exc_message,
-            exception_type=_exception_type(_retry_cause(reason)),
-            traceback=_format_traceback(einfo),
-            output=output,
-            **_worker_fields(request),
-        )
+    event = TaskEvent(
+        task_id=request.id,
+        name=sender.name,
+        state=TaskState.RETRY,
+        timestamp=datetime.now(timezone.utc),
+        parent_id=getattr(request, "parent_id", None),
+        root_id=getattr(request, "root_id", None),
+        group_id=getattr(request, "group", None),
+        chord_id=chord_id,
+        chord_callback_id=chord_callback_id,
+        retries=request.retries or 0,
+        exception=exc_message,
+        exception_type=_exception_type(_retry_cause(reason)),
+        traceback=_format_traceback(einfo),
+        output=output,
+        **_worker_fields(request),
     )
+    spawn = _green_spawn() if reason is None and einfo is None else None
+    if spawn is None:
+        _publish_event(event)
+    else:
+        _defer_publish(spawn, event)
+
+
+def _green_spawn() -> Callable[..., Any] | None:
+    """``gevent.spawn`` or ``eventlet.spawn`` if sockets are green, else None.
+
+    Read through ``sys.modules``: nothing is imported unless the worker
+    already monkey-patched (Celery does, before importing the app).
+    """
+    monkey = sys.modules.get("gevent.monkey")
+    if monkey is not None and monkey.is_module_patched("socket"):
+        return sys.modules["gevent"].spawn  # type: ignore[no-any-return]  # untyped
+    patcher = sys.modules.get("eventlet.patcher")
+    if patcher is not None and patcher.is_monkey_patched("socket"):
+        return sys.modules["eventlet"].spawn  # type: ignore[no-any-return]  # untyped
+    return None
+
+
+def _defer_publish(spawn: Callable[..., Any], event: TaskEvent) -> None:
+    """Publish ``event`` from a greenlet of its own, after the caller returns.
+
+    For the RETRY Celery sends when it cancels a task from its cold-shutdown
+    signal handler (celery 5.6.3 worker/request.py ``_announce_cancelled``
+    sends task_retry with no reason and no einfo). CPython runs that handler
+    in whatever greenlet is current, possibly the cancelled task's, which
+    gevent's ``terminate_job`` has just scheduled to kill
+    (concurrency/gevent.py: ``gevent.kill`` runs ``greenlet.throw`` from the
+    hub's callback queue). A publish waits on its socket, which yields to the
+    hub; the kill then unwinds the handler before Celery sets
+    ``should_terminate`` and the worker keeps running. Spawning only
+    schedules the new greenlet and never switches, so the handler finishes
+    first; the RETRY goes out when the hub next runs, at the latest when
+    the interpreter exits (``_flush_deferred_publishes``).
+    """
+    global _flush_at_exit_registered
+    _deferred_publishes[:] = [g for g in _deferred_publishes if not g.dead]
+    _deferred_publishes.append(spawn(_publish_event, event))
+    if not _flush_at_exit_registered:
+        _flush_at_exit_registered = True
+        atexit.register(_flush_deferred_publishes)
+
+
+def _flush_deferred_publishes(timeout_s: float = _DEFERRED_FLUSH_TIMEOUT_S) -> None:
+    """Let deferred publishes finish, for at most ``timeout_s`` seconds.
+
+    A cold shutdown sends no ``worker_shutdown`` (celery 5.6.3
+    worker/worker.py ``WorkController.terminate``), so this runs at exit.
+    ``time.sleep`` is green under monkey-patching: waiting lets the hub run
+    them.
+    """
+    deadline = time.monotonic() + timeout_s
+    while any(not g.dead for g in _deferred_publishes) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    _deferred_publishes.clear()
 
 
 def _on_task_revoked(

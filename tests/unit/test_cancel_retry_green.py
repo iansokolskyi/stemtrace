@@ -37,8 +37,10 @@ switches = [0]
 
 
 def ticker():
+    # Runnable on every pass of the hub: any switch away from the handler
+    # lets it count.
     while True:
-        {sleep}(0.001)
+        {sleep}(0)
         switches[0] += 1
 
 
@@ -122,8 +124,8 @@ _EVENTLET = {
 }
 
 
-def _run(variant: dict[str, str]) -> dict[str, object]:
-    script = textwrap.dedent(_SCRIPT.format(**variant))
+def _run(variant: dict[str, str], template: str = _SCRIPT) -> dict[str, object]:
+    script = textwrap.dedent(template.format(**variant))
     try:
         result = subprocess.run(
             [sys.executable, "-W", "ignore", "-c", script],
@@ -156,3 +158,66 @@ def test_cancel_retry_never_yields_in_the_signal_handler(
     assert out["switched_in_handler"] is False
     # Published later, by a greenlet of its own.
     assert out["published"] == ["busy-1"]
+
+
+_EXIT_SCRIPT = """
+{patch}
+import atexit, json
+from celery.app.task import Context
+from celery.exceptions import Retry
+import stemtrace.library.signals as sig
+from stemtrace.library.config import StemtraceConfig, set_config
+
+set_config(StemtraceConfig(transport_url="memory://"))
+
+
+class YieldingTransport:
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event):
+        {sleep}(0)
+        self.events.append(event.task_id)
+
+
+transport = YieldingTransport()
+sig.connect_signals(transport)
+# Registered first, so it runs after stemtrace's own exit hook (LIFO).
+atexit.register(lambda: print(json.dumps({{"at_exit": transport.events,
+                                          "inline": inline}})))
+
+
+class Task:
+    name = "app.busy"
+
+
+def retry(task_id, reason):
+    request = Context(id=task_id, task="app.busy", retries=0,
+                      hostname="celery@w1", delivery_info={{}})
+    task = Task()
+    task.request = request
+    sig._on_task_retry(sender=task, request=request, reason=reason, einfo=None)
+
+
+# A task's own retry publishes inline, before the call returns.
+retry("own-retry", Retry("Retry in 5s"))
+inline = list(transport.events)
+# Celery's cancel path; then the interpreter exits without yielding again.
+retry("cancelled", None)
+"""
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param(_GEVENT, id="gevent", marks=NEEDS_GEVENT),
+        pytest.param(_EVENTLET, id="eventlet", marks=NEEDS_EVENTLET),
+    ],
+)
+def test_cancel_retry_is_published_at_exit_and_other_retries_inline(
+    variant: dict[str, str],
+) -> None:
+    out = _run(variant, _EXIT_SCRIPT)
+
+    assert out["inline"] == ["own-retry"]
+    assert out["at_exit"] == ["own-retry", "cancelled"]
