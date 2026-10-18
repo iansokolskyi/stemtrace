@@ -69,6 +69,17 @@ def _is_ambiguous_path(path: str, raw_path: str) -> bool:
     )
 
 
+def api_unauthenticated_response(
+    *, secret_mismatch: bool, api_key_configured: bool
+) -> JSONResponse:
+    """The JSON 401 an API request without a valid session gets."""
+    body = {"detail": "Authentication required"}
+    if secret_mismatch:
+        body["reason"] = SESSION_SECRET_MISMATCH_REASON
+    headers = {"WWW-Authenticate": "Bearer"} if api_key_configured else None
+    return JSONResponse(body, status_code=401, headers=headers)
+
+
 def _unauthenticated_response(
     request: Request,
     path: str,
@@ -86,11 +97,9 @@ def _unauthenticated_response(
     ``login_path`` are route paths; the browser gets them with the root_path.
     """
     if path.startswith(api_prefix):
-        body = {"detail": "Authentication required"}
-        if secret_mismatch:
-            body["reason"] = SESSION_SECRET_MISMATCH_REASON
-        headers = {"WWW-Authenticate": "Bearer"} if api_key_configured else None
-        return JSONResponse(body, status_code=401, headers=headers)
+        return api_unauthenticated_response(
+            secret_mismatch=secret_mismatch, api_key_configured=api_key_configured
+        )
 
     next_target = browser_path(request.scope, path)
     if request.url.query:

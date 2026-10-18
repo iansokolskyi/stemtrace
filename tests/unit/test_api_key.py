@@ -8,6 +8,7 @@ import pytest
 
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server.fastapi.api_key import (
+    API_KEY_BUSY_RETRY_AFTER_S,
     API_KEY_ENV_VAR,
     API_KEY_MIN_LENGTH,
     ApiKeyGuard,
@@ -218,6 +219,46 @@ def test_guard_locks_ip_after_max_failures_even_for_right_key(
 
     clock.now += LOGIN_LOCKOUT_BASE_S
     assert guard.check(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+
+
+def test_guard_peek_never_counts_a_failure(guard: ApiKeyGuard) -> None:
+    results = [guard.peek("wrong", "1.2.3.4") for _ in range(LOGIN_IP_MAX_FAILURES * 2)]
+
+    assert results == [KeyCheck(KeyStatus.INVALID)] * len(results)
+    assert guard.peek(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+
+
+def test_guard_record_failure_returns_the_wait_once_it_locks_the_ip(
+    guard: ApiKeyGuard,
+) -> None:
+    waits = [guard.record_failure("1.2.3.4") for _ in range(LOGIN_IP_MAX_FAILURES)]
+
+    assert waits == [0] * (LOGIN_IP_MAX_FAILURES - 1) + [int(LOGIN_LOCKOUT_BASE_S)]
+
+
+def test_guard_wrong_keys_in_flight_cover_the_failures_left_without_comparing(
+    guard: ApiKeyGuard,
+) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES):
+        assert guard.peek("wrong", "1.2.3.4").status is KeyStatus.INVALID
+        guard.hold("1.2.3.4")
+
+    busy = KeyCheck(KeyStatus.THROTTLED, API_KEY_BUSY_RETRY_AFTER_S)
+    # A right key is answered like a wrong one: nothing was compared.
+    assert guard.peek(KEY, "1.2.3.4") == busy
+    assert guard.peek("wrong", "1.2.3.4") == busy
+    assert guard.peek(KEY, "5.6.7.8") == KeyCheck(KeyStatus.VALID)
+
+    guard.release("1.2.3.4")
+    assert guard.peek(KEY, "1.2.3.4") == KeyCheck(KeyStatus.VALID)
+
+
+def test_guard_without_client_address_holds_nothing(guard: ApiKeyGuard) -> None:
+    for _ in range(LOGIN_IP_MAX_FAILURES * 2):
+        guard.hold(None)
+
+    assert guard.peek(KEY, None) == KeyCheck(KeyStatus.VALID)
+    guard.release(None)
 
 
 def test_guard_right_key_does_not_clear_ip_failures(guard: ApiKeyGuard) -> None:
