@@ -86,23 +86,31 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   request in. A request whose Bearer token is the key skips the dependency. Every other request
   goes to the dependency, which works as it does without a key (its sub-dependencies,
   `dependency_overrides` and `yield` included), so it can read the `Authorization` header
-  itself, for example for OAuth2 Bearer tokens or `require_basic_auth`. The liveness probe also
-  takes the key or the dependency's credentials. The dependency doesn't cover the WebSocket, so
-  the WebSocket needs the key: browsers that pass the dependency get the dashboard's data but
-  not its live updates; enable the login page for those. `require_api_key` is a separate, older
-  helper for embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key));
-  the key described here is the one built into the server.
+  itself, for example for OAuth2 Bearer tokens or `require_basic_auth`. The OpenAPI schema (and
+  Swagger UI) keeps the dependency's security schemes. The liveness probe also takes the key or
+  the dependency's credentials. The dependency doesn't cover the WebSocket, so the WebSocket
+  needs the key: browsers that pass the dependency get the dashboard's data but not its live
+  updates; enable the login page for those. `require_api_key` is a separate, older helper for
+  embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key
+  described here is the one built into the server.
 - **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
   redirect. A wrong key is refused even if a valid session cookie comes with it.
 - **Throttling.** Wrong keys count per client IP in the login's failed-attempt throttle, so
-  failed sign-ins and wrong keys from one IP add up: after 5, that IP gets `429` with
-  `Retry-After` (30 seconds, doubling up to 15 minutes), even with the right key. A valid key
-  doesn't clear the count. Requests without a client address (a Unix socket) aren't throttled.
-  Counts are per process. With a custom `auth_dependency`, a Bearer token counts as a wrong key
-  only if it has the key's length and the dependency refuses the request too (`401` or `403`),
-  so the app's own tokens don't lock its users out. While an IP is locked out, Bearer tokens of
-  the key's length get `429`, even ones the dependency would accept; other requests still go to
-  the dependency.
+  failed sign-ins and wrong keys from one IP add up: the fifth gets `429` with `Retry-After`
+  (30 seconds, doubling up to 15 minutes), and so does every later request with a Bearer token,
+  even the right key. A valid key doesn't clear the count. Requests without a client address (a
+  Unix socket) aren't throttled. Counts are per process.
+- **Throttling with a custom `auth_dependency`.** A Bearer token counts as a wrong key only if
+  it has the key's length and the dependency refuses the request with `401`, `403` or `422`, so
+  the app's own tokens don't lock its users out. An answer of `5xx` or `429`, or a request the
+  dependency lets in, never counts. The fifth refusal is answered with the lockout's `429`
+  instead of the dependency's answer. A token of the key's length is in flight until its
+  response starts, and an IP whose tokens in flight already cover the failures it has left gets
+  `429` with `Retry-After: 1` without any key comparison, so a burst can't try more keys than
+  the lockout allows. While an IP is locked out or has that many in flight, Bearer tokens of
+  the key's length get `429`, even the right key and tokens the dependency would accept (an
+  app whose own tokens are exactly as long as the key sees this with five such requests at
+  once); other requests still go to the dependency.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
   (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes

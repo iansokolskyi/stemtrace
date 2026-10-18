@@ -21,7 +21,10 @@ from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import stemtrace
-from stemtrace.server.fastapi.api_key import API_KEY_ENV_VAR
+from stemtrace.server.fastapi.api_key import (
+    API_KEY_BUSY_RETRY_AFTER_S,
+    API_KEY_ENV_VAR,
+)
 from stemtrace.server.fastapi.login_throttle import LOGIN_IP_MAX_FAILURES
 
 KEY = "0123456789abcdef0123456789abcdef"
@@ -196,6 +199,66 @@ async def test_wrong_keys_in_flight_at_once_never_test_more_keys_than_a_lockout_
     throttle = extension.auth_throttle
     assert throttle is not None
     assert throttle._ip_in_flight == {}
+
+
+def test_a_locked_out_ip_gets_429_even_for_a_token_the_dependency_would_accept() -> (
+    None
+):
+    """Documented: a locked-out client's tokens of the key's length aren't judged."""
+    accepted = "a" * len(KEY)
+
+    async def accepts_one_token(request: Request) -> None:
+        if request.headers.get("authorization") != f"Bearer {accepted}":
+            raise HTTPException(status_code=401, detail="no")
+
+    app, _ = _build(Depends(accepts_one_token))
+    own = {"Authorization": f"Bearer {accepted}"}
+
+    with TestClient(app) as client:
+        assert client.get(API, headers=own).status_code == 200
+        for i in range(LOGIN_IP_MAX_FAILURES):
+            client.get(API, headers=_wrong_key(i))
+        locked = client.get(API, headers=own)
+        other = client.get(API, headers={"Authorization": "Bearer short"})
+
+    assert locked.status_code == 429
+    assert other.status_code == 401
+
+
+async def test_tokens_in_flight_cover_the_failures_left_for_the_right_key_too() -> None:
+    """The dependency admits, so nothing fails; the slots are held until the response."""
+    entered = 0
+    release = asyncio.Event()
+
+    async def slow_admit() -> None:
+        nonlocal entered
+        entered += 1
+        await release.wait()
+
+    app, _ = _build(Depends(slow_admit))
+    transport = httpx.ASGITransport(app=app, client=("203.0.113.9", 4321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        tasks = [
+            asyncio.create_task(client.get(API, headers=_wrong_key(i)))
+            for i in range(LOGIN_IP_MAX_FAILURES)
+        ]
+        for _ in range(10_000):
+            if entered == LOGIN_IP_MAX_FAILURES:
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the requests never reached the dependency")
+        sixth = await client.get(API, headers=_wrong_key(99))
+        right_key = await client.get(API, headers=BEARER)
+        release.set()
+        responses = await asyncio.gather(*tasks)
+        after = await client.get(API, headers=BEARER)
+
+    busy = str(API_KEY_BUSY_RETRY_AFTER_S)
+    assert (sixth.status_code, sixth.headers["retry-after"]) == (429, busy)
+    assert (right_key.status_code, right_key.headers["retry-after"]) == (429, busy)
+    assert [response.status_code for response in responses] == [200] * entered
+    assert after.status_code == 200
 
 
 async def test_a_cancelled_request_frees_its_in_flight_slot() -> None:
