@@ -150,12 +150,10 @@ def worker(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Stoppable
         run.close()
 
 
-def _start_sleepy(worker: StoppableWorker, seconds: float) -> str:
-    task_id = str(
-        worker.sender.send_task(
-            "output_test.sleepy", args=[seconds], queue=worker.queue
-        ).id
-    )
+def _start_sleepy(
+    worker: StoppableWorker, seconds: float, name: str = "output_test.sleepy"
+) -> str:
+    task_id = str(worker.sender.send_task(name, args=[seconds], queue=worker.queue).id)
     worker.wait("STARTED", lambda es: TaskState.STARTED in _task_states(es, task_id))
     return task_id
 
@@ -210,6 +208,11 @@ def test_cold_stop_publishes_worker_terminating(worker: StoppableWorker) -> None
     falls back to a warm stop: the task finishes, then worker_shutdown.
     """
     task_id = _start_sleepy(worker, 30 if worker.pool == "prefork" else 4)
+    late_id = (
+        _start_sleepy(worker, 30, "output_test.sleepy_late")
+        if worker.pool == "prefork"
+        else None
+    )
 
     worker.proc.send_signal(signal.SIGQUIT)
     worker.proc.wait(timeout=TIMEOUT_SECONDS)
@@ -230,6 +233,13 @@ def test_cold_stop_publishes_worker_terminating(worker: StoppableWorker) -> None
     assert _cancelled(entries, task_id), log
     assert "SUCCESS:True" not in kinds, log
     assert "worker_shutdown" not in kinds, log
+    # Celery 5.6+ cancels an acks_late task without a RETRY (it is requeued):
+    # only worker_terminating says it was cut short.
+    assert late_id is not None
+    if tuple(int(p) for p in celery.__version__.split(".")[:2]) >= (5, 6):
+        late_states = set(_task_states(entries, late_id))
+        assert TaskState.STARTED in late_states, log
+        assert late_states <= {TaskState.RECEIVED, TaskState.STARTED}, log
 
 
 @needs_celery_55
@@ -243,7 +253,10 @@ def test_cold_stop_after_warm_stop_ends_with_worker_shutdown(
     task_id = _start_sleepy(worker, 30)
 
     worker.proc.send_signal(signal.SIGTERM)
-    time.sleep(1)
+    # SIGTERM only sets should_stop; the warm stop starts when the event loop
+    # next checks it (after its broker poll, about a second on Redis). A
+    # SIGQUIT before that is a plain cold stop (worker_terminating).
+    time.sleep(3)
     worker.proc.send_signal(signal.SIGQUIT)
     worker.proc.wait(timeout=TIMEOUT_SECONDS)
 

@@ -159,3 +159,10 @@ def sleepy(seconds: float) -> str:
     """Run for ``seconds``, long enough to stop the worker meanwhile."""
     time.sleep(seconds)
     return "slept"
+
+
+@app.task(name="output_test.sleepy_late", acks_late=True)
+def sleepy_late(seconds: float) -> str:
+    """Like ``sleepy``, acknowledged only after it finishes (redelivered if lost)."""
+    time.sleep(seconds)
+    return "slept"

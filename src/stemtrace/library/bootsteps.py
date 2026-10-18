@@ -198,8 +198,9 @@ class WorkerTerminatingStep(bootsteps.StartStopStep):  # type: ignore[misc]
     ``terminate`` there and ``stop`` on a warm stop (``Blueprint.stop``); the
     inherited ``stop`` does nothing. It says the process is ending, not
     which tasks were killed: on Celery 5.5+ the cold-shutdown handler cancels
-    running tasks first, and each gets a RETRY ("cancelled by Celery").
-    A cold stop that escalates a warm one (SIGTERM then SIGQUIT, Ctrl+C twice)
+    running tasks first, and each gets a RETRY ("cancelled by Celery") except,
+    on 5.6+, ``acks_late`` ones (requeued, no event). With a task running, a
+    cold stop that escalates a warm one (SIGTERM then SIGQUIT, Ctrl+C twice)
     or fails in Celery (gevent with SIGQUIT, celery 5.6.3) ends with
     ``worker_shutdown`` instead. Requiring the Pool orders this step after it
     at start, so before it on terminate.
