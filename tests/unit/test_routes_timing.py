@@ -64,3 +64,41 @@ def test_graph_nodes_split_duration_and_group_has_none(client: TestClient) -> No
     assert _timing(nodes["done"]) == (15000, 1000, 3000, 4000)
     assert group["node_type"] == "GROUP"
     assert _timing(group)[1:] == (None, None, None)
+
+
+@pytest.fixture
+def eta_client() -> TestClient:
+    """A store with one task sent with countdown=3 and one sent without."""
+    store = GraphStore()
+    eta = T0 + timedelta(seconds=3)
+    for task_id, state, at, with_eta in [
+        ("later", TaskState.PENDING, 0, True),
+        ("later", TaskState.STARTED, 3.5, True),
+        ("later", TaskState.SUCCESS, 4, True),
+        ("now", TaskState.PENDING, 0, False),
+        ("now", TaskState.STARTED, 1, False),
+    ]:
+        store.add_event(
+            TaskEvent(
+                task_id=task_id,
+                name="app.encode",
+                state=state,
+                timestamp=T0 + timedelta(seconds=at),
+                eta=eta if with_eta else None,
+            )
+        )
+    app = FastAPI()
+    app.include_router(create_api_router(store))
+    return TestClient(app)
+
+
+def test_eta_on_task_graph_node_and_event_responses(eta_client: TestClient) -> None:
+    tasks = {t["task_id"]: t for t in eta_client.get("/api/tasks").json()["tasks"]}
+    detail = eta_client.get("/api/tasks/later").json()["task"]
+    node = eta_client.get("/api/graphs/later").json()["nodes"]["later"]
+
+    for payload in (tasks["later"], detail, node):
+        assert payload["eta"] == "2026-10-17T00:00:03Z"
+        assert payload["queue_wait_ms"] == 500
+    assert [e["eta"] for e in detail["events"]] == ["2026-10-17T00:00:03Z"] * 3
+    assert (tasks["now"]["eta"], tasks["now"]["queue_wait_ms"]) == (None, 1000)

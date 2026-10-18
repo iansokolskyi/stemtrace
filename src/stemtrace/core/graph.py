@@ -117,6 +117,9 @@ def _with_aware_timestamp(event: TaskEvent) -> TaskEvent:
     )
 
 
+_PRE_START = (TaskState.PENDING, TaskState.RECEIVED)
+
+
 def _is_pre_start(event: TaskEvent) -> bool:
     """Whether the event belongs before the first run of the task.
 
@@ -124,7 +127,12 @@ def _is_pre_start(event: TaskEvent) -> bool:
     after the worker already started or even finished the task, so its
     timestamp can't place it.
     """
-    return event.retries == 0 and event.state in (TaskState.PENDING, TaskState.RECEIVED)
+    return event.retries == 0 and event.state in _PRE_START
+
+
+def _first_eta(events: list[TaskEvent]) -> datetime | None:
+    """The ETA the first of ``events`` that carries one reports (they share one message)."""
+    return next((e.eta for e in events if e.eta is not None), None)
 
 
 def _digest(event: TaskEvent) -> bytes:
@@ -292,26 +300,61 @@ class TaskNode(BaseModel):
         """Routing key of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.routing_key)
 
+    def _own_first_attempt(self) -> list[TaskEvent]:
+        """The task's own first-attempt events, without a ``task.replace()`` replacement's.
+
+        The replacement reuses the ID with ``retries`` 0 but reports the task, or a
+        task below it, as parent; the graph decides the task's own parent regardless
+        of clocks (``reported_parent_id``). Without parent IDs (protocol 1, or a
+        root task), the task's earliest events stand for its own.
+        """
+        first = [e for e in self.events if e.retries == 0]
+        if all(e.parent_id is None for e in first):
+            # Protocol 1 sends no parent_id (celery 5.6.3 app/amqp.py as_task_v1). A
+            # replacement is only sent while the task runs, so the earliest event of
+            # each state is the task's own if the clocks agree. Within a run, the
+            # worker publishes RECEIVED before STARTED (bootsteps._wrap_strategy runs
+            # before the strategy), so a RECEIVED after the first STARTED is a later
+            # run's: the replacement's or a redelivery's (docs/features.md).
+            earliest = {
+                state: min(events, key=lambda e: e.timestamp)
+                for state in (TaskState.STARTED, *_PRE_START)
+                if (events := [e for e in first if e.state == state])
+            }
+            started = earliest.get(TaskState.STARTED)
+            received = earliest.get(TaskState.RECEIVED)
+            if started and received and received.timestamp > started.timestamp:
+                del earliest[TaskState.RECEIVED]
+            return list(earliest.values())
+        # An older sender's PENDING carries no parent.
+        return [e for e in first if e.parent_id in (None, self.reported_parent_id)]
+
+    @property
+    def eta(self) -> datetime | None:
+        """When the first attempt was scheduled to run (``countdown`` or ``eta``), in UTC.
+
+        None when the task could run at once or no event reported it. A retry's
+        or a ``replace()`` replacement's ETA is on its own events (``TaskEvent.eta``).
+        """
+        return _first_eta(self._own_first_attempt())
+
     @property
     def queue_wait_ms(self) -> int | None:
-        """Milliseconds from sending the task to its first run starting.
+        """Milliseconds from sending the task, or its ETA if later, to its first run.
 
-        From the earliest first-attempt PENDING or RECEIVED to the earliest
-        first-attempt STARTED; None if either is missing (no stemtrace in the
-        sending process and RECEIVED off, or not started yet). A retry's wait
-        isn't counted: it includes the retry's countdown. The sender stamps
-        PENDING after publishing, so it can follow STARTED even with exact
-        clocks; that counts as 0, as does a sender clock ahead of the worker's.
+        Counts the first attempt only (a retry's wait includes its countdown).
+        None until the task has a sent event (PENDING or RECEIVED) and a first
+        STARTED. The span crosses the sender's and the worker's clocks, so a
+        negative wait counts as 0.
         """
-        sent = [event.timestamp for event in self.events if _is_pre_start(event)]
-        started = [
-            event.timestamp
-            for event in self.events
-            if event.state == TaskState.STARTED and event.retries == 0
-        ]
+        own = self._own_first_attempt()
+        sent = [e.timestamp for e in own if _is_pre_start(e)]
+        started = [e.timestamp for e in own if e.state == TaskState.STARTED]
         if not sent or not started:
             return None
-        return _ms(min(started) - min(sent))
+        eta = _first_eta(own)
+        wait_from = min(sent) if eta is None else max(min(sent), eta)
+        return _ms(min(started) - wait_from)
 
     @property
     def runtime_ms(self) -> int | None:
