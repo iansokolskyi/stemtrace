@@ -107,12 +107,28 @@ SHAPES: dict[str, Shape] = {
 }
 
 
-# Chains whose first step is hard-limited in its on_success handler, after Celery
-# sent the second step. In "ran" the later steps finish before the limit; in
-# "running" the second is still running at the limit and the third not yet sent.
+class LateChain(NamedTuple):
+    """A chain whose first step is killed in ``on_success``, and when it is killed."""
+
+    tasks: list[str]
+    # The kill waits for this state from each of these steps, so the ordering a
+    # test pins is guaranteed by the app, not by how fast the pool runs the steps.
+    gate_state: TaskState
+    gated_steps: tuple[str, ...]
+
+
+# The first step dies in its ``on_success`` handler, after Celery sent the second step.
+# In "ran" it dies once every later step succeeded; in "running" once the second step
+# started (it then runs 8 s), so the third step is not yet sent.
 LATE_CHAINS = {
-    "ran": ["mp.late_first", "mp.ok", "mp.ok", "mp.ok"],
-    "running": ["mp.late_first", "mp.slow", "mp.ok"],
+    "ran": LateChain(
+        ["mp.late_first", "mp.ok", "mp.ok", "mp.ok"],
+        TaskState.SUCCESS,
+        ("s2", "s3", "s4"),
+    ),
+    "running": LateChain(
+        ["mp.late_first", "mp.slow", "mp.ok"], TaskState.STARTED, ("s2",)
+    ),
 }
 
 
@@ -174,8 +190,8 @@ class Run:
         self.scenarios: dict[tuple[str, str], Scenario] = {}
         # Each LATE_CHAINS chain's task IDs by step, and its events.
         self.late_ids = {
-            name: {f"s{i}": str(uuid.uuid4()) for i in range(1, len(tasks) + 1)}
-            for name, tasks in LATE_CHAINS.items()
+            name: {f"s{i}": str(uuid.uuid4()) for i in range(1, len(late.tasks) + 1)}
+            for name, late in LATE_CHAINS.items()
         }
         self.late_events: dict[str, list[TaskEvent]] = {
             name: [] for name in LATE_CHAINS
@@ -286,11 +302,18 @@ def _stop_worker(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _send_late_chains(sender: Celery, run: Run) -> None:
-    for name, tasks in LATE_CHAINS.items():
+    for name, late in LATE_CHAINS.items():
+        ids = run.late_ids[name]
+        gate = {
+            "state": late.gate_state.value,
+            "task_ids": [ids[step] for step in late.gated_steps],
+        }
         chain(
             *(
-                sender.signature(task).set(task_id=run.late_ids[name][f"s{i}"])
-                for i, task in enumerate(tasks, start=1)
+                sender.signature(task, kwargs={"gate": gate} if i == 1 else None).set(
+                    task_id=ids[f"s{i}"]
+                )
+                for i, task in enumerate(late.tasks, start=1)
             )
         ).apply_async()
 
@@ -333,7 +356,7 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Run]:
         assert run.wait(run.primary_failures_in, TIMEOUT_SECONDS), run.worker_log()
         # The unrun steps' FAILUREs trail the failing task's, in the same handler.
         run.wait(run.all_failures_in, TRAILING_SECONDS)
-        # The late chains go once the pool is free, so their steps run before the limit.
+        # The late chains go once the earlier scenarios are done; each waits for its gate.
         connect_signals(transport)
         try:
             _send_late_chains(sender, run)
@@ -401,7 +424,7 @@ def _late_events(run: Run, name: str, step: str, state: TaskState) -> list[TaskE
     ]
 
 
-def _late_limit_time(run: Run, name: str) -> datetime:
+def _late_failure_time(run: Run, name: str) -> datetime:
     """When the main process recorded the failure: its last FAILURE in the chain."""
     return max(
         e.timestamp for e in run.late_events[name] if e.state == TaskState.FAILURE
@@ -429,12 +452,12 @@ def _late_states(
 # FAILURE for each, as celery's backend stores one: celery 5.6.3 backends/base.py
 # mark_as_failure). The tests below pin what that shows; docs/graphs.md says it.
 def test_late_failure_fails_the_later_steps_that_already_ran(run: Run) -> None:
-    limit = _late_limit_time(run, "ran")
+    failed_at = _late_failure_time(run, "ran")
 
     for step in ("s2", "s3", "s4"):
         [success] = _late_events(run, "ran", step, TaskState.SUCCESS)
         [failure] = _late_events(run, "ran", step, TaskState.FAILURE)
-        assert success.timestamp < limit
+        assert success.timestamp < failed_at
         assert failure.hostname is None
     # The later FAILURE wins over the earlier SUCCESS.
     assert _late_states(run, "ran") == dict.fromkeys(
@@ -445,16 +468,17 @@ def test_late_failure_fails_the_later_steps_that_already_ran(run: Run) -> None:
 def test_late_failure_shows_running_and_unsent_steps_failed_until_they_finish(
     run: Run,
 ) -> None:
-    limit = _late_limit_time(run, "running")
+    failed_at = _late_failure_time(run, "running")
     [s2_started] = _late_events(run, "running", "s2", TaskState.STARTED)
     [s2_success] = _late_events(run, "running", "s2", TaskState.SUCCESS)
     [s3_pending] = _late_events(run, "running", "s3", TaskState.PENDING)
     [s3_failure] = _late_events(run, "running", "s3", TaskState.FAILURE)
 
-    # At the limit s2 is running and s3 is not sent yet (its FAILURE precedes its PENDING).
-    assert s2_started.timestamp < limit < s2_success.timestamp
+    # When the first step dies s2 is running and s3 is not sent yet (its FAILURE
+    # precedes its PENDING).
+    assert s2_started.timestamp < failed_at < s2_success.timestamp
     assert s3_failure.timestamp < s3_pending.timestamp
-    assert _late_states(run, "running", until=limit) == dict.fromkeys(
+    assert _late_states(run, "running", until=failed_at) == dict.fromkeys(
         ("s2", "s3"), TaskState.FAILURE
     )
     # Each step's own result then replaces its FAILURE.
