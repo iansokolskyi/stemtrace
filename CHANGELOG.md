@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-19
+
 **Highlights:**
 - Access for scripts and coding agents: an API key for the JSON API and the WebSocket (it also works next to your own `auth_dependency`: either one lets a request in), a `SKILL.md` that teaches an agent to query stemtrace, and summary endpoints for dashboards (`/api/overview`, `/api/stats/timeseries`, `/api/failures`).
 - Timing you can trust: each task reports how long it waited in the queue (counting from its ETA) apart from how long it ran, and runs are read on one worker's clock, so clock differences between workers no longer distort them.
@@ -333,7 +335,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.10...v0.4.0
 [0.3.10]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.9...v0.3.10
