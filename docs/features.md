@@ -161,6 +161,9 @@ Limitations:
   topic, fanout or other named exchange (an exchange and routing key, or a queue bound to a
   non-direct exchange) can reach any number of queues, so `queue` is empty and only
   `routing_key` is set. Checked with a topic exchange on real Redis and RabbitMQ workers.
+- On the gevent pool, Celery 5.6.3 sends no `task_failure` signal for a hard time limit (it only
+  stores the failure in the result backend), so stemtrace publishes no FAILURE: the task stays
+  `STARTED`.
 - A FAILURE that Celery reports from the worker's main process, such as a hard time limit
   (`billiard.exceptions.TimeLimitExceeded`), has no request of its own in Celery's signal.
   stemtrace takes them from the failing request itself: the attempt's retry count, `hostname`,
@@ -267,7 +270,8 @@ Limitations:
   tell which start goes with which end. That happens when Celery delivers a finished attempt to
   the same worker again (a Redis visibility-timeout redelivery), or announces REVOKED for a run
   that already finished (`revoke(terminate=True)`). While the run delivered again is still
-  running, its runtime can be wrong until it ends. Workers up to 0.4.0 send no `hostname`, so
+  running, its runtime can be wrong until it ends. If Celery then retries that attempt,
+  `total_runtime_ms` can leave out the runs before the retry. Workers up to 0.4.0 send no `hostname`, so
   their events are paired as before.
 - Workers up to 0.4.0 send no `hostname`, and the main-process FAILURE of workers up to 0.4.1
   has none and `retries=0` whatever the attempt. For those events, a run's start and end can
