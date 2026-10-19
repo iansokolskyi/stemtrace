@@ -973,7 +973,7 @@ class GraphStore:
         A group or chord goes whole, with its members and callback, so its
         state never comes from part of them; one eviction can free over 10%.
         A unit too big to keep (over 90% of ``max_nodes``) loses its oldest
-        members instead.
+        nodes instead.
         """
         if len(self._graph.nodes) <= self._max_nodes:
             return
