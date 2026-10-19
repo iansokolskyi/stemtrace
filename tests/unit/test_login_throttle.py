@@ -684,3 +684,74 @@ class TestLoginEndpointThrottling:
             )
 
         assert other_client.status_code == (303 if trusted else 429)
+
+
+# --- attempts in flight (wrong API keys the app's dependency is still judging) ---
+
+
+def _hold(throttle: LoginThrottle, ip: str, times: int) -> None:
+    for _ in range(times):
+        throttle.hold_ip_attempt(ip)
+
+
+def test_ip_has_capacity_until_in_flight_attempts_cover_the_failures_left() -> None:
+    throttle = LoginThrottle()
+    _fail(throttle, 2, _attempt(user=None))
+    left = LOGIN_IP_MAX_FAILURES - 2
+
+    _hold(throttle, _IP, left - 1)
+    assert throttle.ip_has_capacity(_IP) is True
+    throttle.hold_ip_attempt(_IP)
+    assert throttle.ip_has_capacity(_IP) is False
+    assert throttle.ip_has_capacity("198.51.100.1") is True
+
+
+def test_ip_has_capacity_again_once_an_attempt_is_released() -> None:
+    throttle = LoginThrottle()
+    _hold(throttle, _IP, LOGIN_IP_MAX_FAILURES)
+    assert throttle.ip_has_capacity(_IP) is False
+
+    throttle.release_ip_attempt(_IP)
+
+    assert throttle.ip_has_capacity(_IP) is True
+
+
+def test_ip_has_capacity_with_nothing_in_flight_after_a_lockout_ended() -> None:
+    """No failures left and nothing in flight is a lockout that expired, not a cap."""
+    clock = FakeClock()
+    throttle = LoginThrottle(clock=clock)
+    _fail(throttle, LOGIN_IP_MAX_FAILURES, _attempt(user=None))
+    clock.now += LOGIN_LOCKOUT_BASE_S
+
+    assert throttle.ip_has_capacity(_IP) is True
+    throttle.hold_ip_attempt(_IP)
+    assert throttle.ip_has_capacity(_IP) is False
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("2001:db8::1", "2001:db8::ffff"),  # one IPv6 /64
+        ("203.0.113.7", "203.0.113.7:51234"),  # a proxy that appends the source port
+        ("203.0.113.7", "::ffff:203.0.113.7"),  # IPv4-mapped IPv6
+    ],
+)
+def test_in_flight_attempts_are_shared_across_spellings_of_one_ip(
+    first: str, second: str
+) -> None:
+    throttle = LoginThrottle()
+    for i in range(LOGIN_IP_MAX_FAILURES):
+        throttle.hold_ip_attempt(first if i % 2 else second)
+
+    assert throttle.ip_has_capacity(first) is False
+    assert throttle.ip_has_capacity(second) is False
+
+
+def test_release_ip_attempt_forgets_an_ip_with_nothing_in_flight() -> None:
+    throttle = LoginThrottle()
+    throttle.hold_ip_attempt(_IP)
+
+    throttle.release_ip_attempt(_IP)
+    throttle.release_ip_attempt(_IP)  # an extra release is harmless
+
+    assert throttle._ip_in_flight == {}

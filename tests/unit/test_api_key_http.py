@@ -116,6 +116,10 @@ def _assert_ws_denied(client: TestClient, **kwargs: object) -> None:
     assert exc_info.value.code == 1008
 
 
+_OTHER_DEP = stemtrace.require_api_key("other-secret-value")
+DEP_HEADERS = {"X-API-Key": "other-secret-value"}
+
+
 # --- key only ---------------------------------------------------------------
 
 
@@ -309,23 +313,19 @@ def test_form_only_bearer_header_does_not_bypass_login(form_only: TestClient) ->
     _assert_ws_denied(form_only, headers=BEARER)
 
 
-# --- auth_dependency + key: both needed ------------------------------------
+# --- auth_dependency + key: either one ---------------------------------------
 
 
-def test_auth_dependency_and_key_both_required() -> None:
-    app = _app(
-        api_key=KEY, auth_dependency=stemtrace.require_api_key("other-secret-value")
-    )
-    both = {**BEARER, "X-API-Key": "other-secret-value"}
+def test_auth_dependency_or_key_lets_a_request_in() -> None:
+    app = _app(api_key=KEY, auth_dependency=_OTHER_DEP)
 
     with TestClient(app) as client:
-        assert client.get("/stemtrace/api/tasks", headers=both).status_code == 200
-        assert client.get("/stemtrace/api/tasks", headers=BEARER).status_code == 401
-        only_dep = client.get(
-            "/stemtrace/api/tasks", headers={"X-API-Key": "other-secret-value"}
-        )
-        assert only_dep.status_code == 401
-        assert only_dep.headers["www-authenticate"] == "Bearer"
+        for headers in ({**BEARER, **DEP_HEADERS}, BEARER, DEP_HEADERS):
+            assert (
+                client.get("/stemtrace/api/tasks", headers=headers).status_code == 200
+            )
+        neither = client.get("/stemtrace/api/tasks")
+        assert neither.status_code == 401
 
 
 # --- entry points -----------------------------------------------------------
@@ -571,10 +571,8 @@ def test_form_and_key_liveness_with_any_bearer_is_200(
 
 def test_auth_dependency_and_key_websocket_and_liveness() -> None:
     """The dependency covers the JSON API only: WS needs the key, liveness the dependency."""
-    app = _app(
-        api_key=KEY, auth_dependency=stemtrace.require_api_key("other-secret-value")
-    )
-    dep = {"X-API-Key": "other-secret-value"}
+    app = _app(api_key=KEY, auth_dependency=_OTHER_DEP)
+    dep = DEP_HEADERS
 
     with TestClient(app) as client:
         with client.websocket_connect("/stemtrace/ws", headers=BEARER):
@@ -582,8 +580,8 @@ def test_auth_dependency_and_key_websocket_and_liveness() -> None:
         _assert_ws_denied(client, headers=dep)
         assert client.get("/stemtrace/api/health/live").status_code == 401
         assert client.get("/stemtrace/api/health/live", headers=dep).status_code == 200
-        # A browser with only the host's auth can't use the dashboard's data.
-        assert client.get("/stemtrace/api/tasks", headers=dep).status_code == 401
+        # A browser with only the host's auth can use the dashboard's data.
+        assert client.get("/stemtrace/api/tasks", headers=dep).status_code == 200
 
 
 def test_cli_login_failures_count_toward_key_lockout(
@@ -625,6 +623,11 @@ def test_head_is_authenticated_like_get_in_every_mode(path: str) -> None:
         assert form_and_key.head(path, headers=BEARER).status_code == 200
         _login(form_and_key)
         assert form_and_key.head(path).status_code == 200
+    with TestClient(_app(api_key=KEY, auth_dependency=_OTHER_DEP)) as key_or_dep:
+        assert key_or_dep.head(path).status_code == 401
+        assert key_or_dep.head(path, headers=WRONG).status_code == 401
+        assert key_or_dep.head(path, headers=BEARER).status_code == 200
+        assert key_or_dep.head(path, headers=DEP_HEADERS).status_code == 200
 
 
 def test_head_on_the_liveness_probe_stays_public_with_a_key() -> None:
@@ -659,6 +662,11 @@ def test_other_methods_are_405_with_allow_in_every_key_mode() -> None:
         assert form_and_key.post("/stemtrace/api/tasks").status_code == 401
         for headers in (WRONG, BEARER):
             resp = form_and_key.post("/stemtrace/api/tasks", headers=headers)
+            assert resp.status_code == 405
+            assert set(resp.headers["allow"].split(", ")) == {"GET", "HEAD"}
+    with TestClient(_app(api_key=KEY, auth_dependency=_OTHER_DEP)) as key_or_dep:
+        for headers in ({}, WRONG, BEARER, DEP_HEADERS):
+            resp = key_or_dep.post("/stemtrace/api/tasks", headers=headers)
             assert resp.status_code == 405
             assert set(resp.headers["allow"].split(", ")) == {"GET", "HEAD"}
 

@@ -86,23 +86,51 @@ curl -H "Authorization: Bearer $STEMTRACE_API_KEY" \
   page). Nothing in front of stemtrace (e.g. an auth proxy that forwards its own token) may add
   an `Authorization: Bearer` header: stemtrace treats it as a wrong key, even next to a valid
   session, and wrong keys lock out the proxy's IP, login included.
-- **With a custom `auth_dependency`**, a JSON API request needs the key *and* whatever the
-  dependency checks (FastAPI runs every router dependency; one can't waive another), so the
-  dependency mustn't use the `Authorization` header itself (`require_basic_auth` does;
-  `require_api_key`, which reads `X-API-Key`, doesn't). The dependency doesn't cover the
-  WebSocket, as without a key, so the WebSocket needs only the key; the liveness probe needs the
-  dependency's credentials but not the key. Browsers
-  never send the key, so with a key the dashboard stops working for users of the custom auth;
-  enable the login page for them. `require_api_key` is a separate, older helper for embedded
-  apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key described
-  here is the one built into the server.
-- **Errors.** A missing or wrong key gets `401` with `WWW-Authenticate: Bearer`, never a
-  redirect. A wrong key is refused even if a valid session cookie comes with it.
+- **With a custom `auth_dependency`**, which must be a `Depends(...)` or `Security(...)` (a
+  plain function or other callable raises `ConfigurationError` at setup), the key *or* the
+  dependency's credentials let a JSON API request in. A request whose Bearer token is the key skips the dependency. Every other request
+  goes to the dependency, which works as it does without a key (its sub-dependencies,
+  `dependency_overrides` and `yield` included), so it can read the `Authorization` header
+  itself, for example for OAuth2 Bearer tokens or `require_basic_auth`. The OpenAPI schema (and
+  Swagger UI) keeps the dependency's security schemes. The liveness probe also takes the key or
+  the dependency's credentials. The dependency doesn't cover the WebSocket, so the WebSocket
+  needs the key: browsers that pass the dependency get the dashboard's data but not its live
+  updates; enable the login page for those. `require_api_key` is a separate, older helper for
+  embedded apps (see [Built-in auth helpers](#built-in-auth-helpers-basic--api-key)); the key
+  described here is the one built into the server.
+- **With a custom `auth_dependency` and the login page**, only the key skips the session check.
+  Every other request except the liveness probe needs a session cookie *and* the dependency,
+  as without a key, whatever
+  `Authorization` header it carries: a request without a session gets `401`, so
+  `require_basic_auth` credentials alone are not enough until the browser has signed in.
+- **Errors.** Without a custom `auth_dependency`, a missing or wrong key gets `401` with
+  `WWW-Authenticate: Bearer`, never a redirect, and a wrong key is refused even if a valid
+  session cookie comes with it. With one, a request that isn't the key gets the dependency's own
+  answer, which can be a redirect or a `403`; only the login page's missing session is a `401`
+  from stemtrace.
 - **Throttling.** Wrong keys count per client IP in the login's failed-attempt throttle, so
-  failed sign-ins and wrong keys from one IP add up: after 5, that IP gets `429` with
-  `Retry-After` (30 seconds, doubling up to 15 minutes), even with the right key. A valid key
-  doesn't clear the count. Requests without a client address (a Unix socket) aren't throttled.
-  Counts are per process.
+  failed sign-ins and wrong keys from one IP add up: the fifth gets `429` with `Retry-After`
+  (30 seconds, doubling up to 15 minutes), and so does every later request with a Bearer token,
+  even the right key. A valid key doesn't clear the count. Requests without a client address (a
+  Unix socket) aren't throttled. Counts are per process.
+- **Throttling with a custom `auth_dependency`.** A Bearer token of the key's length counts as
+  a wrong key unless the dependency lets the request in. Any other answer counts: `401`, `403`,
+  `422`, a redirect, `400`, `404`, `5xx`, the dependency's own `429`, and an unhandled error in
+  the dependency, so a failing token decoder can't be used to guess keys for free. An error of
+  the endpoint after the dependency admitted the request doesn't count, and neither does an
+  error raised after a `yield` dependency has yielded, because that dependency admits at its
+  `yield` (a limit of how FastAPI runs it). The trade-off: while the
+  dependency fails (an identity provider outage, say), the app's own tokens that are exactly as
+  long as the key count as wrong keys and can lock their IP out. Tokens of any other length
+  never count. With the login page on, a wrong key without a session gets `401` and counts too.
+  The fifth failure is answered with the lockout's `429` instead of the dependency's answer
+  (unless the dependency crashed, which stays a `500`). A token of the key's length is in flight
+  until the dependency admits it or its response starts, and an IP whose tokens in flight
+  already cover the failures it has left gets `429` with `Retry-After: 1` without any key
+  comparison, so a burst can't try more keys than the lockout allows. While an IP is locked out
+  or has that many in flight, Bearer tokens of the key's length get `429`, even the right key
+  and tokens the dependency would accept (an app whose own tokens are exactly as long as the
+  key sees this with five such requests at once); other requests still go to the dependency.
 - **WebSocket.** Clients that can set headers send `Authorization: Bearer <key>`. Browsers can't,
   so they offer two subprotocols, `stemtrace` and `stemtrace.bearer.<base64url(key)>`
   (unpadded); the server accepts with `stemtrace` and never echoes the key. When the key comes

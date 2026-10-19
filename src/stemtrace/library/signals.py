@@ -727,7 +727,7 @@ def _failed_request(sender: "Task", task_id: str) -> Any:
 
 
 def _worker_request(candidate: Any, task_id: str) -> Context | None:
-    """The attempt, worker and IDs of a worker ``Request`` for ``task_id``, else None."""
+    """The attempt, worker, IDs, chord and chain of ``task_id``'s worker ``Request``, else None."""
     fields = getattr(candidate, "request_dict", None)
     if not isinstance(fields, dict) or fields.get("id") != task_id:
         return None
@@ -737,6 +737,11 @@ def _worker_request(candidate: Any, task_id: str) -> Context | None:
         parent_id=fields.get("parent_id"),
         root_id=fields.get("root_id"),
         group=fields.get("group"),
+        chord=getattr(candidate, "chord", None),
+        # celery 5.2.2 and 5.6.3 worker/request.py on_failure: mark_as_failure(
+        # request=self._context) runs before task_failure, and _context merges
+        # the message's embed (chain) into request_dict.
+        chain=fields.get("chain"),
         hostname=getattr(candidate, "hostname", None),
         delivery_info=getattr(candidate, "delivery_info", None),
     )
@@ -782,7 +787,7 @@ def _on_task_failure(
             **_worker_fields(request),
         )
     )
-    _publish_unrun_chain_steps(sender.request, task_id, exception)
+    _publish_unrun_chain_steps(request, task_id, exception)
 
 
 def _sent_already(parent_id: str, step: Any) -> bool:
