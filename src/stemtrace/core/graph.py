@@ -432,11 +432,11 @@ class TaskNode(BaseModel):
     def _runs(self) -> list[tuple[TaskEvent, TaskEvent]] | None:
         """Pair each run's STARTED with the RETRY or final event that ended it.
 
-        Runs are read on one worker's clock (see ``_run_start``), in
-        ``_precedence`` order. Runs whose end was missed, or ended in a terminal
-        event from a worker before the final one, are left out. None unless the
-        task finished and its last run's STARTED is from the final event's
-        attempt.
+        Runs are read on one worker's clock (see ``_run_start``). A terminal
+        before the final event closes its worker's latest unfinished run, so a
+        same-worker redelivery gives None; without a worker the runs can't be
+        told apart. None unless the task finished and its last run's STARTED is
+        from the final event's attempt.
         """
         # A FAILURE with retries=0 and no worker comes from an older worker's
         # main process (celery 5.6.3 worker/request.py Request.on_failure, where
@@ -462,10 +462,11 @@ class TaskNode(BaseModel):
                 continue
             if event is not final and event.state in TERMINAL_STATES:
                 # A run that ended before the final event (retry(throw=False),
-                # or the same attempt's earlier run on this worker): closed and
-                # left out, so the final event never pairs with a finished run's
-                # start. Without a worker (0.4.0 and earlier) the run can't be
-                # told apart.
+                # or the same attempt's earlier run on this worker) is left out.
+                # STARTEDs sort before terminals, so this pops the latest STARTED
+                # on its key, a redelivery's if there is one: a final event of that
+                # attempt then finds no start, so it has no runtimes. Without a
+                # worker (0.4.0 and earlier) nothing is popped.
                 if event.hostname is not None:
                     open_runs.pop(_run_key(event), None)
                 continue

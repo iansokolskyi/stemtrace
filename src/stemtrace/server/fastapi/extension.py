@@ -112,6 +112,7 @@ class StemtraceExtension:
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be
                 loaded, or ``api_key`` is too short or has invalid characters.
+                A bad ``auth_dependency`` doesn't raise here, but in ``router``.
         """
         self._broker_url = broker_url
         self._transport_url = transport_url or broker_url
@@ -180,7 +181,13 @@ class StemtraceExtension:
 
     @property
     def router(self) -> APIRouter:
-        """Pre-configured router. Mount with app.include_router()."""
+        """Pre-configured router. Mount with app.include_router().
+
+        Raises:
+            ConfigurationError: If ``auth_dependency`` isn't a ``Depends(...)``
+                or ``Security(...)`` that wraps a callable. ``StemtraceExtension(...)``
+                itself doesn't raise for it; this does.
+        """
         router = create_router(
             store=self._store,
             consumer=self._consumer,
@@ -205,8 +212,13 @@ class StemtraceExtension:
         return router
 
     def init_app(self, app: FastAPI, *, prefix: str | None = None) -> None:
-        """Initialize stemtrace on a FastAPI app. Wraps lifespan and adds router."""
+        """Initialize stemtrace on a FastAPI app. Wraps lifespan and adds router.
+
+        Raises:
+            ConfigurationError: As ``router``; the app is then left unchanged.
+        """
         mount_prefix = f"/{self._normalize_prefix(prefix or self._prefix)}"
+        router = self.router  # built first: a refusal must not touch the app
 
         original_lifespan = app.router.lifespan_context
         app.router.lifespan_context = self._wrap_lifespan(original_lifespan)
@@ -218,7 +230,7 @@ class StemtraceExtension:
                 url=browser_path(request.scope, f"{mount_prefix}/"), status_code=307
             )
 
-        app.include_router(self.router, prefix=mount_prefix)
+        app.include_router(router, prefix=mount_prefix)
 
     @overload
     def _wrap_lifespan(self, original: LifespanNone) -> LifespanNone: ...

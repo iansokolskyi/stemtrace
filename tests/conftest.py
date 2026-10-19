@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.library.config import _reset_config
 
 RawGet = Callable[[Any, str], Awaitable[int]]
 
@@ -46,6 +47,13 @@ class InterleavingLock:
         tb: TracebackType | None,
     ) -> None:
         self._inner.release()
+
+
+@pytest.fixture(autouse=True)
+def _reset_stemtrace_config() -> Iterator[None]:
+    """Clear the worker config a test set, so it can't leak into the next test."""
+    yield
+    _reset_config()
 
 
 @pytest.fixture

@@ -17,6 +17,7 @@ from stemtrace.library.scrubbing import (
     scrub_args,
     scrub_dict,
 )
+from stemtrace.library.signals import _scrub_and_serialize_args
 
 
 class TestIsSensitiveKey:
@@ -896,3 +897,31 @@ def test_scrub_dict_rebuilds_a_namedtuple_key_without_its_make(
     ((out_key, value),) = scrub_dict({key: "v"}).items()
 
     assert (tuple(out_key), type(out_key), value) == (shown, type(key), "v")
+
+
+class _StatefulKey(collections.namedtuple("_StatefulKeyBase", "a")):
+    """A namedtuple whose own ``__new__`` stores state that its repr reads."""
+
+    def __new__(cls, a: object) -> "_StatefulKey":
+        key = super().__new__(cls, a)
+        key.original = a  # type: ignore[attr-defined]  # the state under test
+        return key
+
+    def __repr__(self) -> str:
+        return f"_StatefulKey({self.original!r})"  # type: ignore[attr-defined]
+
+
+def test_scrub_dict_namedtuple_key_drops_state_its_new_set() -> None:
+    """The rebuilt key has no ``__new__`` state, which could hold the raw part."""
+    ((out_key, _),) = scrub_dict({_StatefulKey(_Field.PASSWORD): "v"}).items()
+
+    assert (tuple(out_key), type(out_key)) == (("pw",), _StatefulKey)
+    assert not hasattr(out_key, "original")
+    with pytest.raises(AttributeError):
+        repr(out_key)
+
+
+def test_capture_of_namedtuple_key_that_reads_new_state_is_a_placeholder() -> None:
+    args = ({_StatefulKey(_Field.PASSWORD): "v"},)
+
+    assert _scrub_and_serialize_args(args) == ["[Not captured: AttributeError]"]

@@ -665,6 +665,8 @@ class _RenderedTags(HTMLParser):
 def _oracle_reasons(body: str) -> set[str]:
     """Say why body should be rejected, without the validator's token walk.
 
+    It parses with the same ``MarkdownIt("commonmark")`` as the validator, so a
+    parser bug shows in both: what differs is the check, not the parser.
     Headings and top-level blocks come from rendered HTML, raw HTML from comparing
     renders with HTML on and off, and empty bullets from the output. The list marker
     and link definitions are not in the HTML, so those two read the parser output.
@@ -723,7 +725,7 @@ def _fuzz_bodies(count: int, seed: int) -> list[str]:
     return bodies
 
 
-def test_invalid_body_agrees_with_independent_oracle_on_random_bodies() -> None:
+def test_invalid_body_agrees_with_rendered_html_oracle_on_random_bodies() -> None:
     bodies = _fuzz_bodies(count=6000, seed=20261018)
     reasons = {body: _oracle_reasons(body) for body in bodies}
 
