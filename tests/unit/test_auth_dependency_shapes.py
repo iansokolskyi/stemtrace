@@ -3,6 +3,7 @@
 # No ``from __future__ import annotations``: FastAPI 0.112 resolves a callable
 # object's string annotations without its module globals.
 
+import functools
 from typing import Any
 
 import pytest
@@ -42,6 +43,8 @@ ACCEPTED: dict[str, Any] = {
     "Depends-async": Depends(_async_check),
     "Security-with-scopes": Security(_check, scopes=["read"]),
     "Depends-callable-object": Depends(_CallableObject()),
+    "Depends-partial": Depends(functools.partial(_check)),
+    "Depends-no-cache": Depends(_check, use_cache=False),
 }
 
 # Fail closed at setup, as FastAPI 0.112 does on main (an AttributeError at
@@ -58,6 +61,9 @@ REFUSED: dict[str, Any] = {
     "empty-Depends": Depends(),
     "Depends-None": Depends(None),
     "empty-Security": Security(),
+    "Depends-non-callable": Depends(5),  # type: ignore[arg-type]  # refused at setup
+    "Depends-string": Depends("require_admin"),  # type: ignore[arg-type]
+    "Security-non-callable": Security(5),  # type: ignore[arg-type]
     "Depends-subclass-without-callable": type("_Marked", (params.Depends,), {})(),
 }
 
@@ -165,3 +171,16 @@ def test_extension_init_app_refused_dependency_leaves_the_app_unchanged() -> Non
         extension.init_app(app)
 
     assert _shape(app) == before
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        stemtrace.require_api_key("a-long-enough-secret"),
+        stemtrace.require_basic_auth("u", "p"),
+    ],
+    ids=["require_api_key", "require_basic_auth"],
+)
+def test_the_require_helpers_are_accepted_at_setup(helper: Any) -> None:
+    _app(auth_dependency=helper)
+    _app(auth_dependency=helper, api_key=KEY)

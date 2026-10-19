@@ -34,10 +34,10 @@ def check_auth_dependency(auth_dependency: Any) -> None:
     """
     if auth_dependency is None:
         return
-    # A Depends with no callable passes isinstance; fastapi 0.143.1 then
-    # resolves it to the wrapper's own annotation, so the app boots.
-    if not isinstance(auth_dependency, params.Depends) or (
-        auth_dependency.dependency is None
+    # isinstance alone lets Depends(), Depends(5) and Depends("name") through:
+    # fastapi 0.143.1 boots with them, then every API request returns a 500.
+    if not isinstance(auth_dependency, params.Depends) or not callable(
+        auth_dependency.dependency
     ):
         raise ConfigurationError(
             "auth_dependency must be a FastAPI dependency: wrap the callable in "
