@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Highlights:**
+- Access for scripts and coding agents: an API key for the JSON API and the WebSocket (it also works next to your own `auth_dependency`: either one lets a request in), a `SKILL.md` that teaches an agent to query stemtrace, and summary endpoints for dashboards (`/api/overview`, `/api/stats/timeseries`, `/api/failures`).
+- Timing you can trust: each task reports how long it waited in the queue (counting from its ETA) apart from how long it ran, and runs are read on one worker's clock, so clock differences between workers no longer distort them.
+- States that match what Celery did: `IGNORED` and `REJECTED` tasks no longer look stuck as `STARTED`, a failed chain now shows its unrun steps as failed, a worker stopped without Celery's shutdown signal is reported, and a chord says why its callback never ran.
+- Fixes: gevent workers finish a cold shutdown; a group or chord is no longer split when old tasks are evicted; enum dict keys are scrubbed by value, not by name; failures from a hard time limit or a lost worker keep their worker, queue, parents and chord.
+
+**Upgrading:** upgrade the server before the workers: an older server drops the new `IGNORED` and `worker_terminating` events with a warning. A failed chain now publishes `FAILURE` for its unrun steps (a behavior change, from upgraded workers). An `auth_dependency` must now be a `Depends(...)` or `Security(...)`; anything else raises `ConfigurationError` at setup. See [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md) and [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md) for the known limitations of this release.
+
 ### Added
 - Tasks that raise Celery's `Ignore` now end as `IGNORED`, and tasks that raise `Reject` as `REJECTED`, with the reason as `exception` (shown on the task page). They used to stay `STARTED` forever, because Celery sends no failure for them. `task.replace()`, which raises `Ignore` internally, is not reported as ignored. `Reject(requeue=True)` publishes nothing on a task with `acks_late`, because the message runs again; without `acks_late` the worker acknowledged the message before the task ran, so it doesn't run again and the task ends as `REJECTED`, as it does under eager `apply()`. The task list's state filter now offers `REJECTED` and `IGNORED`. Upgrade the server before the workers: an older server drops IGNORED events with a warning per event.
 - `GET /api/tasks` and `GET /api/graphs` take `task_group=` (exact group name) and `tag=` (one of the group's tags) filters; a graph matches when any of its tasks does. See "Task groups" in `docs/configuration.md`.
