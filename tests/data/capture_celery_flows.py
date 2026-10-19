@@ -290,6 +290,15 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             group(add.si(6, 6), add.si(7, 7)),
             tsum.s(),
         ),
+        # The last tsum and the add below it are chord 2's callback and the
+        # step after it; Celery stamps both with the first group's ID.
+        "chain_groups_tasks_add": lambda: chain(
+            group(add.si(1, 1), add.si(2, 2)),
+            tsum.s(),
+            group(add.si(4, 4), add.si(5, 5)),
+            tsum.s(),
+            add.s(10),
+        ),
         "chain_failed_head": lambda: chain(fail.si(), add.s(1), add.s(2)),
         "chain_head_result_not_stored": lambda: chain(
             unstorable.si(), add.si(1, 1), add.si(2, 2)

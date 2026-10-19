@@ -2366,19 +2366,26 @@ def _drawn_in(snap: _Snapshot) -> dict[str, str]:
 
 def _expected_unit(snap: _Snapshot, container: str) -> set[str]:
     """What goes with a GROUP/CHORD, worked out top-down (the store walks up):
-    its group's member tasks, its direct children (a nested container with its
-    own unit), and the tasks under it on the way down to a member."""
+    the stamped tasks whose first container above is this one, its direct
+    children (a nested container with its own unit), and the tasks under it on
+    the way down to a stamped task."""
     group_id = snap[container][1]
     drawn_in = _drawn_in(snap)
-    # A task stamped with this group but drawn inside another container
-    # belongs to that one (Celery stamps a pipeline's last task with its first
-    # group's ID); one drawn at a root still belongs here (a replaced member).
+    stored_groups = {
+        group for kind, group, _, _ in snap.values() if kind != NodeType.TASK
+    }
+    # Stamped: the task's group_id names a stored GROUP/CHORD. Its container is
+    # the first one above it (Celery stamps a pipeline's last tasks with the
+    # first group's ID, wherever the graph draws them); at a root, the group it
+    # is stamped with (a replaced member).
     members = {
         node_id
         for node_id, (kind, group, _, _) in snap.items()
         if kind == NodeType.TASK
-        and group == group_id
-        and drawn_in.get(node_id, container) == container
+        and group in stored_groups
+        and (
+            drawn_in[node_id] == container if node_id in drawn_in else group == group_id
+        )
     }
 
     def task_children(node_id: str) -> list[str]:
@@ -2460,6 +2467,7 @@ _KINDS = [
     "callback",
     "callback_starts_chord",
     "stamped_callback",
+    "stamped_below_steps",
 ]
 
 
@@ -2485,6 +2493,22 @@ def _chord_events(kind: str, rng: random.Random, i: int, c: int) -> list[TaskEve
             events.append(
                 _event_at(f"t{i}cb", i, rng, group_id=f"c{c}", parent_id=f"t{i}h1")
             )
+        case "stamped_below_steps":
+            # chain(group, task, group, task, add, ...): the steps after the
+            # callback are drawn below it, the last stamped with an earlier
+            # chord's group ID.
+            events = [
+                _event_at(
+                    f"t{i}h{n}", i, rng, group_id=f"s{i}", chord_callback_id=f"t{i}cb"
+                )
+                for n in range(2)
+            ]
+            events.append(_event_at(f"t{i}cb", i, rng, parent_id=f"t{i}h1"))
+            steps = rng.choice([1, 2])
+            for n in range(steps):
+                kw = {"group_id": f"c{c}"} if n == steps - 1 else {}
+                parent = f"t{i}cb" if n == 0 else f"t{i}x{n - 1}"
+                events.append(_event_at(f"t{i}x{n}", i, rng, parent_id=parent, **kw))
         case "callback_starts_chord":
             # The callback's workflow: the next chord's headers hang from it.
             events = [
@@ -2527,7 +2551,13 @@ def _random_events(rng: random.Random, i: int, ids: list[str]) -> list[TaskEvent
                 _event_at(f"t{i}i{n}", i, rng, group_id=f"in{i}", parent_id=f"t{i}")
                 for n in range(2)
             ]
-        case "header" | "callback" | "stamped_callback" | "callback_starts_chord":
+        case (
+            "header"
+            | "callback"
+            | "stamped_callback"
+            | "stamped_below_steps"
+            | "callback_starts_chord"
+        ):
             events = _chord_events(kind, rng, i, c)
         case _:
             events = [_event_at(f"t{i}", i, rng)]
@@ -2813,3 +2843,73 @@ def test_eviction_unit_of_a_pipeline_s_last_task_is_the_chord_it_is_drawn_in() -
 
     assert len({unit_of[c.task_id] for c in chords}) == len(chords)
     assert unit_of[stamped.task_id] == unit_of[last.task_id]
+
+
+_MAX_TIME = datetime.max.replace(tzinfo=timezone.utc)
+
+
+def _chords_by_age(graph: TaskGraph) -> list[TaskNode]:
+    """The graph's CHORD nodes, earliest first."""
+    return sorted(
+        (n for n in graph.nodes.values() if n.node_type == NodeType.CHORD),
+        key=lambda n: min(graph.nodes[c].first_seen or _MAX_TIME for c in n.children),
+    )
+
+
+def test_eviction_unit_of_a_task_below_a_pipeline_s_callback_is_its_chord() -> None:
+    """Real capture of chain(group, tsum, group, tsum, add): Celery stamps the
+    add below chord 2's callback with chord 1's group ID. It belongs to chord 2
+    with the callback, and chord 1 is a unit of its own."""
+    store = GraphStore()
+    for event in _FLOWS["chain_groups_tasks_add"]:
+        store.add_event(TaskEvent.model_validate(event))
+    graph = store._graph
+    first, second = _chords_by_age(graph)
+    (stamped,) = [
+        n
+        for n in graph.nodes.values()
+        if n.node_type == NodeType.TASK
+        and n.group_id == first.group_id
+        and n.parent_id in graph.nodes
+        and graph.nodes[n.parent_id].node_type == NodeType.TASK
+    ]
+    callback = graph.nodes[stamped.parent_id or ""]
+    units = _units_of(graph)
+
+    assert graph.nodes[callback.parent_id or ""].parent_id == second.task_id
+    assert units[stamped.task_id] == units[callback.task_id] == units[second.task_id]
+    assert units[first.task_id] != units[second.task_id]
+    # The oracle puts the same nodes together (rule 1 of the unit spec).
+    assert {frozenset(u) for u in _top_units(_snapshot(graph.nodes))} == {
+        frozenset(n.task_id for n in unit) for unit in _eviction_units(graph)
+    }
+
+
+def test_eviction_of_a_pipeline_takes_the_oldest_chord_and_keeps_the_next_whole() -> (
+    None
+):
+    """With the capture above, newer tasks evict chord 1 alone; chord 2 stays
+    with its callback and the add stamped with chord 1's ID."""
+    events = [TaskEvent.model_validate(e) for e in _FLOWS["chain_groups_tasks_add"]]
+    store = GraphStore(max_nodes=10)
+    for event in events:
+        store.add_event(event)
+    graph = store._graph
+    first, second = _chords_by_age(graph)
+    units = _units_of(graph)
+    first_unit = {n for n, u in units.items() if u == units[first.task_id]}
+    second_unit = {n for n, u in units.items() if u == units[second.task_id]}
+    assert len(graph.nodes) == len(first_unit) + len(second_unit) == 9
+
+    last = max(e.timestamp for e in events)
+    for i in range(3):
+        store.add_event(
+            TaskEvent(
+                task_id=f"x{i}",
+                name="tests.filler",
+                state=TaskState.SUCCESS,
+                timestamp=last + timedelta(seconds=1 + i),
+            )
+        )
+
+    assert set(store._graph.nodes) == second_unit | {"x0", "x1", "x2"}
