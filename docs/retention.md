@@ -8,6 +8,20 @@ The store holds at most `max_nodes` tasks: 10,000 for `stemtrace server`, and th
 default for an embedded app, which can change it with `init_app(max_nodes=...)` (see
 [Embedded server options](configuration.md#embedded-server-options-init_app)).
 
+When it is full it evicts the oldest tasks down to 90% of `max_nodes`. A group or chord goes as one
+unit: with the nodes drawn directly inside it (its callback, a group nested in it), its members, and
+the tasks between a member and it (a chain's earlier steps, the rest of the callback's chain). The
+unit is as old as the newest of them, so a group is never shown with part of its members and a state
+worked out from them, and one eviction can free more than 10%. A task Celery stamped with the
+ID of a group or chord the store holds goes with the first group or chord above it, and so do the
+tasks between them: in `chain(group, task, group, task, add)` the `add` goes with the second chord,
+not the first group whose ID it carries. A stamped task drawn under no group or chord goes with the
+group it is stamped with (a replaced member). Tasks a member starts, and a workflow the callback
+starts, are evicted on their own, so a long pipeline of chords doesn't keep its oldest chords over
+newer tasks. A unit bigger than 90% of
+`max_nodes` can't be held whole: its oldest nodes are evicted like single tasks, and the group's
+state comes from the members still held.
+
 ## Redis (Streams)
 
 On restart, the server can rebuild state by replaying events that are

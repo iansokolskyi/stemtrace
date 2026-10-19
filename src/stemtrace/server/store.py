@@ -103,6 +103,73 @@ def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     return max(member_times, default=_MIN_DATETIME), 1
 
 
+def _eviction_units(graph: TaskGraph) -> list[list[TaskNode]]:
+    """The graph's nodes, each GROUP/CHORD together with what shows its state.
+
+    That is every node drawn directly inside it (a GROUP/CHORD too), its member
+    tasks, and the tasks between a member and it (a chain's earlier steps, the
+    callback's chain). Tasks a member starts, and a workflow its callback
+    starts, are units of their own.
+    """
+    root = {node_id: node_id for node_id in graph.nodes}
+
+    def find(node_id: str) -> str:
+        """The representative of ``node_id``'s unit."""
+        while root[node_id] != node_id:
+            root[node_id] = root[root[node_id]]
+            node_id = root[node_id]
+        return node_id
+
+    for node_id, owner in _unit_links(graph):
+        root[find(node_id)] = find(owner)
+    units: dict[str, list[TaskNode]] = {}
+    for node in graph.nodes.values():
+        units.setdefault(find(node.task_id), []).append(node)
+    return list(units.values())
+
+
+def _unit_links(graph: TaskGraph) -> list[tuple[str, str]]:
+    """Pairs of nodes in one eviction unit (see ``_eviction_units``)."""
+    links: list[tuple[str, str]] = []
+    containers: dict[str, set[str]] = {}
+    for node in graph.nodes.values():
+        if node.node_type != NodeType.TASK and node.group_id is not None:
+            containers.setdefault(node.group_id, set()).add(node.task_id)
+        parent = graph.nodes.get(node.parent_id) if node.parent_id else None
+        if parent is not None and parent.node_type != NodeType.TASK:
+            links.append((node.task_id, parent.task_id))  # drawn directly inside
+    for node in graph.nodes.values():
+        owners = containers.get(node.group_id or "")
+        if node.node_type != NodeType.TASK or owners is None:
+            continue
+        steps, above = _path_up(graph, node)
+        # Stamped with this group but drawn inside another container (a
+        # pipeline's last task): the drawn-inside links put it in that one.
+        if above is None or above in owners:
+            links.extend((node.task_id, owner) for owner in owners)
+        links.extend((step, node.task_id) for step in steps)
+    return links
+
+
+def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
+    """The tasks above ``node`` up to the first GROUP/CHORD, and that container.
+
+    ``(no tasks, None)`` when the walk ends without one: at a root, a parent
+    that isn't stored, or a parent loop.
+    """
+    steps: list[str] = []
+    current = node
+    while current.parent_id is not None and current.parent_id not in steps:
+        parent = graph.nodes.get(current.parent_id)
+        if parent is None:
+            break
+        if parent.node_type != NodeType.TASK:
+            return steps, parent.task_id
+        steps.append(parent.task_id)
+        current = parent
+    return [], None
+
+
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the first timestamp for a node (including children for synthetic nodes)."""
     if node.first_seen is not None:
@@ -901,20 +968,28 @@ class GraphStore:
             return last_time
 
     def _maybe_evict(self) -> None:
-        """Evict oldest 10% when over capacity. Call with lock held.
+        """Evict the oldest units down to 90% of capacity. Call with lock held.
 
-        A GROUP/CHORD node is as old as its newest member and goes after it,
-        so a container isn't evicted while its members are still shown.
+        A group or chord goes whole, with its members and callback, so its
+        state never comes from part of them; one eviction can free over 10%.
+        A unit too big to keep (over 90% of ``max_nodes``) loses its oldest
+        nodes instead.
         """
         if len(self._graph.nodes) <= self._max_nodes:
             return
-
-        nodes_by_age = sorted(
-            self._graph.nodes.values(),
-            key=lambda n: _eviction_age(n, self._graph),
+        keep = int(self._max_nodes * 0.9)
+        # A unit is as old as its newest node.
+        units = sorted(
+            _eviction_units(self._graph),
+            key=lambda unit: max(_eviction_age(n, self._graph) for n in unit),
         )
-
-        to_remove = len(nodes_by_age) - int(self._max_nodes * 0.9)
-        for node in nodes_by_age[:to_remove]:
-            self._graph.remove_node(node.task_id)
-            self._runs.pop(node.task_id, None)
+        for unit in units:
+            excess = len(self._graph.nodes) - keep
+            if excess <= 0:
+                return
+            if len(unit) > keep:
+                unit = sorted(unit, key=lambda n: _eviction_age(n, self._graph))
+                unit = unit[:excess]
+            for node in unit:
+                self._graph.remove_node(node.task_id)
+                self._runs.pop(node.task_id, None)
