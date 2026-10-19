@@ -6,17 +6,20 @@ stemtrace stream:
 - ``MP_BROKER_URL``: the Celery broker, result backend and event stream (Redis).
 - ``MP_SUFFIX``: makes the queue and stream names unique.
 
-``mp.late_first`` outlives its hard time limit after Celery sent the next chain step.
+``mp.late_first`` is killed in ``on_success`` after Celery sent the next chain step,
+once the later steps reached the state its ``gate`` kwarg names.
 The four ``mp.fail_*`` tasks fail four ways: an exception and a soft time
 limit, which the pool child reports itself, and a hard time limit and a killed
 pool child, which the worker's main process reports.
 """
 
+import json
 import os
 import signal
 import time
 from typing import Any
 
+import redis
 from celery import Celery, Task
 
 import stemtrace
@@ -85,8 +88,21 @@ def fail_killed(*_: object) -> None:
     os.kill(os.getpid(), signal.SIGKILL)
 
 
-class SlowOnSuccess(Task):
-    """A task whose ``on_success`` handler outlives its time limit."""
+GATE_TIMEOUT_S = 60
+
+
+def _gate_open(client: "redis.Redis[bytes]", state: str, task_ids: list[str]) -> bool:
+    """Whether the stemtrace stream holds a ``state`` event for every task in ``task_ids``."""
+    seen = set()
+    for _, fields in client.xrange(f"{EVENTS_PREFIX}:events"):
+        payload = json.loads(fields[b"data"])
+        if payload.get("state") == state:
+            seen.add(payload.get("task_id"))
+    return seen >= set(task_ids)
+
+
+class KilledOnSuccess(Task):
+    """A task whose ``on_success`` handler waits for its gate, then kills its pool child."""
 
     def on_success(
         self,
@@ -95,18 +111,32 @@ class SlowOnSuccess(Task):
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> None:
-        """Run in the pool child after the next chain step was sent (celery 5.6.3 app/trace.py)."""
-        time.sleep(30)
+        """Wait for ``kwargs["gate"]``, then die: the main process records the failure.
+
+        Celery 5.6.3 app/trace.py runs this after it sent the next chain step. The
+        gate is ``{"state": ..., "task_ids": [...]}``: the kill waits for a stemtrace
+        event in that state from every listed task, so the later steps' progress
+        never races it. After ``GATE_TIMEOUT_S`` the kill happens anyway, so a gate
+        that never opens fails the test's assertions instead of hanging a pool slot.
+        """
+        gate = kwargs["gate"]
+        client = redis.from_url(os.environ["MP_BROKER_URL"])
+        deadline = time.monotonic() + GATE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if _gate_open(client, gate["state"], gate["task_ids"]):
+                break
+            time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGKILL)
 
 
-@app.task(name="mp.late_first", base=SlowOnSuccess, time_limit=4)
-def late_first(*_: object) -> int:
-    """Succeed, then be hard-limited inside ``on_success``."""
+@app.task(name="mp.late_first", base=KilledOnSuccess)
+def late_first(*_: object, **__: object) -> int:
+    """Succeed, then be killed inside ``on_success``."""
     return 1
 
 
 @app.task(name="mp.slow")
 def slow(*_: object) -> int:
-    """Run for 8 s: still running when ``mp.late_first`` is stopped (4 s limit)."""
+    """Run for 8 s: still running when ``mp.late_first`` is killed, once this has started."""
     time.sleep(8)
     return 1
