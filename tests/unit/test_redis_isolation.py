@@ -105,7 +105,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_controller(
-    args: list[str], redis_url: str, target: Path
+    args: list[str],
+    redis_url: str,
+    target: Path,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run pytest as an xdist controller with tests/conftest.py loaded as a plugin."""
     return subprocess.run(
@@ -128,6 +131,7 @@ def _run_controller(
             **{k: v for k, v in os.environ.items() if not k.startswith("PYTEST_XDIST")},
             "REDIS_URL": redis_url,
             "PYTHONPATH": str(REPO_ROOT),
+            **(extra_env or {}),
         },
         capture_output=True,
         text=True,
@@ -229,6 +233,26 @@ def test_pytest_when_a_worker_dies_outside_a_test_exits_non_zero(
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
     assert "worker gw1 crashed and worker restarting disabled" in output, output
+
+
+def test_pytest_controller_inheriting_worker_env_when_worker_dies_exits_cleanly(
+    tmp_path: Path,
+) -> None:
+    """A nested controller that inherited PYTEST_XDIST_WORKER has no restart limit set."""
+    (tmp_path / "conftest.py").write_text(
+        _CRASH_CONFTEST.format(startup=_DIE["sigkill"], teardown="pass")
+    )
+    (tmp_path / "test_many.py").write_text(_MANY_TESTS)
+    result = _run_controller(
+        ["-n", "2", "--dist", "worksteal"],
+        f"{BASE}/15",
+        tmp_path,
+        extra_env={"PYTEST_XDIST_WORKER": "gw3"},
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Traceback" not in output, output
+    assert "TypeError" not in output, output
 
 
 def test_pytest_with_healthy_workers_exits_zero(tmp_path: Path) -> None:
