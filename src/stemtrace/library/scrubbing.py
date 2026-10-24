@@ -168,15 +168,25 @@ def _scrub_dict(
     data: dict[Any, Any],
     patterns: frozenset[str],
     safe_keys: frozenset[str] | None,
+    budget: _Budget | None = None,
 ) -> dict[Any, Any]:
     """Scrub a dictionary with patterns already lowercased by the entry point."""
+    if budget is not None:
+        budget.charge(4 * dict.__len__(data))  # ": " and ", " per entry
     result: dict[Any, Any] = {}
     for key, value in data.items():
+        if budget is not None:
+            if type(key) is str:  # the common key, charged without a call
+                budget.left -= len(key) + 2
+                if budget.left < 0:
+                    raise ValueTooBig
+            else:
+                _charge_key(key, budget)
         shown = _as_matched(key)
         if _is_sensitive_key(key, patterns, safe_keys):
             result[shown] = FILTERED
         else:
-            result[shown] = _scrub_value(value, patterns, safe_keys)
+            result[shown] = _scrub_value(value, patterns, safe_keys, budget)
 
     return result
 
@@ -217,15 +227,97 @@ def _scrub_value(
     value: Any,
     sensitive_keys: frozenset[str],
     safe_keys: frozenset[str] | None = None,
+    budget: _Budget | None = None,
 ) -> Any:
-    """Recursively scrub a value (handles nested dicts and lists)."""
+    """Recursively scrub a value (handles nested dicts and lists).
+
+    With a ``budget``, each container is charged its smallest output size before
+    its items are visited, so the walk ends with ValueTooBig after O(budget)
+    nodes instead of the whole value.
+    """
     if isinstance(value, dict):
-        return _scrub_dict(value, sensitive_keys, safe_keys)
+        return _scrub_dict(value, sensitive_keys, safe_keys, budget)
     if isinstance(value, list):
-        return [_scrub_value(item, sensitive_keys, safe_keys) for item in value]
+        if budget is not None:
+            budget.charge(2 * list.__len__(value))  # an element and its ", "
+        return [_scrub_value(item, sensitive_keys, safe_keys, budget) for item in value]
     if isinstance(value, tuple):
-        return tuple(_scrub_value(item, sensitive_keys, safe_keys) for item in value)
+        if budget is not None:
+            budget.charge(2 * tuple.__len__(value))
+        return tuple(
+            _scrub_value(item, sensitive_keys, safe_keys, budget) for item in value
+        )
+    if budget is not None and type(value) not in _FREE_LEAVES:
+        _charge_leaf(value, budget)
     return value
+
+
+# Leaves charged nothing: the parent's per-entry charge already covers them.
+_FREE_LEAVES = frozenset({int, float, bool, type(None)})
+
+
+class ValueTooBig(Exception):
+    """A value's smallest possible scrubbed size already exceeds the limit."""
+
+
+class _Budget:
+    """Running lower bound on a value's scrubbed size, shared by one walk."""
+
+    def __init__(self, max_size: int) -> None:
+        self.left = max_size
+
+    def charge(self, cost: int) -> None:
+        """Spend ``cost`` bytes, raising ValueTooBig once the limit is passed."""
+        self.left -= cost
+        if self.left < 0:
+            raise ValueTooBig
+
+
+def _charge_key(key: object, budget: _Budget) -> None:
+    """Charge a dict key's minimum output size, before anything walks its parts."""
+    match key:
+        case str():
+            budget.charge(str.__len__(key) + 2)
+        case bytes():
+            budget.charge(bytes.__len__(key) + 3)
+        case tuple() | frozenset():
+            budget.charge(1)
+            for part in key:
+                _charge_key(part, budget)
+        case _:
+            budget.charge(1)
+
+
+def _charge_leaf(value: Any, budget: _Budget) -> None:
+    """Charge a string or bytes leaf its minimum output size."""
+    # Other leaves need no charge: their parent's per-entry charge covers them.
+    match value:
+        case str():
+            budget.charge(str.__len__(value) + 2)
+        case bytes():  # json falls back to str(): "b'...'"
+            budget.charge(bytes.__len__(value) + 3)
+        case bytearray():
+            budget.charge(bytearray.__len__(value) + 3)
+
+
+def oversize_marker(max_size: int) -> str:
+    """The text that stands in for a value known to exceed ``max_size``."""
+    return f"{TRUNCATED_PREFIX}over {max_size} bytes > {max_size} max]"
+
+
+def scrub_within(
+    value: Any,
+    max_size: int,
+    sensitive_keys: frozenset[str],
+    safe_keys: frozenset[str] | None = None,
+) -> Any:
+    """Scrub ``value`` like ``scrub_args``/``scrub_dict``, walking O(``max_size``) nodes.
+
+    Raises:
+        ValueTooBig: The value is certainly bigger than ``max_size`` once scrubbed.
+    """
+    patterns = _lowercase_patterns(sensitive_keys, None)
+    return _scrub_value(value, patterns, safe_keys, _Budget(max_size))
 
 
 def scrub_args(
@@ -270,9 +362,19 @@ def safe_serialize(
     """
     all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
 
-    # First scrub the value
-    scrubbed = _scrub_value(value, all_sensitive, safe_keys)
+    # A value that is certainly too big is never fully copied or serialized.
+    try:
+        scrubbed = _scrub_value(value, all_sensitive, safe_keys, _Budget(max_size))
+    except ValueTooBig:
+        return oversize_marker(max_size)
+    return fit_scrubbed(scrubbed, max_size)
 
+
+def fit_scrubbed(scrubbed: Any, max_size: int) -> Any:
+    """Return an already scrubbed value if it fits ``max_size``, else a text stand-in.
+
+    The stand-in is the Truncated marker, or ``str()`` of a value json can't encode.
+    """
     # Try to serialize to check size and ensure it's JSON-compatible
     try:
         serialized = json.dumps(scrubbed, default=str)
