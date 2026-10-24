@@ -11,8 +11,8 @@ or not), and counts it under its current state.
 
 from __future__ import annotations
 
+import heapq
 import re
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Final
@@ -229,11 +229,21 @@ def time_series(
     Raises:
         ValueError: If more than ``MAX_BUCKETS`` buckets would be needed.
     """
-    starts = bucket_starts(start, end, bucket)
-    series = TimeSeries(starts=starts, bucket=bucket)
-    size = bucket.total_seconds()
-    first = starts[0].timestamp()
-    width = len(starts)
+    series = TimeSeries(starts=bucket_starts(start, end, bucket), bucket=bucket)
+    count_runs(series, records, key_of=key_of)
+    return series
+
+
+def count_runs(
+    series: TimeSeries,
+    records: Iterable[RunRecord],
+    *,
+    key_of: Callable[[RunRecord], str] | None = None,
+) -> None:
+    """Add ``records`` to ``series``, so a long list can be counted in slices."""
+    size = series.bucket.total_seconds()
+    first = series.starts[0].timestamp()
+    width = len(series.starts)
     for record in records:
         offset = record.last_updated.timestamp() - first
         if offset < 0:
@@ -243,7 +253,6 @@ def time_series(
         if key_of is not None:
             per_key = series.by_key.setdefault(key_of(record), {})
             per_key.setdefault(record.state, [0] * width)[index] += 1
-    return series
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,31 +267,72 @@ class FailureGroup:
     sample_task_ids: tuple[str, ...]
 
 
-def failure_groups(records: Iterable[RunRecord], window: Window) -> list[FailureGroup]:
-    """Group the window's FAILURE runs by exception class.
+class FailureTally:
+    """Running totals of one exception class's FAILURE runs, added to one by one.
+
+    Keeps O(names + ``FAILURE_SAMPLES``) state, so reading a tally never sorts
+    the runs: summarizing is O(types), whatever the number of failures.
+    """
+
+    __slots__ = ("_names", "_newest", "count", "first_seen", "last_seen")
+
+    def __init__(self, first: RunRecord) -> None:
+        """Start a tally with its first run."""
+        self.count = 1
+        self.first_seen = self.last_seen = first.last_updated
+        self._names = {first.name}
+        # Min-heap of the newest runs by (last_updated, task_id): the root is
+        # the next to drop.
+        self._newest = [(first.last_updated, first.task_id)]
+
+    def add(self, record: RunRecord) -> None:
+        """Count one more FAILURE run."""
+        stamp = record.last_updated
+        self.count += 1
+        self.first_seen = min(self.first_seen, stamp)
+        self.last_seen = max(self.last_seen, stamp)
+        self._names.add(record.name)
+        entry = (stamp, record.task_id)
+        if len(self._newest) < FAILURE_SAMPLES:
+            heapq.heappush(self._newest, entry)
+        elif entry > self._newest[0]:
+            heapq.heapreplace(self._newest, entry)
+
+    def group(self, exception_type: str | None) -> FailureGroup:
+        """The tally as a group."""
+        return FailureGroup(
+            exception_type=exception_type,
+            count=self.count,
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            task_names=tuple(sorted(self._names)),
+            sample_task_ids=tuple(
+                task_id for _, task_id in sorted(self._newest, reverse=True)
+            ),
+        )
+
+
+def collect_failures(
+    by_type: dict[str | None, FailureTally],
+    records: Iterable[RunRecord],
+    window: Window,
+) -> None:
+    """Add the window's FAILURE ``records`` to ``by_type``, so slices can be collected.
 
     Runs without an exception class (events from workers older than the
-    field) form one group with ``exception_type`` None.
-
-    Returns:
-        Groups, most runs first; ties by latest failure first.
+    field) are tallied under ``None``.
     """
-    by_type: dict[str | None, list[RunRecord]] = defaultdict(list)
     for record in records:
         if record.state == TaskState.FAILURE and window.contains(record.last_updated):
-            by_type[record.exception_type].append(record)
-    groups = []
-    for exception_type, failed in by_type.items():
-        failed.sort(key=lambda r: (r.last_updated, r.task_id), reverse=True)
-        groups.append(
-            FailureGroup(
-                exception_type=exception_type,
-                count=len(failed),
-                first_seen=failed[-1].last_updated,
-                last_seen=failed[0].last_updated,
-                task_names=tuple(sorted({r.name for r in failed})),
-                sample_task_ids=tuple(r.task_id for r in failed[:FAILURE_SAMPLES]),
-            )
-        )
+            tally = by_type.get(record.exception_type)
+            if tally is None:
+                by_type[record.exception_type] = FailureTally(record)
+            else:
+                tally.add(record)
+
+
+def summarize_failures(by_type: dict[str | None, FailureTally]) -> list[FailureGroup]:
+    """Turn the tallies into groups, most runs first; ties by latest failure."""
+    groups = [tally.group(exception_type) for exception_type, tally in by_type.items()]
     groups.sort(key=lambda g: (-g.count, -g.last_seen.timestamp()))
     return groups
