@@ -409,7 +409,7 @@ def test_summaries_aggregate_outside_the_store_lock(
 ) -> None:
     store.add_event(_event("a", TaskState.FAILURE, 1, exception_type="E"))
     held: list[bool] = []
-    for name in ("window_stats", "time_series", "failure_groups"):
+    for name in ("window_stats", "count_runs", "collect_failures"):
         real = getattr(stats, name)
 
         def spy(*args: object, _real: object = real, **kwargs: object) -> object:

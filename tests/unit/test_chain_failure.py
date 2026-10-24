@@ -36,6 +36,10 @@ def app() -> Iterator[Celery]:
     app = Celery("chain-failure", broker="memory://", backend="cache+memory://")
     for name in ("a", "b", "c", "d", "cb"):
         app.task(name=f"t.{name}")(_noop)
+    # kombu's memory broker keeps queues on the Channel class, so messages other
+    # test files left in "celery" would show up in _drain when they share a process.
+    with app.connection_for_read() as conn:
+        conn.SimpleQueue("celery").clear()
     yield app
     disconnect_signals()
     MemoryTransport.clear()

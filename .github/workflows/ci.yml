@@ -115,7 +115,7 @@ jobs:
         run: uv sync --locked --no-build --all-extras
 
       - name: Run tests
-        run: uv run --locked --no-build pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
+        run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist loadfile --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -301,7 +301,7 @@ jobs:
         run: uv sync --locked --no-build --all-extras
 
       - name: Run tests (coverage only)
-        run: uv run --locked --no-build pytest --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
+        run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist loadfile --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage (main)
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

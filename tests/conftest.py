@@ -1,5 +1,6 @@
 """Shared pytest fixtures."""
 
+import os
 import socket
 import urllib.parse
 from collections.abc import Awaitable, Callable, Iterator, MutableMapping
@@ -11,8 +12,36 @@ import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.config import _reset_config
+from tests.redis_isolation import (
+    DEFAULT_REDIS_URL,
+    check_worker_count,
+    redis_url_for_worker,
+)
 
 RawGet = Callable[[Any, str], Awaitable[int]]
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Fail fast, on the xdist controller, when workers can't each get a Redis db."""
+    workers = getattr(config.option, "numprocesses", None)
+    if "PYTEST_XDIST_WORKER" in os.environ or not isinstance(workers, int):
+        return
+    try:
+        check_worker_count(
+            os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
+            min(workers, config.option.maxprocesses or workers),
+        )
+    except ValueError as err:
+        raise pytest.UsageError(str(err)) from err
+
+
+# Integration modules read REDIS_URL at import, so set it before they are collected.
+# pytest_configure above has already checked that every worker gets a valid db.
+if "PYTEST_XDIST_WORKER" in os.environ:
+    os.environ["REDIS_URL"] = redis_url_for_worker(
+        os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
+        os.environ["PYTEST_XDIST_WORKER"],
+    )
 
 
 class InterleavingLock:
