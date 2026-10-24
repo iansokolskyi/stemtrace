@@ -3,10 +3,13 @@
 Each request copies the store's run records once (``GraphStore.run_records``,
 references only) and aggregates outside the store lock: O(n) in the records
 held (at most the store's ``max_nodes``), plus O(buckets) for time series.
+The aggregation runs in slices that yield to the event loop between them.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections import defaultdict
 from datetime import (
     datetime,  # noqa: TC003  FastAPI resolves Query annotations at runtime
 )
@@ -30,23 +33,51 @@ from stemtrace.server.api.schemas import (
 from stemtrace.server.groups import group_lookup
 from stemtrace.server.stats import (
     MAX_DURATION,
+    TimeSeries,
     Window,
+    WindowStats,
     auto_bucket,
-    failure_groups,
+    bucket_starts,
+    collect_failures,
+    count_runs,
     parse_duration,
+    summarize_failures,
     time_series,
     window_stats,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
     from stemtrace.core.events import TaskState
     from stemtrace.core.groups import GroupConfig
     from stemtrace.server.stats import RunRecord
     from stemtrace.server.store import GraphStore, WorkerRegistry
 
+# Records aggregated between yields to the event loop: about 1 ms of work, so
+# a request over max_nodes records never holds the loop for longer.
+_SLICE = 2048
+
 _WITHIN_HELP = "Relative window ending now, e.g. 30s, 15m, 6h or 7d (at most 3650d)"
+
+
+async def _slices(records: list[RunRecord]) -> AsyncIterator[list[RunRecord]]:
+    """Yield ``records`` in slices, giving the event loop a turn after each."""
+    # Concurrency model: ``records`` is the store's snapshot (a list copy of
+    # immutable records, taken under the store lock), so the consumer thread
+    # can ingest meanwhile without a race or a torn result. Slicing on the loop
+    # rather than in a worker thread never waits for a free thread either.
+    for start in range(0, len(records), _SLICE):
+        yield records[start : start + _SLICE]
+        await asyncio.sleep(0)
+
+
+async def _oldest(records: list[RunRecord], now: datetime) -> datetime:
+    """The oldest ``last_updated`` among ``records``, or ``now`` with none."""
+    oldest = now
+    async for part in _slices(records):
+        oldest = min(oldest, min(r.last_updated for r in part))
+    return oldest
 
 
 def _window_response(window: Window) -> TimeWindowResponse:
@@ -93,6 +124,14 @@ def add_summary_routes(
     _add_failures_route(router, store=store)
 
 
+def _add_stats(total: WindowStats, part: WindowStats) -> WindowStats:
+    return WindowStats(
+        runs=total.runs + part.runs,
+        failures=total.failures + part.failures,
+        minutes=part.minutes,
+    )
+
+
 def _add_overview_route(
     router: APIRouter, *, store: GraphStore, worker_registry: WorkerRegistry | None
 ) -> None:
@@ -119,10 +158,10 @@ def _add_overview_route(
         window = Window(now - params.parse_within(within), now, open_end=True)
         baseline = window.previous()
         records = store.run_records()
-        current, previous = (
-            window_stats(records, window),
-            window_stats(records, baseline),
-        )
+        current, previous = WindowStats(0, 0, 0.0), WindowStats(0, 0, 0.0)
+        async for part in _slices(records):
+            current = _add_stats(current, window_stats(part, window))
+            previous = _add_stats(previous, window_stats(part, baseline))
         workers = worker_registry.get_all_workers() if worker_registry else []
         return OverviewResponse(
             window=_window_response(window),
@@ -182,8 +221,9 @@ def _add_timeseries_route(
             raise _unprocessable("group_by must be task_group")
         now = params.utcnow()
         records = store.run_records()
-        oldest = min((r.last_updated for r in records), default=now)
-        window = _recent_window(within, from_date, now, min(oldest, now))
+        window = _recent_window(
+            within, from_date, now, min(await _oldest(records, now), now)
+        )
         try:
             size = (
                 parse_duration(bucket)
@@ -202,7 +242,9 @@ def _add_timeseries_route(
 
         try:
             if key_of is None:
-                series = time_series(records, start=window.start, end=now, bucket=size)
+                series = TimeSeries(bucket_starts(window.start, now, size), size)
+                async for part in _slices(records):
+                    count_runs(series, part)
             else:
                 # Resolves every run's group: off the event loop, as the task
                 # list's group filters do (see routes._group_task_names).
@@ -252,9 +294,13 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
             raise _unprocessable("group_by must be exception")
         now = params.utcnow()
         records = store.run_records()
-        oldest = min((r.last_updated for r in records), default=now)
-        window = _recent_window(within, from_date, now, min(oldest, now))
-        groups_ = failure_groups(records, window)
+        window = _recent_window(
+            within, from_date, now, min(await _oldest(records, now), now)
+        )
+        by_type: dict[str | None, list[RunRecord]] = defaultdict(list)
+        async for part in _slices(records):
+            collect_failures(by_type, part, window)
+        groups_ = summarize_failures(by_type)
         return FailureGroupListResponse(
             window=_window_response(window),
             group_by=group_by,

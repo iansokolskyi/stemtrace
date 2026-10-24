@@ -229,11 +229,21 @@ def time_series(
     Raises:
         ValueError: If more than ``MAX_BUCKETS`` buckets would be needed.
     """
-    starts = bucket_starts(start, end, bucket)
-    series = TimeSeries(starts=starts, bucket=bucket)
-    size = bucket.total_seconds()
-    first = starts[0].timestamp()
-    width = len(starts)
+    series = TimeSeries(starts=bucket_starts(start, end, bucket), bucket=bucket)
+    count_runs(series, records, key_of=key_of)
+    return series
+
+
+def count_runs(
+    series: TimeSeries,
+    records: Iterable[RunRecord],
+    *,
+    key_of: Callable[[RunRecord], str] | None = None,
+) -> None:
+    """Add ``records`` to ``series``, so a long list can be counted in slices."""
+    size = series.bucket.total_seconds()
+    first = series.starts[0].timestamp()
+    width = len(series.starts)
     for record in records:
         offset = record.last_updated.timestamp() - first
         if offset < 0:
@@ -243,7 +253,6 @@ def time_series(
         if key_of is not None:
             per_key = series.by_key.setdefault(key_of(record), {})
             per_key.setdefault(record.state, [0] * width)[index] += 1
-    return series
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,9 +277,25 @@ def failure_groups(records: Iterable[RunRecord], window: Window) -> list[Failure
         Groups, most runs first; ties by latest failure first.
     """
     by_type: dict[str | None, list[RunRecord]] = defaultdict(list)
+    collect_failures(by_type, records, window)
+    return summarize_failures(by_type)
+
+
+def collect_failures(
+    by_type: dict[str | None, list[RunRecord]],
+    records: Iterable[RunRecord],
+    window: Window,
+) -> None:
+    """Add the window's FAILURE ``records`` to ``by_type``, so slices can be collected."""
     for record in records:
         if record.state == TaskState.FAILURE and window.contains(record.last_updated):
             by_type[record.exception_type].append(record)
+
+
+def summarize_failures(
+    by_type: dict[str | None, list[RunRecord]],
+) -> list[FailureGroup]:
+    """Turn collected failures into groups, most runs first; ties by latest failure."""
     groups = []
     for exception_type, failed in by_type.items():
         failed.sort(key=lambda r: (r.last_updated, r.task_id), reverse=True)
