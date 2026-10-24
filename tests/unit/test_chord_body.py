@@ -65,7 +65,7 @@ def test_body_first_task_id_chain_keeps_first_step_not_last() -> None:
     found = body_first_task_id(_as_dict(body))
 
     assert found == steps[0].options["task_id"]
-    assert found != body.options["task_id"]
+    assert found != steps[-1].options["task_id"]
 
 
 @pytest.mark.parametrize(
@@ -106,7 +106,7 @@ def test_extract_chord_info_returns_body_first_id_of_each_body_kind(kind: str) -
 
     _, callback_id, first_id = _extract_chord_info(_as_dict(body))
 
-    assert callback_id == body.options["task_id"]
+    assert callback_id == body.options.get("task_id")
     assert first_id == expected
 
 
