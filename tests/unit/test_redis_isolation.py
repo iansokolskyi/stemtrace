@@ -80,9 +80,16 @@ def test_pytest_with_too_few_dbs_exits_with_usage_error(url: str) -> None:
             "loadfile",
             "-p",
             "no:cacheprovider",
+            # The lowest-versions CI job passes this too (old floors warn on import).
+            "-W",
+            "ignore::DeprecationWarning",
             "tests/unit/test_redis_isolation.py",
         ],
-        env={**os.environ, "REDIS_URL": url},
+        # This test may itself run on an xdist worker; the child is a controller.
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("PYTEST_XDIST")},
+            "REDIS_URL": url,
+        },
         capture_output=True,
         text=True,
         timeout=120,
