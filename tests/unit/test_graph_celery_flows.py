@@ -181,6 +181,18 @@ _EXPECTED: dict[str, str] = {
         "chord{*tsum, +add, +add})), chord{+add, +add}), +add, +add, "
         "celery.chord_unlock}"
     ),
+    # chord(headers, chord(...)): the outer chord's callback is the inner chord.
+    # On chord_unlock the inner headers report the outer chord's unlock task,
+    # which is never a callback itself.
+    "chord_in_chord_body_slow": ("chord{*chord{*tsum, +tsum, +tsum}, +add, +slow_add}"),
+    "chord_in_chord_body@chord_unlock": (
+        "chord{*chord{*tsum, +tsum, +tsum, celery.chord_unlock}, +add, +add, "
+        "celery.chord_unlock}"
+    ),
+    "chord_in_chord_body_slow@chord_unlock": (
+        "chord{*chord{*tsum, +tsum, +tsum, celery.chord_unlock}, +add, "
+        "+slow_add, celery.chord_unlock}"
+    ),
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
     # the callback the header names.
@@ -1194,3 +1206,32 @@ def test_replay_chain_of_chords_without_unlock_events_never_swaps_callbacks(
 
             first = graph.nodes[f"group:{group_id}"]
             assert first.chord_id in (None, callback)
+
+
+@pytest.mark.parametrize("flow", ["chord_in_chord_body", "chord_in_chord_body_slow"])
+@pytest.mark.parametrize("drop_only_pending", [False, True])
+def test_replay_chord_in_chord_body_without_unlock_events_never_names_unlock(
+    flow: str, drop_only_pending: bool
+) -> None:
+    """Missing a ``chord_unlock`` task's events can only lose the callback."""
+    events = _CAPTURES[f"{flow}@chord_unlock"]
+    outer = next(
+        e["group_id"] for e in events if e["parent_id"] is None and e["group_id"]
+    )
+    inner = next(
+        e["chord_callback_id"]
+        for e in events
+        if e["group_id"] == outer and e["chord_callback_id"]
+    )
+    unlocks = [e["task_id"] for e in events if e["name"] == "celery.chord_unlock"]
+    for dropped in unlocks:
+        kept = [
+            e
+            for e in events
+            if e["task_id"] != dropped
+            or (drop_only_pending and e["state"] != "PENDING")
+        ]
+        for order in _orders(kept)[:6]:
+            graph = _replay(order)
+
+            assert graph.nodes[f"group:{outer}"].chord_id in (None, f"group:{inner}")

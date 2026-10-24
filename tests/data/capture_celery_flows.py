@@ -204,6 +204,13 @@ def reject() -> int:
     raise Reject("bad input", requeue=False)
 
 
+@app.task(name="flows.slow_add")
+def slow_add(x: int, y: int) -> int:
+    """Add after a pause, so a chord_unlock task polls (retries) meanwhile."""
+    time.sleep(2.5)
+    return x + y
+
+
 @app.task(bind=True, name="flows.flaky_add", max_retries=2)
 def flaky_add(self: Any, x: int, y: int) -> int:
     """Add, failing (and retrying) once on its first run."""
@@ -280,6 +287,10 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         ),
         "chord_in_chord_body": lambda: chord(
             [add.s(1, 1), add.s(2, 2)],
+            chord([tsum.s(), tsum.s()], tsum.s()),
+        ),
+        "chord_in_chord_body_slow": lambda: chord(
+            [slow_add.s(1, 1), add.s(2, 2)],
             chord([tsum.s(), tsum.s()], tsum.s()),
         ),
         "chord_with_chain_body": lambda: chord(
@@ -451,6 +462,8 @@ _UNLOCK_FLOWS = (
     "chain_chords_2",
     "chain_chords_3",
     "chain_chords_4",
+    "chord_in_chord_body",
+    "chord_in_chord_body_slow",
 )
 # Chords Celery never completes: there is no result to wait for.
 _NEVER_COMPLETE = ("chord_ignored_header", "chord_rejected_header")
@@ -501,7 +514,7 @@ def main() -> None:
         if "--suffix" in sys.argv:
             only = [a for a in only if a != suffix]
     if UNLOCK:
-        flows = {name: flows[name] for name in (only or _UNLOCK_FLOWS) if name in flows}
+        flows = {name: flows[name] for name in (only or _UNLOCK_FLOWS)}
     elif only:
         flows = {name: flows[name] for name in only}
     captures: dict[str, list[dict[str, Any]]] = {}
