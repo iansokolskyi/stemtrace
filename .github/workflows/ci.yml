@@ -171,7 +171,7 @@ jobs:
       # Old floors (e.g. typer) emit deprecation warnings under current click;
       # the suite turns warnings into errors, which isn't what this job checks.
       - name: Run unit tests
-        run: .venv-lowest/bin/python -m pytest tests/unit -p no:cacheprovider --no-cov -W ignore::DeprecationWarning
+        run: .venv-lowest/bin/python -m pytest tests/unit -n auto --maxprocesses 8 --dist load --durations=25 -p no:cacheprovider --no-cov -W ignore::DeprecationWarning
 
   audit:
     name: Audit runtime dependencies
