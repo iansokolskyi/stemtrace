@@ -2,6 +2,7 @@
 
 import json
 import random
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -36,6 +37,23 @@ class CountingList(list[Any]):
             yield item
 
 
+class CountingTuple(tuple[Any, ...]):
+    """A tuple that counts the items handed out by iteration."""
+
+    visits = 0
+
+    def __iter__(self) -> Any:
+        for item in super().__iter__():
+            type(self).visits += 1
+            yield item
+
+
+class BigValue(Enum):
+    """An Enum whose member value is a huge tuple."""
+
+    HUGE = CountingTuple(range(2_000_000))
+
+
 class CountingDict(dict[Any, Any]):
     """A dict that counts the entries handed out by items()."""
 
@@ -50,6 +68,7 @@ class CountingDict(dict[Any, Any]):
 @pytest.fixture(autouse=True)
 def _reset_counters() -> None:
     CountingList.visits = 0
+    CountingTuple.visits = 0
     CountingDict.visits = 0
 
 
@@ -123,6 +142,12 @@ class TestCostIsBounded:
         self, no_json: None
     ) -> None:
         assert safe_serialize({"k" * 5_000_000: 1}, MAX_SIZE) == _marker()
+
+    def test_safe_serialize_with_enum_key_of_huge_value_visits_few_nodes(
+        self, no_json: None
+    ) -> None:
+        assert safe_serialize({BigValue.HUGE: 1}, MAX_SIZE) == _marker()
+        assert CountingTuple.visits <= VISIT_BOUND
 
     def test_capture_args_with_huge_list_skips_scrubbing(self, no_json: None) -> None:
         args = (CountingList(["x"] * 500_000),)

@@ -312,6 +312,10 @@ def _charge_key(key: object, budget: _Budget) -> None:
             budget.charge(1)
             for part in key:
                 _charge_key(part, budget)
+        case Enum():
+            # _key_names matches an Enum key by its value too, so charge that first.
+            budget.charge(1)
+            _charge_key(key.value, budget)
         case _:
             budget.charge(1)
 
