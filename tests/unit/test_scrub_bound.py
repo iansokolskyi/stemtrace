@@ -104,8 +104,15 @@ class TestCostIsBounded:
 
     @pytest.mark.parametrize(
         "value",
-        ["z" * 5_000_000, b"z" * 5_000_000, ["z" * 5_000_000], {"k": b"z" * 5_000_000}],
-        ids=["str", "bytes", "str_in_list", "bytes_in_dict"],
+        [
+            "z" * 5_000_000,
+            b"z" * 5_000_000,
+            ["z" * 5_000_000],
+            [b"z" * 5_000_000],
+            (b"z" * 5_000_000,),
+            {"k": b"z" * 5_000_000},
+        ],
+        ids=["str", "bytes", "str_in_list", "bytes_in_list", "bytes_in_tuple", "bytes_in_dict"],
     )
     def test_safe_serialize_with_one_huge_leaf_never_serializes(
         self, no_json: None, value: Any
