@@ -477,11 +477,112 @@ def test_unlock_without_a_body_signature_leaves_the_header_evidence() -> None:
     draws(events, CB)
 
 
-def test_unlock_naming_a_chord_without_headers_makes_no_chord() -> None:
+def test_unlock_naming_a_chord_without_members_makes_no_chord() -> None:
     graph = build([unlock(U, G, task_body(CB)), ev(CB)])
 
     assert f"group:{G}" not in graph.nodes
     assert graph._unlocks[U].group_id == G
+
+
+# --- a chord whose headers carry no stamp or first id (Celery 5.2 chain body) ---
+
+
+def member(task_id: str, group: str = G) -> TaskEvent:
+    """A header of a Celery 5.2 chord with a chain body: group ID, no stamp."""
+    return ev(task_id, group=group)
+
+
+def test_unlock_makes_a_group_without_header_evidence_a_chord_in_any_order() -> None:
+    events = [
+        member(H1),
+        member(H2),
+        unlock(U, G, chain_body(CB, uid(23)), result_of(H1, H2)),
+        ev(CB),
+    ]
+
+    for order in orders(events):
+        graph = build(order)
+        assert graph.nodes[f"group:{G}"].node_type == NodeType.CHORD
+        assert graph.get_group_members(G) == [H1, H2] or graph.get_group_members(G) == [
+            H2,
+            H1,
+        ]
+        assert callback_of(graph) == CB
+        assert graph.nodes[U].parent_id == f"group:{G}"
+
+
+def test_unlock_listing_some_members_makes_those_the_headers() -> None:
+    other = uid(13)
+    events = [
+        member(H1),
+        member(H2),
+        member(other),
+        unlock(U, G, task_body(CB), result_of(H1, H2)),
+        ev(CB),
+    ]
+
+    for order in orders(events):
+        graph = build(order)
+        assert sorted(graph.get_group_members(G)) == sorted([H1, H2])
+        assert graph.nodes[other].parent_id is None
+        assert callback_of(graph) == CB
+
+
+def test_unlock_with_an_unreadable_result_makes_every_member_a_header() -> None:
+    events = [member(H1), member(H2), unlock(U, G, task_body(CB), "?"), ev(CB)]
+
+    for order in orders(events):
+        graph = build(order)
+        assert sorted(graph.get_group_members(G)) == sorted([H1, H2])
+        assert callback_of(graph) == CB
+
+
+def test_header_evidence_replaces_the_headers_the_unlock_task_lists() -> None:
+    # H1 carries a stamp: the headers are the ones whose events name one, as
+    # soon as any does, whichever event came first.
+    events = [
+        member(H1),
+        member(H2),
+        unlock(U, G, task_body(CB), result_of(H1, H2)),
+        ev(CB),
+        header(H1, stamp=G, state=TaskState.STARTED),
+    ]
+
+    for order in orders(events):
+        graph = build(order)
+        assert graph.get_group_members(G) == [H1]
+        assert graph._groups[G].marked == {H1: None}
+        assert callback_of(graph) == CB
+
+
+def test_removing_the_unlock_task_turns_its_chord_back_into_a_group() -> None:
+    graph = build(
+        [member(H1), member(H2), unlock(U, G, task_body(CB), result_of(H1, H2)), ev(CB)]
+    )
+    assert graph.nodes[f"group:{G}"].node_type == NodeType.CHORD
+
+    graph.remove_node(U)
+
+    assert_graph_invariants(graph)
+    assert graph.nodes[f"group:{G}"].node_type == NodeType.GROUP
+    assert graph._candidate == {}
+
+
+def test_removing_a_listed_header_leaves_the_others_as_the_headers() -> None:
+    graph = build(
+        [member(H1), member(H2), unlock(U, G, task_body(CB), result_of(H1, H2)), ev(CB)]
+    )
+
+    graph.remove_node(H1)
+
+    assert_graph_invariants(graph)
+    assert graph.get_group_members(G) == [H2]
+    assert callback_of(graph) == CB
+
+    graph.remove_node(H2)
+
+    assert_graph_invariants(graph)
+    assert f"group:{G}" not in graph.nodes
 
 
 def test_unlock_arguments_arriving_later_are_read() -> None:

@@ -132,10 +132,15 @@ def is_complete(graph: TaskGraph, chord_truth: dict[str, Any]) -> bool:
 
 
 def replay(events: list[TaskEvent]) -> TaskGraph:
-    """The graph after adding the events in the order given."""
+    """The graph after adding the events in the order given.
+
+    Celery's events always settle a chord's resolution (the graph counts the
+    chords whose resolution kept being asked again after its last pass).
+    """
     graph = TaskGraph()
     for event in events:
         graph.add_event(event)
+    assert graph._resolve_overflows == 0
     return graph
 
 
@@ -161,6 +166,7 @@ def wrong_in_prefixes(
             for c, ch in chords
             if judge(graph, c, ch) == "WRONG"
         ]
+    assert graph._resolve_overflows == 0
     return found
 
 

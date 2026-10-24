@@ -72,6 +72,9 @@ def _check_group_indexes(graph: TaskGraph) -> None:
     for group_id, tally in graph._groups.items():
         assert set(tally.members) <= set(nodes), (group_id, "member not in nodes")
         assert set(tally.headers) <= set(tally.members), (group_id, "stray header")
+        assert set(tally.marked) <= set(tally.members), (group_id, "stray mark")
+        wanted = graph._wanted_headers(group_id, tally)
+        assert set(tally.headers) == set(wanted), (group_id, "headers", list(wanted))
     for node_id, node in nodes.items():
         if node.group_id is None:
             continue
@@ -96,6 +99,8 @@ def _check_group_indexes(graph: TaskGraph) -> None:
 def _check_chord_indexes(graph: TaskGraph) -> None:
     """Chord callbacks, claims and unlock tasks agree with the nodes."""
     nodes = graph.nodes
+    assert not graph._resolving, graph._resolving
+    assert not graph._resolve_again, graph._resolve_again
     for node_id, node in nodes.items():
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"

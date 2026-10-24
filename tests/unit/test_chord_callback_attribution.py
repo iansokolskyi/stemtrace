@@ -129,6 +129,7 @@ def test_remove_a_single_task_of_a_chord_flow_never_draws_a_wrong_callback(
             graph = ct.replay(events)
             graph.remove_node(task_ids[index])
             assert_graph_invariants(graph)
+            assert graph._resolve_overflows == 0
             assert _wrong(graph, capture) == [], (key, variant, task_ids[index])
 
 

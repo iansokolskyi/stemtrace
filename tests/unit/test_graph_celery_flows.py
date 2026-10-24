@@ -167,9 +167,9 @@ _EXPECTED: dict[str, str] = {
     "group_of_chains_link_spawns": "add_with_subtask(add, group{+add, add(add)})",
     # Result backends without chord support: Celery's chord_unlock task
     # fires the body, which reports it as its parent.
-    "chord@chord_unlock": "celery.chord_unlock(tsum) | chord{+add, +add, +add}",
-    "chain_a_group_tsum_add@chord_unlock": "add(celery.chord_unlock(tsum(add)), chord{+add, +add})",
-    "chord_with_chain_body@chord_unlock": "celery.chord_unlock(tsum(add)) | chord{+add, +add}",
+    "chord@chord_unlock": "chord{*tsum, +add, +add, +add, celery.chord_unlock}",
+    "chain_a_group_tsum_add@chord_unlock": "add(chord{*>tsum(add), +add, +add, celery.chord_unlock})",
+    "chord_with_chain_body@chord_unlock": "chord{*>tsum(add), +add, +add, celery.chord_unlock}",
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
     # the callback the header names, which the field says (without it the
