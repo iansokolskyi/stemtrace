@@ -114,7 +114,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-build --all-extras
 
+      # coverage.py's C tracer (Python 3.10-3.13) makes the suite about 2x slower, so
+      # only the Codecov version (3.12) measures coverage and enforces the 95% gate.
       - name: Run tests
+        if: matrix.python-version != '3.12'
+        run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist worksteal --durations=25
+
+      - name: Run tests with coverage
+        if: matrix.python-version == '3.12'
         run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist worksteal --durations=25 --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage
