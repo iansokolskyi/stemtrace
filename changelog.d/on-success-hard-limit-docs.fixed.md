@@ -1,0 +1,1 @@
+- Correct the docs on a hard time limit that hits in `on_success`. The task shows `FAILURE`, then `SUCCESS`, and ends `SUCCESS`, as Celery's result backend does. A chain step that already finished before the failure shows `FAILURE`, while the backend keeps its `SUCCESS`.
