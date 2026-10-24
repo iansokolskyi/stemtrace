@@ -14,18 +14,8 @@ types:
 
 # Check for missing docstrings on public APIs
 docstrings:
-	@uv run python -c " \
-import ast; \
-from pathlib import Path; \
-missing = []; \
-[missing.extend([f'{py}:{n.lineno} - {n.name}' for n in ast.walk(ast.parse(py.read_text())) \
-  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
-  and not (n.name.startswith('_') and not n.name.startswith('__')) \
-  and not ast.get_docstring(n)]) \
-for py in Path('src/stemtrace').rglob('*.py') if '__pycache__' not in str(py)]; \
-[print(m) for m in missing]; \
-exit(1) if missing else print('✓ All public APIs have docstrings') \
-"
+	uv run python scripts/check_docstrings.py
+
 
 lint:
 	uv run ruff check src/ tests/
