@@ -87,27 +87,45 @@ def test_chord_not_run_reasons_clear_only_when_a_callback_is_drawn(flow: str) ->
                 seen[node_id] = reason
 
 
+def _shown_reasons(flow: str) -> tuple[list[str | None], TaskNode]:
+    """The reasons the chord of a capture shows in turn, and its final node."""
+    graph = TaskGraph()
+    reasons = []
+    for event in _CAPTURES[flow]:
+        graph.add_event(TaskEvent.model_validate(event))
+        reasons.extend(_chord_reasons(graph).values())
+    shown = [r for i, r in enumerate(reasons) if i == 0 or r != reasons[i - 1]]
+    (chord,) = [n for n in graph.nodes.values() if n.node_type == NodeType.CHORD]
+    return shown, chord
+
+
 def test_chord_not_run_reason_ignored_header_that_reported_its_result() -> None:
     """Real capture: the header calls backend.mark_as_done, then raises
     Ignore. Celery counts its part (5.6.3 backends/base.py mark_as_done) and
     runs the callback, so the reason shows only until the callback appears."""
-    graph = TaskGraph()
-    reasons = []
-    for event in _CAPTURES["chord_ignored_header_marked_done"]:
-        graph.add_event(TaskEvent.model_validate(event))
-        reasons.extend(_chord_reasons(graph).values())
+    shown, chord = _shown_reasons("chord_ignored_header_marked_done@field")
 
-    shown = [r for i, r in enumerate(reasons) if i == 0 or r != reasons[i - 1]]
     assert shown == [None, "header_ignored", None]
-    (chord,) = [n for n in graph.nodes.values() if n.node_type == NodeType.CHORD]
     assert chord.chord_id is not None
+
+
+def test_chord_not_run_reason_stays_for_a_callback_old_workers_leave_undrawn() -> None:
+    """The same chord from a worker without ``chord_body_first_id``: the stamp
+    can't tell the callback from a chain body's last task, no callback is
+    drawn, and the reason stays though the callback ran."""
+    shown, chord = _shown_reasons("chord_ignored_header_marked_done")
+
+    assert shown == [None, "header_ignored"]
+    assert chord.chord_id is None
 
 
 _NOT_RUN = {
     # A header chain's first step fails: its unrun last step (the header) fails.
     "chord_chain_header_failed_head": "header_failed",
     "chord_failed_header": "header_failed",
+    "chord_failed_header@field": "header_failed",
     "chord_failed_header_subtask": "header_failed",
+    "chord_failed_header_subtask@field": "header_failed",
     "chord_rejected_header": "header_failed",
     "chord_ignored_header": "header_ignored",
 }
@@ -122,7 +140,12 @@ def test_chord_not_run_reason_real_header_outcome_in_any_order(
 
 
 @pytest.mark.parametrize(
-    "flow", [flow for flow in _CHORD_FLOWS if flow not in _NOT_RUN]
+    "flow",
+    [
+        flow
+        for flow in _CHORD_FLOWS
+        if flow not in _NOT_RUN and flow != "chord_ignored_header_marked_done"
+    ],
 )
 def test_chord_not_run_reason_real_chord_whose_callback_ran_has_none(flow: str) -> None:
     assert all(reason is None for reason in _reasons(_CAPTURES[flow]).values())

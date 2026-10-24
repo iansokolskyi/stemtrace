@@ -2354,7 +2354,9 @@ def _drawn_in(snap: _Snapshot) -> dict[str, str]:
     for node_id, (kind, _, children, _) in snap.items():
         if kind == NodeType.TASK:
             continue
-        todo = [c for c in children if c in snap]
+        # (a callback listed by its chord but drawn inside another container
+        # belongs to that one)
+        todo = [c for c in children if c in snap and snap[c][3] == node_id]
         while todo:
             current = todo.pop()
             if snap[current][0] != NodeType.TASK or current in owner:
@@ -2402,7 +2404,9 @@ def _expected_unit(snap: _Snapshot, container: str) -> set[str]:
     unit = {container} | members
     todo: list[str] = []
     for child in snap[container][2]:
-        if child not in snap:
+        # A callback drawn inside another container is only listed here (the
+        # chord's edge to it): it stays in that container's unit.
+        if child not in snap or snap[child][3] != container:
             continue
         if snap[child][0] != NodeType.TASK:
             unit |= _expected_unit(snap, child)
@@ -2624,8 +2628,6 @@ def test_eviction_never_splits_a_real_workflow_group(flow: str) -> None:
 _NESTED_FLOWS = [
     "chord_in_chord_body",
     "chord_header_fanout_group",
-    "chord_group_body",
-    "chain_group_group",
     "chord_group_body@celery5.2",
     "chain_group_group@celery5.2",
 ]
@@ -2822,7 +2824,7 @@ def test_eviction_unit_of_a_pipeline_s_last_task_is_the_chord_it_is_drawn_in() -
     the last chord's callback. It belongs to the last chord, so the first and
     last chords stay separate units."""
     store = GraphStore()
-    for event in _FLOWS["chain_groups_tasks"]:
+    for event in _FLOWS["chain_groups_tasks@field"]:
         store.add_event(TaskEvent.model_validate(event))
     graph = store._graph
     unit_of = {
@@ -2861,7 +2863,7 @@ def test_eviction_unit_of_a_task_below_a_pipeline_s_callback_is_its_chord() -> N
     add below chord 2's callback with chord 1's group ID. It belongs to chord 2
     with the callback, and chord 1 is a unit of its own."""
     store = GraphStore()
-    for event in _FLOWS["chain_groups_tasks_add"]:
+    for event in _FLOWS["chain_groups_tasks_add@field"]:
         store.add_event(TaskEvent.model_validate(event))
     graph = store._graph
     first, second = _chords_by_age(graph)
@@ -2876,7 +2878,7 @@ def test_eviction_unit_of_a_task_below_a_pipeline_s_callback_is_its_chord() -> N
     callback = graph.nodes[stamped.parent_id or ""]
     units = _units_of(graph)
 
-    assert graph.nodes[callback.parent_id or ""].parent_id == second.task_id
+    assert callback.parent_id == second.task_id
     assert units[stamped.task_id] == units[callback.task_id] == units[second.task_id]
     assert units[first.task_id] != units[second.task_id]
     # The oracle puts the same nodes together (rule 1 of the unit spec).
@@ -2890,7 +2892,9 @@ def test_eviction_of_a_pipeline_takes_the_oldest_chord_and_keeps_the_next_whole(
 ):
     """With the capture above, newer tasks evict chord 1 alone; chord 2 stays
     with its callback and the add stamped with chord 1's ID."""
-    events = [TaskEvent.model_validate(e) for e in _FLOWS["chain_groups_tasks_add"]]
+    events = [
+        TaskEvent.model_validate(e) for e in _FLOWS["chain_groups_tasks_add@field"]
+    ]
     store = GraphStore(max_nodes=10)
     for event in events:
         store.add_event(event)
