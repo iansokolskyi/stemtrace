@@ -104,7 +104,7 @@ uv run mypy src/ --strict
 # Unit tests only (fast)
 uv run pytest tests/unit/
 
-# All tests (add `-n auto --dist loadfile` to run in parallel, as `make test` does)
+# All tests (add `-n auto --dist worksteal` to run in parallel, as `make test` does)
 uv run pytest
 
 # With coverage
