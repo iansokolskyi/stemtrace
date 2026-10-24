@@ -115,7 +115,7 @@ def _callback_mark(graph: TaskGraph, node_id: str, named: set[str]) -> str:
     """How a drawn callback relates to the ones its headers name."""
 
     def is_named(candidate: str) -> bool:
-        return any(candidate in (n, f"group:{n}", f"group:{n}:body") for n in named)
+        return any(candidate in (n, f"group:{n}") for n in named)
 
     if is_named(node_id):
         return "*"

@@ -37,6 +37,9 @@ def count_event_fields(events: Events, count: Counter[str]) -> None:
         count[f"events_{state}"] += 1
         count[f"events_{state}_with_chord_callback_id"] += "chord_callback_id" in event
         count[f"events_{state}_with_chord_id"] += "chord_id" in event
+        count[f"events_{state}_with_chord_body_first_id"] += (
+            "chord_body_first_id" in event
+        )
         count[f"events_{state}_with_group_id"] += "group_id" in event
 
 
