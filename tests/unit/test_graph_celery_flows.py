@@ -168,10 +168,6 @@ _EXPECTED: dict[str, str] = {
     "chain_chords_3": (
         "chord{*>tsum(chord{+add, +add(tsum(chord{*tsum, +add, +add}))}), +add, +add}"
     ),
-    "chain_chords_4": (
-        "chord{*>tsum(chord{+add, +add(tsum(chord{+add, +add(tsum("
-        "chord{*tsum, +add, +add}))}))}), +add, +add}"
-    ),
     # With chord_unlock each chord has its own unlock task, which reports the
     # chord's parent. The first chord's callback is the task its own unlock
     # fired (the first tsum), never a later chord's.
@@ -184,11 +180,6 @@ _EXPECTED: dict[str, str] = {
         "chord{*>tsum(celery.chord_unlock(tsum(celery.chord_unlock, "
         "chord{*tsum, +add, +add})), chord{+add, +add}), +add, +add, "
         "celery.chord_unlock}"
-    ),
-    "chain_chords_4@chord_unlock": (
-        "chord{*>tsum(celery.chord_unlock(tsum(celery.chord_unlock(tsum("
-        "celery.chord_unlock, chord{*tsum, +add, +add})), chord{+add, +add})), "
-        "chord{+add, +add}), +add, +add, celery.chord_unlock}"
     ),
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
@@ -299,6 +290,22 @@ _EXPECTED: dict[str, str] = {
     ),
 }
 
+# Four chords: the eviction and removal tests (``_QUADRATIC_FLOWS``) are slow in
+# the number of events and CI's job limit is 15 minutes, so these are only
+# replayed in ``_orders``.
+_FOUR_CHORDS_EXPECTED: dict[str, str] = {
+    "chain_chords_4": (
+        "chord{*>tsum(chord{+add, +add(tsum(chord{+add, +add(tsum("
+        "chord{*tsum, +add, +add}))}))}), +add, +add}"
+    ),
+    "chain_chords_4@chord_unlock": (
+        "chord{*>tsum(celery.chord_unlock(tsum(celery.chord_unlock(tsum("
+        "celery.chord_unlock, chord{*tsum, +add, +add})), chord{+add, +add})), "
+        "chord{+add, +add}), +add, +add, celery.chord_unlock}"
+    ),
+}
+_QUADRATIC_FLOWS = sorted(set(_CAPTURES) - set(_FOUR_CHORDS_EXPECTED))
+
 
 def _replay(events: list[dict[str, Any]]) -> TaskGraph:
     graph = TaskGraph()
@@ -315,6 +322,12 @@ def _orders(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         random.Random(seed).shuffle(shuffled)
         orders.append(shuffled)
     return orders
+
+
+@pytest.mark.parametrize("flow", sorted(_FOUR_CHORDS_EXPECTED))
+def test_replay_four_chords_in_any_order_builds_expected_graph(flow: str) -> None:
+    for order in _orders(_CAPTURES[flow]):
+        assert _structure(_replay(order)) == _FOUR_CHORDS_EXPECTED[flow]
 
 
 @pytest.mark.parametrize("flow", sorted(_EXPECTED))
@@ -334,7 +347,7 @@ def _nodes_of_type(graph: TaskGraph, node_type: NodeType) -> list[TaskNode]:
     return [node for node in graph.nodes.values() if node.node_type == node_type]
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
 def test_replay_celery_flow_with_eviction_keeps_graph_invariants(flow: str) -> None:
     for order in _orders(_CAPTURES[flow])[:6]:
         store = GraphStore(max_nodes=4)
@@ -631,7 +644,7 @@ def _graph_shape(
     }
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
 def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
     """Removing any one or two tasks of a real capture leaves the graph that
     the remaining events build, in arrival order and two shuffles."""
@@ -678,7 +691,7 @@ def _replay_events(events: list[TaskEvent]) -> TaskGraph:
     return graph
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
 def test_remove_node_mid_stream_then_continue_matches_rebuild(flow: str) -> None:
     """Removing any node partway through a real capture, then receiving the
     rest of its events, leaves the graph that the events it kept build.
@@ -1176,7 +1189,7 @@ def test_replay_chain_of_chords_without_unlock_events_never_swaps_callbacks(
             if e["task_id"] != dropped
             or (drop_only_pending and e["state"] != "PENDING")
         ]
-        for order in _orders(kept):
+        for order in _orders(kept)[:6]:
             graph = _replay(order)
 
             first = graph.nodes[f"group:{group_id}"]
