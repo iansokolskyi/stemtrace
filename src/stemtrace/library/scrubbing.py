@@ -228,6 +228,99 @@ def _scrub_value(
     return value
 
 
+class _OverBudget(Exception):
+    """Internal: the value is already too big, stop walking it."""
+
+
+def _charge(spent: list[int], cost: int, max_size: int) -> None:
+    """Add ``cost`` to the running total, raising once it passes ``max_size``."""
+    spent[0] += cost
+    if spent[0] > max_size:
+        raise _OverBudget
+
+
+def _walk_bound(
+    value: Any,
+    patterns: frozenset[str],
+    safe_keys: frozenset[str] | None,
+    spent: list[int],
+    max_size: int,
+) -> None:
+    """Charge ``value`` its minimum scrubbed size, stopping once over ``max_size``.
+
+    Every cost is at most what the value serializes to after scrubbing, as JSON
+    or as ``str()`` (the fallback): a string is at least its length plus quotes,
+    a value under a sensitive key is ``[Filtered]``, anything else at least 1.
+    Each node costs at least 1, so the walk visits O(max_size) nodes.
+    """
+    match value:
+        case str():
+            _charge(spent, str.__len__(value) + 2, max_size)
+        case bytes() | bytearray():  # json falls back to str(), "b'...'"
+            _charge(spent, len(value) + 3, max_size)
+        case dict():
+            for key, item in value.items():
+                _charge(spent, _key_cost(key) + 4, max_size)
+                if _is_sensitive_key(key, patterns, safe_keys):
+                    _charge(spent, len(FILTERED) + 2, max_size)
+                else:
+                    _walk_bound(item, patterns, safe_keys, spent, max_size)
+        case list() | tuple():
+            for item in value:
+                _charge(spent, 2, max_size)
+                _walk_bound(item, patterns, safe_keys, spent, max_size)
+        case _:
+            _charge(spent, 1, max_size)
+
+
+def _key_cost(key: object) -> int:
+    """Minimum size of a dict key in the output, in O(1)."""
+    match key:
+        case str():
+            return str.__len__(key) + 2
+        case bytes():
+            return bytes.__len__(key) + 3
+        case tuple() | frozenset():
+            return len(key)
+        case _:
+            return 1
+
+
+def exceeds_size_bound(
+    value: Any,
+    max_size: int,
+    sensitive_keys: frozenset[str] = DEFAULT_SENSITIVE_KEYS,
+    additional_keys: frozenset[str] | None = None,
+    safe_keys: frozenset[str] | None = None,
+) -> bool:
+    """Whether ``value`` is certainly bigger than ``max_size`` once scrubbed.
+
+    Walks at most O(``max_size``) nodes, so it is safe on a publish path.
+    False means unknown: the caller still has to serialize to find out.
+    """
+    return _exceeds_bound(
+        value, _lowercase_patterns(sensitive_keys, additional_keys), safe_keys, max_size
+    )
+
+
+def _exceeds_bound(
+    value: Any,
+    patterns: frozenset[str],
+    safe_keys: frozenset[str] | None,
+    max_size: int,
+) -> bool:
+    try:
+        _walk_bound(value, patterns, safe_keys, [0], max_size)
+    except _OverBudget:
+        return True
+    return False
+
+
+def oversize_marker(max_size: int) -> str:
+    """The text that stands in for a value known to exceed ``max_size``."""
+    return f"{TRUNCATED_PREFIX}over {max_size} bytes > {max_size} max]"
+
+
 def scrub_args(
     args: tuple[Any, ...],
     sensitive_keys: frozenset[str] = DEFAULT_SENSITIVE_KEYS,
@@ -269,6 +362,10 @@ def safe_serialize(
         JSON-serializable value, or string representation if serialization fails.
     """
     all_sensitive = _lowercase_patterns(sensitive_keys, additional_keys)
+
+    # A value that is certainly too big is never copied or serialized.
+    if _exceeds_bound(value, all_sensitive, safe_keys, max_size):
+        return oversize_marker(max_size)
 
     # First scrub the value
     scrubbed = _scrub_value(value, all_sensitive, safe_keys)

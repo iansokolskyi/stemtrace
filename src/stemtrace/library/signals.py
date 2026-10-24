@@ -46,6 +46,8 @@ from stemtrace.library.output_capture import (
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     TRUNCATED_PREFIX,
+    exceeds_size_bound,
+    oversize_marker,
     safe_serialize,
     scrub_args,
     scrub_dict,
@@ -370,6 +372,10 @@ def _capture_args(args: Any) -> list[Any] | None:
     if not capture_args:
         return None
 
+    # Before scrubbing: that copies the whole value, however big.
+    if exceeds_size_bound(args, max_size, sensitive, safe_keys=safe):
+        return [oversize_marker(max_size)]
+
     if scrub_enabled:
         scrubbed = scrub_args(tuple(args), sensitive, safe_keys=safe)
     else:
@@ -386,6 +392,9 @@ def _capture_kwargs(kwargs: Any) -> dict[str, Any] | None:
     sensitive, safe, max_size, scrub_enabled, capture_args, _ = _get_scrub_config()
     if not capture_args:
         return None
+
+    if exceeds_size_bound(kwargs, max_size, sensitive, safe_keys=safe):
+        return {"_truncated": oversize_marker(max_size)}
 
     if scrub_enabled:
         scrubbed = scrub_dict(dict(kwargs), sensitive, safe_keys=safe)
