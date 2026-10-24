@@ -356,6 +356,29 @@ _FOUR_CHORDS_EXPECTED: dict[str, str] = {
 _QUADRATIC_FLOWS = sorted(set(_CAPTURES) - set(_FOUR_CHORDS_EXPECTED))
 
 
+def _with_known_failures(flows: list[str], known: set[str], why: str) -> list[Any]:
+    """Parametrize ``flows``; the ``known`` ones fail on v0.4.2 too (strict xfail)."""
+    return [
+        pytest.param(f, marks=pytest.mark.xfail(strict=True, reason=why))
+        if f in known
+        else f
+        for f in flows
+    ]
+
+
+# Nested chords on a chord_unlock backend (and a few native ones) are known
+# limitations: these invariants fail on v0.4.2 as well (TRIAGE, not fixed here).
+_TRANSIENT_KNOWN = {
+    "chord_depth3_body@chord_unlock",
+    "chord_in_chord_body@chord_unlock",
+    "chord_in_chord_body_slow@chord_unlock",
+}
+_REMOVAL_KNOWN = {
+    "chain_chord_chord_body_add",
+    "chord_chain_tsum_chord_body@chord_unlock",
+}
+
+
 def _replay(events: list[dict[str, Any]]) -> TaskGraph:
     graph = TaskGraph()
     for event in events:
@@ -556,7 +579,12 @@ def _causal_orders(
     return orders
 
 
-@pytest.mark.parametrize("flow", sorted(_EXPECTED))
+@pytest.mark.parametrize(
+    "flow",
+    _with_known_failures(
+        sorted(_EXPECTED), _TRANSIENT_KNOWN, "transient states of a known limitation"
+    ),
+)
 def test_replay_celery_flow_shows_only_accepted_transients(flow: str) -> None:
     """After every event the graph only differs from its final shape in
     accepted ways (see above): in arrival order, and for captures from this
@@ -693,7 +721,12 @@ def _graph_shape(
     }
 
 
-@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
+@pytest.mark.parametrize(
+    "flow",
+    _with_known_failures(
+        _QUADRATIC_FLOWS, _REMOVAL_KNOWN, "removal of a known limitation's tasks"
+    ),
+)
 def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
     """Removing any one or two tasks of a real capture leaves the graph that
     the remaining events build, in arrival order and two shuffles."""

@@ -2652,8 +2652,10 @@ class TaskGraph(BaseModel):
         else:
             chord_node.children.remove(callback_id)
         if released:
-            # No longer a callback: it may be a chain link now.
+            # No longer a callback: it may be a chain link now, and a chord
+            # that was refused it (it was held) can draw it.
             self._on_children_changed(callback_id)
+            self._retrigger(callback_id)
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""
