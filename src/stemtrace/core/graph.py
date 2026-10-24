@@ -2451,8 +2451,8 @@ class TaskGraph(BaseModel):
         Resumes from where this start's last walk stopped: reported parents
         never change, so the path below is still valid (a node removed or
         turned header, or a new chord parent, resets the walks). Ends at a
-        task whose parent is a header, a ``chord_unlock`` task or the chord's
-        own parent.
+        task whose parent is a header, the chord's own ``chord_unlock`` task
+        (it reports the chord's parent) or the chord's own parent.
 
         Returns:
             (body start node ID, chord_unlock task ID or None), or None if the
@@ -2477,7 +2477,15 @@ class TaskGraph(BaseModel):
                 return None
             self._add_chord_dep(group_id, parent_id)
             parent = self.nodes.get(parent_id)
-            fired_by_unlock = parent is not None and parent.name == _CHORD_UNLOCK_TASK
+            # celery 5.6.3 ``fallback_chord_unlock`` applies the unlock from the
+            # task that sends the headers, so it reports their parent; an
+            # unlock reporting another parent fired a chord nested in the body.
+            fired_by_unlock = False
+            if parent is not None and parent.name == _CHORD_UNLOCK_TASK:
+                unlock_parent = parent.reported_parent_id
+                fired_by_unlock = unlock_parent == chord_parent
+                if unlock_parent is None and not fired_by_unlock:
+                    return None  # its parent isn't reported yet: wait for it
             # A chain's chord body reports the chain's previous task, which is
             # the chord's own parent, rather than a header.
             if (
