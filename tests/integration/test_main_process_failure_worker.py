@@ -11,6 +11,7 @@ Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``): the
 broker, the result backend and where stemtrace's events go.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -495,14 +496,11 @@ def test_late_failure_leaves_every_step_success_in_the_result_backend(
     # replaces the main process's FAILURE or, for a finished one, is kept
     # (celery 5.6.3 backends/base.py _store_result). So the backend disagrees with the
     # FAILUREs stemtrace shows for the steps that already finished.
-    sender = Celery("mp_backend_reader", backend=REDIS_URL)
-
-    try:
-        states = {
-            step: sender.AsyncResult(task_id).state
-            for step, task_id in run.late_ids[name].items()
-        }
-    finally:
-        sender.close()
+    states = {
+        step: json.loads(run.client.get(f"celery-task-meta-{task_id}") or b"{}").get(
+            "status"
+        )
+        for step, task_id in run.late_ids[name].items()
+    }
 
     assert states == dict.fromkeys(run.late_ids[name], "SUCCESS")

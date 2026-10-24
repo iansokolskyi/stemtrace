@@ -8,6 +8,7 @@ SIGTERM, which unwinds ``on_success`` and still runs ``task_postrun``.
 Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``).
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -65,6 +66,12 @@ class Run:
         self.client = redis.from_url(REDIS_URL)
         self.task_id = str(uuid.uuid4())
         self.result_state: str | None = None
+
+    def backend_state(self) -> str:
+        """The task's state in the Redis result backend (celery's own key and JSON)."""
+        raw = self.client.get(f"celery-task-meta-{self.task_id}")
+        assert raw is not None
+        return str(json.loads(raw)["status"])
 
     def events(self) -> list[TaskEvent | WorkerEvent]:
         """Every event on the run's stream so far."""
@@ -125,14 +132,14 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Run]:
             lambda: any(isinstance(e, WorkerEvent) for e in run.events()),
             WAIT_SECONDS,
         ), log_path.read_text(errors="replace")[-4000:]
-        sender = Celery("os_sender", broker=REDIS_URL, backend=REDIS_URL)
+        sender = Celery("os_sender", broker=REDIS_URL)
         sender.conf.update(task_serializer="json", task_default_queue=run.queue)
-        result = sender.send_task("os.limited", task_id=run.task_id)
+        sender.send_task("os.limited", task_id=run.task_id)
         assert _wait(lambda: TaskState.FAILURE in run.states(), WAIT_SECONDS), (
             log_path.read_text(errors="replace")[-4000:]
         )
         _wait(lambda: TaskState.SUCCESS in run.states(), TRAILING_SECONDS)
-        run.result_state = result.state
+        run.result_state = run.backend_state()
         sender.close()
         yield run
     finally:
