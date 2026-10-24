@@ -5,7 +5,7 @@ resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'emscripten'",
     "python_full_version >= '3.15' and sys_platform != 'emscripten'",
     "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'emscripten'",
-    "(python_full_version >= '3.11' and python_full_version < '3.15' and sys_platform != 'emscripten') or (python_full_version == '3.11.*' and sys_platform == 'emscripten')",
+    "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'emscripten')",
     "python_full_version < '3.11'",
 ]
 
@@ -247,7 +247,7 @@ version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'emscripten'",
-    "(python_full_version >= '3.11' and python_full_version < '3.15' and sys_platform != 'emscripten') or (python_full_version == '3.11.*' and sys_platform == 'emscripten')",
+    "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'emscripten')",
     "python_full_version < '3.11'",
 ]
 dependencies = [
@@ -716,7 +716,7 @@ resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'emscripten'",
     "python_full_version >= '3.15' and sys_platform != 'emscripten'",
     "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'emscripten'",
-    "(python_full_version >= '3.11' and python_full_version < '3.15' and sys_platform != 'emscripten') or (python_full_version == '3.11.*' and sys_platform == 'emscripten')",
+    "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'emscripten')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ef/4a/50822184bd67cc6493f0fb6a880749158fcd31ab3fa07409acfd91f9fc85/dnspython-2.9.0.tar.gz", hash = "sha256:b44dc6b18f07a8b1c56676a19fbfdb5209415b046a9cece286baafa87ff3f7f1", size = 423560, upload-time = "2026-10-09T00:07:24.352Z" }
 wheels = [
@@ -769,7 +769,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.143.1"
+version = "0.157.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -779,9 +779,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/16/52ca959230f9820660fd822f488f883d7dc42310716b4cc6d2a944835dcd/fastapi-0.143.1.tar.gz", hash = "sha256:4cafaab64df8534758bf0fce61947f5e27e6cd512798ccbbaad5425086c3b664", size = 469025, upload-time = "2026-10-14T12:53:09.448Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/7b/f9540549feb36e84c3420aea470148d0f0bcd1e9d1aec5b36216f3f31738/fastapi-0.157.0.tar.gz", hash = "sha256:460d48b9fe6fabbb785630fc5b256710bc82723b597b4bfbd6e4470ae5bb20f4", size = 504894, upload-time = "2026-10-21T13:56:33.414Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/73/30ee3dd8f26fd385e451bbded9e1b54766a277db588e70154dd894f4b698/fastapi-0.143.1-py3-none-any.whl", hash = "sha256:687beb445804e4c4dbe2a76fd83c25e9b973ac48c267defb86f791e099baecc4", size = 144682, upload-time = "2026-10-14T12:53:07.69Z" },
+    { url = "https://files.pythonhosted.org/packages/50/c3/759716158338892ed8e483077241cdf80e1fd727f56baf750c75bfea58de/fastapi-0.157.0-py3-none-any.whl", hash = "sha256:45b5cbf098ce3f47e008ca67931ce333d028129c823e3b6766a3bd0d70b81f7f", size = 147897, upload-time = "2026-10-21T13:56:31.895Z" },
 ]
 
 [[package]]
@@ -2285,7 +2285,7 @@ resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'emscripten'",
     "python_full_version >= '3.15' and sys_platform != 'emscripten'",
     "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'emscripten'",
-    "(python_full_version >= '3.11' and python_full_version < '3.15' and sys_platform != 'emscripten') or (python_full_version == '3.11.*' and sys_platform == 'emscripten')",
+    "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'emscripten')",
 ]
 dependencies = [
     { name = "typing-extensions" },
