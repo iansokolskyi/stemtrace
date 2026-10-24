@@ -2294,7 +2294,7 @@ class TaskGraph(BaseModel):
         elif named is not None:
             callback = self._walk_to_body(group_id, named, tally, chord_parent)
             if callback is None:
-                callback = self._named_group_body(named, group_id)
+                callback = self._named_group_body(named, group_id, chord_parent)
         for tail_id in tally.tails:
             if callback is not None:
                 break
@@ -2493,7 +2493,13 @@ class TaskGraph(BaseModel):
                 or fired_by_unlock
                 or (parent is not None and parent_id == chord_parent)
             ):
-                start = self._body_node(node, group_id)
+                # An unlock here belongs to a chord nested in the body: no
+                # evidence for this chord's own body start.
+                start = (
+                    None
+                    if node.name == _CHORD_UNLOCK_TASK
+                    else self._body_node(node, group_id)
+                )
                 if start is None:
                     return None
                 return start, parent_id if fired_by_unlock else None
@@ -2518,7 +2524,7 @@ class TaskGraph(BaseModel):
         return group_node_id if group_node_id in self.nodes else None
 
     def _named_group_body(
-        self, named: str, group_id: str
+        self, named: str, group_id: str, chord_parent: str | None
     ) -> tuple[str, str | None] | None:
         """A named callback ID that is another group: the body is that group.
 
@@ -2537,6 +2543,15 @@ class TaskGraph(BaseModel):
         self._add_chord_dep(group_id, parent_id)
         if self._is_header(parent_id, group_id):
             return group_node_id, None
+        # On a chord_unlock backend the inner headers report the outer chord's
+        # own unlock task, which reports the outer chord's parent.
+        unlock = self.nodes.get(parent_id)
+        if (
+            unlock is not None
+            and unlock.name == _CHORD_UNLOCK_TASK
+            and unlock.reported_parent_id == chord_parent
+        ):
+            return group_node_id, parent_id
         return None
 
     def _set_callback(
