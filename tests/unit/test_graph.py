@@ -3063,6 +3063,58 @@ class TestRemoveNode:
         assert graph._callback_of == {}
         assert graph.nodes["cb"].parent_id is None
 
+    def test_remove_node_group_whose_member_loops_back_leaves_no_dangling_root(
+        self,
+    ) -> None:
+        # t2 and t5 report each other as parent, so the cycle is broken at
+        # group g2's link; removing g2 while that link is being re-placed used
+        # to unlink it twice (a dangling root on f4f9169, ValueError after
+        # dropping the guard).
+        def event(
+            task_id: str,
+            state: TaskState,
+            seconds: int,
+            *,
+            parent_id: str | None = None,
+            group_id: str | None = None,
+            chord_callback_id: str | None = None,
+            retries: int = 0,
+        ) -> TaskEvent:
+            return TaskEvent(
+                task_id=task_id,
+                name="tests.task",
+                state=state,
+                timestamp=_BASE_TIME + timedelta(seconds=seconds),
+                parent_id=parent_id,
+                group_id=group_id,
+                chord_callback_id=chord_callback_id,
+                retries=retries,
+            )
+
+        graph = _build(
+            event("t5", TaskState.FAILURE, 18, parent_id="t6", group_id="g2"),
+            event("t2", TaskState.FAILURE, 55, parent_id="t3", retries=1),
+            event("t0", TaskState.RECEIVED, 25, parent_id="t7"),
+            event("t5", TaskState.RETRY, 5, parent_id="t2", group_id="g2"),
+            event("t8", TaskState.FAILURE, 40, group_id="g2"),
+            event("t8", TaskState.FAILURE, 32, parent_id="t0", group_id="g0"),
+            event("t2", TaskState.STARTED, 41, parent_id="t5"),
+            event(
+                "t7",
+                TaskState.PENDING,
+                30,
+                group_id="g0",
+                chord_callback_id="t8",
+                retries=1,
+            ),
+        )
+
+        graph.remove_node("group:g2")
+
+        assert_graph_invariants(graph)
+        assert "group:g2" not in graph.nodes
+        assert graph.root_ids == ["group:g0", "t2"]
+
     def test_remove_node_callback_being_removed_is_not_found_again_by_its_chord(
         self,
     ) -> None:

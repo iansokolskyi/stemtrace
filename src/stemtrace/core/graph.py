@@ -1095,10 +1095,6 @@ class TaskGraph(BaseModel):
     # IDs, and the reverse; a change to one of those re-resolves the chord.
     _chord_deps: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     _deps_of_chord: dict[str, set[str]] = PrivateAttr(default_factory=dict)
-    # Nodes whose place a chord's refused callback depends on -> chord group
-    # IDs, and the reverse; a move of one of them re-resolves the chord.
-    _placement_deps: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
-    _placement_deps_of: dict[str, set[str]] = PrivateAttr(default_factory=dict)
     # Missing parent ID -> nodes (in arrival order) to move under it once its
     # node is created, and the reverse map to keep both in sync.
     _awaiting_parent: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
@@ -1433,10 +1429,10 @@ class TaskGraph(BaseModel):
         roots, waiting for it like for any missing parent; a removed
         GROUP/CHORD releases its members to their own parents (or the roots)
         but keeps their membership, so a later member event can recreate it
-        (a CHORD with the callback its headers named). Headers naming
-        different callbacks, or two chords naming one, aren't Celery shapes:
-        the last name wins, and removing the task that gave it doesn't bring
-        back an earlier one.
+        (a CHORD with the evidence its headers gave). Headers that name
+        different callbacks, or two chords that name one, aren't Celery
+        shapes: those chords draw no callback, and removing the task that
+        caused the conflict brings it back.
 
         Args:
             task_id: ID of the node to remove.
@@ -1476,7 +1472,6 @@ class TaskGraph(BaseModel):
             if child is not None and child.parent_id == task_id:
                 self._place(child)
         self._retrigger(task_id)
-        self._retrigger_placement(task_id)
         if node.node_type != NodeType.TASK and node.group_id is not None:
             self._retrigger(node.group_id)  # a chord that read the group
         for group_id in chords:
@@ -1632,8 +1627,6 @@ class TaskGraph(BaseModel):
         because the group sits below it, the group's link is the one broken:
         the group becomes a root.
         """
-        if node.task_id in self._removing:
-            return
         desired = self._desired_parent(node)
         if desired != node.parent_id:
             parent_id = self._safe_parent(node, desired)
@@ -1662,8 +1655,7 @@ class TaskGraph(BaseModel):
         after a member joins or the group becomes a chord).
         """
         group_id = group_node.group_id
-        if group_id is None:
-            return
+        assert group_id is not None  # a synthetic node carries its group's ID
         tally = self._groups[group_id]
         parent = tally.parent()
         if parent == tally.read_parent:
@@ -1720,7 +1712,7 @@ class TaskGraph(BaseModel):
             chord_node = self.nodes.get(_group_node_id(group_id)) if group_id else None
             if chord_node is not None and current.parent_id == chord_node.task_id:
                 chord_node.chord_id = None
-                self._release_callback(chord_node, group_id or "", current.task_id)
+                self._release_callback(chord_node, current.task_id)
                 self._resolve_callback(group_id or "")
                 return True
             current = self.nodes.get(current.parent_id or "")
@@ -1736,7 +1728,6 @@ class TaskGraph(BaseModel):
         self._unlink(node)
         node.parent_id = parent_id
         self._link(node)
-        self._retrigger_placement(node.task_id)
 
     def _link(self, node: TaskNode) -> None:
         """List a node under its ``parent_id``, or as a root if it has none.
@@ -1895,13 +1886,11 @@ class TaskGraph(BaseModel):
         self, group_id: str, tally: _GroupTally, wanted: dict[str, None]
     ) -> None:
         """Make ``wanted`` the group's headers (it may become or stop being a chord)."""
-        was_chord = bool(tally.headers)
         tally.headers.clear()
         tally.headers.update(wanted)
         group_node = self.nodes.get(_group_node_id(group_id))
         if not wanted:
-            if was_chord:
-                self._stop_being_chord(group_id, tally, group_node)
+            self._stop_being_chord(group_id, tally, group_node)
             return
         self._become_chord_group(group_id, tally)
         if group_node is None:
@@ -2240,8 +2229,8 @@ class TaskGraph(BaseModel):
         if tally.chains_allowed() != was_allowed:
             self._rechain_group(tally)
         group_node = self.nodes.get(_group_node_id(group_id))
-        if was_header:
-            self._reconcile_headers(group_id, tally, group_node)
+        if was_header and not tally.headers:
+            self._stop_being_chord(group_id, tally, group_node)
         if group_node is not None:
             group_node.state = _aggregate_group_state(tally.state_counts.keys())
             if group_node.node_type == NodeType.CHORD:
@@ -2250,16 +2239,6 @@ class TaskGraph(BaseModel):
         elif not tally.members:
             del self._groups[group_id]
         return peers
-
-    def _reconcile_headers(
-        self, group_id: str, tally: _GroupTally, group_node: TaskNode | None
-    ) -> None:
-        """A header left: another set may count now (the unlock task's), or none."""
-        wanted = self._wanted_headers(group_id, tally)
-        if wanted.keys() != tally.headers.keys():
-            self._apply_headers(group_id, tally, dict(wanted))
-        elif not tally.headers:
-            self._stop_being_chord(group_id, tally, group_node)
 
     def _stop_being_chord(
         self, group_id: str, tally: _GroupTally, group_node: TaskNode | None
@@ -2376,11 +2355,6 @@ class TaskGraph(BaseModel):
         for group_id in list(self._chord_deps.get(node_id, ())):  # NOSONAR
             self._resolve_callback(group_id)
 
-    def _retrigger_placement(self, node_id: str) -> None:
-        """Re-resolve the chords whose callback was refused for this node's place."""
-        for group_id in list(self._placement_deps.get(node_id, ())):  # NOSONAR
-            self._resolve_callback(group_id)
-
     def _add_chord_dep(self, group_id: str, node_id: str) -> None:
         """Record that a chord's callback resolution read this task or group."""
         deps = self._deps_of_chord.setdefault(group_id, set())
@@ -2396,7 +2370,6 @@ class TaskGraph(BaseModel):
         """
         for node_id in self._deps_of_chord.pop(group_id, set()):
             _drop_from(self._chord_deps, node_id, group_id)
-        self._drop_placement_deps(group_id)
         candidate = self._candidate.pop(group_id, None)
         if candidate is None:
             return set()
@@ -2423,7 +2396,6 @@ class TaskGraph(BaseModel):
         tally = self._groups.get(group_id)
         if chord_node is None or tally is None or not tally.headers:
             return  # a group (or a chord whose node is gone): nothing to draw
-        self._drop_placement_deps(group_id)
         unlocks = self._unlocks_of(group_id, tally)
         candidate = self._evidence_callback(group_id, tally, unlocks)
         sole = self._claim(group_id, candidate)
@@ -2432,31 +2404,9 @@ class TaskGraph(BaseModel):
             chord_parent = tally.parent()
             if self._loops_back(candidate, chord_node, chord_parent):
                 self._cycles_refused += 1
-                self._depend_on_placement(group_id, chord_node, chord_parent)
             else:
                 callback = (candidate, min(unlocks, default=None))
         self._set_callback(chord_node, group_id, callback)
-
-    def _depend_on_placement(
-        self, group_id: str, chord_node: TaskNode, chord_parent: str | None
-    ) -> None:
-        """Re-resolve the chord when a node above it or its parent moves.
-
-        Only a callback refused for closing a cycle depends on where they sit.
-        """
-        deps = self._placement_deps_of.setdefault(group_id, set())
-        for start in (chord_node.task_id, chord_parent):
-            current = start
-            while current is not None and current not in deps:
-                deps.add(current)
-                _add_to(self._placement_deps, current, group_id)
-                above = self.nodes.get(current)
-                current = above.parent_id if above is not None else None
-
-    def _drop_placement_deps(self, group_id: str) -> None:
-        """Forget the nodes whose place a chord's refused callback depended on."""
-        for node_id in self._placement_deps_of.pop(group_id, set()):
-            _drop_from(self._placement_deps, node_id, group_id)
 
     def _claim(self, group_id: str, candidate: str | None) -> bool:
         """Record the node a chord's evidence points to; whether it is alone there.
@@ -2539,10 +2489,7 @@ class TaskGraph(BaseModel):
         """``first`` if it is a task with events that isn't one of the headers."""
         self._add_chord_dep(group_id, first)
         usable = (
-            first in self.nodes
-            and first not in self._removing
-            and first != group_id
-            and first not in tally.headers
+            first in self.nodes and first != group_id and first not in tally.headers
         )
         return first if usable else None
 
@@ -2592,7 +2539,7 @@ class TaskGraph(BaseModel):
         if previous != callback_id:
             chord_node.chord_id = callback_id
             if previous is not None:
-                self._release_callback(chord_node, group_id, previous)
+                self._release_callback(chord_node, previous)
             if callback_id is not None:
                 self._claim_callback(group_id, callback_id)
         if callback_id is None:
@@ -2612,8 +2559,7 @@ class TaskGraph(BaseModel):
             return
         if previous is not None:
             del self._unlock_by_chord[group_id]
-            if self._unlock_of.get(previous) == group_id:
-                del self._unlock_of[previous]
+            del self._unlock_of[previous]
             self._place_if_present(previous)
         if unlock_id is not None:
             self._unlock_by_chord[group_id] = unlock_id
@@ -2631,21 +2577,16 @@ class TaskGraph(BaseModel):
         self._callback_of[callback_id] = group_id
         self._rechain_owner_of(callback_id)  # a callback isn't a chain link
 
-    def _release_callback(
-        self, chord_node: TaskNode, group_id: str, callback_id: str
-    ) -> None:
+    def _release_callback(self, chord_node: TaskNode, callback_id: str) -> None:
         """Unlink a node that is no longer the chord's callback."""
-        released = self._callback_of.get(callback_id) == group_id
-        if released:
-            del self._callback_of[callback_id]
+        del self._callback_of[callback_id]
         callback_node = self.nodes.get(callback_id)
         if callback_node is not None and callback_node.parent_id == chord_node.task_id:
             self._place(callback_node)
         else:
             chord_node.children.remove(callback_id)
-        if released:
-            # No longer a callback: it may be a chain link now.
-            self._on_children_changed(callback_id)
+        # No longer a callback: it may be a chain link now.
+        self._on_children_changed(callback_id)
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""
