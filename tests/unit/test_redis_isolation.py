@@ -210,9 +210,7 @@ def _die_if_gw1():
 # Where the worker dies: each is a point with no test item to report the loss.
 _DIE_AT = {
     "conftest-import": "_die_if_gw1()",
-    "collection": (
-        "def pytest_collection_modifyitems():\n    _die_if_gw1()"
-    ),
+    "collection": ("def pytest_collection_modifyitems():\n    _die_if_gw1()"),
     # Before xdist's own hook sends workerfinished, so the run reports "N passed".
     "worker-sessionfinish": (
         "@pytest.hookimpl(tryfirst=True)\ndef pytest_sessionfinish():\n"
