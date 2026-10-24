@@ -497,9 +497,12 @@ def test_late_failure_leaves_every_step_success_in_the_result_backend(
     # FAILUREs stemtrace shows for the steps that already finished.
     sender = Celery("mp_backend_reader", backend=REDIS_URL)
 
-    states = {
-        step: sender.AsyncResult(task_id).state
-        for step, task_id in run.late_ids[name].items()
-    }
+    try:
+        states = {
+            step: sender.AsyncResult(task_id).state
+            for step, task_id in run.late_ids[name].items()
+        }
+    finally:
+        sender.close()
 
     assert states == dict.fromkeys(run.late_ids[name], "SUCCESS")

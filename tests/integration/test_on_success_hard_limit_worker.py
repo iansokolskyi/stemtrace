@@ -133,6 +133,7 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Run]:
         )
         _wait(lambda: TaskState.SUCCESS in run.states(), TRAILING_SECONDS)
         run.result_state = result.state
+        sender.close()
         yield run
     finally:
         proc.terminate()
@@ -142,6 +143,7 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Run]:
             proc.kill()
             proc.wait()
         run.client.delete(run.stream_key, run.queue, f"celery-task-meta-{run.task_id}")
+        run.client.close()
 
 
 def test_hard_limit_in_on_success_publishes_failure_then_success(run: Run) -> None:
