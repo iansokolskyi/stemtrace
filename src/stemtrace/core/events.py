@@ -72,6 +72,8 @@ class TaskEvent(BaseModel):
         group_id: ID shared by tasks in the same group/chord.
         chord_id: ID of the group for which this header task's chord will complete.
         chord_callback_id: Task ID of the chord callback (only set on header tasks).
+        chord_body_first_id: Task ID the chord's body starts with (header tasks
+            of a chord whose body is a task, or a chain starting with a task).
         trace_id: Optional distributed tracing ID.
         retries: Number of retry attempts so far.
         args: Positional arguments passed to the task (scrubbed).
@@ -109,6 +111,7 @@ class TaskEvent(BaseModel):
     group_id: str | None = None
     chord_id: str | None = None
     chord_callback_id: str | None = None
+    chord_body_first_id: str | None = None
     trace_id: str | None = None
     retries: int = 0
 

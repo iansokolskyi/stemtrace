@@ -874,7 +874,7 @@ class TestGraphApiShapes:
     def test_chain_with_chord_is_one_graph_with_callback(self) -> None:
         """``chain(add, group(add, add), tsum, add)`` is one graph:
         first task -> CHORD (2 headers) -> tsum (callback) -> add."""
-        client, ids = self._client("chain_a_group_tsum_add")
+        client, ids = self._client("chain_a_group_tsum_add@field")
         first, tsum, last = ids["flows.add#0"], ids["flows.tsum#0"], ids["flows.add#3"]
 
         graphs = client.get("/api/graphs").json()["graphs"]

@@ -170,7 +170,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
 
         # A chord header's message carries the chord callback signature (a dict
         # once deserialized); read its ids the way STARTED reads request.chord.
-        chord_id, chord_callback_id = _extract_chord_info(chord)
+        chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(chord)
         queue, routing_key = _delivered_destination(
             getattr(message, "delivery_info", None)
         )
@@ -185,6 +185,7 @@ class ReceivedEventStep(bootsteps.ConsumerStep):  # type: ignore[misc]
                 group_id=group_id,
                 chord_id=chord_id,
                 chord_callback_id=chord_callback_id,
+                chord_body_first_id=chord_body_first_id,
                 hostname=self._hostname,
                 queue=queue,
                 routing_key=routing_key,

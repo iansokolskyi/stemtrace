@@ -310,7 +310,14 @@ class TestReceivedFromCeleryMessages:
         )
 
         assert [
-            (e.task_id, e.state, e.group_id, e.chord_id, e.chord_callback_id)
+            (
+                e.task_id,
+                e.state,
+                e.group_id,
+                e.chord_id,
+                e.chord_callback_id,
+                e.chord_body_first_id,
+            )
             for e in events
         ] == [
             (
@@ -318,6 +325,7 @@ class TestReceivedFromCeleryMessages:
                 TaskState.RECEIVED,
                 "group-1",
                 "group-1",
+                callback.options["task_id"],
                 callback.options["task_id"],
             )
         ]

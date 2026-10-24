@@ -29,6 +29,7 @@ from celery.signals import (
 from celery.utils.serialization import UnpickleableExceptionWrapper
 from celery.utils.time import maybe_iso8601
 
+from stemtrace.core.chord_body import body_first_task_id
 from stemtrace.core.events import (
     RegisteredTaskDefinition,
     TaskEvent,
@@ -126,36 +127,34 @@ _flush_at_exit_registered = False
 _deferred_sleep: Callable[[float], None] = time.sleep
 
 
-def _extract_chord_info(chord_attr: Any) -> tuple[str | None, str | None]:
-    """Extract chord group_id and callback task_id from chord attribute.
+def _extract_chord_info(
+    chord_attr: Any,
+) -> tuple[str | None, str | None, str | None]:
+    """Read the chord ids a header task's ``chord`` attribute carries.
 
-    Celery's task.request.chord on HEADER tasks contains:
-    - The chord callback signature with options.group_id and options.task_id
+    ``request.chord`` (and the ``chord`` option of a publish) is the chord body's
+    signature: a Signature object or its dict.
 
     Returns:
-        Tuple of (chord_group_id, callback_task_id)
+        ``(chord_group_id, callback_task_id, body_first_task_id)``. The last is
+        the task ID the body starts with; None when the body is a group or
+        chord, or the attribute isn't a well-formed body signature.
     """
     if chord_attr is None:
-        return None, None
+        return None, None, None
 
     group_id: str | None = None
     callback_id: str | None = None
 
-    # Celery Signature object
-    if hasattr(chord_attr, "options"):
-        opts = chord_attr.options
-        if isinstance(opts, dict):
-            group_id = opts.get("group_id") or opts.get("group")
-            callback_id = opts.get("task_id")
-
-    # Dict-like (Celery chord dict: {'task': ..., 'options': {'group_id': ..., 'task_id': ...}})
-    elif isinstance(chord_attr, dict):
+    # Signature object, or its dict ({'task': ..., 'options': {...}}).
+    opts = getattr(chord_attr, "options", None)
+    if opts is None and isinstance(chord_attr, dict):
         opts = chord_attr.get("options", {})
-        if isinstance(opts, dict):
-            group_id = opts.get("group_id") or opts.get("group")
-            callback_id = opts.get("task_id")
+    if isinstance(opts, dict):
+        group_id = opts.get("group_id") or opts.get("group")
+        callback_id = opts.get("task_id")
 
-    return group_id, callback_id
+    return group_id, callback_id, body_first_task_id(chord_attr)
 
 
 # Set while this thread (greenlet, under gevent/eventlet) publishes an event.
@@ -576,7 +575,7 @@ def _on_task_prerun(
     **_: Any,
 ) -> None:
     """Handle task_prerun: publish STARTED and start capturing output."""
-    chord_id, chord_callback_id = _extract_chord_info(
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
     _publish_event(
@@ -590,6 +589,7 @@ def _on_task_prerun(
             group_id=getattr(task.request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
+            chord_body_first_id=chord_body_first_id,
             retries=task.request.retries or 0,
             args=_scrub_and_serialize_args(args),
             kwargs=_scrub_and_serialize_kwargs(kwargs),
@@ -630,7 +630,7 @@ def _on_task_postrun(
     # Clean up PENDING tracking
     _pending_emitted.discard(task_id)
 
-    chord_id, chord_callback_id = _extract_chord_info(
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
     _publish_event(
@@ -644,6 +644,7 @@ def _on_task_postrun(
             group_id=getattr(task.request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
+            chord_body_first_id=chord_body_first_id,
             retries=task.request.retries or 0,
             result=_scrub_and_serialize_result(retval),
             output=output,
@@ -677,7 +678,7 @@ def _publish_ignored_or_rejected(
         exception, exception_type = _format_exception(reason), _exception_type(reason)
     elif reason is not None:
         exception = str(reason)
-    chord_id, chord_callback_id = _extract_chord_info(
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
         getattr(task.request, "chord", None)
     )
     _publish_event(
@@ -691,6 +692,7 @@ def _publish_ignored_or_rejected(
             group_id=getattr(task.request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
+            chord_body_first_id=chord_body_first_id,
             retries=task.request.retries or 0,
             exception=exception,
             exception_type=exception_type,
@@ -782,7 +784,9 @@ def _on_task_failure(
     _pending_emitted.discard(task_id)
 
     request = _failed_request(sender, task_id)
-    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
+        getattr(request, "chord", None)
+    )
     _publish_event(
         TaskEvent(
             task_id=task_id,
@@ -794,6 +798,7 @@ def _on_task_failure(
             group_id=getattr(request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
+            chord_body_first_id=chord_body_first_id,
             retries=getattr(request, "retries", 0) or 0,
             exception=_format_exception(exception),
             exception_type=_exception_type(exception),
@@ -847,7 +852,9 @@ def _publish_unrun_chain_steps(
         step_id, name = options.get("task_id"), step.get("task")
         if not isinstance(step_id, str) or not isinstance(name, str):
             continue
-        chord_id, chord_callback_id = _extract_chord_info(options.get("chord"))
+        chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
+            options.get("chord")
+        )
         _publish_event(
             TaskEvent(
                 task_id=step_id,
@@ -859,6 +866,7 @@ def _publish_unrun_chain_steps(
                 group_id=options.get("group_id"),
                 chord_id=chord_id,
                 chord_callback_id=chord_callback_id,
+                chord_body_first_id=chord_body_first_id,
                 exception=_format_exception(exception),
                 exception_type=_exception_type(exception),
             )
@@ -887,7 +895,9 @@ def _on_task_retry(
     else:
         exc_message = _format_exception(None, einfo) or _CANCELLED_RETRY_REASON
 
-    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
+        getattr(request, "chord", None)
+    )
     # Use current retry count (not +1) so RETRY groups with the STARTED that failed
     # Timeline: STARTED(0) → RETRY(0) → STARTED(1) → RETRY(1) → ...
     event = TaskEvent(
@@ -900,6 +910,7 @@ def _on_task_retry(
         group_id=getattr(request, "group", None),
         chord_id=chord_id,
         chord_callback_id=chord_callback_id,
+        chord_body_first_id=chord_body_first_id,
         retries=request.retries or 0,
         exception=exc_message,
         exception_type=_exception_type(_retry_cause(reason)),
@@ -988,7 +999,9 @@ def _on_task_revoked(
     **_: Any,
 ) -> None:
     del terminated, signum, expired
-    chord_id, chord_callback_id = _extract_chord_info(getattr(request, "chord", None))
+    chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
+        getattr(request, "chord", None)
+    )
     _publish_event(
         TaskEvent(
             task_id=request.id,
@@ -1000,6 +1013,7 @@ def _on_task_revoked(
             group_id=getattr(request, "group", None),
             chord_id=chord_id,
             chord_callback_id=chord_callback_id,
+            chord_body_first_id=chord_body_first_id,
             retries=getattr(request, "retries", 0) or 0,
             **_worker_fields(request),
         )

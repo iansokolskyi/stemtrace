@@ -41,6 +41,34 @@ class TestTaskState:
 
 
 class TestTaskEventCreation:
+    def test_chord_body_first_id_defaults_to_none_and_round_trips(self) -> None:
+        event = TaskEvent(
+            task_id="t",
+            name="n",
+            state=TaskState.STARTED,
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        with_field = event.model_copy(update={"chord_body_first_id": "first"})
+
+        assert event.chord_body_first_id is None
+        restored = TaskEvent.model_validate_json(with_field.model_dump_json())
+        assert restored.chord_body_first_id == "first"
+
+    def test_unknown_field_is_ignored_not_refused(self) -> None:
+        """A server from before a field ignores it (as v0.4.2 does ``chord_body_first_id``)."""
+        event = TaskEvent.model_validate(
+            {
+                "task_id": "t",
+                "name": "n",
+                "state": "STARTED",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "a_field_from_a_later_release": "x",
+            }
+        )
+
+        assert event.task_id == "t"
+        assert not hasattr(event, "a_field_from_a_later_release")
+
     def test_with_required_fields(self) -> None:
         event = TaskEvent(
             task_id="abc-123",

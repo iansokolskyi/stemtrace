@@ -4,7 +4,6 @@ from stemtrace.core.graph import (
     NodeType,
     TaskGraph,
     TaskNode,
-    _body_node_id,
     _group_node_id,
 )
 
@@ -73,6 +72,9 @@ def _check_group_indexes(graph: TaskGraph) -> None:
     for group_id, tally in graph._groups.items():
         assert set(tally.members) <= set(nodes), (group_id, "member not in nodes")
         assert set(tally.headers) <= set(tally.members), (group_id, "stray header")
+        assert set(tally.marked) <= set(tally.members), (group_id, "stray mark")
+        wanted = graph._wanted_headers(group_id, tally)
+        assert set(tally.headers) == set(wanted), (group_id, "headers", list(wanted))
     for node_id, node in nodes.items():
         if node.group_id is None:
             continue
@@ -95,15 +97,13 @@ def _check_group_indexes(graph: TaskGraph) -> None:
 
 
 def _check_chord_indexes(graph: TaskGraph) -> None:
-    """Chord callbacks, unlock tasks and group bodies agree with the nodes."""
+    """Chord callbacks, claims and unlock tasks agree with the nodes."""
     nodes = graph.nodes
+    assert not graph._resolving, graph._resolving
     for node_id, node in nodes.items():
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"
             assert graph._callback_of.get(node.chord_id) == node.group_id, node_id
-        if node.node_type == NodeType.CHORD and node.chord_callback_id is not None:
-            named = graph._chord_by_callback.get(node.chord_callback_id)
-            assert named == node.group_id, (node_id, node.chord_callback_id, named)
     for callback_id, group_id in graph._callback_of.items():
         chord = nodes.get(_group_node_id(group_id))
         assert chord is not None, (callback_id, group_id, "callback of no chord")
@@ -116,30 +116,56 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
         assert graph._unlock_of.get(unlock_id) == group_id, (group_id, unlock_id)
     for unlock_id, group_id in graph._unlock_of.items():
         assert graph._unlock_by_chord.get(group_id) == unlock_id, (group_id, unlock_id)
-    for group_id, members in graph._body_members.items():
-        assert _body_node_id(group_id) in nodes, f"{group_id} lost its body node"
-        assert len(set(members)) == len(members), (group_id, members)
-        for member_id in members:
-            # A task is in one chord's group body only.
-            assert graph._body_of.get(member_id) == group_id, member_id
-    for member_id, group_id in graph._body_of.items():
-        assert member_id in graph._body_members[group_id], member_id
+    _check_claims(graph)
+    _check_unlock_indexes(graph)
+
+
+def _check_claims(graph: TaskGraph) -> None:
+    """A node two chords point to is drawn after neither."""
+    for candidate, claimants in graph._claims.items():
+        assert claimants, (candidate, "empty claim")
+        for group_id in claimants:
+            assert graph._candidate.get(group_id) == candidate, (group_id, candidate)
+        if len(claimants) > 1:
+            assert candidate not in graph._callback_of, (candidate, claimants)
+    for group_id, candidate in graph._candidate.items():
+        assert group_id in graph._claims.get(candidate, {}), (group_id, candidate)
+        tally = graph._groups.get(group_id)
+        assert tally is not None, (group_id, "candidate of no group")
+        assert tally.headers, (group_id, "candidate of no chord")
+    for callback_id, group_id in graph._callback_of.items():
+        assert graph._candidate.get(group_id) == callback_id, (callback_id, group_id)
+
+
+def _check_unlock_indexes(graph: TaskGraph) -> None:
+    """``chord_unlock`` tasks are indexed by the chord they name, and exist."""
+    for unlock_id, info in graph._unlocks.items():
+        assert unlock_id in graph.nodes, (unlock_id, "unlock of no node")
+        if info.group_id is not None:
+            assert unlock_id in graph._unlocks_by_group[info.group_id], unlock_id
+    for group_id, unlock_ids in graph._unlocks_by_group.items():
+        assert unlock_ids, group_id
+        for unlock_id in unlock_ids:
+            assert graph._unlocks[unlock_id].group_id == group_id, unlock_id
 
 
 def _check_named_callbacks(graph: TaskGraph) -> None:
-    """Named chord callbacks: the tally owns them, the node and index agree."""
+    """Chord evidence: the tally owns it, the node and the stamp index agree."""
     for group_id, tally in graph._groups.items():
         node = graph.nodes.get(_group_node_id(group_id))
         if node is not None and node.node_type == NodeType.CHORD:
-            assert node.chord_callback_id == tally.named_callback, group_id
-    # Each named callback is one chord's current name (also while the CHORD
-    # node is removed): no stale entries. Which name a chord keeps when its
-    # headers (or two chords) name different callbacks isn't checked here.
-    for callback_id, group_id in graph._chord_by_callback.items():
-        tally = graph._groups.get(group_id)
-        assert tally is not None, (callback_id, group_id, "named by no group")
-        assert tally.headers, (callback_id, group_id, "named by no chord")
-        assert tally.named_callback == callback_id, (callback_id, group_id)
+            assert node.chord_callback_id == graph._named_stamp(tally), group_id
+        for evidence in (tally.stamps, tally.firsts):
+            for value, task_ids in evidence.items():
+                assert task_ids, (group_id, value, "empty evidence")
+                assert set(task_ids) <= set(tally.headers), (group_id, value)
+        stamp = graph._named_stamp(tally)
+        expected = stamp if stamp != group_id else None
+        assert graph._stamp_of.get(group_id) == expected, (group_id, stamp)
+    for stamp, group_ids in graph._chords_by_stamp.items():
+        assert group_ids, (stamp, "empty stamp index")
+        for group_id in group_ids:
+            assert graph._stamp_of.get(group_id) == stamp, (stamp, group_id)
 
 
 def _check_missing_parent_indexes(graph: TaskGraph) -> None:
@@ -185,6 +211,15 @@ def _check_reported_children(graph: TaskGraph) -> None:
             assert child.reported_parent_id == parent_id, (parent_id, child_id)
 
 
+def assert_chords_settled(graph: TaskGraph) -> None:
+    """Resolving a chord again changes nothing: its callback is where its evidence puts it."""
+    for node in list(graph.nodes.values()):
+        if node.node_type == NodeType.CHORD and node.group_id is not None:
+            before = graph_state(graph)
+            graph._resolve_callback(node.group_id)
+            assert graph_state(graph) == before, node.group_id
+
+
 def assert_graph_invariants(graph: TaskGraph) -> None:
     """Fail if the graph's links are inconsistent.
 
@@ -194,7 +229,7 @@ def assert_graph_invariants(graph: TaskGraph) -> None:
     edge); no node is its own ancestor; each node is a root or listed in
     exactly its parent's children; every node is reachable from a root. The
     internal indexes (group tallies, chains, chord callbacks and unlock tasks,
-    group bodies, missing-parent waits, replacement walks) name live nodes and
+    missing-parent waits, replacement walks) name live nodes and
     agree with each other.
     """
     roots = _check_roots(graph)
@@ -222,8 +257,8 @@ def graph_state(graph: TaskGraph) -> dict[str, object]:
 
     Per node: name, type, place (parent and children), chord callback (drawn
     and named), reported parent, state and group. Also the roots and the
-    chord indexes (named callbacks, drawn callbacks, chord_unlock tasks, group
-    bodies), so a stale entry in one of them counts as a difference. Lists
+    chord indexes (stamps, drawn callbacks, chord_unlock tasks), so a stale
+    entry in one of them counts as a difference. Lists
     are sorted: two graphs built in different orders may list the same
     children or roots in another order.
     """
@@ -243,8 +278,7 @@ def graph_state(graph: TaskGraph) -> dict[str, object]:
             for node_id, node in graph.nodes.items()
         },
         "roots": sorted(graph.root_ids),
-        "chord_by_callback": dict(graph._chord_by_callback),
+        "stamp_of": dict(graph._stamp_of),
         "callback_of": dict(graph._callback_of),
         "unlock_of": dict(graph._unlock_of),
-        "body_of": dict(graph._body_of),
     }

@@ -1,0 +1,219 @@
+{
+ "cells": {
+  "field": {
+   "native|5.2.2|chain>chord": {
+    "n": 4,
+    "ok": 0
+   },
+   "native|5.2.2|chain>task": {
+    "n": 38,
+    "ok": 33
+   },
+   "native|5.2.2|chord": {
+    "n": 22,
+    "ok": 0
+   },
+   "native|5.2.2|group": {
+    "n": 10,
+    "ok": 4
+   },
+   "native|5.2.2|task": {
+    "n": 130,
+    "ok": 125
+   },
+   "native|5.6.3|chain>chord": {
+    "n": 5,
+    "ok": 0
+   },
+   "native|5.6.3|chain>task": {
+    "n": 132,
+    "ok": 126
+   },
+   "native|5.6.3|chord": {
+    "n": 25,
+    "ok": 24
+   },
+   "native|5.6.3|group": {
+    "n": 13,
+    "ok": 0
+   },
+   "native|5.6.3|task": {
+    "n": 109,
+    "ok": 104
+   },
+   "redis|5.6.3|chain>task": {
+    "n": 35,
+    "ok": 33
+   },
+   "redis|5.6.3|chord": {
+    "n": 2,
+    "ok": 2
+   },
+   "redis|5.6.3|group": {
+    "n": 1,
+    "ok": 0
+   },
+   "redis|5.6.3|task": {
+    "n": 13,
+    "ok": 10
+   },
+   "unlock|5.2.2|chain>chord": {
+    "n": 4,
+    "ok": 0
+   },
+   "unlock|5.2.2|chain>task": {
+    "n": 38,
+    "ok": 33
+   },
+   "unlock|5.2.2|chord": {
+    "n": 22,
+    "ok": 0
+   },
+   "unlock|5.2.2|group": {
+    "n": 10,
+    "ok": 4
+   },
+   "unlock|5.2.2|task": {
+    "n": 130,
+    "ok": 125
+   },
+   "unlock|5.6.3|chain>chord": {
+    "n": 5,
+    "ok": 0
+   },
+   "unlock|5.6.3|chain>task": {
+    "n": 132,
+    "ok": 126
+   },
+   "unlock|5.6.3|chord": {
+    "n": 25,
+    "ok": 24
+   },
+   "unlock|5.6.3|group": {
+    "n": 13,
+    "ok": 0
+   },
+   "unlock|5.6.3|task": {
+    "n": 109,
+    "ok": 104
+   }
+  },
+  "plain": {
+   "native|5.2.2|chain>chord": {
+    "n": 4,
+    "ok": 0
+   },
+   "native|5.2.2|chain>task": {
+    "n": 38,
+    "ok": 0
+   },
+   "native|5.2.2|chord": {
+    "n": 22,
+    "ok": 0
+   },
+   "native|5.2.2|group": {
+    "n": 10,
+    "ok": 4
+   },
+   "native|5.2.2|task": {
+    "n": 130,
+    "ok": 125
+   },
+   "native|5.6.3|chain>chord": {
+    "n": 5,
+    "ok": 0
+   },
+   "native|5.6.3|chain>task": {
+    "n": 132,
+    "ok": 0
+   },
+   "native|5.6.3|chord": {
+    "n": 25,
+    "ok": 24
+   },
+   "native|5.6.3|group": {
+    "n": 13,
+    "ok": 0
+   },
+   "native|5.6.3|task": {
+    "n": 109,
+    "ok": 56
+   },
+   "redis|5.6.3|chain>task": {
+    "n": 35,
+    "ok": 0
+   },
+   "redis|5.6.3|chord": {
+    "n": 2,
+    "ok": 2
+   },
+   "redis|5.6.3|group": {
+    "n": 1,
+    "ok": 0
+   },
+   "redis|5.6.3|task": {
+    "n": 13,
+    "ok": 7
+   },
+   "unlock|5.2.2|chain>chord": {
+    "n": 4,
+    "ok": 0
+   },
+   "unlock|5.2.2|chain>task": {
+    "n": 38,
+    "ok": 32
+   },
+   "unlock|5.2.2|chord": {
+    "n": 22,
+    "ok": 0
+   },
+   "unlock|5.2.2|group": {
+    "n": 10,
+    "ok": 4
+   },
+   "unlock|5.2.2|task": {
+    "n": 130,
+    "ok": 125
+   },
+   "unlock|5.6.3|chain>chord": {
+    "n": 5,
+    "ok": 0
+   },
+   "unlock|5.6.3|chain>task": {
+    "n": 132,
+    "ok": 83
+   },
+   "unlock|5.6.3|chord": {
+    "n": 25,
+    "ok": 24
+   },
+   "unlock|5.6.3|group": {
+    "n": 13,
+    "ok": 0
+   },
+   "unlock|5.6.3|task": {
+    "n": 109,
+    "ok": 104
+   }
+  }
+ },
+ "ok_to_none": {
+  "field": {
+   "native|5.6.3|chain>chord": 2,
+   "native|5.6.3|group": 5,
+   "redis|5.6.3|group": 1,
+   "unlock|5.6.3|group": 5
+  },
+  "plain": {
+   "native|5.6.3|chain>chord": 2,
+   "native|5.6.3|chain>task": 66,
+   "native|5.6.3|group": 5,
+   "native|5.6.3|task": 46,
+   "redis|5.6.3|chain>task": 14,
+   "redis|5.6.3|group": 1,
+   "redis|5.6.3|task": 3,
+   "unlock|5.6.3|chain>task": 1,
+   "unlock|5.6.3|group": 5
+  }
+ }
+}
