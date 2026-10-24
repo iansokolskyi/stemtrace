@@ -64,9 +64,12 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     ran" status.
     """
     lost = session.config.stash.get(_LOST_WORKERS, [])
+    # None: pytest_configure skipped this controller (it inherited
+    # PYTEST_XDIST_WORKER) and never set the limit, so no restart is allowed.
+    limit = int(session.config.option.maxworkerrestart or 0)
     if (
         lost
-        and len(lost) > int(session.config.option.maxworkerrestart)
+        and len(lost) > limit
         and (
             session.exitstatus
             in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED)

@@ -223,6 +223,36 @@ def _rebuilt(key: tuple[Any, ...] | frozenset[Any]) -> Any:
     return tuple(parts)
 
 
+def _scrub_items(
+    items: Any,
+    sensitive_keys: frozenset[str],
+    safe_keys: frozenset[str] | None,
+    budget: _Budget | None,
+) -> list[Any]:
+    """Scrub each item of a list or tuple, in order."""
+    if budget is None:
+        return [_scrub_value(item, sensitive_keys, safe_keys) for item in items]
+    scrubbed: list[Any] = []
+    append = scrubbed.append
+    for item in items:
+        # Exact str and bytes, the common leaves, are charged without a call.
+        kind = type(item)
+        if kind is str:
+            budget.left -= len(item) + 2
+        elif kind is bytes:
+            budget.left -= len(item) + 3  # json falls back to str(): "b'...'"
+        elif kind is int:  # free: the parent's per-entry charge covers it
+            append(item)
+            continue
+        else:
+            append(_scrub_value(item, sensitive_keys, safe_keys, budget))
+            continue
+        if budget.left < 0:
+            raise ValueTooBig
+        append(item)
+    return scrubbed
+
+
 def _scrub_value(
     value: Any,
     sensitive_keys: frozenset[str],
@@ -240,13 +270,11 @@ def _scrub_value(
     if isinstance(value, list):
         if budget is not None:
             budget.charge(2 * list.__len__(value))  # an element and its ", "
-        return [_scrub_value(item, sensitive_keys, safe_keys, budget) for item in value]
+        return _scrub_items(value, sensitive_keys, safe_keys, budget)
     if isinstance(value, tuple):
         if budget is not None:
             budget.charge(2 * tuple.__len__(value))
-        return tuple(
-            _scrub_value(item, sensitive_keys, safe_keys, budget) for item in value
-        )
+        return tuple(_scrub_items(value, sensitive_keys, safe_keys, budget))
     if budget is not None and type(value) not in _FREE_LEAVES:
         _charge_leaf(value, budget)
     return value
@@ -284,6 +312,10 @@ def _charge_key(key: object, budget: _Budget) -> None:
             budget.charge(1)
             for part in key:
                 _charge_key(part, budget)
+        case Enum():
+            # _key_names matches an Enum key by its value too, so charge that first.
+            budget.charge(1)
+            _charge_key(key.value, budget)
         case _:
             budget.charge(1)
 
