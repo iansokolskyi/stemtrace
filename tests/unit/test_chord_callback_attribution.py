@@ -36,7 +36,7 @@ import pytest
 
 from stemtrace.core.graph import TaskGraph
 from tests import chord_truth as ct
-from tests.graph_invariants import assert_graph_invariants
+from tests.graph_invariants import assert_chords_settled, assert_graph_invariants
 
 DATA = Path(__file__).parents[1] / "data"
 EXPECTED = json.loads((DATA / "chord_truth_expected.json").read_text())
@@ -129,7 +129,7 @@ def test_remove_a_single_task_of_a_chord_flow_never_draws_a_wrong_callback(
             graph = ct.replay(events)
             graph.remove_node(task_ids[index])
             assert_graph_invariants(graph)
-            assert graph._resolve_overflows == 0
+            assert_chords_settled(graph)
             assert _wrong(graph, capture) == [], (key, variant, task_ids[index])
 
 

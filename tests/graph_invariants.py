@@ -212,6 +212,15 @@ def _check_reported_children(graph: TaskGraph) -> None:
             assert child.reported_parent_id == parent_id, (parent_id, child_id)
 
 
+def assert_chords_settled(graph: TaskGraph) -> None:
+    """Resolving a chord again changes nothing: its callback is where its evidence puts it."""
+    for node in list(graph.nodes.values()):
+        if node.node_type == NodeType.CHORD and node.group_id is not None:
+            before = graph_state(graph)
+            graph._resolve_callback(node.group_id)
+            assert graph_state(graph) == before, node.group_id
+
+
 def assert_graph_invariants(graph: TaskGraph) -> None:
     """Fail if the graph's links are inconsistent.
 

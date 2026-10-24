@@ -696,8 +696,10 @@ class _EventIndex:
 
 
 # Passes one chord's resolution makes when what it read changes meanwhile
-# (placing its callback moves nodes other chords read): two or three settle it,
-# the bound only guards against a loop no events make.
+# (placing its callback moves nodes other chords read). Two settle every chord
+# of the recorded Celery flows. Events whose placements contradict each other
+# (a callback that the group it hangs from also hangs below) never settle: the
+# bound ends the loop, with the callback drawn or not.
 _RESOLVE_PASSES = 8
 
 # Celery's polling task that fires a chord's body when the result backend
@@ -1119,8 +1121,6 @@ class TaskGraph(BaseModel):
     # once more when the pass ends.
     _resolving: set[str] = PrivateAttr(default_factory=set)
     _resolve_again: set[str] = PrivateAttr(default_factory=set)
-    # Resolutions that used every pass and were still asked again (never seen).
-    _resolve_overflows: int = PrivateAttr(default=0)
     # Nodes kept off their parent (or groups made roots) to break a cycle;
     # placed again after each change.
     _cycle_broken: dict[str, None] = PrivateAttr(default_factory=dict)
@@ -2433,8 +2433,6 @@ class TaskGraph(BaseModel):
                 self._resolve_callback_now(group_id)
                 if group_id not in self._resolve_again:
                     break
-            else:
-                self._resolve_overflows += 1
         finally:
             self._resolving.discard(group_id)
             self._resolve_again.discard(group_id)

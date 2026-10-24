@@ -19,6 +19,7 @@ from typing import Any
 
 from stemtrace.core.events import TaskEvent
 from stemtrace.core.graph import NodeType, TaskGraph
+from tests.graph_invariants import assert_chords_settled
 
 DATA = Path(__file__).parent / "data"
 FLOWS = DATA / "chord_truth_flows.json"
@@ -134,13 +135,12 @@ def is_complete(graph: TaskGraph, chord_truth: dict[str, Any]) -> bool:
 def replay(events: list[TaskEvent]) -> TaskGraph:
     """The graph after adding the events in the order given.
 
-    Celery's events always settle a chord's resolution (the graph counts the
-    chords whose resolution kept being asked again after its last pass).
+    The chords' callbacks have settled: resolving them again changes nothing.
     """
     graph = TaskGraph()
     for event in events:
         graph.add_event(event)
-    assert graph._resolve_overflows == 0
+    assert_chords_settled(graph)
     return graph
 
 
@@ -166,7 +166,7 @@ def wrong_in_prefixes(
             for c, ch in chords
             if judge(graph, c, ch) == "WRONG"
         ]
-    assert graph._resolve_overflows == 0
+    assert_chords_settled(graph)
     return found
 
 
