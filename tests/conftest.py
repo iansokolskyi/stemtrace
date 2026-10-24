@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import Any
 
 import pytest
+from kombu.transport.memory import Channel as MemoryChannel
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.config import _reset_config
@@ -123,6 +124,17 @@ def _reset_stemtrace_config() -> Iterator[None]:
     """Clear the worker config a test set, so it can't leak into the next test."""
     yield
     _reset_config()
+
+
+@pytest.fixture(autouse=True)
+def _empty_memory_broker() -> Iterator[None]:
+    """Drop messages a test left in kombu's memory broker.
+
+    kombu 5.6 keeps its queues on ``memory.Channel`` (class level), so a message
+    a test published would otherwise reach the next test's real worker.
+    """
+    yield
+    MemoryChannel.queues.clear()
 
 
 @pytest.fixture
