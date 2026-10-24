@@ -1,0 +1,1 @@
+- The docs no longer say that Celery never makes two chords name the same callback: Celery 5.6.3 does, for a chord whose body is another chord followed by a task in a chain.
