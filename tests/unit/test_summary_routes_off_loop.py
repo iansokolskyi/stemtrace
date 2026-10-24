@@ -23,6 +23,9 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
 MAX_LOOP_LAG_S = 0.020
+# The overview is two cheap passes: unsliced, 30k nodes hold the loop 13-15 ms
+# (sliced: 2-3 ms), under MAX_LOOP_LAG_S, so it gets a tighter bound to guard the route.
+OVERVIEW_MAX_LOOP_LAG_S = 0.007
 LOOP_LAG_RUNS = 3
 PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
@@ -113,7 +116,7 @@ async def _longest_loop_hold(app: FastAPI, path: str) -> float:
 @pytest.mark.slow
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("path", PATHS)
-async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
+async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
     path: str, shape: str, big_stores: dict[str, GraphStore]
 ) -> None:
     """The longest stretch the loop is held, while the request runs, stays short."""
@@ -124,7 +127,10 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
     # test workers) inflates one run, so the best of a few is the signal.
     holds = [await _longest_loop_hold(app, path) for _ in range(LOOP_LAG_RUNS)]
     longest = min(holds)
-    assert longest <= MAX_LOOP_LAG_S, f"loop held for {longest * 1000:.1f} ms"
+    budget = OVERVIEW_MAX_LOOP_LAG_S if "/overview" in path else MAX_LOOP_LAG_S
+    assert longest <= budget, (
+        f"loop held for {longest * 1000:.1f} ms (max {budget * 1000:.0f})"
+    )
 
 
 @pytest.mark.parametrize("shape", SHAPES)
