@@ -46,13 +46,21 @@ def test_main_with_every_public_definition_documented_returns_zero(
     ("source", "name", "line"),
     [
         ("def f() -> None:\n    pass\n", "f", 1),
-        ('class A:\n    """A."""\n\n    def __init__(self) -> None:\n        pass\n', "__init__", 4),
+        (
+            'class A:\n    """A."""\n\n    def __init__(self) -> None:\n        pass\n',
+            "__init__",
+            4,
+        ),
         ("class B:\n    pass\n", "B", 1),
         ("async def g() -> None:\n    pass\n", "g", 1),
     ],
 )
 def test_main_with_missing_docstring_reports_it_and_returns_one(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str, name: str, line: int
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+    name: str,
+    line: int,
 ) -> None:
     path = _write(tmp_path, source)
 
