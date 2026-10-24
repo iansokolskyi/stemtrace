@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from celery import Celery, chain, chord, group
+from celery._state import get_current_app
 from celery.canvas import Signature
 
 from stemtrace.core.chord_body import body_first_task_id
@@ -28,6 +29,17 @@ def _as_dict(sig: Signature) -> Any:
 
 
 def _bodies() -> dict[str, tuple[Signature, str | None]]:
+    """One frozen body of each kind. Freezing a chord needs this app's backend, so
+    it is the current app meanwhile; the previous one is put back."""
+    previous = get_current_app()
+    app.set_current()
+    try:
+        return _build_bodies()
+    finally:
+        previous.set_current()
+
+
+def _build_bodies() -> dict[str, tuple[Signature, str | None]]:
     first = _sig("t.first")
     first.freeze("first-id")
     return {

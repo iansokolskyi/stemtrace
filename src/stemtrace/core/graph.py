@@ -1789,11 +1789,6 @@ class TaskGraph(BaseModel):
         group_node_id = _group_node_id(node.group_id)
         return group_node_id if group_node_id in self.nodes else None
 
-    def _is_header(self, task_id: str, group_id: str) -> bool:
-        """Whether a task is one of a chord's headers."""
-        tally = self._groups.get(group_id)
-        return tally is not None and task_id in tally.headers
-
     def _join_group(
         self,
         node: TaskNode,
