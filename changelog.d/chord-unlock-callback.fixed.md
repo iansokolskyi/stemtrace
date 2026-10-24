@@ -1,0 +1,1 @@
+- Fix a chain of three or more chords (such as `chain(group(...), task, group(...), task, group(...), task)`) on a result backend that uses `celery.chord_unlock`, for example a database backend: the first chord now draws its own callback, not a later chord's, and its `celery.chord_unlock` task no longer sits at the top of the graph. Other shapes are drawn as in 0.4.2.

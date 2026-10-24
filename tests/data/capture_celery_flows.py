@@ -204,6 +204,13 @@ def reject() -> int:
     raise Reject("bad input", requeue=False)
 
 
+@app.task(name="flows.slow_add")
+def slow_add(x: int, y: int) -> int:
+    """Add after a pause, so a chord_unlock task polls (retries) meanwhile."""
+    time.sleep(2.5)
+    return x + y
+
+
 @app.task(bind=True, name="flows.flaky_add", max_retries=2)
 def flaky_add(self: Any, x: int, y: int) -> int:
     """Add, failing (and retrying) once on its first run."""
@@ -245,8 +252,19 @@ def page_delayed(self: Any, page: int) -> Any:
     return page
 
 
+def _chain_of_chords(count: int) -> Signature:
+    """``chain(group, tsum)`` repeated ``count`` times (each pair is one chord)."""
+    steps: list[Signature] = [group(add.s(1, 1), add.s(2, 2)), tsum.s()]
+    for _ in range(count - 1):
+        steps += [group(add.s(1), add.s(2)), tsum.s()]
+    return chain(*steps)
+
+
 def _flows() -> dict[str, Callable[[], Signature]]:
     return {
+        **{
+            f"chain_chords_{n}": (lambda n=n: _chain_of_chords(n)) for n in (1, 2, 3, 4)
+        },
         "chain": lambda: chain(add.s(1, 1), add.s(2), add.s(3)),
         "group": lambda: group(add.s(i, i) for i in range(3)),
         "chord": lambda: chord((add.s(i, i) for i in range(3)), tsum.s()),
@@ -269,6 +287,36 @@ def _flows() -> dict[str, Callable[[], Signature]]:
         ),
         "chord_in_chord_body": lambda: chord(
             [add.s(1, 1), add.s(2, 2)],
+            chord([tsum.s(), tsum.s()], tsum.s()),
+        ),
+        "chord_chord_header": lambda: chord(
+            [chord([add.s(1, 1), add.s(2, 2)], tsum.s()), add.s(3, 3)], tsum.s()
+        ),
+        "chord_chord_header_slow": lambda: chord(
+            [chord([slow_add.s(1, 1), add.s(2, 2)], tsum.s()), add.s(3, 3)], tsum.s()
+        ),
+        "chain_chord_chord_body_add": lambda: chain(
+            chord([add.s(1, 1), add.s(2, 2)], chord([tsum.s(), tsum.s()], tsum.s())),
+            add.s(10),
+        ),
+        "chord_chain_chord_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chain(chord([tsum.s(), tsum.s()], tsum.s()), add.s(10)),
+        ),
+        "chain_add_chord_chord_body": lambda: chain(
+            add.s(1, 1),
+            chord([add.s(1), add.s(2)], chord([tsum.s(), tsum.s()], tsum.s())),
+        ),
+        "chord_depth3_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chord([tsum.s(), tsum.s()], chord([tsum.s(), tsum.s()], tsum.s())),
+        ),
+        "chord_chain_tsum_chord_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chain(tsum.s(), chord([add.s(1), add.s(2)], tsum.s())),
+        ),
+        "chord_in_chord_body_slow": lambda: chord(
+            [slow_add.s(1, 1), add.s(2, 2)],
             chord([tsum.s(), tsum.s()], tsum.s()),
         ),
         "chord_with_chain_body": lambda: chord(
@@ -432,7 +480,24 @@ def _event_dict(event: Any) -> dict[str, Any]:
     )
 
 
-_UNLOCK_FLOWS = ("chord", "chain_a_group_tsum_add", "chord_with_chain_body")
+_UNLOCK_FLOWS = (
+    "chord",
+    "chain_a_group_tsum_add",
+    "chord_with_chain_body",
+    "chain_chords_1",
+    "chain_chords_2",
+    "chain_chords_3",
+    "chain_chords_4",
+    "chord_in_chord_body",
+    "chord_in_chord_body_slow",
+    "chord_chord_header",
+    "chord_chord_header_slow",
+    "chain_chord_chord_body_add",
+    "chord_chain_chord_body",
+    "chain_add_chord_chord_body",
+    "chord_depth3_body",
+    "chord_chain_tsum_chord_body",
+)
 # Chords Celery never completes: there is no result to wait for.
 _NEVER_COMPLETE = ("chord_ignored_header", "chord_rejected_header")
 _TERMINAL = frozenset(
@@ -482,7 +547,7 @@ def main() -> None:
         if "--suffix" in sys.argv:
             only = [a for a in only if a != suffix]
     if UNLOCK:
-        flows = {name: flows[name] for name in _UNLOCK_FLOWS}
+        flows = {name: flows[name] for name in (only or _UNLOCK_FLOWS)}
     elif only:
         flows = {name: flows[name] for name in only}
     captures: dict[str, list[dict[str, Any]]] = {}

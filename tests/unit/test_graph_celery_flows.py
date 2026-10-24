@@ -160,6 +160,76 @@ _EXPECTED: dict[str, str] = {
     "chord@chord_unlock": "chord{*tsum, +add, +add, +add, celery.chord_unlock}",
     "chain_a_group_tsum_add@chord_unlock": "add(chord{*>tsum(add), +add, +add, celery.chord_unlock})",
     "chord_with_chain_body@chord_unlock": "chord{*>tsum(add), +add, +add, celery.chord_unlock}",
+    # chain(group, tsum) repeated N times: one chord per pair. Only the first
+    # and the last chord name a callback task (the others name their own group
+    # ID and nothing is stamped with it), so the middle chords draw none.
+    "chain_chords_1": "chord{*tsum, +add, +add}",
+    "chain_chords_2": "chord{*>tsum(chord{*tsum, +add, +add}), +add, +add}",
+    "chain_chords_3": (
+        "chord{*>tsum(chord{+add, +add(tsum(chord{*tsum, +add, +add}))}), +add, +add}"
+    ),
+    # With chord_unlock each chord has its own unlock task, which reports the
+    # chord's parent. The first chord's callback is the task its own unlock
+    # fired (the first tsum), never a later chord's.
+    "chain_chords_1@chord_unlock": "chord{*tsum, +add, +add, celery.chord_unlock}",
+    "chain_chords_2@chord_unlock": (
+        "chord{*>tsum(celery.chord_unlock, chord{*tsum, +add, +add}), +add, +add, "
+        "celery.chord_unlock}"
+    ),
+    "chain_chords_3@chord_unlock": (
+        "chord{*>tsum(celery.chord_unlock(tsum(celery.chord_unlock, "
+        "chord{*tsum, +add, +add})), chord{+add, +add}), +add, +add, "
+        "celery.chord_unlock}"
+    ),
+    # Chords nested in chord bodies and headers. Native: correct, except where
+    # noted. chord_unlock: only a chord whose header is a chord is correct; a
+    # chord nested in a body is a KNOWN LIMITATION on that backend (the inner
+    # headers report the outer chord's unlock task, which the walk can't tell
+    # from the chord's own: the graph splits, and the pins are what v0.4.2
+    # drew, see test_graph_chord_differential.py).
+    "chord_chord_header": "chord{*>chord{*tsum, +add, +tsum}, +add, +add}",
+    "chord_chord_header@chord_unlock": (
+        "chord{*>chord{*tsum, +add, +tsum, celery.chord_unlock}, +add, +add, "
+        "celery.chord_unlock}"
+    ),
+    "chord_chord_header_slow": "chord{*>chord{*tsum, +add, +tsum}, +add, +slow_add}",
+    "chord_chord_header_slow@chord_unlock": (
+        "chord{*>chord{*tsum, +add, +tsum, celery.chord_unlock}, +add, +slow_add, "
+        "celery.chord_unlock}"
+    ),
+    "chord_in_chord_body_slow": "chord{*chord{*tsum, +tsum, +tsum}, +add, +slow_add}",
+    "chord_in_chord_body@chord_unlock": (
+        "celery.chord_unlock(chord{+tsum, +tsum}) | "
+        "chord{*tsum, +add, +add, celery.chord_unlock}"
+    ),
+    "chord_in_chord_body_slow@chord_unlock": (
+        "celery.chord_unlock(chord{+tsum, +tsum}) | "
+        "chord{*tsum, +add, +slow_add, celery.chord_unlock}"
+    ),
+    "chord_depth3_body": "chord{*chord{*chord{*tsum, +tsum, +tsum}, +tsum, +tsum}, +add, +add}",
+    "chord_depth3_body@chord_unlock": (
+        "celery.chord_unlock(celery.chord_unlock(chord{+tsum, +tsum}), "
+        "chord{+tsum, +tsum}) | chord{*tsum, +add, +add, celery.chord_unlock}"
+    ),
+    # KNOWN LIMITATIONS (native too): the nested chord's callbacks hang below
+    # its headers, and a chord naming the same callback ID as another one.
+    "chain_chord_chord_body_add": (
+        "chord{*chord{+tsum, +tsum(tsum(add))}, +add, +add}"
+    ),
+    "chain_chord_chord_body_add@chord_unlock": (
+        "celery.chord_unlock(chord{+tsum, +tsum}) | "
+        "chord{*>tsum(add), +add, +add, celery.chord_unlock}"
+    ),
+    "chord_chain_chord_body": "chord{*>chord{+tsum, +tsum(tsum(add))}, +add, +add}",
+    "chord_chain_chord_body@chord_unlock": (
+        "celery.chord_unlock(chord{+tsum, +tsum}) | "
+        "chord{*>tsum(add), +add, +add, celery.chord_unlock}"
+    ),
+    "chain_add_chord_chord_body": "add(chord{*tsum, +tsum, +tsum}, chord{+add, +add})",
+    "chain_add_chord_chord_body@chord_unlock": (
+        "add(celery.chord_unlock(celery.chord_unlock), chord{*tsum, +tsum, +tsum}, "
+        "chord{+add, +add})"
+    ),
     # chain(a, chord([b], tsum)): the callback reports a, the chain's
     # previous task, as its parent; it carries the chord's group ID and is
     # the callback the header names.
@@ -269,6 +339,45 @@ _EXPECTED: dict[str, str] = {
     ),
 }
 
+# Four chords: the eviction and removal tests (``_QUADRATIC_FLOWS``) are slow in
+# the number of events and CI's job limit is 15 minutes, so these are only
+# replayed in ``_orders``.
+_FOUR_CHORDS_EXPECTED: dict[str, str] = {
+    "chain_chords_4": (
+        "chord{*>tsum(chord{+add, +add(tsum(chord{+add, +add(tsum("
+        "chord{*tsum, +add, +add}))}))}), +add, +add}"
+    ),
+    "chain_chords_4@chord_unlock": (
+        "chord{*>tsum(celery.chord_unlock(tsum(celery.chord_unlock(tsum("
+        "celery.chord_unlock, chord{*tsum, +add, +add})), chord{+add, +add})), "
+        "chord{+add, +add}), +add, +add, celery.chord_unlock}"
+    ),
+}
+_QUADRATIC_FLOWS = sorted(set(_CAPTURES) - set(_FOUR_CHORDS_EXPECTED))
+
+
+def _with_known_failures(flows: list[str], known: set[str], why: str) -> list[Any]:
+    """Parametrize ``flows``; the ``known`` ones fail on v0.4.2 too (strict xfail)."""
+    return [
+        pytest.param(f, marks=pytest.mark.xfail(strict=True, reason=why))
+        if f in known
+        else f
+        for f in flows
+    ]
+
+
+# Nested chords on a chord_unlock backend (and a few native ones) are known
+# limitations: these invariants fail on v0.4.2 as well (TRIAGE, not fixed here).
+_TRANSIENT_KNOWN = {
+    "chord_depth3_body@chord_unlock",
+    "chord_in_chord_body@chord_unlock",
+    "chord_in_chord_body_slow@chord_unlock",
+}
+_REMOVAL_KNOWN = {
+    "chain_chord_chord_body_add",
+    "chord_chain_tsum_chord_body@chord_unlock",
+}
+
 
 def _replay(events: list[dict[str, Any]]) -> TaskGraph:
     graph = TaskGraph()
@@ -285,6 +394,12 @@ def _orders(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         random.Random(seed).shuffle(shuffled)
         orders.append(shuffled)
     return orders
+
+
+@pytest.mark.parametrize("flow", sorted(_FOUR_CHORDS_EXPECTED))
+def test_replay_four_chords_in_any_order_builds_expected_graph(flow: str) -> None:
+    for order in _orders(_CAPTURES[flow]):
+        assert _structure(_replay(order)) == _FOUR_CHORDS_EXPECTED[flow]
 
 
 @pytest.mark.parametrize("flow", sorted(_EXPECTED))
@@ -304,7 +419,7 @@ def _nodes_of_type(graph: TaskGraph, node_type: NodeType) -> list[TaskNode]:
     return [node for node in graph.nodes.values() if node.node_type == node_type]
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
 def test_replay_celery_flow_with_eviction_keeps_graph_invariants(flow: str) -> None:
     for order in _orders(_CAPTURES[flow])[:6]:
         store = GraphStore(max_nodes=4)
@@ -464,7 +579,12 @@ def _causal_orders(
     return orders
 
 
-@pytest.mark.parametrize("flow", sorted(_EXPECTED))
+@pytest.mark.parametrize(
+    "flow",
+    _with_known_failures(
+        sorted(_EXPECTED), _TRANSIENT_KNOWN, "transient states of a known limitation"
+    ),
+)
 def test_replay_celery_flow_shows_only_accepted_transients(flow: str) -> None:
     """After every event the graph only differs from its final shape in
     accepted ways (see above): in arrival order, and for captures from this
@@ -601,7 +721,12 @@ def _graph_shape(
     }
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize(
+    "flow",
+    _with_known_failures(
+        _QUADRATIC_FLOWS, _REMOVAL_KNOWN, "removal of a known limitation's tasks"
+    ),
+)
 def test_remove_tasks_matches_rebuild_without_them(flow: str) -> None:
     """Removing any one or two tasks of a real capture leaves the graph that
     the remaining events build, in arrival order and two shuffles."""
@@ -648,7 +773,7 @@ def _replay_events(events: list[TaskEvent]) -> TaskGraph:
     return graph
 
 
-@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+@pytest.mark.parametrize("flow", _QUADRATIC_FLOWS)
 def test_remove_node_mid_stream_then_continue_matches_rebuild(flow: str) -> None:
     """Removing any node partway through a real capture, then receiving the
     rest of its events, leaves the graph that the events it kept build.
@@ -1093,3 +1218,61 @@ def test_remove_tasks_with_skewed_replacement_matches_rebuild() -> None:
             t: (n.name, n.reported_parent_id) for t, n in rebuilt.nodes.items()
         }
         assert _graph_shape(graph) == _graph_shape(rebuilt)
+
+
+def _first_chord_events(flow: str) -> tuple[list[dict[str, Any]], str, str]:
+    """A chain-of-chords capture, the first chord's group ID and its callback.
+
+    The first chord is the one whose headers are top-level; its callback is
+    the first ``tsum``, the one reported under a top-level task (the
+    ``celery.chord_unlock`` task, or a header, on the native backend).
+    """
+    events = _CAPTURES[flow]
+    top = {e["task_id"] for e in events if e["parent_id"] is None}
+    headers = [e for e in events if e["name"] == "flows.add" and e["parent_id"] is None]
+    group_id = headers[0]["group_id"]
+    (callback,) = {
+        e["task_id"]
+        for e in events
+        if e["name"] == "flows.tsum" and e["parent_id"] in top
+    }
+    return events, group_id, callback
+
+
+@pytest.mark.parametrize("chords", [2, 3, 4])
+@pytest.mark.parametrize("backend", ["", "@chord_unlock"])
+def test_replay_chain_of_chords_first_chord_gets_its_own_callback(
+    chords: int, backend: str
+) -> None:
+    events, group_id, callback = _first_chord_events(f"chain_chords_{chords}{backend}")
+
+    for order in _orders(events):
+        graph = _replay(order)
+
+        first = graph.nodes[f"group:{group_id}"]
+        assert first.chord_id == callback
+        assert len(graph.root_ids) == 1
+
+
+@pytest.mark.parametrize("chords", [2, 3, 4])
+@pytest.mark.parametrize("drop_only_pending", [False, True])
+def test_replay_chain_of_chords_without_unlock_events_never_swaps_callbacks(
+    chords: int, drop_only_pending: bool
+) -> None:
+    """Missing a ``chord_unlock`` task's events can only lose a callback."""
+    events, group_id, callback = _first_chord_events(
+        f"chain_chords_{chords}@chord_unlock"
+    )
+    unlocks = [e["task_id"] for e in events if e["name"] == "celery.chord_unlock"]
+    for dropped in unlocks:
+        kept = [
+            e
+            for e in events
+            if e["task_id"] != dropped
+            or (drop_only_pending and e["state"] != "PENDING")
+        ]
+        for order in _orders(kept)[:6]:
+            graph = _replay(order)
+
+            first = graph.nodes[f"group:{group_id}"]
+            assert first.chord_id in (None, callback)

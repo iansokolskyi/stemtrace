@@ -2451,8 +2451,8 @@ class TaskGraph(BaseModel):
         Resumes from where this start's last walk stopped: reported parents
         never change, so the path below is still valid (a node removed or
         turned header, or a new chord parent, resets the walks). Ends at a
-        task whose parent is a header, a ``chord_unlock`` task or the chord's
-        own parent.
+        task whose parent is a header, the chord's own ``chord_unlock`` task
+        (it reports the chord's parent) or the chord's own parent.
 
         Returns:
             (body start node ID, chord_unlock task ID or None), or None if the
@@ -2478,6 +2478,11 @@ class TaskGraph(BaseModel):
             self._add_chord_dep(group_id, parent_id)
             parent = self.nodes.get(parent_id)
             fired_by_unlock = parent is not None and parent.name == _CHORD_UNLOCK_TASK
+            if fired_by_unlock and parent is not None:
+                nested = self._unlock_is_nested(group_id, tally, parent)
+                if nested is None:
+                    return None  # waits for the unlock's sender
+                fired_by_unlock = not nested
             # A chain's chord body reports the chain's previous task, which is
             # the chord's own parent, rather than a header.
             if (
@@ -2485,7 +2490,13 @@ class TaskGraph(BaseModel):
                 or fired_by_unlock
                 or (parent is not None and parent_id == chord_parent)
             ):
-                start = self._body_node(node, group_id)
+                # An unlock here belongs to a chord nested in the body: no
+                # evidence for this chord's own body start.
+                start = (
+                    None
+                    if node.name == _CHORD_UNLOCK_TASK
+                    else self._body_node(node, group_id)
+                )
                 if start is None:
                     return None
                 return start, parent_id if fired_by_unlock else None
@@ -2493,6 +2504,32 @@ class TaskGraph(BaseModel):
                 return None
             walk.seen.add(parent_id)
             walk.current = parent_id
+
+    def _unlock_is_nested(
+        self, group_id: str, tally: _GroupTally, unlock: TaskNode
+    ) -> bool | None:
+        """Whether a ``chord_unlock`` task is positively another chord's.
+
+        celery 5.6.3 ``fallback_chord_unlock`` applies the unlock from the task
+        that sends the headers, so it reports the headers' parent. It counts as
+        another chord's only when every header reports one parent, the unlock
+        reports another, and that sender is a plain task; otherwise the walk
+        stops at it. None while the sender's events haven't arrived.
+        """
+        sender_id = unlock.reported_parent_id
+        if sender_id is None:
+            return False
+        parents: set[str | None] = set()
+        for header_id in tally.headers:
+            self._add_chord_dep(group_id, header_id)
+            parents.add(self.nodes[header_id].reported_parent_id)
+        if len(parents) != 1 or sender_id in parents:
+            return False
+        self._add_chord_dep(group_id, sender_id)
+        sender = self.nodes.get(sender_id)
+        if sender is None:
+            return None
+        return sender.name != _CHORD_UNLOCK_TASK
 
     def _body_node(self, node: TaskNode, group_id: str) -> str | None:
         """The node a body starting at this task is drawn as: it, or its group.
@@ -2615,8 +2652,10 @@ class TaskGraph(BaseModel):
         else:
             chord_node.children.remove(callback_id)
         if released:
-            # No longer a callback: it may be a chain link now.
+            # No longer a callback: it may be a chain link now, and a chord
+            # that was refused it (it was held) can draw it.
             self._on_children_changed(callback_id)
+            self._retrigger(callback_id)
 
     def get_node(self, task_id: str) -> TaskNode | None:
         """Get node by ID, or None if not found."""

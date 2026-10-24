@@ -101,6 +101,8 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"
             assert graph._callback_of.get(node.chord_id) == node.group_id, node_id
+            # chord_unlock only polls: it is never a chord's callback.
+            assert nodes[node.chord_id].name != "celery.chord_unlock", node_id
         if node.node_type == NodeType.CHORD and node.chord_callback_id is not None:
             named = graph._chord_by_callback.get(node.chord_callback_id)
             assert named == node.group_id, (node_id, node.chord_callback_id, named)
