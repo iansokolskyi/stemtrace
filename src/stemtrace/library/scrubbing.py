@@ -292,6 +292,7 @@ class _Budget:
     """Running lower bound on a value's scrubbed size, shared by one walk."""
 
     def __init__(self, max_size: int) -> None:
+        """Start the budget at ``max_size`` bytes."""
         self.left = max_size
 
     def charge(self, cost: int) -> None:

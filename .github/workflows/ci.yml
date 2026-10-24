@@ -47,6 +47,9 @@ jobs:
       - name: Check docstring length
         run: uv run --locked --no-build python scripts/check_docstring_length.py
 
+      - name: Check public APIs have docstrings
+        run: uv run --locked --no-build python scripts/check_docstrings.py
+
       - name: Check changelog fragments
         run: uv run --locked --no-build python scripts/assemble_changelog.py --check
 
