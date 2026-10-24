@@ -5,11 +5,11 @@ A hard time limit in ``on_success`` makes the worker's main process call
 the chain steps after it. docs/graphs.md says what the backend keeps. No broker is
 needed: a memory cache backend stands for the key-value backends (Redis, Memcached)
 and ``db+sqlite`` for the database backends.
-
-Celery 5.6.3 ``backends/base.py`` ``BaseKeyValueStoreBackend._store_result`` ignores an
-update once SUCCESS is stored (5.2.7 too); ``backends/database/__init__.py``
-``DatabaseBackend._store_result`` updates unconditionally.
 """
+
+# Celery 5.6.3 (and 5.2.7) backends/base.py BaseKeyValueStoreBackend._store_result ignores
+# an update once SUCCESS is stored; backends/database/__init__.py DatabaseBackend._store_result
+# updates unconditionally.
 
 from pathlib import Path
 
