@@ -116,6 +116,8 @@ jobs:
 
       # coverage.py's C tracer (Python 3.10-3.13) makes the suite about 2x slower, so
       # only the Codecov version (3.14) measures coverage and enforces the 95% gate.
+      # Blind spot: code that runs only on Python 3.10-3.13 (e.g. the tomli branch in
+      # server/groups.py) is never coverage-measured.
       - name: Run tests
         if: matrix.python-version != '3.14'
         run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist worksteal --durations=25
