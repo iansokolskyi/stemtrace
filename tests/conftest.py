@@ -12,35 +12,34 @@ import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.config import _reset_config
+from tests.redis_isolation import (
+    DEFAULT_REDIS_URL,
+    check_worker_count,
+    redis_url_for_worker,
+)
 
 RawGet = Callable[[Any, str], Awaitable[int]]
 
-_DEFAULT_REDIS_URL = "redis://localhost:6379/15"
 
-
-def _redis_url_for_worker(url: str, worker_id: str | None) -> str:
-    """Return ``url`` pointing at a Redis db that only ``worker_id`` uses.
-
-    xdist worker ``gwN`` gets the db N positions below the configured one, so
-    workers never share streams or keys. Without xdist the URL is unchanged.
-    """
-    if not worker_id or not worker_id.startswith("gw"):
-        return url
-    parts = urllib.parse.urlsplit(url)
-    base = int(parts.path.lstrip("/") or 0)
-    db = base - int(worker_id[2:])
-    if db < 0:
-        raise RuntimeError(
-            f"xdist worker {worker_id} has no Redis db below {base}; use fewer workers"
+def pytest_configure(config: pytest.Config) -> None:
+    """Fail fast, on the xdist controller, when workers can't each get a Redis db."""
+    workers = getattr(config.option, "numprocesses", None)
+    if "PYTEST_XDIST_WORKER" in os.environ or not isinstance(workers, int):
+        return
+    try:
+        check_worker_count(
+            os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
+            min(workers, config.option.maxprocesses or workers),
         )
-    return urllib.parse.urlunsplit(parts._replace(path=f"/{db}"))
+    except ValueError as err:
+        raise pytest.UsageError(str(err)) from err
 
 
-# Integration modules read REDIS_URL at import time and their worker subprocesses
-# inherit it, so set it before they are collected.
+# Integration modules read REDIS_URL at import, so set it before they are collected.
+# pytest_configure above has already checked that every worker gets a valid db.
 if "PYTEST_XDIST_WORKER" in os.environ:
-    os.environ["REDIS_URL"] = _redis_url_for_worker(
-        os.environ.get("REDIS_URL", _DEFAULT_REDIS_URL),
+    os.environ["REDIS_URL"] = redis_url_for_worker(
+        os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
         os.environ["PYTEST_XDIST_WORKER"],
     )
 

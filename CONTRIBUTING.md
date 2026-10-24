@@ -112,7 +112,7 @@ uv run pytest --cov=stemtrace --cov-report=term-missing
 ```
 
 Parallel runs give each xdist worker its own Redis database (`REDIS_URL`'s database minus the
-worker number), so use at most 16 workers against a default Redis.
+worker number), so use at most 16 workers against a default Redis (`make test` caps at 8). The run stops with a usage error if `REDIS_URL` has too low a database number for the worker count.
 
 **Coverage requirement:** 95% minimum
 
