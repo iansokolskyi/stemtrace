@@ -11,6 +11,7 @@ Requires Redis (``REDIS_URL``, default ``redis://localhost:6379/15``): the
 broker, the result backend and where stemtrace's events go.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -448,9 +449,9 @@ def _late_states(
 
 
 # The main process records a failure after the pool process already sent the next
-# step, so its request.chain still lists every later step (stemtrace publishes a
-# FAILURE for each, as celery's backend stores one: celery 5.6.3 backends/base.py
-# mark_as_failure). The tests below pin what that shows; docs/graphs.md says it.
+# step, so its request.chain still lists every later step and stemtrace publishes a
+# FAILURE for each. The tests below pin what that shows; docs/graphs.md says it. The
+# result backend differs: it keeps SUCCESS for every step (the last test below).
 def test_late_failure_fails_the_later_steps_that_already_ran(run: Run) -> None:
     failed_at = _late_failure_time(run, "ran")
 
@@ -485,3 +486,21 @@ def test_late_failure_shows_running_and_unsent_steps_failed_until_they_finish(
     assert _late_states(run, "running") == dict.fromkeys(
         ("s2", "s3"), TaskState.SUCCESS
     )
+
+
+@pytest.mark.parametrize("name", LATE_CHAINS)
+def test_late_failure_leaves_every_step_success_in_the_result_backend(
+    run: Run, name: str
+) -> None:
+    # The step died after celery stored its SUCCESS, and a later step's result
+    # replaces the main process's FAILURE or, for a finished one, is kept
+    # (celery 5.6.3 backends/base.py _store_result). So the backend disagrees with the
+    # FAILUREs stemtrace shows for the steps that already finished.
+    states = {
+        step: json.loads(run.client.get(f"celery-task-meta-{task_id}") or b"{}").get(
+            "status"
+        )
+        for step, task_id in run.late_ids[name].items()
+    }
+
+    assert states == dict.fromkeys(run.late_ids[name], "SUCCESS")
