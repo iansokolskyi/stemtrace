@@ -57,10 +57,15 @@ def _variant(events: list[dict[str, Any]], variant: str) -> list[dict[str, Any]]
     if variant == "plain":
         return plain
     if variant == "legacy":
+        # PENDING without parent and group IDs (before 0.4.0), and FAILURE from a
+        # worker's main process without any of them (before 0.4.2).
         bare = ("group_id", "parent_id")
+        bare_failure = (*bare, "root_id", "chord_id", "chord_callback_id")
         return [
             {k: v for k, v in e.items() if k not in bare}
             if e["state"] == "PENDING"
+            else {k: v for k, v in e.items() if k not in bare_failure}
+            if e["state"] == "FAILURE"
             else e
             for e in plain
         ]

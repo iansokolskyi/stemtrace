@@ -1095,6 +1095,10 @@ class TaskGraph(BaseModel):
     # IDs, and the reverse; a change to one of those re-resolves the chord.
     _chord_deps: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
     _deps_of_chord: dict[str, set[str]] = PrivateAttr(default_factory=dict)
+    # Nodes whose place a chord's refused callback depends on -> chord group
+    # IDs, and the reverse; a move of one of them re-resolves the chord.
+    _placement_deps: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
+    _placement_deps_of: dict[str, set[str]] = PrivateAttr(default_factory=dict)
     # Missing parent ID -> nodes (in arrival order) to move under it once its
     # node is created, and the reverse map to keep both in sync.
     _awaiting_parent: dict[str, dict[str, None]] = PrivateAttr(default_factory=dict)
@@ -1472,6 +1476,7 @@ class TaskGraph(BaseModel):
             if child is not None and child.parent_id == task_id:
                 self._place(child)
         self._retrigger(task_id)
+        self._retrigger_placement(task_id)
         if node.node_type != NodeType.TASK and node.group_id is not None:
             self._retrigger(node.group_id)  # a chord that read the group
         for group_id in chords:
@@ -1728,6 +1733,7 @@ class TaskGraph(BaseModel):
         self._unlink(node)
         node.parent_id = parent_id
         self._link(node)
+        self._retrigger_placement(node.task_id)
 
     def _link(self, node: TaskNode) -> None:
         """List a node under its ``parent_id``, or as a root if it has none.
@@ -2355,6 +2361,11 @@ class TaskGraph(BaseModel):
         for group_id in list(self._chord_deps.get(node_id, ())):  # NOSONAR
             self._resolve_callback(group_id)
 
+    def _retrigger_placement(self, node_id: str) -> None:
+        """Re-resolve the chords whose callback was refused for this node's place."""
+        for group_id in list(self._placement_deps.get(node_id, ())):  # NOSONAR
+            self._resolve_callback(group_id)
+
     def _add_chord_dep(self, group_id: str, node_id: str) -> None:
         """Record that a chord's callback resolution read this task or group."""
         deps = self._deps_of_chord.setdefault(group_id, set())
@@ -2370,6 +2381,7 @@ class TaskGraph(BaseModel):
         """
         for node_id in self._deps_of_chord.pop(group_id, set()):
             _drop_from(self._chord_deps, node_id, group_id)
+        self._drop_placement_deps(group_id)
         candidate = self._candidate.pop(group_id, None)
         if candidate is None:
             return set()
@@ -2396,6 +2408,7 @@ class TaskGraph(BaseModel):
         tally = self._groups.get(group_id)
         if chord_node is None or tally is None or not tally.headers:
             return  # a group (or a chord whose node is gone): nothing to draw
+        self._drop_placement_deps(group_id)
         unlocks = self._unlocks_of(group_id, tally)
         candidate = self._evidence_callback(group_id, tally, unlocks)
         sole = self._claim(group_id, candidate)
@@ -2404,9 +2417,31 @@ class TaskGraph(BaseModel):
             chord_parent = tally.parent()
             if self._loops_back(candidate, chord_node, chord_parent):
                 self._cycles_refused += 1
+                self._depend_on_placement(group_id, chord_node, chord_parent)
             else:
                 callback = (candidate, min(unlocks, default=None))
         self._set_callback(chord_node, group_id, callback)
+
+    def _depend_on_placement(
+        self, group_id: str, chord_node: TaskNode, chord_parent: str | None
+    ) -> None:
+        """Re-resolve the chord when a node above it or its parent moves.
+
+        Only a callback refused for closing a cycle depends on where they sit.
+        """
+        deps = self._placement_deps_of.setdefault(group_id, set())
+        for start in (chord_node.task_id, chord_parent):
+            current = start
+            while current is not None and current not in deps:
+                deps.add(current)
+                _add_to(self._placement_deps, current, group_id)
+                above = self.nodes.get(current)
+                current = above.parent_id if above is not None else None
+
+    def _drop_placement_deps(self, group_id: str) -> None:
+        """Forget the nodes whose place a chord's refused callback depended on."""
+        for node_id in self._placement_deps_of.pop(group_id, set()):
+            _drop_from(self._placement_deps, node_id, group_id)
 
     def _claim(self, group_id: str, candidate: str | None) -> bool:
         """Record the node a chord's evidence points to; whether it is alone there.

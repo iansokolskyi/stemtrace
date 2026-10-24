@@ -929,3 +929,24 @@ def test_graph_rebuilt_from_its_nodes_keeps_the_drawn_callback() -> None:
     rebuilt = TaskGraph.model_validate(graph.model_dump())
 
     assert callback_of(rebuilt) == CB
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="known limitation: a bare FAILURE from a worker before 0.4.2 (no group ID)",
+)
+def test_known_limitation_bare_failure_of_a_chain_tail_alone_is_drawn_as_callback() -> (
+    None
+):
+    # Without the field, a chain body's last task carries the stamp. Its only
+    # surviving event is a main-process FAILURE from a worker before 0.4.2,
+    # which has no group ID, so nothing shows the task is in the chord's group:
+    # it is drawn as the callback though the body starts with another task.
+    # (Needs two faults: the tail's other events lost, and that worker.)
+    events = [
+        header(H1, stamp=CB),
+        header(H2, stamp=CB),
+        ev(CB, TaskState.FAILURE),
+    ]
+
+    draws(events, None)

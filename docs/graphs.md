@@ -112,3 +112,16 @@ either order.
 A `celery.chord_unlock` task is tied to its chord by its arguments. With `capture_args=False`, or
 arguments over the 10 KB limit, it isn't, and it shows as a graph of its own; a chord with
 `chord_body_first_id` still draws its callback.
+
+### Known limitations
+
+- A `FAILURE` that Celery sends from a worker's main process (a hard time limit) carries no group
+  or parent ID when the worker is before 0.4.2. Without `chord_body_first_id`, if every other
+  event of a chain body's last task is also lost, that bare `FAILURE` can make the task look like
+  the chord's callback. It takes two faults: an old worker and lost events. Workers that send the
+  field aren't affected.
+- A Celery 5.2 chord that only a `celery.chord_unlock` task makes a chord (workers before 0.4.3)
+  has no `not_run_reason`: the reason reads the headers' own events, and those name no callback.
+- A `celery.chord_unlock` task names its chord only when the group ID and the header IDs in its
+  arguments are UUIDs. Celery lets you set your own task and group IDs; with IDs that aren't
+  UUIDs the task isn't tied to its chord (the chord shows no callback from it, never another one).
