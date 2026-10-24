@@ -171,15 +171,19 @@ def _scrub_dict(
     budget: _Budget | None = None,
 ) -> dict[Any, Any]:
     """Scrub a dictionary with patterns already lowercased by the entry point."""
+    if budget is not None:
+        budget.charge(4 * dict.__len__(data))  # ": " and ", " per entry
     result: dict[Any, Any] = {}
     for key, value in data.items():
         if budget is not None:
-            budget.charge(4)  # ": " and ", "
-            _charge_key(key, budget)
+            if type(key) is str:  # the common key, charged without a call
+                budget.left -= len(key) + 2
+                if budget.left < 0:
+                    raise ValueTooBig
+            else:
+                _charge_key(key, budget)
         shown = _as_matched(key)
         if _is_sensitive_key(key, patterns, safe_keys):
-            if budget is not None:
-                budget.charge(len(FILTERED) + 2)
             result[shown] = FILTERED
         else:
             result[shown] = _scrub_value(value, patterns, safe_keys, budget)
@@ -227,21 +231,29 @@ def _scrub_value(
 ) -> Any:
     """Recursively scrub a value (handles nested dicts and lists).
 
-    With a ``budget``, every node is charged its smallest output size, so the
-    walk ends with ValueTooBig after O(budget) nodes instead of the whole value.
+    With a ``budget``, each container is charged its smallest output size before
+    its items are visited, so the walk ends with ValueTooBig after O(budget)
+    nodes instead of the whole value.
     """
     if isinstance(value, dict):
         return _scrub_dict(value, sensitive_keys, safe_keys, budget)
-    if isinstance(value, (list, tuple)):
-        items = []
-        for item in value:
-            if budget is not None:
-                budget.charge(2)  # an element and its ", "
-            items.append(_scrub_value(item, sensitive_keys, safe_keys, budget))
-        return items if isinstance(value, list) else tuple(items)
-    if budget is not None:
+    if isinstance(value, list):
+        if budget is not None:
+            budget.charge(2 * list.__len__(value))  # an element and its ", "
+        return [_scrub_value(item, sensitive_keys, safe_keys, budget) for item in value]
+    if isinstance(value, tuple):
+        if budget is not None:
+            budget.charge(2 * tuple.__len__(value))
+        return tuple(
+            _scrub_value(item, sensitive_keys, safe_keys, budget) for item in value
+        )
+    if budget is not None and type(value) not in _FREE_LEAVES:
         _charge_leaf(value, budget)
     return value
+
+
+# Leaves charged nothing: the parent's per-entry charge already covers them.
+_FREE_LEAVES = frozenset({int, float, bool, type(None)})
 
 
 class ValueTooBig(Exception):
@@ -277,7 +289,8 @@ def _charge_key(key: object, budget: _Budget) -> None:
 
 
 def _charge_leaf(value: Any, budget: _Budget) -> None:
-    """Charge a value that is not a dict, list or tuple its minimum output size."""
+    """Charge a string or bytes leaf its minimum output size."""
+    # Other leaves need no charge: their parent's per-entry charge covers them.
     match value:
         case str():
             budget.charge(str.__len__(value) + 2)
@@ -285,8 +298,6 @@ def _charge_leaf(value: Any, budget: _Budget) -> None:
             budget.charge(bytes.__len__(value) + 3)
         case bytearray():
             budget.charge(bytearray.__len__(value) + 3)
-        case _:
-            budget.charge(1)
 
 
 def oversize_marker(max_size: int) -> str:
@@ -356,7 +367,14 @@ def safe_serialize(
         scrubbed = _scrub_value(value, all_sensitive, safe_keys, _Budget(max_size))
     except ValueTooBig:
         return oversize_marker(max_size)
+    return fit_scrubbed(scrubbed, max_size)
 
+
+def fit_scrubbed(scrubbed: Any, max_size: int) -> Any:
+    """Return an already scrubbed value if it fits ``max_size``, else a text stand-in.
+
+    The stand-in is the Truncated marker, or ``str()`` of a value json can't encode.
+    """
     # Try to serialize to check size and ensure it's JSON-compatible
     try:
         serialized = json.dumps(scrubbed, default=str)

@@ -176,8 +176,8 @@ class TestUnderLimitCostMatchesUnbounded:
     def test_capture_args_checks_each_key_no_more_often_than_before(
         self, monkeypatch: pytest.MonkeyPatch, rows: int
     ) -> None:
-        # Before the bound, capture scrubbed twice (scrub_args, then
-        # safe_serialize): two key checks per dict key.
+        # Before the bound, capture scrubbed twice (two key checks per dict key).
+        # It now walks once: at most one check per dict key.
         calls: list[object] = []
         real = scrubbing._is_sensitive_key
 
@@ -189,7 +189,7 @@ class TestUnderLimitCostMatchesUnbounded:
         args = ([{"a": i, "b": {"c": i}} for i in range(rows)],)
 
         assert _scrub_and_serialize_args(args) == [args[0]]
-        assert len(calls) <= 2 * (3 * rows)
+        assert len(calls) <= 3 * rows
 
     def test_capture_kwargs_checks_each_key_no_more_often_than_before(
         self, monkeypatch: pytest.MonkeyPatch
@@ -205,7 +205,7 @@ class TestUnderLimitCostMatchesUnbounded:
         kwargs = {"rows": [{"a": i, "b": {"c": i}} for i in range(20)]}
 
         assert _scrub_and_serialize_kwargs(kwargs) == kwargs
-        assert len(calls) <= 2 * (1 + 3 * 20)
+        assert len(calls) <= 1 + 3 * 20
 
 
 class TestScrubbingStillHolds:

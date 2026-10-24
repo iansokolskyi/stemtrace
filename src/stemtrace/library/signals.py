@@ -47,6 +47,7 @@ from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     TRUNCATED_PREFIX,
     ValueTooBig,
+    fit_scrubbed,
     oversize_marker,
     safe_serialize,
     scrub_within,
@@ -384,8 +385,8 @@ def _capture_args(args: Any) -> list[Any] | None:
         return [oversize_marker(max_size)]
     scrubbed = list(walked)
 
-    result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
-    # safe_serialize may return truncation message string or the list
+    result: Any = fit_scrubbed(scrubbed, max_size)
+    # fit_scrubbed may return truncation message string or the list
     if isinstance(result, list):
         return result
     return [result] if result is not None else scrubbed
@@ -406,8 +407,8 @@ def _capture_kwargs(kwargs: Any) -> dict[str, Any] | None:
     except ValueTooBig:
         return {"_truncated": oversize_marker(max_size)}
 
-    result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
-    # safe_serialize returns the dict, or text: its truncation message, or the
+    result: Any = fit_scrubbed(scrubbed, max_size)
+    # fit_scrubbed returns the dict, or text: its truncation message, or the
     # str() of a dict json can't encode (which starts with "{", never with
     # TRUNCATED_PREFIX).
     if isinstance(result, dict):
