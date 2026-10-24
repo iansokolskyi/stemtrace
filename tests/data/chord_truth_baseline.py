@@ -60,7 +60,13 @@ def drawn_callback(graph: TaskGraph, chord_truth: dict[str, Any]) -> str:
     if node.node_type != NodeType.CHORD:
         return "not_chord"
     if chord_truth["callback_kind"] == "group":
-        members = graph._body_members.get(gid, [])
+        body = getattr(graph, "_body_members", None)  # v0.4.2 drew a body node
+        if body is not None:
+            members = body.get(gid, [])
+        else:
+            members = graph.get_group_members(
+                (node.chord_id or "").removeprefix(_PREFIX)
+            )
         return "none" if not members else "members:" + ",".join(sorted(members))
     if node.chord_id is None:
         return "none"
@@ -84,9 +90,9 @@ def replay(events: list[TaskEvent]) -> TaskGraph:
 
 
 def classify(drawn: str, expected: str | None) -> str:
-    """``ok``, ``none`` or ``wrong`` (``unresolved``: the body never ran)."""
+    """``ok``, ``none`` or ``wrong`` (``unresolved``: the body never ran and none is drawn)."""
     if expected is None:
-        return "unresolved"
+        return "unresolved" if drawn in ("no_node", "none", "not_chord") else "wrong"
     if drawn == expected:
         return "ok"
     if drawn in ("no_node", "none", "not_chord"):

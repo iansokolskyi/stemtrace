@@ -14,7 +14,8 @@ adds the chord flows again (keys ending ``@chord_unlock``) with a
 the callback from its ``celery.chord_unlock`` polling task. ``--only NAME...``
 captures just those flows and merges them into the existing file;
 ``--suffix S`` stores them as ``NAME + S`` (e.g. to keep a capture made with
-an older stemtrace alongside a new one). ``--worker-process`` makes the worker
+an older stemtrace alongside a new one: the ``@field`` captures are the chord
+flows recorded again with ``chord_body_first_id`` on their header events). ``--worker-process`` makes the worker
 forget which tasks were already announced before each task, as a worker in
 its own process does (the client and the in-process worker otherwise share
 that memory, which hides a worker's republished PENDING, e.g. from
@@ -25,7 +26,10 @@ file, ``chord_truth_flows.json`` (flow key -> events, truth, checks), and leave
 ``celery_flows.json`` alone: they capture the chord workflows (the existing ones,
 or seeded random canvases) together with the *truth* about every chord, taken
 from Celery's own canvas at send time (see ``_ChordRecorder``), not from what
-stemtrace's graph draws. Keys read ``NAME@native|unlock[+wp]@celeryX.Y.Z``.
+stemtrace's graph draws. Keys read ``NAME@native|unlock|redis[+wp]@celeryX.Y.Z``.
+``--backend-url redis://...`` runs the native flows on that result backend;
+``--only NAME...`` picks flows (the ``_extra_flows`` ones too); a flow that
+doesn't finish, or that Celery refuses, gets a fresh worker for the next one.
 
 The graph tests compare names and topology, not task IDs or arrival order,
 so a regenerated capture must still pass them; keep the ``@`` variants made
@@ -38,6 +42,8 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,10 +61,19 @@ from stemtrace.library.signals import connect_signals, disconnect_signals
 from stemtrace.transports.memory import MemoryTransport
 
 OUTPUT = Path(__file__).with_name("celery_flows.json")
-TRUTH_OUTPUT = Path(__file__).with_name("chord_truth_flows.json")
+TRUTH_OUTPUT = Path(
+    sys.argv[sys.argv.index("--out") + 1]
+    if "--out" in sys.argv
+    else Path(__file__).with_name("chord_truth_flows.json")
+)
 
 UNLOCK = "--unlock" in sys.argv
-_BACKEND = (
+_BACKEND_URL = (
+    sys.argv[sys.argv.index("--backend-url") + 1]
+    if "--backend-url" in sys.argv
+    else None
+)
+_BACKEND = _BACKEND_URL or (
     f"db+sqlite:///{tempfile.mkdtemp()}/results.sqlite" if UNLOCK else "cache+memory://"
 )
 app = Celery("flows", broker="memory://", backend=_BACKEND)
@@ -474,6 +489,70 @@ def _nested_chord_flows() -> dict[str, Callable[[], Signature]]:
     }
 
 
+def _extra_flows() -> dict[str, Callable[[], Signature]]:
+    """Chord flows whose body never runs, and sweeps over chains of chords.
+
+    ``q6_*``: a header fails, is revoked (expired), ignored or rejected.
+    ``q1_*``: a header that spawns an unrelated task and fails. ``q3_*``:
+    headers whose ID list is long. ``q2_L{n}_G{g}_T{t}``: a task, then ``n``
+    pairs of a group of ``g`` tasks and a task, then ``t`` more tasks.
+    """
+    past = lambda: datetime.now(timezone.utc) - timedelta(seconds=30)  # noqa: E731
+    flows: dict[str, Callable[[], Signature]] = {
+        "q6_fail_task_body": lambda: chord([fail.s(), add.s(1, 1)], tsum.s()),
+        "q6_fail_chain_body": lambda: chord(
+            [fail.s(), add.s(1, 1)], chain(tsum.s(), add.s(10))
+        ),
+        "q6_fail_chain_SG": lambda: chain(
+            add.s(1, 1), group(fail.si(), add.s(2)), tsum.s(), add.s(3)
+        ),
+        "q6_fail_chord_body": lambda: chord(
+            [fail.s(), add.s(1, 1)], chord([tsum.s(), tsum.s()], tsum.s())
+        ),
+        "q6_fail_group_body": lambda: chord(
+            [fail.s(), add.s(1, 1)], group(tsum.s(), tsum.s())
+        ),
+        "q6_revoked_task_body": lambda: chord(
+            [add.si(1, 1).set(expires=past()), add.si(2, 2)], tsum.s()
+        ),
+        "q6_revoked_chain_body": lambda: chord(
+            [add.si(1, 1).set(expires=past()), add.si(2, 2)],
+            chain(tsum.s(), add.s(10)),
+        ),
+        "q6_ignored_task_body": lambda: chord([ignore.s(), add.s(1, 1)], tsum.s()),
+        "q6_rejected_task_body": lambda: chord([reject.s(), add.s(1, 1)], tsum.s()),
+        "q1_fail_header_subtask": lambda: chord(
+            [add_with_subtask.s(1, 1), fail.s()], tsum.s()
+        ),
+        "q1_fail_header_subtask_SG": lambda: chain(
+            add.s(1, 1),
+            group(add_with_subtask.s(1), fail.si()),
+            tsum.s(),
+            add.s(3),
+        ),
+        "q3_big_header": lambda: chord([add.si(i, i) for i in range(200)], tsum.s()),
+        "q3_chain_headers": lambda: chord(
+            [chain(add.si(i, i), add.s(1), add.s(2)) for i in range(40)], tsum.s()
+        ),
+    }
+
+    def sweep(pairs: int, size: int, tail: int) -> Callable[[], Signature]:
+        def build() -> Signature:
+            steps: list[Signature] = []
+            for _ in range(pairs):
+                steps += [group(*[step.s() for _ in range(size)]), step.s()]
+            steps += [step.s() for _ in range(tail)]
+            return chain(step.s(), *steps)
+
+        return build
+
+    for pairs in range(1, 6):
+        for size in range(1, 5):
+            for tail in range(3):
+                flows[f"q2_L{pairs}_G{size}_T{tail}"] = sweep(pairs, size, tail)
+    return flows
+
+
 # Flows that contain a chord and complete. A header that fails, is ignored or
 # is rejected never completes its chord, so there is no body to place.
 _TRUTH_FLOWS = (
@@ -806,23 +885,25 @@ def describe_canvas(spec: Spec) -> str:
 
 
 def _event_dict(event: Any) -> dict[str, Any]:
+    """An event for ``celery_flows.json``; ``celery.chord_unlock`` also keeps its args."""
     assert isinstance(event, TaskEvent)
-    return event.model_dump(
-        mode="json",
-        include={
-            "task_id",
-            "name",
-            "state",
-            "timestamp",
-            "parent_id",
-            "root_id",
-            "group_id",
-            "chord_id",
-            "chord_callback_id",
-            "retries",
-            "eta",
-        },
-    )
+    fields = {
+        "task_id",
+        "name",
+        "state",
+        "timestamp",
+        "parent_id",
+        "root_id",
+        "group_id",
+        "chord_id",
+        "chord_callback_id",
+        "chord_body_first_id",
+        "retries",
+        "eta",
+    }
+    if event.name == "celery.chord_unlock":
+        fields |= {"args", "kwargs"}
+    return event.model_dump(mode="json", include=fields)
 
 
 _UNLOCK_FLOWS = ("chord", "chain_a_group_tsum_add", "chord_with_chain_body")
@@ -872,6 +953,7 @@ _TRUTH_EVENT_FIELDS = {
     "group_id",
     "chord_id",
     "chord_callback_id",
+    "chord_body_first_id",
     "retries",
     "eta",
 }
@@ -941,8 +1023,14 @@ def _checks(
     checks = []
     for chord_truth in chords:
         gid = chord_truth["group_id"]
+        # Header members as the graph sees them: the group ID and a chord
+        # stamp or body field on one event. A header chain's own ID isn't one
+        # (its last task is: ``header_members`` holds ``None`` for it).
         members = {
-            m["id"] for m in chord_truth["header_members"] if m["kind"] != "chord"
+            e["task_id"]
+            for e in events
+            if e.get("group_id") == gid
+            and ("chord_callback_id" in e or "chord_body_first_id" in e)
         }
         named = [
             e for e in events if e["task_id"] in members and "chord_callback_id" in e
@@ -1014,6 +1102,19 @@ def _compact_unlock_args(events: list[dict[str, Any]]) -> None:
         seen.add(marker)
 
 
+def _forget_unseen_callbacks(
+    chords: list[dict[str, Any]], checks: list[dict[str, Any]]
+) -> None:
+    """Set ``callback_id`` to None where the body never ran (``callback_seen``).
+
+    ``callback_id_frozen`` keeps the ID Celery froze; a chord that never ran
+    its body has no callback to draw, which is not the same as a missing one.
+    """
+    for chord_truth, check in zip(chords, checks, strict=True):
+        if not check["callback_seen"]:
+            chord_truth["callback_id"] = None
+
+
 def _write_truth(captures: dict[str, dict[str, Any]]) -> None:
     lines = [
         f" {json.dumps(k)}: {json.dumps(v, separators=(',', ':'))}"
@@ -1039,7 +1140,7 @@ def _capture_truth(
     recorder.install()
     captures: dict[str, dict[str, Any]] = {}
     version = f"celery{celery.__version__}"
-    backend = "unlock" if UNLOCK else "native"
+    backend = "redis" if _BACKEND_URL else "unlock" if UNLOCK else "native"
     wp = "+wp" if "--worker-process" in sys.argv else ""
     # solo runs the header tasks one after another in the worker's only thread:
     # a chord whose counter completes early blocks that thread joining results
@@ -1049,50 +1150,63 @@ def _capture_truth(
     connect_signals(MemoryTransport())
     if wp:
         task_prerun.connect(_forget_announced, weak=False)
-    try:
-        with start_worker(
+
+    def start() -> Any:
+        return start_worker(
             app,
             pool=pool,
             concurrency=4 if pool == "threads" else 1,
             perform_ping_check=False,
-        ):
-            for name, (desc, build) in flows.items():
-                MemoryTransport.clear()
-                recorder.chords.clear()
-                status = "ok"
-                error = None
-                try:
-                    build().apply_async().get(
-                        timeout=_FLOW_TIMEOUT_S,
-                        propagate=False,
-                        disable_sync_subtasks=False,
-                    )
-                except CeleryTimeout:
-                    status = "timeout"
-                except Exception as exc:  # noqa: BLE001  # Celery refused the canvas
-                    status, error = "rejected", f"{type(exc).__name__}: {exc}"
-                _settle()
-                if status != "ok":
-                    app.control.purge()
-                events = [
-                    _truth_event_dict(e)
-                    for e in MemoryTransport.events
-                    if isinstance(e, TaskEvent)
-                ]
-                _compact_unlock_args(events)
-                chords = list(recorder.chords)
-                _resolve_callbacks(chords)
-                captures[f"{name}@{backend}{wp}@{version}"] = {
-                    "desc": desc,
-                    "status": status,
-                    "error": error,
-                    "pool": pool,
-                    "events": events,
-                    "truth": {"chords": chords},
-                    "checks": _checks(chords, events),
-                }
-                print(f"{name}: {status}, {len(chords)} chords, {len(events)} events")
+        )
+
+    workers = ExitStack()
+    workers.enter_context(start())
+    try:
+        for name, (desc, build) in flows.items():
+            MemoryTransport.clear()
+            recorder.chords.clear()
+            status = "ok"
+            error = None
+            try:
+                build().apply_async().get(
+                    timeout=_FLOW_TIMEOUT_S,
+                    propagate=False,
+                    disable_sync_subtasks=False,
+                )
+            except CeleryTimeout:
+                status = "timeout"
+            except Exception as exc:  # noqa: BLE001  # Celery refused the canvas
+                status, error = "rejected", f"{type(exc).__name__}: {exc}"
+            _settle()
+            events = [
+                _truth_event_dict(e)
+                for e in MemoryTransport.events
+                if isinstance(e, TaskEvent)
+            ]
+            if status != "ok":
+                # A flow that never finished leaves tasks, a chord counter or a
+                # retry timer behind: the next flow gets a worker of its own.
+                workers.close()
+                app.control.purge()
+                workers = ExitStack()
+                workers.enter_context(start())
+            _compact_unlock_args(events)
+            chords = list(recorder.chords)
+            _resolve_callbacks(chords)
+            checks = _checks(chords, events)
+            _forget_unseen_callbacks(chords, checks)
+            captures[f"{name}@{backend}{wp}@{version}"] = {
+                "desc": desc,
+                "status": status,
+                "error": error,
+                "pool": pool,
+                "events": events,
+                "truth": {"chords": chords},
+                "checks": checks,
+            }
+            print(f"{name}: {status}, {len(chords)} chords, {len(events)} events")
     finally:
+        workers.close()
         disconnect_signals()
         recorder.uninstall()
     return captures
@@ -1103,7 +1217,13 @@ def _arg_value(flag: str) -> str | None:
 
 
 def _names_after(flag: str) -> list[str]:
-    return [a for a in sys.argv[sys.argv.index(flag) + 1 :] if not a.startswith("--")]
+    """The arguments that follow ``flag``, up to the next flag."""
+    names: list[str] = []
+    for arg in sys.argv[sys.argv.index(flag) + 1 :]:
+        if arg.startswith("--"):
+            break
+        names.append(arg)
+    return names
 
 
 def _builder(spec: Spec) -> Callable[[], Signature]:
@@ -1114,7 +1234,7 @@ def truth_main() -> None:
     """Capture chord flows with truth: ``--truth-flows`` or ``--generate N --seed S``."""
     flows: dict[str, tuple[str, Callable[[], Signature]]] = {}
     if "--truth-flows" in sys.argv:
-        known = {**_flows(), **_nested_chord_flows()}
+        known = {**_flows(), **_nested_chord_flows(), **_extra_flows()}
         names = _names_after("--only") if "--only" in sys.argv else list(_TRUTH_FLOWS)
         flows.update({n: (n, known[n]) for n in names})
     if "--generate" in sys.argv:
@@ -1163,12 +1283,13 @@ def main() -> None:
                 else:
                     result.get(timeout=60, propagate=False, disable_sync_subtasks=False)
                 _settle()
-                key = f"{name}@chord_unlock" if UNLOCK else f"{name}{suffix}"
+                key = f"{name}@chord_unlock{suffix}" if UNLOCK else f"{name}{suffix}"
                 captures[key] = [
                     _event_dict(e)
                     for e in MemoryTransport.events
                     if isinstance(e, TaskEvent)
                 ]
+                _compact_unlock_args(captures[key])
     finally:
         disconnect_signals()
     if UNLOCK or only:
