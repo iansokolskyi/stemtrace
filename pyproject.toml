@@ -64,6 +64,7 @@ dev = [
     "import-linter>=2.0",  # Enforces the core/library/server import boundaries (make lint, CI)
     "gevent>=25.4.1",  # DNS helper tests under gevent's monkey-patching
     "eventlet>=0.39.0",  # DNS helper tests under eventlet's monkey-patching
+    "sqlalchemy>=2.0",  # Celery's db+sqlite result backend, in the result backend overwrite test
 ]
 
 [project.urls]
