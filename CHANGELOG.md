@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading:** upgrade the workers, not only the server, to see every chord's callback. Workers before this release don't report `chord_body_first_id`: chords whose body is a chain, and Celery 5.6 chords whose body is a task that carries the chord's group ID, show no callback for them (the body's tasks hang from the header they report) until the workers are upgraded. A server from before the field ignores it, so the order doesn't matter. See [Graphs: chord callbacks](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md#chord-callbacks).
+
 ## [0.4.2] - 2026-10-19
 
 **Highlights:**
