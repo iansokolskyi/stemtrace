@@ -115,18 +115,18 @@ jobs:
         run: uv sync --locked --no-build --all-extras
 
       # coverage.py's C tracer (Python 3.10-3.13) makes the suite about 2x slower, so
-      # only the Codecov version (3.12) measures coverage and enforces the 95% gate.
+      # only the Codecov version (3.14) measures coverage and enforces the 95% gate.
       - name: Run tests
-        if: matrix.python-version != '3.12'
+        if: matrix.python-version != '3.14'
         run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist worksteal --durations=25
 
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.14'
         run: uv run --locked --no-build pytest -n auto --maxprocesses 8 --dist worksteal --durations=25 --cov=stemtrace --cov-branch --cov-report=xml --cov-fail-under=95
 
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.14'
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -277,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      UV_PYTHON: "3.12"
+      UV_PYTHON: "3.14"
       STEMTRACE_SKIP_UI_BUILD: "1"
       REDIS_URL: redis://localhost:6379/15
     # Without Redis the real-worker integration tests skip with "Redis not available".
@@ -297,7 +297,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
