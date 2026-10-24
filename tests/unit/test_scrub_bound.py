@@ -130,6 +130,84 @@ class TestCostIsBounded:
         assert CountingDict.visits <= VISIT_BOUND
 
 
+class _CountingKey(tuple[Any, ...]):
+    """A tuple dict key that counts the parts handed out by iteration."""
+
+    visits = 0
+
+    def __iter__(self) -> Any:
+        for part in super().__iter__():
+            type(self).visits += 1
+            yield part
+
+
+class _LyingBytes(bytes):
+    def __len__(self) -> int:
+        return 10**9
+
+
+class TestBoundCoversEveryShape:
+    def test_safe_serialize_with_huge_tuple_key_visits_few_parts(
+        self, no_json: None
+    ) -> None:
+        _CountingKey.visits = 0
+        value = {_CountingKey((tuple(range(300_000)),)): 1}
+
+        assert safe_serialize(value, MAX_SIZE) == _marker()
+        assert _CountingKey.visits <= 1
+
+    def test_safe_serialize_with_wide_tuple_key_visits_few_parts(
+        self, no_json: None
+    ) -> None:
+        _CountingKey.visits = 0
+        value = {_CountingKey(range(300_000)): 1}
+
+        assert safe_serialize(value, MAX_SIZE) == _marker()
+        assert _CountingKey.visits <= VISIT_BOUND
+
+    def test_safe_serialize_with_bytes_that_lie_about_length_keeps_them(self) -> None:
+        assert safe_serialize([_LyingBytes(b"ab")], MAX_SIZE) == [b"ab"]
+        # A bytes key is not JSON, so the text of the dict comes back.
+        assert safe_serialize({_LyingBytes(b"k"): 1}, MAX_SIZE) == "{b'k': 1}"
+
+
+class TestUnderLimitCostMatchesUnbounded:
+    @pytest.mark.parametrize("rows", [1, 10, 100])
+    def test_capture_args_checks_each_key_no_more_often_than_before(
+        self, monkeypatch: pytest.MonkeyPatch, rows: int
+    ) -> None:
+        # Before the bound, capture scrubbed twice (scrub_args, then
+        # safe_serialize): two key checks per dict key.
+        calls: list[object] = []
+        real = scrubbing._is_sensitive_key
+
+        def counting(key: object, *args: Any, **kwargs: Any) -> bool:
+            calls.append(key)
+            return real(key, *args, **kwargs)
+
+        monkeypatch.setattr(scrubbing, "_is_sensitive_key", counting)
+        args = ([{"a": i, "b": {"c": i}} for i in range(rows)],)
+
+        assert _scrub_and_serialize_args(args) == [args[0]]
+        assert len(calls) <= 2 * (3 * rows)
+
+    def test_capture_kwargs_checks_each_key_no_more_often_than_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[object] = []
+        real = scrubbing._is_sensitive_key
+
+        def counting(key: object, *args: Any, **kwargs: Any) -> bool:
+            calls.append(key)
+            return real(key, *args, **kwargs)
+
+        monkeypatch.setattr(scrubbing, "_is_sensitive_key", counting)
+        kwargs = {"rows": [{"a": i, "b": {"c": i}} for i in range(20)]}
+
+        assert _scrub_and_serialize_kwargs(kwargs) == kwargs
+        assert len(calls) <= 2 * (1 + 3 * 20)
+
+
 class TestScrubbingStillHolds:
     def test_safe_serialize_with_huge_value_under_sensitive_key_keeps_the_rest(
         self,
@@ -244,3 +322,31 @@ class TestDifferentialAgainstUnboundedSerialize:
         # Both outcomes are exercised, or the comparison proves little.
         assert kept > 100
         assert cut > 0 or max_size >= 1500
+
+
+def _reference_args(args: tuple[Any, ...], max_size: int) -> list[Any]:
+    """_capture_args as it was before the bound (two scrubs, then the size check)."""
+    scrubbed = scrubbing.scrub_args(args)
+    result = _reference(scrubbed, max_size)
+    return result if isinstance(result, list) else [result]
+
+
+class TestCaptureDifferential:
+    @pytest.mark.parametrize("max_size", [10, 60, 300, 1500])
+    def test_capture_args_matches_unbounded_reference(
+        self, monkeypatch: pytest.MonkeyPatch, max_size: int
+    ) -> None:
+        monkeypatch.setattr(
+            "stemtrace.library.signals._get_scrub_config",
+            lambda: (DEFAULT_SENSITIVE_KEYS, None, max_size, True, True, True),
+        )
+        rng = random.Random(7 + max_size)
+        for _ in range(1000):
+            args = tuple(_payload(rng) for _ in range(rng.randint(0, 3)))
+            expected = _reference_args(args, max_size)
+            actual = _scrub_and_serialize_args(args)
+            if expected == actual:
+                continue
+            # The only allowed difference: the marker of a value known to be big.
+            assert actual == [_marker(max_size)], args
+            assert str(expected[0]).startswith(TRUNCATED_PREFIX), args

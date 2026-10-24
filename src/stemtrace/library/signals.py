@@ -46,11 +46,10 @@ from stemtrace.library.output_capture import (
 from stemtrace.library.scrubbing import (
     DEFAULT_SENSITIVE_KEYS,
     TRUNCATED_PREFIX,
-    exceeds_size_bound,
+    ValueTooBig,
     oversize_marker,
     safe_serialize,
-    scrub_args,
-    scrub_dict,
+    scrub_within,
 )
 
 if TYPE_CHECKING:
@@ -368,18 +367,22 @@ def _scrub_and_serialize_result(result: Any) -> Any | None:
 
 
 def _capture_args(args: Any) -> list[Any] | None:
-    sensitive, safe, max_size, scrub_enabled, capture_args, _ = _get_scrub_config()
+    sensitive, safe, max_size, _, capture_args, _ = _get_scrub_config()
     if not capture_args:
         return None
 
-    # Before scrubbing: that copies the whole value, however big.
-    if exceeds_size_bound(args, max_size, sensitive, safe_keys=safe):
+    # One bounded walk replaces scrub_args: it stops once the value is too big.
+    # (Disabled scrubbing has an empty pattern set: the walk only copies.)
+    try:
+        walked = scrub_within(
+            args if isinstance(args, (list, tuple)) else tuple(args),
+            max_size,
+            sensitive,
+            safe,
+        )
+    except ValueTooBig:
         return [oversize_marker(max_size)]
-
-    if scrub_enabled:
-        scrubbed = scrub_args(tuple(args), sensitive, safe_keys=safe)
-    else:
-        scrubbed = list(args)
+    scrubbed = list(walked)
 
     result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
     # safe_serialize may return truncation message string or the list
@@ -389,17 +392,19 @@ def _capture_args(args: Any) -> list[Any] | None:
 
 
 def _capture_kwargs(kwargs: Any) -> dict[str, Any] | None:
-    sensitive, safe, max_size, scrub_enabled, capture_args, _ = _get_scrub_config()
+    sensitive, safe, max_size, _, capture_args, _ = _get_scrub_config()
     if not capture_args:
         return None
 
-    if exceeds_size_bound(kwargs, max_size, sensitive, safe_keys=safe):
+    try:
+        scrubbed = scrub_within(
+            kwargs if isinstance(kwargs, dict) else dict(kwargs),
+            max_size,
+            sensitive,
+            safe,
+        )
+    except ValueTooBig:
         return {"_truncated": oversize_marker(max_size)}
-
-    if scrub_enabled:
-        scrubbed = scrub_dict(dict(kwargs), sensitive, safe_keys=safe)
-    else:
-        scrubbed = dict(kwargs)
 
     result: Any = safe_serialize(scrubbed, max_size, sensitive, safe_keys=safe)
     # safe_serialize returns the dict, or text: its truncation message, or the
