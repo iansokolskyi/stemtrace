@@ -9,7 +9,6 @@ The aggregation runs in slices that yield to the event loop between them.
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 from datetime import (
     datetime,  # noqa: TC003  FastAPI resolves Query annotations at runtime
 )
@@ -33,6 +32,7 @@ from stemtrace.server.api.schemas import (
 from stemtrace.server.groups import group_lookup
 from stemtrace.server.stats import (
     MAX_DURATION,
+    FailureTally,
     TimeSeries,
     Window,
     WindowStats,
@@ -297,7 +297,7 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
-        by_type: dict[str | None, list[RunRecord]] = defaultdict(list)
+        by_type: dict[str | None, FailureTally] = {}
         async for part in _slices(records):
             collect_failures(by_type, part, window)
         groups_ = summarize_failures(by_type)

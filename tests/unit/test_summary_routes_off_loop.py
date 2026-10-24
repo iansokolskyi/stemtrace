@@ -25,25 +25,33 @@ MAX_NODES = 30_000
 MAX_LOOP_LAG_S = 0.020
 PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
+# (name, failure_share_is_all, exception types): the mix has a quarter of the runs
+# failing over 7 types; a storm has every run failing, over 1 or 50 types.
+SHAPES = {
+    "mix": (False, 7),
+    "storm_1_type": (True, 1),
+    "storm_50_types": (True, 50),
+}
 
 
-def _add(store: GraphStore, i: int, *, seconds_ago: int) -> None:
-    state = _STATES[i % len(_STATES)]
+def _add(store: GraphStore, i: int, *, seconds_ago: int, shape: str = "mix") -> None:
+    storm, types = SHAPES[shape]
+    state = TaskState.FAILURE if storm else _STATES[i % len(_STATES)]
     store.add_event(
         TaskEvent(
             task_id=f"t{i}",
             name=f"app.task{i % 50}",
             state=state,
             timestamp=NOW - timedelta(seconds=seconds_ago),
-            exception_type=f"Err{i % 7}" if state == TaskState.FAILURE else None,
+            exception_type=f"Err{i % types}" if state == TaskState.FAILURE else None,
         )
     )
 
 
-def _populated(count: int) -> GraphStore:
+def _populated(count: int, shape: str = "mix") -> GraphStore:
     store = GraphStore(max_nodes=count + 5_000)
     for i in range(count):
-        _add(store, i, seconds_ago=(i * 7) % 7200)
+        _add(store, i, seconds_ago=(i * 7) % 7200, shape=shape)
     return store
 
 
@@ -59,8 +67,15 @@ def _fixed_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="module")
-def big_store() -> GraphStore:
-    return _populated(MAX_NODES)
+def big_stores() -> dict[str, GraphStore]:
+    return {}
+
+
+def _big_store(cache: dict[str, GraphStore], shape: str) -> GraphStore:
+    """The 30k-node store of ``shape``, built once per shape for the module."""
+    if shape not in cache:
+        cache[shape] = _populated(MAX_NODES, shape)
+    return cache[shape]
 
 
 async def _get(app: FastAPI, path: str) -> httpx.Response:
@@ -70,12 +85,13 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("path", PATHS)
 async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
-    path: str, big_store: GraphStore
+    path: str, shape: str, big_stores: dict[str, GraphStore]
 ) -> None:
     """The longest stretch the loop is held, while the request runs, stays short."""
-    app = _app(big_store)
+    app = _app(_big_store(big_stores, shape))
     # The first request builds the app's middleware stack (about 70 ms): not ours.
     assert (await _get(app, "/api/health")).status_code == 200
     done = asyncio.Event()
@@ -102,13 +118,14 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
     assert longest <= MAX_LOOP_LAG_S, f"loop held for {longest * 1000:.1f} ms"
 
 
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("path", [*PATHS, "/api/stats/timeseries?bucket=1m&within=2h"])
 @pytest.mark.parametrize("slice_size", [1, 7, 500])
 async def test_summary_response_is_the_same_whatever_the_slice_size(
-    path: str, slice_size: int, monkeypatch: pytest.MonkeyPatch
+    path: str, shape: str, slice_size: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One slice is the unsliced computation; smaller slices give the same bytes."""
-    app = _app(_populated(1_500))
+    app = _app(_populated(1_500, shape))
     monkeypatch.setattr(summary_routes, "_SLICE", 10**9)
     expected = await _get(app, path)
     monkeypatch.setattr(summary_routes, "_SLICE", slice_size)

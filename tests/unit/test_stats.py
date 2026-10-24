@@ -1,5 +1,6 @@
 """Tests for the summary aggregates (server/stats.py)."""
 
+import random
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,12 +11,15 @@ from stemtrace.server.stats import (
     FAILURE_SAMPLES,
     MAX_BUCKETS,
     OUTCOME_STATES,
+    FailureGroup,
+    FailureTally,
     RunRecord,
     Window,
     auto_bucket,
     bucket_starts,
-    failure_groups,
+    collect_failures,
     parse_duration,
+    summarize_failures,
     time_series,
     window_stats,
 )
@@ -230,7 +234,65 @@ def test_time_series_splits_by_key() -> None:
     assert series.counts == {TaskState.SUCCESS: [1, 0], TaskState.FAILURE: [1, 1]}
 
 
-# --- failure_groups ---------------------------------------------------------
+# --- failure groups -----------------------------------------------------------
+
+
+def failure_groups(
+    records: list[RunRecord], window: Window, *, slice_size: int = 10**9
+) -> list[FailureGroup]:
+    """Collect ``records`` in slices of ``slice_size``, as the route does."""
+    by_type: dict[str | None, FailureTally] = {}
+    for start in range(0, len(records), slice_size):
+        collect_failures(by_type, records[start : start + slice_size], window)
+    return summarize_failures(by_type)
+
+
+def _reference_groups(records: list[RunRecord], window: Window) -> list[FailureGroup]:
+    """The spec: sort every failure of a type (what the tallies must equal)."""
+    by_type: dict[str | None, list[RunRecord]] = {}
+    for r in records:
+        if r.state == TaskState.FAILURE and window.contains(r.last_updated):
+            by_type.setdefault(r.exception_type, []).append(r)
+    groups = []
+    for exception_type, failed in by_type.items():
+        failed.sort(key=lambda r: (r.last_updated, r.task_id), reverse=True)
+        groups.append(
+            FailureGroup(
+                exception_type=exception_type,
+                count=len(failed),
+                first_seen=failed[-1].last_updated,
+                last_seen=failed[0].last_updated,
+                task_names=tuple(sorted({r.name for r in failed})),
+                sample_task_ids=tuple(r.task_id for r in failed[:FAILURE_SAMPLES]),
+            )
+        )
+    groups.sort(key=lambda g: (-g.count, -g.last_seen.timestamp()))
+    return groups
+
+
+@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize("slice_size", [1, 5, 10**9])
+def test_failure_groups_equal_the_sorting_reference_on_random_runs(
+    seed: int, slice_size: int
+) -> None:
+    """Ties on time (task ID breaks them), few and many types, names and states."""
+    rng = random.Random(seed)
+    states = [TaskState.FAILURE] * 3 + [TaskState.SUCCESS, TaskState.RETRY]
+    records = [
+        _run(
+            f"t{rng.randrange(10**6)}-{i}",
+            rng.choice(states),
+            T0 + timedelta(minutes=rng.randrange(-5, 12)),
+            f"app.n{rng.randrange(6)}",
+            rng.choice(["A", "B", "C", None][: rng.randrange(1, 5)]),
+        )
+        for i in range(rng.randrange(0, 60))
+    ]
+    window = Window(T0, T0 + timedelta(minutes=8), open_end=bool(seed % 2))
+
+    assert failure_groups(records, window, slice_size=slice_size) == _reference_groups(
+        records, window
+    )
 
 
 def test_failure_groups_group_by_exception_most_first() -> None:
