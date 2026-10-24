@@ -255,7 +255,9 @@ def _chain_of_chords(count: int) -> Signature:
 
 def _flows() -> dict[str, Callable[[], Signature]]:
     return {
-        **{f"chain_chords_{n}": (lambda n=n: _chain_of_chords(n)) for n in (1, 2, 3, 4)},
+        **{
+            f"chain_chords_{n}": (lambda n=n: _chain_of_chords(n)) for n in (1, 2, 3, 4)
+        },
         "chain": lambda: chain(add.s(1, 1), add.s(2), add.s(3)),
         "group": lambda: group(add.s(i, i) for i in range(3)),
         "chord": lambda: chord((add.s(i, i) for i in range(3)), tsum.s()),
@@ -499,9 +501,7 @@ def main() -> None:
         if "--suffix" in sys.argv:
             only = [a for a in only if a != suffix]
     if UNLOCK:
-        flows = {
-            name: flows[name] for name in (only or _UNLOCK_FLOWS) if name in flows
-        }
+        flows = {name: flows[name] for name in (only or _UNLOCK_FLOWS) if name in flows}
     elif only:
         flows = {name: flows[name] for name in only}
     captures: dict[str, list[dict[str, Any]]] = {}

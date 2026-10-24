@@ -1149,9 +1149,7 @@ def _first_chord_events(flow: str) -> tuple[list[dict[str, Any]], str, str]:
 def test_replay_chain_of_chords_first_chord_gets_its_own_callback(
     chords: int, backend: str
 ) -> None:
-    events, group_id, callback = _first_chord_events(
-        f"chain_chords_{chords}{backend}"
-    )
+    events, group_id, callback = _first_chord_events(f"chain_chords_{chords}{backend}")
 
     for order in _orders(events):
         graph = _replay(order)
