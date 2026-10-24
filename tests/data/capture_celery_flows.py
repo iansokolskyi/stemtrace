@@ -289,6 +289,32 @@ def _flows() -> dict[str, Callable[[], Signature]]:
             [add.s(1, 1), add.s(2, 2)],
             chord([tsum.s(), tsum.s()], tsum.s()),
         ),
+        "chord_chord_header": lambda: chord(
+            [chord([add.s(1, 1), add.s(2, 2)], tsum.s()), add.s(3, 3)], tsum.s()
+        ),
+        "chord_chord_header_slow": lambda: chord(
+            [chord([slow_add.s(1, 1), add.s(2, 2)], tsum.s()), add.s(3, 3)], tsum.s()
+        ),
+        "chain_chord_chord_body_add": lambda: chain(
+            chord([add.s(1, 1), add.s(2, 2)], chord([tsum.s(), tsum.s()], tsum.s())),
+            add.s(10),
+        ),
+        "chord_chain_chord_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chain(chord([tsum.s(), tsum.s()], tsum.s()), add.s(10)),
+        ),
+        "chain_add_chord_chord_body": lambda: chain(
+            add.s(1, 1),
+            chord([add.s(1), add.s(2)], chord([tsum.s(), tsum.s()], tsum.s())),
+        ),
+        "chord_depth3_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chord([tsum.s(), tsum.s()], chord([tsum.s(), tsum.s()], tsum.s())),
+        ),
+        "chord_chain_tsum_chord_body": lambda: chord(
+            [add.s(1, 1), add.s(2, 2)],
+            chain(tsum.s(), chord([add.s(1), add.s(2)], tsum.s())),
+        ),
         "chord_in_chord_body_slow": lambda: chord(
             [slow_add.s(1, 1), add.s(2, 2)],
             chord([tsum.s(), tsum.s()], tsum.s()),
@@ -464,6 +490,13 @@ _UNLOCK_FLOWS = (
     "chain_chords_4",
     "chord_in_chord_body",
     "chord_in_chord_body_slow",
+    "chord_chord_header",
+    "chord_chord_header_slow",
+    "chain_chord_chord_body_add",
+    "chord_chain_chord_body",
+    "chain_add_chord_chord_body",
+    "chord_depth3_body",
+    "chord_chain_tsum_chord_body",
 )
 # Chords Celery never completes: there is no result to wait for.
 _NEVER_COMPLETE = ("chord_ignored_header", "chord_rejected_header")
