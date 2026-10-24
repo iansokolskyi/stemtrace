@@ -31,6 +31,9 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports import rabbitmq
 from stemtrace.transports.rabbitmq import RabbitMQTransport
 
+_WORKER = os.environ.get(
+    "PYTEST_XDIST_WORKER", "gw"
+)  # keeps names unique across xdist workers
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
     "RABBITMQ_MANAGEMENT_URL", "http://guest:guest@localhost:15672"
@@ -240,7 +243,7 @@ class TestRabbitMQPublishFailoverBroker:
 
     @pytest.fixture
     def prefix(self) -> Iterator[str]:
-        prefix = f"test_publish_{int(time.time() * 1000)}"
+        prefix = f"test_publish_{_WORKER}_{int(time.time() * 1000)}"
         yield prefix
         with (
             contextlib.suppress(Exception),
@@ -316,7 +319,7 @@ class TestRabbitMQPublishFailoverCredentials:
     @pytest.fixture
     def app_account(self) -> Iterator[tuple[str, str, str]]:
         """A vhost and a non-guest user that may only use that vhost."""
-        suffix = int(time.time() * 1000)
+        suffix = f"{_WORKER}_{int(time.time() * 1000)}"
         vhost, user, password = f"stemtrace_vh_{suffix}", f"app_{suffix}", "s3cret"
         _management_request("PUT", f"vhosts/{vhost}", {})
         _management_request("PUT", f"users/{user}", {"password": password, "tags": ""})

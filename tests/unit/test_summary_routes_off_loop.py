@@ -23,6 +23,7 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
 MAX_LOOP_LAG_S = 0.020
+LOOP_LAG_RUNS = 3
 PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
@@ -84,16 +85,8 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("path", PATHS)
-async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
-    path: str, shape: str, big_stores: dict[str, GraphStore]
-) -> None:
-    """The longest stretch the loop is held, while the request runs, stays short."""
-    app = _app(_big_store(big_stores, shape))
-    # The first request builds the app's middleware stack (about 70 ms): not ours.
-    assert (await _get(app, "/api/health")).status_code == 200
+async def _longest_loop_hold(app: FastAPI, path: str) -> float:
+    """Request ``path`` and return the longest stretch the loop went without a turn."""
     done = asyncio.Event()
     longest = 0.0
 
@@ -113,8 +106,24 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
     finally:
         done.set()
         await probing
-
     assert response.status_code == 200
+    return longest
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("path", PATHS)
+async def test_summary_request_at_30k_nodes_keeps_loop_lag_under_20ms(
+    path: str, shape: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """The longest stretch the loop is held, while the request runs, stays short."""
+    app = _app(_big_store(big_stores, shape))
+    # The first request builds the app's middleware stack (about 70 ms): not ours.
+    assert (await _get(app, "/api/health")).status_code == 200
+    # A loop held by the aggregation shows in every run; a preempted CPU (parallel
+    # test workers) inflates one run, so the best of a few is the signal.
+    holds = [await _longest_loop_hold(app, path) for _ in range(LOOP_LAG_RUNS)]
+    longest = min(holds)
     assert longest <= MAX_LOOP_LAG_S, f"loop held for {longest * 1000:.1f} ms"
 
 

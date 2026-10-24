@@ -30,6 +30,9 @@ from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEvent
 from stemtrace.transports import get_transport
 from stemtrace.transports.rabbitmq import RabbitMQTransport
 
+_WORKER = os.environ.get(
+    "PYTEST_XDIST_WORKER", "gw"
+)  # keeps names unique across xdist workers
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 RABBITMQ_MANAGEMENT_URL = os.environ.get(
     "RABBITMQ_MANAGEMENT_URL", "http://guest:guest@localhost:15672"
@@ -111,7 +114,7 @@ def _consume_one(
 @pytest.fixture
 def rabbitmq_transport() -> Iterator[RabbitMQTransport]:
     """Create a RabbitMQ transport with unique prefix for test isolation."""
-    prefix = f"test_{int(time.time() * 1000)}"
+    prefix = f"test_{_WORKER}_{int(time.time() * 1000)}"
     transport = get_transport(RABBITMQ_URL, prefix=prefix, ttl=60)
     assert isinstance(transport, RabbitMQTransport)
 
@@ -273,7 +276,9 @@ class TestRabbitMQConsumerHeartbeats:
         separator = "&" if "?" in RABBITMQ_URL else "?"
         url = f"{RABBITMQ_URL}{separator}heartbeat={self.HEARTBEAT_S}"
         transport = RabbitMQTransport.from_url(
-            url, prefix=f"test_hb_{int(time.time() * 1000)}", ttl=60
+            url,
+            prefix=f"test_hb_{_WORKER}_{int(time.time() * 1000)}",
+            ttl=60,
         )
         transport._declare_exchange_and_queue()
         events, stop, thread = _start_consumer(transport)
