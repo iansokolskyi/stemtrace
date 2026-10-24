@@ -199,16 +199,26 @@ import signal
 
 import pytest
 
-if os.environ.get("PYTEST_XDIST_WORKER") == "gw1":
-    {startup}
 
-
-@pytest.fixture(scope="session", autouse=True)
-def _die_at_teardown():
-    yield
+def _die_if_gw1():
     if os.environ.get("PYTEST_XDIST_WORKER") == "gw1":
-        {teardown}
+        {die}
+
+
+{hooks}
 """
+# Where the worker dies: each is a point with no test item to report the loss.
+_DIE_AT = {
+    "conftest-import": "_die_if_gw1()",
+    "collection": (
+        "def pytest_collection_modifyitems():\n    _die_if_gw1()"
+    ),
+    # Before xdist's own hook sends workerfinished, so the run reports "N passed".
+    "worker-sessionfinish": (
+        "@pytest.hookimpl(tryfirst=True)\ndef pytest_sessionfinish():\n"
+        "    _die_if_gw1()"
+    ),
+}
 _MANY_TESTS = (
     "import pytest\n\n@pytest.mark.parametrize('i', range(40))\n"
     "def test_ok(i):\n    pass\n"
@@ -216,17 +226,13 @@ _MANY_TESTS = (
 
 
 @pytest.mark.parametrize("how", _DIE)
-@pytest.mark.parametrize("when", ["startup", "teardown"])
+@pytest.mark.parametrize("when", _DIE_AT)
 def test_pytest_when_a_worker_dies_outside_a_test_exits_non_zero(
     tmp_path: Path, when: str, how: str
 ) -> None:
-    """A worker lost without a test item is not replaced, so it must fail the run."""
-    die = _DIE[how]
+    """A worker lost where no test item reports it is not replaced: fail the run."""
     (tmp_path / "conftest.py").write_text(
-        _CRASH_CONFTEST.format(
-            startup=die if when == "startup" else "pass",
-            teardown=die if when == "teardown" else "pass",
-        )
+        _CRASH_CONFTEST.format(die=_DIE[how], hooks=_DIE_AT[when])
     )
     (tmp_path / "test_many.py").write_text(_MANY_TESTS)
     result = _run_controller(["-n", "2", "--dist", "worksteal"], f"{BASE}/15", tmp_path)
@@ -240,7 +246,7 @@ def test_pytest_controller_inheriting_worker_env_when_worker_dies_exits_cleanly(
 ) -> None:
     """A nested controller that inherited PYTEST_XDIST_WORKER has no restart limit set."""
     (tmp_path / "conftest.py").write_text(
-        _CRASH_CONFTEST.format(startup=_DIE["sigkill"], teardown="pass")
+        _CRASH_CONFTEST.format(die=_DIE["sigkill"], hooks=_DIE_AT["conftest-import"])
     )
     (tmp_path / "test_many.py").write_text(_MANY_TESTS)
     result = _run_controller(
