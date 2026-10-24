@@ -153,6 +153,7 @@ def test_failed_head_of_chord_header_chain_fails_its_last_step_as_header(
     assert step.name == "t.b"
     assert step.group_id is not None
     assert step.chord_callback_id == callback_id
+    assert step.chord_body_first_id == callback_id
     assert step.parent_id == head.task_id
 
 

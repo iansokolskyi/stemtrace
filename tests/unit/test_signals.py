@@ -1305,7 +1305,7 @@ class TestExtractChordInfo:
 
     def test_none_input_returns_none(self) -> None:
         """None chord attribute returns (None, None)."""
-        group_id, callback_id = _extract_chord_info(None)
+        group_id, callback_id, _ = _extract_chord_info(None)
         assert group_id is None
         assert callback_id is None
 
@@ -1317,7 +1317,7 @@ class TestExtractChordInfo:
                 "task_id": "callback-task-456",
             }
         }
-        group_id, callback_id = _extract_chord_info(chord_dict)
+        group_id, callback_id, _ = _extract_chord_info(chord_dict)
         assert group_id == "group-abc-123"
         assert callback_id == "callback-task-456"
 
@@ -1329,7 +1329,7 @@ class TestExtractChordInfo:
                 "task_id": "callback-task-456",
             }
         }
-        group_id, callback_id = _extract_chord_info(chord_dict)
+        group_id, callback_id, _ = _extract_chord_info(chord_dict)
         assert group_id == "group-abc-123"
         assert callback_id == "callback-task-456"
 
@@ -1341,28 +1341,28 @@ class TestExtractChordInfo:
             "task_id": "callback-task-abc",
         }
 
-        group_id, callback_id = _extract_chord_info(mock_signature)
+        group_id, callback_id, _ = _extract_chord_info(mock_signature)
         assert group_id == "group-xyz-789"
         assert callback_id == "callback-task-abc"
 
     def test_empty_options_dict(self) -> None:
         """Empty options dict returns (None, None)."""
         chord_dict: dict[str, dict[str, str]] = {"options": {}}
-        group_id, callback_id = _extract_chord_info(chord_dict)
+        group_id, callback_id, _ = _extract_chord_info(chord_dict)
         assert group_id is None
         assert callback_id is None
 
     def test_missing_options_key(self) -> None:
         """Dict without options key returns (None, None)."""
         chord_dict: dict[str, str] = {"task": "some.task"}
-        group_id, callback_id = _extract_chord_info(chord_dict)
+        group_id, callback_id, _ = _extract_chord_info(chord_dict)
         assert group_id is None
         assert callback_id is None
 
     def test_options_not_dict(self) -> None:
         """Non-dict options value returns (None, None)."""
         chord_dict = {"options": "not-a-dict"}
-        group_id, callback_id = _extract_chord_info(chord_dict)
+        group_id, callback_id, _ = _extract_chord_info(chord_dict)
         assert group_id is None
         assert callback_id is None
 
@@ -1402,6 +1402,60 @@ class TestChordIdCapture:
         assert event.chord_id == "chord-group-id"
         assert event.chord_callback_id == "callback-task-id"
 
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            (
+                {"task": "t.cb", "options": {"task_id": "cb-id", "group_id": "g"}},
+                "cb-id",
+            ),
+            (
+                {
+                    "task": "celery.chain",
+                    "kwargs": {
+                        "tasks": [
+                            {"task": "t.first", "options": {"task_id": "first-id"}},
+                            {"task": "t.last", "options": {"task_id": "last-id"}},
+                        ]
+                    },
+                    "options": {"task_id": "last-id", "group_id": "g"},
+                },
+                "first-id",
+            ),
+            (
+                {"task": "celery.group", "options": {"task_id": "g", "group_id": "g"}},
+                None,
+            ),
+            (
+                {
+                    "task": "celery.chain",
+                    "kwargs": {"tasks": [{"task": "celery.chord", "options": {}}]},
+                    "options": {"task_id": "last-id", "group_id": "g"},
+                },
+                None,
+            ),
+        ],
+        ids=["task_body", "chain_body", "group_body", "chain_chord_body"],
+    )
+    def test_prerun_captures_body_first_id_by_body_kind(
+        self,
+        transport: MemoryTransport,
+        body: dict[str, Any],
+        expected: str | None,
+    ) -> None:
+        """task_prerun sets chord_body_first_id from the body's first task."""
+        task = MagicMock()
+        task.name = "tests.header_task"
+        task.request.parent_id = None
+        task.request.root_id = None
+        task.request.group = "g"
+        task.request.chord = body
+        task.request.retries = 0
+
+        _on_task_prerun(task_id="header-1", task=task, args=(), kwargs={})
+
+        assert MemoryTransport.events[0].chord_body_first_id == expected
+
     def test_prerun_without_chord(
         self,
         transport: MemoryTransport,
@@ -1418,6 +1472,7 @@ class TestChordIdCapture:
         event = MemoryTransport.events[0]
         assert event.chord_id is None
         assert event.chord_callback_id is None
+        assert event.chord_body_first_id is None
 
 
 class TestSignalsScrubbingAndCaptureBranches:
