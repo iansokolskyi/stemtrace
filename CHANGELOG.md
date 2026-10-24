@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**Upgrading:** upgrade the workers, not only the server, to see every chord's callback. Workers before this release don't report `chord_body_first_id`: chords whose body is a chain, and Celery 5.6 chords whose body is a task that carries the chord's group ID, show no callback for them (the body's tasks hang from the header they report) until the workers are upgraded. A server from before the field ignores it, so the order doesn't matter. See [Graphs: chord callbacks](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md#chord-callbacks).
+**Highlights:**
+- Chord callbacks you can trust: a chord now shows its real callback or none, never another chord's, except in the cases listed in [Graphs: known limitations](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md#known-limitations). The graph reads the IDs the events name, including a new `chord_body_first_id` field that workers send, instead of walking tasks' parents. This fixes chains of chords on result backends that use `celery.chord_unlock` (such as Celery's database backend, `db+...`) and wrong callbacks in nested chords on every backend.
+- Workers no longer stall on large task arguments of built-in types: argument capture stops at `max_data_size` instead of scrubbing and encoding the whole value first, and arguments under the limit are scrubbed in one pass.
+- The summary endpoints (`/api/overview`, `/api/failures`, `/api/stats/timeseries`) aggregate a large store in slices instead of holding the event loop for the whole aggregation.
+- Security: the Docker image ships certifi 2026.10.23 (PYSEC-2026-4320).
+
+**Upgrading:** upgrade the workers, not only the server, to see every chord's callback. Workers before this release don't report `chord_body_first_id`: chords whose body is a chain, and Celery 5.6 chords whose body is a task that carries the chord's group ID, show no callback for them (the body's tasks hang from the header they report) until the workers are upgraded. A server from before the field ignores it, so the order doesn't matter. See [Graphs: chord callbacks](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md#chord-callbacks). The bundled UI now needs Chrome or Edge 111, Firefox 114, or Safari 16.4 or later.
 
 ## [0.4.2] - 2026-10-19
 
