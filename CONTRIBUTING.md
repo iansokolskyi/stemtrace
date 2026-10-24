@@ -113,7 +113,7 @@ uv run pytest --cov=stemtrace --cov-report=term-missing
 
 Parallel runs give each xdist worker its own Redis database (`REDIS_URL`'s database minus the
 worker number), so use at most 16 workers against a default Redis (`make test` caps at 8). The run stops with a usage error if `REDIS_URL` has too low a database number for the worker count.
-A crashed worker fails the run instead of being replaced, because a replacement would need another database. To allow restarts, pass `--max-worker-restart N` and leave room for N more databases.
+A worker that dies stops the run with a failing exit code instead of being replaced, because a replacement would need another database. To allow restarts, pass `--max-worker-restart N` and leave room for N more databases.
 
 **Coverage requirement:** 95% minimum
 

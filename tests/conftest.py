@@ -22,6 +22,9 @@ from tests.redis_isolation import (
 RawGet = Callable[[Any, str], Awaitable[int]]
 
 
+_LOST_WORKERS = pytest.StashKey[list[str]]()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Fail fast, on the xdist controller, when workers can't each get a Redis db."""
     tx = getattr(config.option, "tx", None)  # absent under -p no:xdist
@@ -29,16 +32,47 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     # ``-n`` has already been turned into ``tx``; ``--tx N*popen`` arrives as ``tx`` only.
     # A crashed worker's replacement takes the next unused id, so an unset restart
-    # limit becomes 0: a crash fails the run instead of walking off the db range.
+    # limit becomes 0: a lost worker stops the run (see pytest_sessionfinish).
     if config.option.maxworkerrestart is None:
         config.option.maxworkerrestart = "0"
     try:
+        restarts = int(config.option.maxworkerrestart)
+    except ValueError as err:
+        raise pytest.UsageError("--max-worker-restart must be a whole number") from err
+    try:
         check_worker_count(
             os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
-            count_tx_workers(tx) + int(config.option.maxworkerrestart),
+            count_tx_workers(tx) + restarts,
         )
     except ValueError as err:
         raise pytest.UsageError(str(err)) from err
+
+
+@pytest.hookimpl(optionalhook=True)  # hookspec exists only when xdist is loaded
+def pytest_testnodedown(node: Any, error: object) -> None:
+    """Record a worker that died, on the controller."""
+    # xdist 3.5.0 and 3.8.0 DSession.worker_errordown call this with the error first.
+    if error is not None and error != "keyboard-interrupt":
+        node.config.stash.setdefault(_LOST_WORKERS, []).append(node.gateway.id)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Fail the run when more workers died than --max-worker-restart replaced.
+
+    A worker that dies before it has a test item (SIGKILL, OOM, a crash at import)
+    leaves xdist nothing to report, and it ends the run with a green or "no tests
+    ran" status.
+    """
+    lost = session.config.stash.get(_LOST_WORKERS, [])
+    if (
+        lost
+        and len(lost) > int(session.config.option.maxworkerrestart)
+        and (
+            session.exitstatus
+            in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED)
+        )
+    ):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 # Integration modules read REDIS_URL at import, so set it before they are collected.
