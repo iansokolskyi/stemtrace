@@ -148,6 +148,31 @@ def test_replay_chord_flow_draws_the_same_callbacks_in_every_order(chunk: str) -
             assert len(drawn) == 1, (key, variant, drawn)
 
 
+@pytest.mark.parametrize(
+    ("key", "shuffle"),
+    [
+        # A callback refused while its chord hung below it was never drawn once
+        # the chord moved away (the refusal didn't depend on the chord's place).
+        ("gen1_013@native@celery5.6.3", 1),
+        # A callback and the group its chain link sits in each want the other
+        # above them while only part of the events have arrived.
+        ("gen1_059@native@celery5.6.3", 5),
+    ],
+)
+def test_shuffles_that_once_ended_differently_draw_what_the_recorded_order_draws(
+    key: str, shuffle: int
+) -> None:
+    capture = ct.load_captures()[key]
+    group_ids = [c["group_id"] for c in capture["truth"]["chords"]]
+    events = ct.events_of(key, "field")
+    order = list(ct.shuffles(key, events, shuffle + 1))[shuffle]
+
+    drawn = [ct.drawn(ct.replay(order), g) for g in group_ids]
+
+    assert drawn == [ct.drawn(ct.replay(events), g) for g in group_ids]
+    assert ct.wrong_in_prefixes(capture, order) == []
+
+
 @pytest.fixture(scope="module")
 def counted() -> dict[str, dict[str, dict[str, int]]]:
     return {variant: ct.cell_counts(variant) for variant in ("field", "plain")}

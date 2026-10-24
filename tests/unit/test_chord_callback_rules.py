@@ -568,6 +568,27 @@ def test_removing_the_unlock_task_turns_its_chord_back_into_a_group() -> None:
     assert graph._candidate == {}
 
 
+def test_removing_the_last_header_with_evidence_brings_the_unlock_headers_back() -> (
+    None
+):
+    graph = build(
+        [
+            header(H1, stamp=G),
+            member(H2),
+            unlock(U, G, task_body(CB), result_of(H1, H2)),
+            ev(CB),
+        ]
+    )
+    assert graph.get_group_members(G) == [H1]
+
+    graph.remove_node(H1)
+
+    assert_graph_invariants(graph)
+    assert graph.nodes[f"group:{G}"].node_type == NodeType.CHORD
+    assert graph.get_group_members(G) == [H2]
+    assert callback_of(graph) == CB
+
+
 def test_removing_a_listed_header_leaves_the_others_as_the_headers() -> None:
     graph = build(
         [member(H1), member(H2), unlock(U, G, task_body(CB), result_of(H1, H2)), ev(CB)]
@@ -744,6 +765,25 @@ def test_removing_the_callback_stops_drawing_it_and_a_new_event_restores_it() ->
     graph.add_event(ev(CB))
 
     assert callback_of(graph) == CB
+
+
+def test_removing_a_callback_that_carries_the_group_id_is_not_drawn_again() -> None:
+    # Celery 5.6 gives a task body's callback the chord's group ID: removing it
+    # moves the chord while the callback is still in the graph.
+    graph = build(
+        [
+            header(H1, stamp=CB, first=CB),
+            header(H2, stamp=CB, first=CB),
+            ev(CB, group=G),
+        ]
+    )
+    assert callback_of(graph) == CB
+
+    graph.remove_node(CB)
+
+    assert_graph_invariants(graph)
+    assert callback_of(graph) is None
+    assert CB not in graph.nodes[f"group:{G}"].children
 
 
 def test_removing_the_only_header_with_the_first_id_forgets_it() -> None:

@@ -695,13 +695,6 @@ class _EventIndex:
         )
 
 
-# Passes one chord's resolution makes when what it read changes meanwhile
-# (placing its callback moves nodes other chords read). Two settle every chord
-# of the recorded Celery flows. Events whose placements contradict each other
-# (a callback that the group it hangs from also hangs below) never settle: the
-# bound ends the loop, with the callback drawn or not.
-_RESOLVE_PASSES = 8
-
 # Celery's polling task that fires a chord's body when the result backend
 # can't (e.g. database backends); the body reports it as its parent.
 _CHORD_UNLOCK_TASK = "celery.chord_unlock"
@@ -1116,11 +1109,9 @@ class TaskGraph(BaseModel):
     # parents can loop, e.g. through task.replace(), which reuses a task ID;
     # where a cycle breaks then depends on order).
     _cycles_refused: int = PrivateAttr(default=0)
-    # Chords whose callback is being resolved, and those asked again meanwhile
-    # (what they read changed, e.g. their callback was placed): they resolve
-    # once more when the pass ends.
+    # Chords whose callback is being resolved: a nested request for the same
+    # chord (its own placement changing mid-resolution) is skipped.
     _resolving: set[str] = PrivateAttr(default_factory=set)
-    _resolve_again: set[str] = PrivateAttr(default_factory=set)
     # Nodes kept off their parent (or groups made roots) to break a cycle;
     # placed again after each change.
     _cycle_broken: dict[str, None] = PrivateAttr(default_factory=dict)
@@ -2424,18 +2415,12 @@ class TaskGraph(BaseModel):
         neither; one that would close a cycle is not drawn.
         """
         if group_id in self._resolving:
-            self._resolve_again.add(group_id)
             return
         self._resolving.add(group_id)
         try:
-            for _ in range(_RESOLVE_PASSES):
-                self._resolve_again.discard(group_id)
-                self._resolve_callback_now(group_id)
-                if group_id not in self._resolve_again:
-                    break
+            self._resolve_callback_now(group_id)
         finally:
             self._resolving.discard(group_id)
-            self._resolve_again.discard(group_id)
 
     def _resolve_callback_now(self, group_id: str) -> None:
         """Do the work of ``_resolve_callback``."""
@@ -2581,12 +2566,9 @@ class TaskGraph(BaseModel):
             # group ID yet (workers before 0.4.0 left it out).
             ambiguous = stamp in tally.members or node.state == TaskState.PENDING
             return None if ambiguous else stamp
-        named = self._groups.get(stamp)
         node_id = _group_node_id(stamp)
         self._add_chord_dep(group_id, node_id)
-        if named is None or node_id not in self.nodes:
-            return None
-        return node_id if any(m not in tally.headers for m in named.members) else None
+        return node_id if node_id in self.nodes else None
 
     def _loops_back(
         self, callback_id: str, chord_node: TaskNode, chord_parent: str | None

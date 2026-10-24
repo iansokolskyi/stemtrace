@@ -100,7 +100,6 @@ def _check_chord_indexes(graph: TaskGraph) -> None:
     """Chord callbacks, claims and unlock tasks agree with the nodes."""
     nodes = graph.nodes
     assert not graph._resolving, graph._resolving
-    assert not graph._resolve_again, graph._resolve_again
     for node_id, node in nodes.items():
         if node.node_type == NodeType.CHORD and node.chord_id is not None:
             assert node.chord_id in node.children, f"{node_id} hides its callback"
