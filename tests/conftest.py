@@ -1,5 +1,6 @@
 """Shared pytest fixtures."""
 
+import os
 import socket
 import urllib.parse
 from collections.abc import Awaitable, Callable, Iterator, MutableMapping
@@ -13,6 +14,35 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.library.config import _reset_config
 
 RawGet = Callable[[Any, str], Awaitable[int]]
+
+_DEFAULT_REDIS_URL = "redis://localhost:6379/15"
+
+
+def _redis_url_for_worker(url: str, worker_id: str | None) -> str:
+    """Return ``url`` pointing at a Redis db that only ``worker_id`` uses.
+
+    xdist worker ``gwN`` gets the db N positions below the configured one, so
+    workers never share streams or keys. Without xdist the URL is unchanged.
+    """
+    if not worker_id or not worker_id.startswith("gw"):
+        return url
+    parts = urllib.parse.urlsplit(url)
+    base = int(parts.path.lstrip("/") or 0)
+    db = base - int(worker_id[2:])
+    if db < 0:
+        raise RuntimeError(
+            f"xdist worker {worker_id} has no Redis db below {base}; use fewer workers"
+        )
+    return urllib.parse.urlunsplit(parts._replace(path=f"/{db}"))
+
+
+# Integration modules read REDIS_URL at import time and their worker subprocesses
+# inherit it, so set it before they are collected.
+if "PYTEST_XDIST_WORKER" in os.environ:
+    os.environ["REDIS_URL"] = _redis_url_for_worker(
+        os.environ.get("REDIS_URL", _DEFAULT_REDIS_URL),
+        os.environ["PYTEST_XDIST_WORKER"],
+    )
 
 
 class InterleavingLock:

@@ -38,11 +38,11 @@ format:
 	uv run ruff check --fix src/ tests/
 
 test:
-	uv run pytest --cov=stemtrace --cov-report=term-missing --cov-fail-under=95
+	uv run pytest -n auto --dist loadfile --cov=stemtrace --cov-report=term-missing --cov-fail-under=95
 
 # Run tests without coverage (faster iteration)
 test-fast:
-	uv run pytest -x -q
+	uv run pytest -n auto --dist loadfile -x -q
 
 # Run only unit tests
 test-unit:
