@@ -2294,7 +2294,7 @@ class TaskGraph(BaseModel):
         elif named is not None:
             callback = self._walk_to_body(group_id, named, tally, chord_parent)
             if callback is None:
-                callback = self._named_group_body(named, group_id, chord_parent)
+                callback = self._named_group_body(named, group_id)
         for tail_id in tally.tails:
             if callback is not None:
                 break
@@ -2477,15 +2477,12 @@ class TaskGraph(BaseModel):
                 return None
             self._add_chord_dep(group_id, parent_id)
             parent = self.nodes.get(parent_id)
-            # celery 5.6.3 ``fallback_chord_unlock`` applies the unlock from the
-            # task that sends the headers, so it reports their parent; an
-            # unlock reporting another parent fired a chord nested in the body.
-            fired_by_unlock = False
-            if parent is not None and parent.name == _CHORD_UNLOCK_TASK:
-                unlock_parent = parent.reported_parent_id
-                fired_by_unlock = unlock_parent == chord_parent
-                if unlock_parent is None and not fired_by_unlock:
-                    return None  # its parent isn't reported yet: wait for it
+            fired_by_unlock = parent is not None and parent.name == _CHORD_UNLOCK_TASK
+            if fired_by_unlock and parent is not None:
+                nested = self._unlock_is_nested(group_id, tally, parent)
+                if nested is None:
+                    return None  # waits for the unlock's sender
+                fired_by_unlock = not nested
             # A chain's chord body reports the chain's previous task, which is
             # the chord's own parent, rather than a header.
             if (
@@ -2508,6 +2505,32 @@ class TaskGraph(BaseModel):
             walk.seen.add(parent_id)
             walk.current = parent_id
 
+    def _unlock_is_nested(
+        self, group_id: str, tally: _GroupTally, unlock: TaskNode
+    ) -> bool | None:
+        """Whether a ``chord_unlock`` task is positively another chord's.
+
+        celery 5.6.3 ``fallback_chord_unlock`` applies the unlock from the task
+        that sends the headers, so it reports the headers' parent. It counts as
+        another chord's only when every header reports one parent, the unlock
+        reports another, and that sender is a plain task; otherwise the walk
+        stops at it. None while the sender's events haven't arrived.
+        """
+        sender_id = unlock.reported_parent_id
+        if sender_id is None:
+            return False
+        parents: set[str | None] = set()
+        for header_id in tally.headers:
+            self._add_chord_dep(group_id, header_id)
+            parents.add(self.nodes[header_id].reported_parent_id)
+        if len(parents) != 1 or sender_id in parents:
+            return False
+        self._add_chord_dep(group_id, sender_id)
+        sender = self.nodes.get(sender_id)
+        if sender is None:
+            return None
+        return sender.name != _CHORD_UNLOCK_TASK
+
     def _body_node(self, node: TaskNode, group_id: str) -> str | None:
         """The node a body starting at this task is drawn as: it, or its group.
 
@@ -2524,7 +2547,7 @@ class TaskGraph(BaseModel):
         return group_node_id if group_node_id in self.nodes else None
 
     def _named_group_body(
-        self, named: str, group_id: str, chord_parent: str | None
+        self, named: str, group_id: str
     ) -> tuple[str, str | None] | None:
         """A named callback ID that is another group: the body is that group.
 
@@ -2543,15 +2566,6 @@ class TaskGraph(BaseModel):
         self._add_chord_dep(group_id, parent_id)
         if self._is_header(parent_id, group_id):
             return group_node_id, None
-        # On a chord_unlock backend the inner headers report the outer chord's
-        # own unlock task, which reports the outer chord's parent.
-        unlock = self.nodes.get(parent_id)
-        if (
-            unlock is not None
-            and unlock.name == _CHORD_UNLOCK_TASK
-            and unlock.reported_parent_id == chord_parent
-        ):
-            return group_node_id, parent_id
         return None
 
     def _set_callback(
