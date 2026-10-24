@@ -3,11 +3,13 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from tests.redis_isolation import (
     check_worker_count,
+    count_tx_workers,
     max_workers,
     redis_url_for_worker,
 )
@@ -97,3 +99,87 @@ def test_pytest_with_too_few_dbs_exits_with_usage_error(url: str) -> None:
     )
     assert result.returncode == 4, result.stdout + result.stderr
     assert "serves at most" in result.stderr
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_controller(
+    args: list[str], redis_url: str, target: Path
+) -> subprocess.CompletedProcess[str]:
+    """Run pytest as an xdist controller with tests/conftest.py loaded as a plugin."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "no:cacheprovider",
+            "-W",
+            "ignore::DeprecationWarning",
+            *args,
+            str(target),
+        ],
+        cwd=REPO_ROOT,
+        # This test may itself run on an xdist worker; the child is a controller.
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("PYTEST_XDIST")},
+            "REDIS_URL": redis_url,
+            "PYTHONPATH": str(REPO_ROOT),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tx", "expected"),
+    [
+        (["popen"], 1),
+        (["3*popen"], 3),
+        (["2*popen", "popen//python=python3", "4*popen"], 7),
+        (["ssh=host"], 1),
+    ],
+)
+def test_count_tx_workers_expands_multipliers(tx: list[str], expected: int) -> None:
+    assert count_tx_workers(tx) == expected
+
+
+def test_pytest_with_tx_multiplier_over_the_dbs_exits_with_usage_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    result = _run_controller(
+        ["--tx", "3*popen", "--dist", "load"], f"{BASE}/1", tmp_path
+    )
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "at most 2 xdist workers but 3 were requested" in result.stderr
+
+
+def test_pytest_with_restarts_over_the_dbs_exits_with_usage_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    result = _run_controller(
+        ["-n", "2", "--max-worker-restart", "1"], f"{BASE}/1", tmp_path
+    )
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "at most 2 xdist workers but 3 were requested" in result.stderr
+
+
+def test_pytest_with_crashing_test_fails_instead_of_respawning_past_the_dbs(
+    tmp_path: Path,
+) -> None:
+    # xdist 3.8.0 names a crashed gw1's replacement gw2, which has no db below /1.
+    (tmp_path / "test_crash.py").write_text(
+        "import os\n\ndef test_crash():\n    os._exit(1)\n"
+    )
+    result = _run_controller(["-n", "2"], f"{BASE}/1", tmp_path)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "worker restarting disabled" in output, output
+    assert "no Redis db below" not in output, output

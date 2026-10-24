@@ -15,6 +15,7 @@ from stemtrace.library.config import _reset_config
 from tests.redis_isolation import (
     DEFAULT_REDIS_URL,
     check_worker_count,
+    count_tx_workers,
     redis_url_for_worker,
 )
 
@@ -23,13 +24,18 @@ RawGet = Callable[[Any, str], Awaitable[int]]
 
 def pytest_configure(config: pytest.Config) -> None:
     """Fail fast, on the xdist controller, when workers can't each get a Redis db."""
-    workers = getattr(config.option, "numprocesses", None)
-    if "PYTEST_XDIST_WORKER" in os.environ or not isinstance(workers, int):
+    tx = getattr(config.option, "tx", None)  # absent under -p no:xdist
+    if "PYTEST_XDIST_WORKER" in os.environ or not tx or config.option.dist == "no":
         return
+    # ``-n`` has already been turned into ``tx``; ``--tx N*popen`` arrives as ``tx`` only.
+    # A crashed worker's replacement takes the next unused id, so an unset restart
+    # limit becomes 0: a crash fails the run instead of walking off the db range.
+    if config.option.maxworkerrestart is None:
+        config.option.maxworkerrestart = "0"
     try:
         check_worker_count(
             os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
-            min(workers, config.option.maxprocesses or workers),
+            count_tx_workers(tx) + int(config.option.maxworkerrestart),
         )
     except ValueError as err:
         raise pytest.UsageError(str(err)) from err
