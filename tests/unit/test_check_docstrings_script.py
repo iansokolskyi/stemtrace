@@ -68,6 +68,20 @@ def test_main_with_missing_docstring_reports_it_and_returns_one(
     assert capsys.readouterr().out.strip() == f"{path}:{line} - {name}"
 
 
+def test_main_under_working_directory_reports_relative_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    _write(package, "def f() -> None:\n    pass\n")
+    monkeypatch.chdir(tmp_path)
+
+    assert check_docstrings.main([str(package)]) == 1
+    assert capsys.readouterr().out.strip() == "pkg/mod.py:1 - f"
+
+
 def test_main_ignores_private_definitions(tmp_path: Path) -> None:
     _write(tmp_path, "def _helper() -> None:\n    pass\n")
 
