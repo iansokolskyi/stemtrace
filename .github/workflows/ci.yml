@@ -237,13 +237,14 @@ jobs:
 
   # Mock-mode Playwright (no Docker) plus the visual snapshots. It runs in the pinned
   # Playwright image so fonts render exactly as when the baselines were made
-  # (npm run test:visual:update uses the same image).
+  # (npm run test:visual:update uses the same image). The image version must match
+  # @playwright/test in package.json (pinned exactly; Dependabot ignores it).
   ui-mock-e2e:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
       options: --ipc=host
     defaults:
       run:

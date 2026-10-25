@@ -16,8 +16,8 @@
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "test:report": "playwright show-report",
-    "test:visual": "docker run --rm --ipc=host -e PW_VISUAL=1 -e E2E_PORT=5199 -v \"$PWD\":/work -w /work mcr.microsoft.com/playwright:v1.64.1-noble npx playwright test --project=visual",
-    "test:visual:update": "docker run --rm --ipc=host -e PW_VISUAL=1 -e E2E_PORT=5199 -v \"$PWD\":/work -w /work mcr.microsoft.com/playwright:v1.64.1-noble npx playwright test --project=visual --update-snapshots"
+    "test:visual": "docker run --rm --ipc=host -e PW_VISUAL=1 -e E2E_PORT=5199 -v \"$PWD\":/work -w /work mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea npx playwright test --project=visual",
+    "test:visual:update": "docker run --rm --ipc=host -e PW_VISUAL=1 -e E2E_PORT=5199 -v \"$PWD\":/work -w /work mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea npx playwright test --project=visual --update-snapshots"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",
@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.2",
-    "@playwright/test": "^1.64.1",
+    "@playwright/test": "1.64.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@tanstack/router-cli": "^1.166.16",
     "@tanstack/router-devtools": "^1.167.2",
