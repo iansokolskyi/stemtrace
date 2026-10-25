@@ -204,6 +204,27 @@ test.describe('Executions table', () => {
     await expect(header(page, 'worker')).toHaveText('Worker')
   })
 
+  test('at 1280px every column fits without the box scrolling sideways', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(
+      manyTasks(5, () => ({
+        task_group: 'Billing',
+        hostname: 'celery@worker-billing-1',
+        queue: 'invoices',
+        queue_wait_ms: 40,
+        runtime_ms: 900,
+      })),
+    )
+    await page.goto('/executions')
+    for (const column of ['group', 'worker', 'queue', 'queue_wait', 'runtime', 'updated']) {
+      await expect(header(page, column)).toBeVisible()
+    }
+    expect(await scrollBox(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0)
+    // The longest worker name is not cut
+    const worker = rows(page).first().locator('[data-cell="worker"]')
+    expect(await worker.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+  })
+
   test('at 400px the page does not scroll sideways but the table box does', async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 })
     const api = await setupMockApi(page, { useDefaults: false })

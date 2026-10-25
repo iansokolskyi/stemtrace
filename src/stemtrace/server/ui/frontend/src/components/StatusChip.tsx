@@ -54,7 +54,7 @@ export function StatusChip({ state, title, className }: StatusChipProps): ReactE
       data-variant={look.loud ? 'loud' : 'quiet'}
       title={title}
       className={clsx(
-        'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-xs',
+        'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-xs leading-5',
         look.loud ? 'font-bold text-ink' : 'font-normal text-muted',
         className,
       )}
@@ -68,8 +68,8 @@ export function StatusChip({ state, title, className }: StatusChipProps): ReactE
       >
         <Icon
           name={look.icon}
-          size={look.loud ? 10 : 14}
-          className={look.loud ? '[stroke-width:3]' : ''}
+          size={look.loud ? 12 : 14}
+          className={look.loud ? '[stroke-width:2.5]' : ''}
         />
       </span>
       {look.word}
