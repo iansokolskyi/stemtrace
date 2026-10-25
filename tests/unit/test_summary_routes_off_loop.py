@@ -22,8 +22,8 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
-# Loop work between two turns, in profile events (Python and C calls and returns) on the
-# loop thread (see _longest_loop_hold). At 30k nodes a sliced turn (2,048 records) takes
+# Loop work between two turns, in profile events (Python and C calls and returns, and C
+# exceptions) on the loop thread (see _longest_loop_hold). At 30k nodes a sliced turn (2,048 records) takes
 # 8-29k events; the pre-#172 unsliced routes took 110-250k in one turn. The budget sits
 # between.
 MAX_LOOP_WORK = 60_000
@@ -92,7 +92,7 @@ async def _longest_loop_hold(app: FastAPI, path: str) -> int:
     """Request ``path``; return the most work the loop did between two of its turns.
 
     Work is the count of profile events (``sys.setprofile``: Python and C calls and
-    returns) on the loop thread, not time: on a CPU-throttled or busy host a stolen or
+    returns, and C exceptions) on the loop thread, not time: on a CPU-throttled or busy host a stolen or
     preempted stretch looks like a held loop in wall time, and also in
     ``time.thread_time`` when the hypervisor steals.
     """
