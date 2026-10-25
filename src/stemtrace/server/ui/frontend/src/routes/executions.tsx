@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
+import { DEFAULT_DENSITY } from '@/components/executions/density'
+import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { Filters } from '@/components/Filters'
-import { TaskList } from '@/components/TaskList'
 import { TaskTimeline } from '@/components/TaskTimeline'
 import { executionsSearch } from './-search'
 
@@ -105,7 +106,20 @@ function TasksPage() {
       <Filters filters={filters} onFiltersChange={setFilters} />
 
       {/* Content */}
-      {viewMode === 'list' ? <TaskList filters={filters} /> : <TaskTimeline filters={filters} />}
+      {viewMode === 'list' ? (
+        <ExecutionsTable
+          params={{
+            state: filters.state,
+            name: filters.name || undefined,
+            name_exact: filters.name_exact,
+            from_date: filters.from_date,
+            to_date: filters.to_date,
+          }}
+          density={DEFAULT_DENSITY}
+        />
+      ) : (
+        <TaskTimeline filters={filters} />
+      )}
     </div>
   )
 }

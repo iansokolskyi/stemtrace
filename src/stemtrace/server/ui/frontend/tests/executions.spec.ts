@@ -77,3 +77,157 @@ test.describe('Executions requests', () => {
     expect(lists[0]).toEqual({ limit: '200', offset: '0', compact: '1' })
   })
 })
+
+const rows = (page: Page) => page.locator('a[href^="/tasks/"]')
+const scrollBox = (page: Page) => page.getByTestId('executions-scroll')
+const header = (page: Page, column: string) => page.locator(`[data-column-header="${column}"]`)
+
+/** Scrolls the table box to the bottom, as a user dragging the scrollbar would. */
+async function scrollToBottom(page: Page): Promise<void> {
+  await scrollBox(page).evaluate((el) => {
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+test.describe('Executions table', () => {
+  test('renders few rows for 2,000 tasks and reaches the last one by scrolling', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(2000))
+    await page.goto('/executions')
+    await expect(page.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
+
+    expect(await rows(page).count()).toBeLessThan(60)
+    expect(await rows(page).count()).toBeGreaterThan(5)
+
+    // Each scroll to the end loads the next page of 200 until the last task is there
+    await expect
+      .poll(
+        async () => {
+          await scrollToBottom(page)
+          return page.getByText('app.jobs.task_1999', { exact: true }).isVisible()
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true)
+    expect(await rows(page).count()).toBeLessThan(60)
+  })
+
+  test('each row shows state, name, group, worker, queue, waits, runtime and age', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    const [task] = manyTasks(1, () => ({
+      task_group: 'Billing',
+      hostname: 'celery@worker-7',
+      queue: 'invoices',
+      queue_wait_ms: 120,
+      runtime_ms: 1500,
+      last_updated: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    }))
+    api.addTask(task)
+    await page.goto('/executions')
+
+    const row = rows(page).first()
+    await expect(row).toHaveAttribute('href', `/tasks/${task.task_id}`)
+    await expect(row.locator('[data-state="SUCCESS"]')).toHaveText('Success')
+    await expect(row.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
+    await expect(row.locator('[data-cell="group"]')).toHaveText('Billing')
+    // The worker shows without the `celery@` every hostname starts with; hover has it whole
+    await expect(row.locator('[data-cell="worker"]')).toHaveText('worker-7')
+    await expect(row.locator('[data-cell="worker"]')).toHaveAttribute('title', 'celery@worker-7')
+    await expect(row.locator('[data-cell="queue"]')).toHaveText('invoices')
+    await expect(row.locator('[data-cell="queue_wait"]')).toHaveText('120ms')
+    await expect(row.locator('[data-cell="runtime"]')).toHaveText('1.5s')
+    await expect(row.locator('[data-cell="updated"]')).toHaveText('5m ago')
+    await row.click()
+    await expect(page).toHaveURL(new RegExp(`/tasks/${task.task_id}$`))
+  })
+
+  const OPTIONAL: { column: string; field: Partial<MockTask>; label: string }[] = [
+    { column: 'group', field: { task_group: 'Billing' }, label: 'Group' },
+    { column: 'worker', field: { hostname: 'celery@w1' }, label: 'Worker' },
+    { column: 'queue', field: { queue: 'default' }, label: 'Queue' },
+    { column: 'queue_wait', field: { queue_wait_ms: 40 }, label: 'Queue wait' },
+    { column: 'runtime', field: { runtime_ms: 900 }, label: 'Runtime' },
+  ]
+  for (const { column, field, label } of OPTIONAL) {
+    test(`the ${label} column is hidden when no row has a value and shown when one does`, async ({
+      page,
+    }) => {
+      const api = await setupMockApi(page, { useDefaults: false })
+      // Every field is present as the API sends it, null: the column has nothing to show
+      api.addTasks(manyTasks(5))
+      await page.goto('/executions')
+      await expect(page.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
+      await expect(header(page, 'name')).toBeVisible()
+      await expect(header(page, column)).toHaveCount(0)
+
+      // One row with a value is enough
+      api.clearTasks()
+      api.addTasks(manyTasks(5, (index) => (index === 3 ? field : {})))
+      await page.goto('/executions')
+      await expect(header(page, column)).toHaveText(label)
+    })
+  }
+
+  test('the column set is decided by the first page and never changes while scrolling', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    // Page 1 (rows 0-199) has a worker and no queue; page 2 (200-399) has a queue and no worker
+    api.addTasks(
+      manyTasks(400, (index) =>
+        index < 200 ? { hostname: 'celery@w1' } : { queue: 'late', hostname: null },
+      ),
+    )
+    await page.goto('/executions')
+    await expect(header(page, 'worker')).toHaveText('Worker')
+    await expect(header(page, 'queue')).toHaveCount(0)
+
+    await expect
+      .poll(
+        async () => {
+          await scrollToBottom(page)
+          return page.getByText('app.jobs.task_0399', { exact: true }).isVisible()
+        },
+        { timeout: 15000 },
+      )
+      .toBe(true)
+    // Page 2 has arrived: its queue did not add a column, its missing worker did not drop one
+    await expect(header(page, 'queue')).toHaveCount(0)
+    await expect(header(page, 'worker')).toHaveText('Worker')
+  })
+
+  test('at 400px the page does not scroll sideways but the table box does', async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 })
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(
+      manyTasks(30, () => ({
+        task_group: 'Billing',
+        hostname: 'celery@w1',
+        queue: 'default',
+        queue_wait_ms: 40,
+        runtime_ms: 900,
+      })),
+    )
+    await page.goto('/executions')
+    await expect(page.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
+
+    const overflow = () =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      )
+    expect(await overflow()).toBeLessThanOrEqual(0)
+
+    const box = scrollBox(page)
+    expect(await box.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeGreaterThan(100)
+    const rect = await box.boundingBox()
+    expect(rect).not.toBeNull()
+    await page.mouse.move((rect?.x ?? 0) + 200, (rect?.y ?? 0) + 100)
+    await page.mouse.wheel(300, 0)
+    await expect.poll(() => box.evaluate((el) => el.scrollLeft)).toBeGreaterThan(100)
+    expect(await overflow()).toBeLessThanOrEqual(0)
+  })
+})

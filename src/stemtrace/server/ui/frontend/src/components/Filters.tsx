@@ -61,7 +61,7 @@ export function Filters({ filters, onFiltersChange }: FiltersProps) {
       {/* State filter */}
       <div className="flex items-center gap-2">
         <span className="text-sm text-slate-400">State:</span>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           {STATES.map((state) => (
             <button
               type="button"
