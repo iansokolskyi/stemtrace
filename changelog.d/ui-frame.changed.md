@@ -1,0 +1,3 @@
+- The dashboard has a new frame: a sidebar with Executions, Flows, Workers and Registry (badges show offline workers and tasks no worker registers), a top strip with breadcrumbs, and a navigation drawer on screens narrower than 900 px. A light theme joins the dark one: the dashboard follows your system setting, and the toggle in the sidebar overrides it for that browser.
+- The task list is now at `/executions` and the graphs at `/flows` and `/flows/<root_id>`. Old links (`/`, `/?state=…`, `/graphs`, `/graph/<root_id>`) redirect to the new pages with their filters.
+- Fonts are bundled with the UI, so the dashboard no longer loads anything from Google Fonts and works offline.
