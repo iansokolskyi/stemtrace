@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-25
+
 **Highlights:**
 - Chord callbacks you can trust: a chord now shows its real callback or none, never another chord's, except in the cases listed in [Graphs: known limitations](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md#known-limitations). The graph reads the IDs the events name, including a new `chord_body_first_id` field that workers send, instead of walking tasks' parents. This fixes chains of chords on result backends that use `celery.chord_unlock` (such as Celery's database backend, `db+...`) and wrong callbacks in nested chords on every backend.
 - Workers no longer stall on large task arguments of built-in types: argument capture stops at `max_data_size` instead of scrubbing and encoding the whole value first, and arguments under the limit are scrubbed in one pass.
@@ -361,7 +363,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/iansokolskyi/stemtrace/compare/v0.3.10...v0.4.0
