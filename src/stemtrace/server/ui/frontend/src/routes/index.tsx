@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Filters } from '@/components/Filters'
 import { TaskList } from '@/components/TaskList'
 import { TaskTimeline } from '@/components/TaskTimeline'
+import { dateSearchParam } from '@/utils/format'
 
 interface SearchParams {
   state?: string
@@ -19,8 +20,8 @@ export const Route = createFileRoute('/')({
     state: typeof search.state === 'string' ? search.state : undefined,
     name: typeof search.name === 'string' ? search.name : undefined,
     name_exact: typeof search.name_exact === 'string' ? search.name_exact : undefined,
-    from_date: typeof search.from_date === 'string' ? search.from_date : undefined,
-    to_date: typeof search.to_date === 'string' ? search.to_date : undefined,
+    from_date: dateSearchParam(search.from_date),
+    to_date: dateSearchParam(search.to_date),
     view: search.view === 'list' || search.view === 'timeline' ? search.view : undefined,
   }),
 })

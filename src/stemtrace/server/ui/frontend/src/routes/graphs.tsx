@@ -4,7 +4,13 @@ import { useGraphsInfinite } from '@/api/queries'
 import { DateRangePicker } from '@/components/DateRangePicker'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
-import { formatDateParam, formatDuration, formatTime, parseDateParam } from '@/utils/format'
+import {
+  dateSearchParam,
+  formatDateParam,
+  formatDuration,
+  formatTime,
+  parseDateParam,
+} from '@/utils/format'
 
 interface SearchParams {
   from_date?: string
@@ -14,8 +20,8 @@ interface SearchParams {
 export const Route = createFileRoute('/graphs')({
   component: GraphsPage,
   validateSearch: (search: Record<string, unknown>): SearchParams => ({
-    from_date: typeof search.from_date === 'string' ? search.from_date : undefined,
-    to_date: typeof search.to_date === 'string' ? search.to_date : undefined,
+    from_date: dateSearchParam(search.from_date),
+    to_date: dateSearchParam(search.to_date),
   }),
 })
 

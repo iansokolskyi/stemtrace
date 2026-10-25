@@ -1,0 +1,1 @@
+- A task list or graphs link whose `from_date` or `to_date` isn't a real `YYYY-MM-DD` date (for example `?from_date=2026-13-45` or a value edited by hand) no longer blanks the dashboard: the invalid date is ignored and the page loads without that filter.
