@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 **Highlights:**
-- Maintenance release with no change in behavior. The rules that decide which run, attempt and worker each task event belongs to (event order, state, runtimes, ETA, queue wait, and the worker, queue and exception shown) now live in one internal module, checked against a golden snapshot of every recorded workflow.
+- Maintenance release with no change in runtime behavior. The rules that decide which run, attempt and worker each task event belongs to (event order, state, runtimes, ETA, queue wait, and the worker, queue and exception shown) now live in one internal module, checked against a golden snapshot of every recorded workflow.
 
-**Upgrading:** nothing to do; workers and server can be upgraded in either order.
+**Upgrading:** nothing to do; workers and server can be upgraded in either order. On Python 3.10, the `dev` extra no longer installs `pre-commit` (see Security).
 
 ## [0.4.3] - 2026-10-25
 
