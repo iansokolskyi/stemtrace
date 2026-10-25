@@ -21,7 +21,8 @@ cd stemtrace
 # Install dependencies (creates venv automatically)
 uv sync --extra dev
 
-# Install pre-commit hooks
+# Install pre-commit hooks (the dev extra skips pre-commit on Python 3.10; there, run
+# `uvx pre-commit install` instead)
 uv run pre-commit install
 
 # Run checks
