@@ -58,13 +58,20 @@ def test_main_with_every_public_definition_documented_returns_zero(
 def test_main_with_missing_docstring_reports_it_and_returns_one(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
     source: str,
     name: str,
     line: int,
 ) -> None:
-    path = _write(tmp_path, source)
+    root, elsewhere = tmp_path / "src", tmp_path / "cwd"
+    root.mkdir()
+    elsewhere.mkdir()
+    path = _write(root, source)
+    # Outside the working directory, the path is printed as given.
+    monkeypatch.chdir(elsewhere)
 
-    assert check_docstrings.main([str(tmp_path)]) == 1
+    assert check_docstrings.main([str(root)]) == 1
     assert capsys.readouterr().out.strip() == f"{path}:{line} - {name}"
 
 
