@@ -35,7 +35,8 @@ const updatedAt = (row: ExecutionRow): number =>
  * the live list (it no longer matches the filters, or the loaded pages no longer reach it) keeps
  * its slot with its last known data and is flagged `departed`, so it is never passed off as
  * current; it is current again if the live list brings it back. A page that loads while frozen
- * is held in the order it arrives and treated the same. New tasks are counted, not drawn. When `frozen` ends the live order applies and departed rows go.
+ * is held in the order it arrives and treated the same. New tasks are counted, not drawn. When
+ * `frozen` ends the live order applies and departed rows go.
  */
 export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows {
   // The order held while frozen: the live list as of the last unfrozen render, or the last apply
