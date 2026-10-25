@@ -255,7 +255,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Mock E2E and visual snapshots
-        run: npx playwright test
+        run: npm test
         env:
           CI: "true"
           PW_VISUAL: "1"
