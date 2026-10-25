@@ -730,4 +730,149 @@ test.describe('Live updates under the cursor', () => {
     await expect(page.getByText(/Showing 253 of 253 tasks|Showing 250 of 253 tasks/)).toBeVisible()
     await expect(departed(page)).toHaveCount(0)
   })
+
+  // Rows from a page that loads while frozen are held like the rows shown at freeze time: they
+  // keep their slot, update in place and are marked when they leave the list. Otherwise one of
+  // them getting an event (or leaving a filter) would slide every appended row below it.
+
+  const ROW = 44 // comfortable row height
+
+  /** Scrolls the box until `count` rows are loaded, then parks row `index` at the top. */
+  async function parkAt(page: Page, count: number, index: number): Promise<void> {
+    await expect
+      .poll(
+        async () => {
+          await scrollToBottom(page)
+          return page.getByText(new RegExp(`Showing ${count} of `)).isVisible()
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true)
+    await scrollBox(page).evaluate((el, top) => {
+      el.scrollTop = top
+    }, index * ROW)
+    await expect(names(page).first()).toBeVisible()
+    await expect.poll(() => topHref(page)).not.toBeNull()
+  }
+
+  /** The task under a point just below the sticky header: the row at the viewport top. */
+  async function topHref(page: Page): Promise<string | null> {
+    const box = await scrollBox(page).boundingBox()
+    return hrefAt(page, (box?.x ?? 0) + 40, (box?.y ?? 0) + 36 + 10)
+  }
+
+  /** Sends the event and waits until every loaded page has been refetched and drawn. */
+  async function sendAndSettle(
+    page: Page,
+    socket: WebSocketRoute,
+    task: MockTask,
+    pages: number,
+  ): Promise<void> {
+    let answered = 0
+    const count = (response: { url(): string }) => {
+      if (new URL(response.url()).pathname === '/api/tasks') answered++
+    }
+    page.on('response', count)
+    send(socket, task)
+    await expect.poll(() => answered).toBeGreaterThanOrEqual(pages)
+    page.off('response', count)
+    await page.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+    )
+  }
+
+  const taskName = (index: number) => `task_${String(index).padStart(4, '0')}`
+  const rowOf = (page: Page, index: number) =>
+    rows(page).filter({ has: page.locator(`[title$="${taskName(index)}"]`) })
+
+  /** Brings row `index` (which may be far off screen) into view without leaving the freeze. */
+  async function reveal(page: Page, index: number): Promise<void> {
+    await scrollBox(page).evaluate(
+      (el, top) => {
+        el.scrollTop = top
+      },
+      index * ROW - 100,
+    )
+    await expect(rowOf(page, index)).toBeVisible()
+  }
+
+  for (const { label, count, park, pages } of [
+    { label: 'page 2', count: 400, park: 260, pages: 2 },
+    { label: 'page 3', count: 450, park: 420, pages: 3 },
+  ]) {
+    // Row to change, relative to the viewport top (`park`)
+    const targets = [
+      { where: 'above', index: park - 30 },
+      { where: 'at', index: park },
+      { where: 'below', index: park + 12 },
+    ]
+    for (const { where, index } of targets) {
+      for (const reason of ['an event', 'leaving the filter'] as const) {
+        test(`${label}: a row loaded while frozen, ${where} the viewport, ${reason}, keeps its slot`, async ({
+          page,
+        }) => {
+          const filtered = reason === 'leaving the filter'
+          const api = await setupMockApi(page, { useDefaults: false })
+          const tasks = manyTasks(450, () => (filtered ? { state: 'STARTED' } : {}))
+          api.addTasks(tasks)
+          const socket = await liveSocket(page)
+          await page.goto(filtered ? '/executions?state=STARTED' : '/executions')
+          await expect(page.getByText('Live', { exact: true })).toBeVisible()
+          await expect(rows(page).first()).toBeVisible()
+          // Scrolled away from the top with the pointer outside: frozen, pages append
+          await parkAt(page, count, park)
+          const before = await topHref(page)
+
+          // The row gets an event (it is now the newest) or finishes and leaves the filter
+          const changed = tasks[index]
+          changed.state = filtered ? 'SUCCESS' : 'FAILURE'
+          changed.last_updated = '2026-10-17T14:00:00.000Z'
+          await sendAndSettle(page, socket(), changed, pages)
+
+          // The top row did not change, and nothing was counted as new
+          expect(await topHref(page)).toBe(before)
+          await expect(page.getByRole('button', { name: /new$/ })).toHaveCount(0)
+          // The row itself updated in place, or is marked and keeps its last state
+          await reveal(page, index)
+          if (filtered) {
+            await expect(rowOf(page, index)).toHaveAttribute('data-departed', 'true')
+            await expect(rowOf(page, index).locator('[data-state="STARTED"]')).toBeVisible()
+          } else {
+            await expect(rowOf(page, index)).not.toHaveAttribute('data-departed', 'true')
+            await expect(rowOf(page, index).locator('[data-state="FAILURE"]')).toBeVisible()
+          }
+        })
+      }
+    }
+  }
+
+  test('a row loaded while frozen with an event does not hide a genuinely new task, and the hovered row stays', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    const tasks = manyTasks(450)
+    api.addTasks(tasks)
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rows(page).first()).toBeVisible()
+    await parkAt(page, 400, 260)
+    // Now the pointer is over the table too (hover freeze)
+    const box = await scrollBox(page).boundingBox()
+    const x = (box?.x ?? 0) + 40
+    const y = (box?.y ?? 0) + 36 + 60
+    await page.mouse.move(x, y)
+    const hovered = await hrefAt(page, x, y)
+
+    tasks[230].last_updated = '2026-10-17T14:00:00.000Z'
+    const added = arrival('app.jobs.fresh_0', 0)
+    api.addTask(added)
+    await sendAndSettle(page, socket(), added, 3)
+
+    // Only the genuinely new task is counted; the appended row with an event is not
+    await expect(newButton(page, 1)).toBeVisible()
+    expect(await hrefAt(page, x, y)).toBe(hovered)
+    await newButton(page, 1).click()
+    await expect(newButton(page, 1)).toHaveCount(0)
+  })
 })

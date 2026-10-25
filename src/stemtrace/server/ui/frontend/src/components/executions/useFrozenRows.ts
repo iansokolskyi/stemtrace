@@ -34,8 +34,9 @@ const updatedAt = (row: ExecutionRow): number =>
  * while frozen, since that would slide the rows below it under the pointer. A shown row that left
  * the live list (it no longer matches the filters, or the loaded pages no longer reach it) keeps
  * its slot with its last known data and is flagged `departed`, so it is never passed off as
- * current; it is current again if the live list brings it back. New tasks are counted, not
- * drawn. When `frozen` ends the live order applies and departed rows go.
+ * current; it is current again if the live list brings it back. A page that loads while frozen
+ * is held in the order it arrives and treated the same. New tasks are counted, not drawn. When
+ * `frozen` ends the live order applies and departed rows go.
  */
 export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows {
   // The order held while frozen: the live list as of the last unfrozen render, or the last apply
@@ -49,19 +50,26 @@ export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows
   }
 
   const latest = new Map(live.map((row) => [row.task_id, row]))
-  const shown: ShownRow[] = held.map((row) => {
-    const current = latest.get(row.task_id)
-    return current ? { row: current, departed: false } : { row, departed: true }
-  })
   const heldIds = new Set(held.map((row) => row.task_id))
   // The oldest update the reader was shown; with nothing held, every row is the first load
   const floor = held.length ? Math.min(...held.map(updatedAt)) : Number.NEGATIVE_INFINITY
 
+  // A task the reader wasn't shown is new if it sorts above what they were shown, else it came
+  // with a page that loaded while frozen: that row is held from now on, in the order it
+  // arrived, so it keeps its slot, updates in place and is marked if it leaves, like any other.
   let newCount = 0
+  const appended: ExecutionRow[] = []
   for (const row of live) {
     if (heldIds.has(row.task_id)) continue
     if (updatedAt(row) > floor) newCount++
-    else shown.push({ row, departed: false })
+    else appended.push(row)
   }
+  // Adjusting state during render: this render is discarded and redrawn with them held
+  if (appended.length) setHeld([...held, ...appended])
+
+  const shown: ShownRow[] = [...held, ...appended].map((row) => {
+    const current = latest.get(row.task_id)
+    return current ? { row: current, departed: false } : { row, departed: true }
+  })
   return { shown, newCount, apply }
 }
