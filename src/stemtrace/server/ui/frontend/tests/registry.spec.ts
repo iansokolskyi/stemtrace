@@ -169,7 +169,7 @@ test.describe('Registry - View runs', () => {
     // One row per run listed; the filter chip also shows the name, so count rows
     const rows = page.locator('a[href^="/tasks/"]')
     await expect(rows).toHaveCount(1)
-    await expect(rows.first().locator('p').first()).toHaveText('app.add')
+    await expect(rows.first().locator('[title="app.add"]')).toHaveText('app.add')
     await expect(page.getByText('app.add_numbers')).toHaveCount(0)
     await expect(page.getByText('other.app.add')).toHaveCount(0)
   })

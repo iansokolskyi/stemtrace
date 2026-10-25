@@ -43,6 +43,30 @@ export function parseDateParam(str: string | undefined): Date | undefined {
   return date
 }
 
+/** A span as `120ms`, `1.5s`, `42s`, `3m 5s` or `1h 20m`; empty when unknown. */
+export function formatSpan(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return ''
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  const totalSeconds = Math.round(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+/** How long ago a timestamp was: `just now`, `5m ago`, `3h ago`, else the date; empty if none. */
+export function formatAgo(timestamp: string | null): string {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  const diff = Date.now() - date.getTime()
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return date.toLocaleDateString()
+}
+
 /** A URL date filter if it is a real YYYY-MM-DD date, else undefined. */
 export function dateSearchParam(value: unknown): string | undefined {
   return typeof value === 'string' && parseDateParam(value) ? value : undefined

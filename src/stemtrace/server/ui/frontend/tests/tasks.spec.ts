@@ -147,8 +147,8 @@ test.describe('Tasks Page - Mock Scenarios', () => {
     await expect(taskName).toBeVisible()
 
     // Should show FAILURE state badge (use locator to find badge near task)
-    // The badge has class 'task-state-badge' and contains FAILURE text
-    const failureBadge = page.locator('.task-state-badge:has-text("FAILURE")')
+    // The state chip carries the state in data-state and shows the word "Failure"
+    const failureBadge = page.locator('[data-state="FAILURE"]')
     await expect(failureBadge).toBeVisible()
   })
 })

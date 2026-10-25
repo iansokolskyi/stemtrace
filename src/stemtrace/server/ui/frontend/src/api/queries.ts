@@ -8,8 +8,11 @@
 import { type InfiniteData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
 import {
+  type ExecutionListResponse,
+  type FetchExecutionsParams,
   type FetchGraphsParams,
   type FetchTasksParams,
+  fetchExecutions,
   fetchGraph,
   fetchGraphs,
   fetchHealth,
@@ -42,29 +45,28 @@ export function useTasks(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
   })
 }
 
-export function useTasksInfinite(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
+/** Rows per Executions page (the API allows 500). */
+export const EXECUTIONS_PAGE_SIZE = 200
+
+/** The Executions list, a page of 200 at a time. A refetch (an event, or the poll while the socket is down) reloads every page loaded so far. */
+export function useExecutions(params: FetchExecutionsParams) {
   const { isConnected } = useWebSocketContext()
 
   return useInfiniteQuery<
-    TaskListResponse,
+    ExecutionListResponse,
     Error,
-    InfiniteData<TaskListResponse>,
+    InfiniteData<ExecutionListResponse>,
     unknown[],
     number
   >({
-    queryKey: ['tasks-infinite', params],
-    queryFn: ({ pageParam }) =>
-      fetchTasks({
-        ...params,
-        limit: PAGE_SIZE,
-        offset: pageParam,
-      }),
+    queryKey: ['executions', params],
+    queryFn: ({ pageParam }) => fetchExecutions(params, EXECUTIONS_PAGE_SIZE, pageParam),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {
       const nextOffset = lastPage.offset + lastPage.limit
       return nextOffset < lastPage.total ? nextOffset : undefined
     },
-    // Only poll first page when WS is disconnected
+    // Only poll when WebSocket is disconnected
     refetchInterval: isConnected ? false : POLL_INTERVAL,
   })
 }

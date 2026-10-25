@@ -190,6 +190,15 @@ export async function setupMockApi(
     first_seen: t.first_seen,
     last_updated: t.last_updated,
     duration_ms: t.duration_ms,
+    // Optional fields are sent as the real API sends them: always present, null when unknown
+    // (Pydantic's None), so "the column has no value anywhere" means null, not a missing key.
+    exception_type: t.exception_type ?? null,
+    hostname: t.hostname ?? null,
+    queue: t.queue ?? null,
+    task_group: t.task_group ?? null,
+    tags: t.tags ?? [],
+    queue_wait_ms: t.queue_wait_ms ?? null,
+    runtime_ms: t.runtime_ms ?? null,
   })
 
   // Health endpoint (use regex like other routes)
@@ -320,8 +329,13 @@ export async function setupMockApi(
     const nameExact = url.searchParams.get('name_exact')
     const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const offset = Number.parseInt(url.searchParams.get('offset') || '0', 10)
+    // compact=1 leaves out each task's events (`events: null`), as the real API does
+    const compact = ['1', 'true'].includes(url.searchParams.get('compact') ?? '')
 
-    let filtered = [...tasks]
+    // The real API lists the most recently updated first (store.list_nodes sorts by
+    // last_updated, newest first); a task without one sorts last. Array.sort is stable.
+    const updatedAt = (t: MockTask) => (t.last_updated ? Date.parse(t.last_updated) : 0)
+    let filtered = [...tasks].sort((a, b) => updatedAt(b) - updatedAt(a))
 
     if (state) {
       filtered = filtered.filter((t) => t.state === state)
@@ -339,7 +353,9 @@ export async function setupMockApi(
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        tasks: paginated.map(serializeTask),
+        tasks: paginated.map((t) =>
+          compact ? { ...serializeTask(t), events: null } : serializeTask(t),
+        ),
         total: filtered.length,
         limit,
         offset,
