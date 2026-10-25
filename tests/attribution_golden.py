@@ -10,7 +10,7 @@ are attributed to runs must leave every one of them unchanged.
 Variants: the captured order; seeded shuffles; each single event dropped (a
 seeded sample of 40 in flows over 100 events); a
 seeded clock offset per task; seeded worker nodenames (the captures have none,
-so the per-worker run pairing would otherwise go unexercised). The expected
+so the per-worker run pairing would otherwise go unexercised); synthetic\ninputs no flow has (a late retry PENDING, a STARTED without a worker, a late\nIGNORED). The expected
 values are main's own output, not ground truth: this guards equivalence only.
 
 Regenerate (only when a behavior change is intended): ``uv run python -m
@@ -81,6 +81,33 @@ def _hosts(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
     return stamped
 
 
+def _synthetic(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
+    # Inputs no recorded flow has, so the rules for them are pinned too: a
+    # retry's PENDING stamped after its STARTED (an older sender), a STARTED
+    # without a worker before a stamped end (a mid-upgrade fleet) and an
+    # IGNORED after another terminal (a replaced task's).
+    out: list[TaskEvent] = []
+    for e in events:
+        if (
+            e.state == TaskState.STARTED
+            and e.hostname is not None
+            and rng.random() < 0.3
+        ):
+            e = e.model_copy(update={"hostname": None})
+        out.append(e)
+        later = e.timestamp + timedelta(milliseconds=5)
+        if e.state == TaskState.STARTED and e.retries > 0:
+            out.append(
+                e.model_copy(update={"state": TaskState.PENDING, "timestamp": later})
+            )
+        if e.state in (TaskState.SUCCESS, TaskState.FAILURE) and rng.random() < 0.3:
+            out.append(
+                e.model_copy(update={"state": TaskState.IGNORED, "timestamp": later})
+            )
+    rng.shuffle(out)
+    return out
+
+
 def variants(raw: list[dict[str, Any]]) -> Iterator[tuple[str, list[TaskEvent]]]:
     """(variant name, events in arrival order) for one flow."""
     events = [TaskEvent.model_validate(e) for e in raw]
@@ -103,6 +130,7 @@ def variants(raw: list[dict[str, Any]]) -> Iterator[tuple[str, list[TaskEvent]]]
     rng.shuffle(order)
     yield "hosts_shuffle", order
     yield "hosts_offsets", _offsets(hosted, rng)
+    yield "synthetic", _synthetic(hosted, rng)
 
 
 def _iso(value: Any) -> Any:
