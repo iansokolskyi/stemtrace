@@ -98,7 +98,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
               return events.some((event) => detailAffectedBy(key, query.state.data, event))
             },
           }),
-          queryClient.invalidateQueries({ queryKey: ['tasks-infinite'] }),
+          queryClient.invalidateQueries({ queryKey: ['executions'] }),
           queryClient.invalidateQueries({ queryKey: ['graphs'] }),
           queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] }),
         ])

@@ -276,6 +276,17 @@ export interface FetchTasksParams {
   to_date?: string
 }
 
+/** The filters of the Executions list; paging and `compact` are fixed by `fetchExecutions`. */
+export interface FetchExecutionsParams {
+  state?: string
+  /** Substring of the task name (the search box). */
+  name?: string
+  /** The whole task name. */
+  name_exact?: string
+  from_date?: string
+  to_date?: string
+}
+
 export interface FetchGraphsParams {
   limit?: number
   offset?: number
@@ -296,6 +307,28 @@ export async function fetchTasks(params?: FetchTasksParams): Promise<TaskListRes
 
   const url = `${API_BASE}/tasks${searchParams.toString() ? `?${searchParams}` : ''}`
   return apiFetch(url, 'Failed to fetch tasks')
+}
+
+/**
+ * One page of the Executions list: compact (no events per row), so a page of 200 stays small.
+ * `offset` is always sent, 0 included.
+ */
+export async function fetchExecutions(
+  params: FetchExecutionsParams,
+  limit: number,
+  offset: number,
+): Promise<ExecutionListResponse> {
+  const searchParams = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    compact: '1',
+  })
+  if (params.state) searchParams.set('state', params.state)
+  if (params.name) searchParams.set('name', params.name)
+  if (params.name_exact) searchParams.set('name_exact', params.name_exact)
+  if (params.from_date) searchParams.set('from_date', params.from_date)
+  if (params.to_date) searchParams.set('to_date', params.to_date)
+  return apiFetch(`${API_BASE}/tasks?${searchParams}`, 'Failed to fetch tasks')
 }
 
 export async function fetchTask(taskId: string): Promise<TaskDetailResponse> {

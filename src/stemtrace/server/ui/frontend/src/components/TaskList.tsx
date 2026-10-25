@@ -3,7 +3,7 @@
  */
 
 import { Link } from '@tanstack/react-router'
-import { useTasksInfinite } from '@/api/queries'
+import { useExecutions } from '@/api/queries'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { StatusChip } from './StatusChip'
 import { TaskName } from './TaskName'
@@ -19,14 +19,13 @@ interface TaskListProps {
 }
 
 export function TaskList({ filters }: TaskListProps) {
-  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
-    useTasksInfinite({
-      state: filters.state,
-      name: filters.name || undefined,
-      name_exact: filters.name_exact,
-      from_date: filters.from_date,
-      to_date: filters.to_date,
-    })
+  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } = useExecutions({
+    state: filters.state,
+    name: filters.name || undefined,
+    name_exact: filters.name_exact,
+    from_date: filters.from_date,
+    to_date: filters.to_date,
+  })
 
   const { lastElementRef } = useInfiniteScroll({
     hasNextPage,
