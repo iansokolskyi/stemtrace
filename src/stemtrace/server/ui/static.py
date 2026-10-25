@@ -8,9 +8,10 @@ import os
 import re
 import stat
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from stemtrace.server.fastapi.paths import is_misplaced_asset_path, strip_root_path
@@ -182,6 +183,47 @@ def _is_regular_file(path: str) -> bool:
         return False
 
 
+def _redirect_into_api_base(
+    request: Request, root: str, api_base: str
+) -> RedirectResponse | None:
+    """Send a standalone UI page opened outside the router basepath into it.
+
+    The SPA uses ``root + api_base`` as its router basepath. Without a root
+    path the router moves ``/tasks/1`` to ``/stemtrace/tasks/1`` itself, but
+    with one (``/monitoring/tasks/1``) the URL already starts with a foreign
+    prefix and the router shows Not Found, so the move is made here.
+
+    Args:
+        request: The UI page request.
+        root: Sanitized ASGI root_path ("" when none).
+        api_base: Fixed base path of the API (e.g. "/stemtrace").
+
+    Returns:
+        A redirect to ``root + api_base + route path`` (query kept), or None
+        when there is no root path or the URL is already under ``api_base``.
+    """
+    if not root:
+        return None
+    root_path = request.scope.get("root_path") or ""
+    route_path = strip_root_path(request.scope["path"], root_path)
+    if route_path == api_base or route_path.startswith(api_base + "/"):
+        return None
+    # The proxy forwarded the prefix too (it should strip it): redirecting would
+    # prepend it again on every hop, so serve the page and let it show Not Found.
+    if route_path == root or route_path.startswith(root + "/"):
+        return None
+    # Build the target from the undecoded path, so %2F, %3F, %23 and %25 in a
+    # task ID stay escaped (the decoded path would turn them into syntax).
+    raw_path = request.scope.get("raw_path")
+    encoded = raw_path.decode("latin-1") if raw_path else quote(route_path)
+    target = root + api_base + strip_root_path(encoded, root_path)
+    # From the scope: request.url reparses the decoded path, where %3F became "?"
+    query = request.scope.get("query_string", b"").decode("latin-1")
+    if query:
+        target += "?" + query
+    return RedirectResponse(target)
+
+
 def get_static_router(*, show_logout: bool = False) -> APIRouter | None:
     """Create router for UI static files. Returns None if dist/ missing."""
     return get_static_router_with_base(None, show_logout=show_logout)
@@ -224,8 +266,8 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
         name="stemtrace-assets",
     )
 
-    @router.get("/", response_class=HTMLResponse)
-    async def serve_index(request: Request) -> HTMLResponse:
+    @router.get("/", response_class=HTMLResponse, response_model=None)
+    async def serve_index(request: Request) -> HTMLResponse | RedirectResponse:
         """Serve the main index.html page."""
         index_path = _FRONTEND_DIR / "index.html"
         if not index_path.exists():
@@ -235,6 +277,9 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             # Explicit API base: UI at the app root, behind the ASGI root_path
             # (reverse proxy prefix) when there is one.
             root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            redirect = _redirect_into_api_base(request, root, api_base)
+            if redirect is not None:
+                return redirect
             prefix = root + api_base
             asset_prefix = root
             effective_logout = root + logout_path if logout_path else None
@@ -261,7 +306,9 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
         )
 
     @router.get("/{path:path}", response_model=None)
-    async def serve_spa(path: str, request: Request) -> FileResponse | HTMLResponse:
+    async def serve_spa(
+        path: str, request: Request
+    ) -> FileResponse | HTMLResponse | RedirectResponse:
         """Serve static files or fall back to index.html for SPA routing.
 
         Only regular files under the frontend directory are served. Escaping
@@ -285,6 +332,9 @@ def get_static_router_with_base(  # noqa: C901  sanitizer kept next to the HTML 
             # Explicit API base: UI at the app root, behind the ASGI root_path
             # (reverse proxy prefix) when there is one.
             root = _sanitize_derived_prefix(request.scope.get("root_path") or "")
+            redirect = _redirect_into_api_base(request, root, api_base)
+            if redirect is not None:
+                return redirect
             prefix = root + api_base
             asset_prefix = root
             effective_logout = root + logout_path if logout_path else None
