@@ -22,9 +22,10 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
-# Loop work between two turns, in Python call/return events on the loop thread (see
-# _longest_loop_hold). At 30k nodes a sliced turn (2,048 records) takes 8-29k events;
-# the pre-#172 unsliced routes took 110-250k in one turn. The budget sits between.
+# Loop work between two turns, in profile events (Python and C calls and returns) on the
+# loop thread (see _longest_loop_hold). At 30k nodes a sliced turn (2,048 records) takes
+# 8-29k events; the pre-#172 unsliced routes took 110-250k in one turn. The budget sits
+# between.
 MAX_LOOP_WORK = 60_000
 PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
@@ -90,9 +91,10 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
 async def _longest_loop_hold(app: FastAPI, path: str) -> int:
     """Request ``path``; return the most work the loop did between two of its turns.
 
-    Work is the count of Python call and return events on the loop thread, not time:
-    on a CPU-throttled or busy host a stolen or preempted stretch looks like a held
-    loop in wall time, and also in ``time.thread_time`` when the hypervisor steals.
+    Work is the count of profile events (``sys.setprofile``: Python and C calls and
+    returns) on the loop thread, not time: on a CPU-throttled or busy host a stolen or
+    preempted stretch looks like a held loop in wall time, and also in
+    ``time.thread_time`` when the hypervisor steals.
     """
     done = asyncio.Event()
     work = 0
@@ -104,6 +106,7 @@ async def _longest_loop_hold(app: FastAPI, path: str) -> int:
 
     async def probe() -> None:
         nonlocal work, longest
+        previous = sys.getprofile()
         sys.setprofile(count)  # per thread: the loop's, since the probe runs on it
         try:
             work = 0
@@ -112,7 +115,7 @@ async def _longest_loop_hold(app: FastAPI, path: str) -> int:
                 longest = max(longest, work)
                 work = 0
         finally:
-            sys.setprofile(None)
+            sys.setprofile(previous)
 
     probing = asyncio.create_task(probe())
     await asyncio.sleep(0)  # the probe's first turn
