@@ -43,7 +43,7 @@ def test_main_with_every_public_definition_documented_returns_zero(
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("source", "name", "line"),
     [
         ("def f() -> None:\n    pass\n", "f", 1),
         (
@@ -59,9 +59,11 @@ def test_main_with_missing_docstring_reports_it_and_returns_one(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
-    case: tuple[str, str, int],
+    *,
+    source: str,
+    name: str,
+    line: int,
 ) -> None:
-    source, name, line = case
     root, elsewhere = tmp_path / "src", tmp_path / "cwd"
     root.mkdir()
     elsewhere.mkdir()
