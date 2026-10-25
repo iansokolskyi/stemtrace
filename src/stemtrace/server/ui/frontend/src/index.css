@@ -49,7 +49,6 @@ body {
   font: 13px / 1.45 var(--sans);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
 }
 
 :focus-visible {
