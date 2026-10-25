@@ -8,7 +8,9 @@ export interface ExecutionsSearch {
   view?: 'list' | 'timeline'
 }
 
-const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+// The router parses `?name=123` as the number 123: keep it as the text the user typed.
+const str = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined
 
 export function executionsSearch(search: Record<string, unknown>): ExecutionsSearch {
   return {

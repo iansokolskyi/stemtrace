@@ -56,6 +56,19 @@ for (const base of ['', '/stemtrace']) {
       await expect(page.getByText('tasks.add')).toHaveCount(0)
     })
 
+    test('a filter that looks like a number survives the redirect', async ({ page }) => {
+      await setupMockApi(page)
+      const requests: string[] = []
+      page.on('request', (r) => {
+        if (new URL(r.url()).pathname.endsWith('/api/tasks')) requests.push(r.url())
+      })
+      await open(page, '/?name=123&state=FAILURE')
+      await expect(page).toHaveURL(/\/executions\?/)
+      await expect
+        .poll(() => requests.some((u) => new URL(u).searchParams.get('name') === '123'))
+        .toBe(true)
+    })
+
     test('bare / opens Executions', async ({ page }) => {
       await setupMockApi(page)
       await open(page, '/')
