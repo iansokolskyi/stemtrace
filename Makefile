@@ -41,7 +41,7 @@ test-unit:
 # floors (lowest-direct) and the test tools constrained to them. --exclude-newer
 # keeps the resolution reproducible; move the date forward to pick up newer
 # transitive releases. CI runs lowest-pins-check, so edit floors here, not by hand.
-LOWEST_EXCLUDE_NEWER := 2026-10-12T00:00:00Z
+LOWEST_EXCLUDE_NEWER := 2026-10-22T00:00:00Z
 LOWEST_COMPILE := uv pip compile -q --python-version 3.10 --exclude-newer $(LOWEST_EXCLUDE_NEWER) \
 	--generate-hashes --no-annotate --custom-compile-command "make lowest-pins"
 
