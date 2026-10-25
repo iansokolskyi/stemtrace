@@ -12,10 +12,19 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   const sidebarRef = useRef<HTMLElement>(null)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
-  const closeDrawer = useCallback((restoreFocus: boolean) => {
+  const restoreFocus = useRef(false)
+
+  const closeDrawer = useCallback((refocus: boolean) => {
+    restoreFocus.current = refocus
     setDrawerOpen(false)
-    if (restoreFocus) menuButtonRef.current?.focus()
   }, [])
+
+  // Focus the menu button only once the page behind the drawer is no longer inert.
+  useEffect(() => {
+    if (drawerOpen || !restoreFocus.current) return
+    restoreFocus.current = false
+    menuButtonRef.current?.focus()
+  }, [drawerOpen])
 
   // Navigating, or widening past the breakpoint, closes the drawer.
   // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is the trigger, not an input
@@ -46,7 +55,8 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
           onClick={() => closeDrawer(true)}
         />
       )}
-      <div className="min-w-0">
+      {/* While the drawer is open the page behind it is out of reach (focus and clicks). */}
+      <div className="min-w-0" data-frame-page inert={isDrawer && drawerOpen}>
         <TopStrip
           isDrawer={isDrawer}
           drawerOpen={drawerOpen}

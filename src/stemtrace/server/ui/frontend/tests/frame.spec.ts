@@ -289,6 +289,21 @@ test.describe('Sidebar', () => {
     await expect(sidebar(page)).not.toBeInViewport()
   })
 
+  test('the open drawer keeps Tab off the page behind it', async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 })
+    await setupMockApi(page)
+    await page.goto('/workers')
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    await expect(sidebar(page)).toBeInViewport({ ratio: 1 })
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press('Tab')
+      const behind = await page.evaluate(
+        () => document.activeElement?.closest('[data-frame-page]') !== null,
+      )
+      expect(behind, `Tab ${i + 1} focused the page behind the drawer`).toBe(false)
+    }
+  })
+
   test('no Google Fonts request and Overpass is loaded', async ({ page }) => {
     const fontCdn: string[] = []
     page.on('request', (r) => {
