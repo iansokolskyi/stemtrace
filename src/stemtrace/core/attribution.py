@@ -5,6 +5,8 @@ node's events, which event decides its state, how events pair into runs, which
 events are the task's own first attempt (ETA, queue wait), and which event
 describes it (worker, queue, routing key, exception). ``TaskNode`` and
 ``TaskGraph`` in ``core.graph`` delegate here.
+
+Internal: not part of stemtrace's public API; names may change without notice.
 """
 
 import hashlib
@@ -20,10 +22,8 @@ __all__ = [
     "EventKey",
     "eta",
     "event_key",
-    "first_eta",
     "is_pre_start",
     "latest",
-    "own_first_attempt",
     "precedence",
     "queue_wait_ms",
     "run_times",
@@ -108,7 +108,7 @@ def is_pre_start(event: TaskEvent) -> bool:
     return event.retries == 0 and event.state in _PRE_START
 
 
-def first_eta(events: list[TaskEvent]) -> datetime | None:
+def _first_eta(events: list[TaskEvent]) -> datetime | None:
     """The ETA the first of ``events`` that carries one reports (they share one message).
 
     Args:
@@ -252,7 +252,7 @@ def latest(
     return value(max(found, key=precedence)) if found else None
 
 
-def own_first_attempt(
+def _own_first_attempt(
     events: list[TaskEvent], reported_parent_id: str | None
 ) -> list[TaskEvent]:
     """The task's own first-attempt events, without a ``task.replace()`` replacement's.
@@ -304,7 +304,7 @@ def eta(events: list[TaskEvent], reported_parent_id: str | None) -> datetime | N
     Returns:
         The first attempt's ETA, or None.
     """
-    return first_eta(own_first_attempt(events, reported_parent_id))
+    return _first_eta(_own_first_attempt(events, reported_parent_id))
 
 
 def queue_wait_ms(
@@ -324,12 +324,12 @@ def queue_wait_ms(
     Returns:
         The wait in milliseconds, or None while it is unknown.
     """
-    own = own_first_attempt(events, reported_parent_id)
+    own = _own_first_attempt(events, reported_parent_id)
     sent = [e.timestamp for e in own if is_pre_start(e)]
     started = [e.timestamp for e in own if e.state == TaskState.STARTED]
     if not sent or not started:
         return None
-    first_attempt_eta = first_eta(own)
+    first_attempt_eta = _first_eta(own)
     wait_from = (
         min(sent) if first_attempt_eta is None else max(min(sent), first_attempt_eta)
     )

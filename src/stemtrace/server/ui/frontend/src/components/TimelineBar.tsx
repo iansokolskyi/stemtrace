@@ -17,7 +17,7 @@ const stateColors: Record<string, string> = {
 const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED', 'IGNORED'])
 
 // Fixed state order for exact timestamp ties. Matches the server's
-// _STATE_ORDER (stemtrace/core/graph.py), so the UI agrees with the API order.
+// _STATE_ORDER (stemtrace/core/attribution.py), so the UI agrees with the API order.
 const STATE_PRIORITY: Record<string, number> = {
   PENDING: 0,
   RECEIVED: 1,
