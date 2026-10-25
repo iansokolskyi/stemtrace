@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-25
+
 **Highlights:**
 - Maintenance release with no change in runtime behavior. The rules that decide which run, attempt and worker each task event belongs to (event order, state, runtimes, ETA, queue wait, and the worker, queue and exception shown) now live in one internal module, checked against a golden snapshot of every recorded workflow.
 
 **Upgrading:** nothing to do; workers and server can be upgraded in either order. On Python 3.10, the `dev` extra no longer installs `pre-commit` (see Security).
+
+### Security
+- Development and CI dependency pins move past published advisories: `virtualenv` 21.14.13 and `filelock` 4.2.4 in the development lock (the `dev` extra now installs `pre-commit` only on Python 3.11 or later, because no fixed `filelock` supports 3.10), and `certifi` 2026.10.19 and `setuptools` 84.2.1 in the lowest-dependency test pins. These pins aren't used by the installed package or the Docker image, whose own dependencies, `certifi` included, are unchanged.
 
 ## [0.4.3] - 2026-10-25
 
@@ -368,7 +373,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
