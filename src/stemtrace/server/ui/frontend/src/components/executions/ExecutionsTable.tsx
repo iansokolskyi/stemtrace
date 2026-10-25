@@ -157,7 +157,7 @@ function TableBox({
     count: rows.length,
     getScrollElement: () => boxRef.current,
     estimateSize: () => rowHeight,
-    getItemKey: (index) => rows[index].task_id,
+    getItemKey: (index) => rows[index].row.task_id,
     overscan: 8,
   })
   // A new density changes every row's height
@@ -218,13 +218,18 @@ function TableBox({
           </div>
           <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
             {items.map((item) => {
-              const row = rows[item.index]
+              const { row, departed } = rows[item.index]
               return (
                 <Link
                   key={item.key}
                   to="/tasks/$taskId"
                   params={{ taskId: row.task_id }}
-                  className="absolute left-0 grid w-full items-center border-b border-rule text-xs text-ink hover:bg-hover"
+                  data-departed={departed || undefined}
+                  title={departed ? 'No longer matches this view' : undefined}
+                  className={clsx(
+                    'absolute left-0 grid w-full items-center border-b border-rule text-xs text-ink hover:bg-hover',
+                    departed && 'opacity-55',
+                  )}
                   style={{
                     gridTemplateColumns: template,
                     height: item.size,
@@ -234,6 +239,7 @@ function TableBox({
                   {columns.map((column, index) => (
                     <Cell key={column.id} column={column} row={row} first={index === 0} />
                   ))}
+                  {departed && <span className="sr-only">No longer matches this view</span>}
                 </Link>
               )
             })}

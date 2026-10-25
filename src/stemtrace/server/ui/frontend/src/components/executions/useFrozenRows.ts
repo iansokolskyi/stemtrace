@@ -1,9 +1,15 @@
 import { useCallback, useState } from 'react'
 import type { ExecutionRow } from '@/api/client'
 
+/** A row to draw: `departed` when it left the live list and shows its last known data. */
+export interface ShownRow {
+  row: ExecutionRow
+  departed: boolean
+}
+
 interface FrozenRows {
   /** The rows to draw. */
-  shown: ExecutionRow[]
+  shown: ShownRow[]
   /** Tasks the live list would insert above the rows on screen, held back while frozen. */
   newCount: number
   /** Adopts the live order now (the "N new" button). */
@@ -24,9 +30,12 @@ const updatedAt = (row: ExecutionRow): number =>
  * screen); one updated before that is an older page loading and is appended.
  *
  * While `frozen`, the rows already shown keep their order and position but take the live data (a
- * state, a runtime or a worker changing shows in place). A shown row that left the live list (it
- * no longer matches the filters, or the first page no longer reaches it) is dropped, never kept
- * with stale data. New tasks are counted, not drawn. When `frozen` ends the live order applies.
+ * state, a runtime or a worker changing shows in place). No shown row is ever removed or moved
+ * while frozen, since that would slide the rows below it under the pointer. A shown row that left
+ * the live list (it no longer matches the filters, or the loaded pages no longer reach it) keeps
+ * its slot with its last known data and is flagged `departed`, so it is never passed off as
+ * current; it is current again if the live list brings it back. New tasks are counted, not
+ * drawn. When `frozen` ends the live order applies and departed rows go.
  */
 export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows {
   // The order held while frozen: the live list as of the last unfrozen render, or the last apply
@@ -35,14 +44,15 @@ export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows
   if (!frozen && held !== live) setHeld(live)
   const apply = useCallback(() => setHeld(live), [live])
 
-  if (!frozen) return { shown: live, newCount: 0, apply }
+  if (!frozen) {
+    return { shown: live.map((row) => ({ row, departed: false })), newCount: 0, apply }
+  }
 
   const latest = new Map(live.map((row) => [row.task_id, row]))
-  const shown: ExecutionRow[] = []
-  for (const row of held) {
+  const shown: ShownRow[] = held.map((row) => {
     const current = latest.get(row.task_id)
-    if (current) shown.push(current)
-  }
+    return current ? { row: current, departed: false } : { row, departed: true }
+  })
   const heldIds = new Set(held.map((row) => row.task_id))
   // The oldest update the reader was shown; with nothing held, every row is the first load
   const floor = held.length ? Math.min(...held.map(updatedAt)) : Number.NEGATIVE_INFINITY
@@ -51,7 +61,7 @@ export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows
   for (const row of live) {
     if (heldIds.has(row.task_id)) continue
     if (updatedAt(row) > floor) newCount++
-    else shown.push(row)
+    else shown.push({ row, departed: false })
   }
   return { shown, newCount, apply }
 }

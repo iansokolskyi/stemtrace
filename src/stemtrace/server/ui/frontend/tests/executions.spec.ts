@@ -569,7 +569,7 @@ test.describe('Live updates under the cursor', () => {
 
   for (const position of [0, 2, 5]) {
     for (const arrivals of [1, 3]) {
-      test(`in a filtered list, the task at row ${position} finishing leaves the list and ${arrivals} new are counted`, async ({
+      test(`in a filtered list, the task at row ${position} finishing leaves the list, keeps its slot marked, and ${arrivals} new are counted`, async ({
         page,
       }) => {
         const api = await setupMockApi(page, { useDefaults: false })
@@ -592,11 +592,142 @@ test.describe('Live updates under the cursor', () => {
         send(socket(), added[0])
 
         await expect(newButton(page, arrivals)).toBeVisible()
-        // The finished task is gone, not left showing "Running"; the others keep their order
-        await expect(rows(page)).toHaveCount(5)
-        await expect(names(page)).toHaveText(before.filter((_, i) => i !== position))
+        // The finished task keeps its slot but is marked, not left passing as "Running"; the
+        // others keep their order (the departed rows' own tests are below)
+        await expect(rows(page)).toHaveCount(6)
+        await expect(rows(page).nth(position)).toHaveAttribute('data-departed', 'true')
+        await expect(names(page)).toHaveText(before)
         await expect(page.getByText('fresh_0', { exact: true })).toHaveCount(0)
       })
     }
   }
+
+  // A shown row that leaves the live list keeps its slot while frozen: dropping it would move
+  // every row below it up, under the pointer. It is marked as no longer current instead, and
+  // goes only when the freeze releases.
+
+  const departed = (page: Page) => page.locator('[data-departed]')
+  /** The task page a point of the screen would open: what the pointer is over. */
+  const hrefAt = (page: Page, x: number, y: number) =>
+    page.evaluate(
+      ([px, py]) => document.elementFromPoint(px, py)?.closest('a')?.getAttribute('href') ?? null,
+      [x, y],
+    )
+
+  for (const leaver of [0, 3, 5]) {
+    const where = leaver < 3 ? 'above' : leaver === 3 ? 'under' : 'below'
+    test(`a filtered task ${where} the pointer finishing keeps every slot and is marked, then goes on release`, async ({
+      page,
+    }) => {
+      const api = await setupMockApi(page, { useDefaults: false })
+      const tasks = manyTasks(6, () => ({ state: 'STARTED' }))
+      api.addTasks(tasks)
+      const socket = await liveSocket(page)
+      await page.goto('/executions?state=STARTED')
+      await expect(page.getByText('Live', { exact: true })).toBeVisible()
+      await expect(rows(page)).toHaveCount(6)
+      const before = await names(page).allTextContents()
+
+      const target = rows(page).nth(3)
+      await target.hover()
+      const box = await target.boundingBox()
+      const x = (box?.x ?? 0) + (box?.width ?? 0) / 2
+      const y = (box?.y ?? 0) + (box?.height ?? 0) / 2
+      expect(await hrefAt(page, x, y)).toBe(`/tasks/${tasks[3].task_id}`)
+
+      tasks[leaver].state = 'SUCCESS'
+      tasks[leaver].last_updated = '2026-10-17T14:00:00.000Z'
+      const refetched = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/tasks')
+      send(socket(), tasks[leaver])
+      await refetched
+      // Let React draw the answer
+      await page.evaluate(
+        () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+      )
+
+      // Nothing moved: the pointer is over the same task, in the same place
+      expect(await hrefAt(page, x, y)).toBe(`/tasks/${tasks[3].task_id}`)
+      expect(await target.boundingBox()).toEqual(box)
+
+      // The task left the list, and is still in its slot, marked, with its last known state
+      const gone = rows(page).nth(leaver)
+      await expect(gone).toHaveAttribute('data-departed', 'true')
+      await expect(departed(page)).toHaveCount(1)
+      await expect(gone.locator('[data-state="STARTED"]')).toBeVisible()
+      await expect(gone).toContainText('No longer matches this view')
+      // Nothing moved: same rows in the same order, the pointer is over the same task
+      await expect(rows(page)).toHaveCount(6)
+      await expect(names(page)).toHaveText(before)
+      expect(await target.boundingBox()).toEqual(box)
+      expect(await hrefAt(page, x, y)).toBe(`/tasks/${tasks[3].task_id}`)
+
+      // The pointer leaves with the table at its top: the live list applies, the task is gone
+      await page.mouse.move(0, 0)
+      await expect(rows(page)).toHaveCount(5)
+      await expect(departed(page)).toHaveCount(0)
+      await expect(names(page)).toHaveText(before.filter((_, i) => i !== leaver))
+    })
+  }
+
+  test('"N new" also releases a departed row', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    const tasks = manyTasks(6, () => ({ state: 'STARTED' }))
+    api.addTasks(tasks)
+    const socket = await liveSocket(page)
+    await page.goto('/executions?state=STARTED')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rows(page)).toHaveCount(6)
+    await rows(page).nth(3).hover()
+
+    tasks[0].state = 'SUCCESS'
+    tasks[0].last_updated = '2026-10-17T14:00:00.000Z'
+    const added = arrival('app.jobs.fresh_0', 0, { state: 'STARTED' })
+    api.addTask(added)
+    send(socket(), added)
+    await expect(newButton(page, 1)).toBeVisible()
+    await expect(departed(page)).toHaveCount(1)
+
+    await newButton(page, 1).click()
+    await expect(departed(page)).toHaveCount(0)
+    await expect(rows(page)).toHaveCount(6)
+    await expect(names(page).first()).toHaveText('fresh_0')
+  })
+
+  test('rows pushed out of the first page keep their slots, and are current again when their page loads', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(250))
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(page.getByText(/Showing 200 of 250 tasks/)).toBeVisible()
+
+    const target = rows(page).nth(3)
+    await target.hover()
+    const box = await target.boundingBox()
+    const x = (box?.x ?? 0) + (box?.width ?? 0) / 2
+    const y = (box?.y ?? 0) + (box?.height ?? 0) / 2
+    const hovered = await hrefAt(page, x, y)
+
+    // Three new tasks push the last three rows of page 1 out of what the server returns
+    const added = Array.from({ length: 3 }, (_, i) => arrival(`app.jobs.fresh_${i}`, i))
+    api.addTasks(added)
+    send(socket(), added[0])
+    await expect(newButton(page, 3)).toBeVisible()
+
+    // All 200 slots are kept (nothing slid up), and the pointer is over the same task
+    await expect(page.getByText(/Showing 200 of 253 tasks/)).toBeVisible()
+    expect(await target.boundingBox()).toEqual(box)
+    expect(await hrefAt(page, x, y)).toBe(hovered)
+
+    // At the bottom: the three are marked, not shown as current
+    await page.mouse.move(0, 0)
+    await scrollBox(page).evaluate((el) => {
+      el.scrollTop = el.scrollHeight
+    })
+    // (the next page is loading by now; the rows it brings back are current in the same slots)
+    await expect(page.getByText(/Showing 253 of 253 tasks|Showing 250 of 253 tasks/)).toBeVisible()
+    await expect(departed(page)).toHaveCount(0)
+  })
 })
