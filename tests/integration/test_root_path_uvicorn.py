@@ -173,10 +173,13 @@ def test_cli_login_flow_behind_root_path(
             data={"username": "admin", "password": "secret"},  # NOSONAR - test only
         )
         cookie = login.cookies.get("stemtrace_session")
-        shell = client.get(
-            "/workers", headers={"cookie": f"stemtrace_session={cookie}"}
-        )
+        session = {"cookie": f"stemtrace_session={cookie}"}
+        outside_base = client.get("/workers", headers=session)
+        shell = client.get("/stemtrace/workers", headers=session)
 
+    # A page URL outside the router basepath moves into it, with the prefix.
+    assert outside_base.status_code == 307
+    assert outside_base.headers["location"] == "/proxy/stemtrace/workers"
     assert shell.status_code == 200
     assert 'src="/proxy/assets/index-abc123.js"' in shell.text
     assert 'window.__STEMTRACE_BASE__="/proxy/stemtrace"' in shell.text

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -1004,3 +1005,94 @@ class TestContainedFrontendPath:
             result = _contained_frontend_path("favicon.svg")
 
         assert result == str(Path(os.path.realpath(dist_dir)) / "favicon.svg")
+
+
+_BASE_RE = re.compile(r'window\.__STEMTRACE_BASE__="([^"]*)"')
+
+
+def _landing_dist(tmp_path: Path) -> Path:
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text(
+        '<html><head></head><body><script src="/assets/i.js"></script></body></html>'
+    )
+    (dist_dir / "assets" / "i.js").write_text("console.log('ui')")
+    return dist_dir
+
+
+def _land(client: TestClient, root: str, route_path: str) -> tuple[str, str]:
+    """Open ``root + route_path`` like a browser; return (final URL, page base).
+
+    Follows redirects by hand: a ``Location`` is a browser URL, so the root
+    path is removed before handing it back to the app, which sees route paths.
+    """
+    url = root + route_path
+    for _ in range(3):
+        route = url[len(root) :] if root else url
+        response = client.get(route, follow_redirects=False)
+        if response.status_code in (301, 302, 303, 307, 308):
+            url = response.headers["location"]
+            continue
+        assert response.status_code == 200
+        match = _BASE_RE.search(response.text)
+        assert match is not None
+        return url, match.group(1)
+    raise AssertionError(f"redirect loop at {url}")
+
+
+class TestLandingUnderRootPath:
+    """Every landing URL ends on a URL inside the page's router basepath.
+
+    The SPA uses ``window.__STEMTRACE_BASE__`` as its router basepath, so a
+    page opened outside that base renders the router's Not Found page.
+    """
+
+    @pytest.mark.parametrize("root", ["/monitoring", "/a/b"])
+    @pytest.mark.parametrize(
+        "route_path",
+        ["/", "/stemtrace/", "/tasks/abc-123", "/stemtrace/tasks/abc-123"],
+    )
+    def test_standalone_landing_under_root_path_lands_inside_base(
+        self, tmp_path: Path, root: str, route_path: str
+    ) -> None:
+        """Standalone UI behind a stripping proxy: final URL is under the base."""
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", _landing_dist(tmp_path)):
+            router = get_static_router_with_base("/stemtrace")
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router)
+            final, base = _land(TestClient(app, root_path=root), root, route_path)
+
+        assert base == f"{root}/stemtrace"
+        assert final == base or final.startswith(base + "/")
+
+    @pytest.mark.parametrize("route_path", ["/", "/tasks/abc-123"])
+    def test_standalone_landing_without_root_path_keeps_serving_in_place(
+        self, tmp_path: Path, route_path: str
+    ) -> None:
+        """Without a root path the shell is served in place (no redirect)."""
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", _landing_dist(tmp_path)):
+            router = get_static_router_with_base("/stemtrace")
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router)
+            final, base = _land(TestClient(app), "", route_path)
+
+        assert final == route_path
+        assert base == "/stemtrace"
+
+    @pytest.mark.parametrize("root", ["", "/monitoring", "/a/b"])
+    @pytest.mark.parametrize("route_path", ["/stemtrace/", "/stemtrace/tasks/abc-123"])
+    def test_embedded_landing_lands_inside_base(
+        self, tmp_path: Path, root: str, route_path: str
+    ) -> None:
+        """Embedded at /stemtrace: base is root + mount and the URL is inside it."""
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", _landing_dist(tmp_path)):
+            router = get_static_router()
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router, prefix="/stemtrace")
+            final, base = _land(TestClient(app, root_path=root), root, route_path)
+
+        assert final == root + route_path
+        assert base == f"{root}/stemtrace"
