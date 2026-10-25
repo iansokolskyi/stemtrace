@@ -7,8 +7,8 @@ stalled WebSocket pushes and anything else sharing the loop.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -22,11 +22,10 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
-MAX_LOOP_LAG_S = 0.020
-# The overview is two cheap passes: unsliced, 30k nodes hold the loop 13-15 ms
-# (sliced: 2-3 ms), under MAX_LOOP_LAG_S, so it gets a tighter bound to guard the route.
-OVERVIEW_MAX_LOOP_LAG_S = 0.007
-LOOP_LAG_RUNS = 3
+# Loop work between two turns, in Python call/return events on the loop thread (see
+# _longest_loop_hold). At 30k nodes a sliced turn (2,048 records) takes 8-29k events;
+# the pre-#172 unsliced routes took 110-250k in one turn. The budget sits between.
+MAX_LOOP_WORK = 60_000
 PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
@@ -88,19 +87,32 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-async def _longest_loop_hold(app: FastAPI, path: str) -> float:
-    """Request ``path`` and return the longest stretch the loop went without a turn."""
+async def _longest_loop_hold(app: FastAPI, path: str) -> int:
+    """Request ``path``; return the most work the loop did between two of its turns.
+
+    Work is the count of Python call and return events on the loop thread, not time:
+    on a CPU-throttled or busy host a stolen or preempted stretch looks like a held
+    loop in wall time, and also in ``time.thread_time`` when the hypervisor steals.
+    """
     done = asyncio.Event()
-    longest = 0.0
+    work = 0
+    longest = 0
+
+    def count(frame: object, event: str, arg: object) -> None:
+        nonlocal work
+        work += 1
 
     async def probe() -> None:
-        nonlocal longest
-        last = time.perf_counter()
-        while not done.is_set():
-            await asyncio.sleep(0)
-            now = time.perf_counter()
-            longest = max(longest, now - last)
-            last = now
+        nonlocal work, longest
+        sys.setprofile(count)  # per thread: the loop's, since the probe runs on it
+        try:
+            work = 0
+            while not done.is_set():
+                await asyncio.sleep(0)
+                longest = max(longest, work)
+                work = 0
+        finally:
+            sys.setprofile(None)
 
     probing = asyncio.create_task(probe())
     await asyncio.sleep(0)  # the probe's first turn
@@ -119,17 +131,13 @@ async def _longest_loop_hold(app: FastAPI, path: str) -> float:
 async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
     path: str, shape: str, big_stores: dict[str, GraphStore]
 ) -> None:
-    """The longest stretch the loop is held, while the request runs, stays short."""
+    """The most work the loop does between two of its turns stays bounded."""
     app = _app(_big_store(big_stores, shape))
     # The first request builds the app's middleware stack (about 70 ms): not ours.
     assert (await _get(app, "/api/health")).status_code == 200
-    # A loop held by the aggregation shows in every run; a preempted CPU (parallel
-    # test workers) inflates one run, so the best of a few is the signal.
-    holds = [await _longest_loop_hold(app, path) for _ in range(LOOP_LAG_RUNS)]
-    longest = min(holds)
-    budget = OVERVIEW_MAX_LOOP_LAG_S if "/overview" in path else MAX_LOOP_LAG_S
-    assert longest <= budget, (
-        f"loop held for {longest * 1000:.1f} ms (max {budget * 1000:.0f})"
+    longest = await _longest_loop_hold(app, path)
+    assert longest <= MAX_LOOP_WORK, (
+        f"loop did {longest} events between turns (max {MAX_LOOP_WORK})"
     )
 
 
