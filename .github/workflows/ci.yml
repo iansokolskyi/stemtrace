@@ -2,7 +2,8 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # redesign: integration branch for the UI redesign until it merges to main as one release
+    branches: [main, redesign]
   push:
     branches: [main]
   workflow_dispatch:
