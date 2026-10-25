@@ -25,7 +25,7 @@ const isRealMode = process.env.E2E_MODE === 'real'
  * for the node to be in the DOM, as the counts that follow do, not visible.
  */
 async function openGraphById(page: import('@playwright/test').Page, rootId: string): Promise<void> {
-  await page.goto(`/graph/${encodeURIComponent(rootId)}`)
+  await page.goto(`/flows/${encodeURIComponent(rootId)}`)
   await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
 }
 
@@ -38,9 +38,9 @@ async function openGraphById(page: import('@playwright/test').Page, rootId: stri
  * the wait times out and the test fails instead of silently skipping.
  */
 async function navigateToFirstGraph(page: import('@playwright/test').Page): Promise<boolean> {
-  await page.goto('/graphs')
+  await page.goto('/flows')
 
-  const graphLink = page.locator('a[href*="/graph/"]').first()
+  const graphLink = page.locator('a[href*="/flows/"]').first()
   const emptyState = page.getByText('No task graphs yet')
   await expect(graphLink.or(emptyState)).toBeVisible({ timeout: 15_000 })
 
@@ -116,7 +116,7 @@ async function openGraph(
     throw new Error(`No graph with ${wanted}; found: ${found || 'none'}`)
   }
 
-  // Open the graph by its route instead of finding its link: the /graphs list shows
+  // Open the graph by its route instead of finding its link: the /flows list shows
   // one page, and on a reused stack the match can be on a later one. Navigating
   // from the list is covered by "can navigate to graph detail".
   await openGraphById(page, match.task_id)
@@ -130,7 +130,7 @@ test.describe('Graphs Page', () => {
   })
 
   test('displays graphs list', async ({ page }) => {
-    await page.goto('/graphs')
+    await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
     // Page should load without errors
@@ -139,12 +139,12 @@ test.describe('Graphs Page', () => {
   })
 
   test('shows graph entries when workflows exist', async ({ page }) => {
-    await page.goto('/graphs')
+    await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
     // Look for graph entries
     const graphEntries = page.locator(
-      '[data-testid="graph-entry"], .graph-entry, a[href*="/graph/"], tr',
+      '[data-testid="graph-entry"], .graph-entry, a[href*="/flows/"], tr',
     )
 
     const count = await graphEntries.count()
@@ -158,7 +158,7 @@ test.describe('Graphs Page', () => {
       test.skip()
       return
     }
-    await expect(page).toHaveURL(/\/graph\/.+/)
+    await expect(page).toHaveURL(/\/flows\/.+/)
   })
 })
 
@@ -535,11 +535,11 @@ test.describe('Graph Page - Mock Scenarios', () => {
     const groupTasks = createGroup(3, { withCallback: false })
     mockApi.addTasks(groupTasks)
 
-    await page.goto('/graphs')
+    await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
     // Should show the group in the list
-    const graphLink = page.locator('a[href*="/graph/"]').first()
+    const graphLink = page.locator('a[href*="/flows/"]').first()
     await expect(graphLink).toBeVisible()
 
     await graphLink.click()
@@ -557,7 +557,7 @@ test.describe('Graph Page - Mock Scenarios', () => {
     const workflowTasks = createWorkflowWithGroup(2)
     mockApi.addTasks(workflowTasks)
 
-    await page.goto('/graphs')
+    await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
     // Find the batch_processor graph
@@ -583,10 +583,10 @@ test.describe('Graph Page - Mock Scenarios', () => {
     const chordTasks = createGroup(3, { withCallback: true })
     mockApi.addTasks(chordTasks)
 
-    await page.goto('/graphs')
+    await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
-    const graphLink = page.locator('a[href*="/graph/"]').first()
+    const graphLink = page.locator('a[href*="/flows/"]').first()
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
@@ -940,6 +940,10 @@ async function settledViewport(page: Page): Promise<string> {
 }
 
 /** The task node a graph draws for `taskId`. */
+// Chromium's intersectionRatio is a float: a fully visible node at a fractional
+// position (the fitted zoom is rarely a whole number) reports 0.9999997, not 1.
+const FULLY_VISIBLE = 0.99
+
 function graphNode(page: Page, taskId: string) {
   return page.locator(`.react-flow__node[data-id="${taskId}"]`)
 }
@@ -980,7 +984,7 @@ test.describe('Graph Page - Live Updates', () => {
 
     await expect(graphNode(page, third.task_id)).toContainText('step_3')
     // Nobody panned or zoomed, so the view re-fits to show the new task
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
     await expect(page.locator('.react-flow__node')).toHaveCount(3)
     await expect(page.locator('.react-flow__edge')).toHaveCount(2)
     await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
@@ -1045,7 +1049,7 @@ test.describe('Graph Page - Live Updates', () => {
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
 
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
   test('shows a new task in view once its size is known, however late that is', async ({
@@ -1111,7 +1115,7 @@ test.describe('Graph Page - Live Updates', () => {
     await page.mouse.up()
     // Released: the node stays where it was dropped, and the view may now re-fit
     expect(await position()).toBe(dragged)
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
   test('keeps the zoom the user chose', async ({ page }) => {

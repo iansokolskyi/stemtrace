@@ -22,6 +22,10 @@ updates:
       # Pinned to ^22: types must match the Node 22 runtime used in CI and Docker
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # Pinned exactly: it must match the Playwright image in ci.yml (ui-mock-e2e) and the
+      # test:visual scripts in package.json. Bump all three together, then regenerate the
+      # visual baselines with npm run test:visual:update.
+      - dependency-name: "@playwright/test"
 
   - package-ecosystem: github-actions
     directory: /

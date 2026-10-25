@@ -1,0 +1,111 @@
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useState } from 'react'
+import { Filters } from '@/components/Filters'
+import { TaskList } from '@/components/TaskList'
+import { TaskTimeline } from '@/components/TaskTimeline'
+import { executionsSearch } from './-search'
+
+export const Route = createFileRoute('/executions')({
+  component: TasksPage,
+  validateSearch: executionsSearch,
+  staticData: { crumb: 'Executions' },
+})
+
+type ViewMode = 'list' | 'timeline'
+
+function TasksPage() {
+  const navigate = useNavigate()
+  const { state, name, name_exact, from_date, to_date, view } = Route.useSearch()
+
+  const [viewMode, setViewMode] = useState<ViewMode>(view ?? 'list')
+  const filters = {
+    state,
+    name: name ?? '',
+    name_exact,
+    from_date,
+    to_date,
+  }
+
+  const setFilters = (newFilters: {
+    state?: string
+    name: string
+    name_exact?: string
+    from_date?: string
+    to_date?: string
+  }) => {
+    navigate({
+      to: '/executions',
+      search: {
+        state: newFilters.state,
+        name: newFilters.name || undefined,
+        name_exact: newFilters.name_exact,
+        from_date: newFilters.from_date,
+        to_date: newFilters.to_date,
+        view: viewMode,
+      },
+      replace: true,
+    })
+  }
+
+  const handleViewModeChange = (mode: ViewMode) => {
+    setViewMode(mode)
+    navigate({
+      to: '/executions',
+      search: {
+        state,
+        name: name || undefined,
+        name_exact,
+        from_date,
+        to_date,
+        view: mode,
+      },
+      replace: true,
+    })
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Page header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">Tasks</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Monitor your Celery task execution in real-time
+          </p>
+        </div>
+
+        {/* View toggle */}
+        <div className="flex items-center gap-2 bg-slate-800 rounded-lg p-1">
+          <button
+            type="button"
+            onClick={() => handleViewModeChange('list')}
+            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+              viewMode === 'list'
+                ? 'bg-slate-700 text-slate-100'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            onClick={() => handleViewModeChange('timeline')}
+            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+              viewMode === 'timeline'
+                ? 'bg-slate-700 text-slate-100'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Timeline
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <Filters filters={filters} onFiltersChange={setFilters} />
+
+      {/* Content */}
+      {viewMode === 'list' ? <TaskList filters={filters} /> : <TaskTimeline filters={filters} />}
+    </div>
+  )
+}

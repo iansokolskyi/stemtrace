@@ -7,36 +7,37 @@ interface SproutMarkProps {
 }
 
 /**
- * The stemtrace "Sprout" mark (dark variant), drawn inline so it needs no
- * network request and works under any mount prefix. Decorative only: the
- * adjacent wordmark carries the accessible name.
+ * The stemtrace Sprout mark as drawn for the Signal box UI: ink stems that fork like the
+ * flow graph's tracks, with two leaves in --sprout. Inline, so it needs no request and works
+ * under any mount prefix. Decorative: the adjacent wordmark carries the accessible name.
  *
- * Source of truth: docs/brand/stemtrace-mark.svg (full-size geometry, stroke 2.6,
- * r=2.6). The favicon copies in index.html and templates/login.html deliberately
- * use thicker strokes (3.2, r=3) for 16px legibility.
+ * The favicon (index.html, templates/login.html) keeps the brand mark from docs/brand/.
  */
-export function SproutMark({ size = 22, className }: SproutMarkProps): ReactElement {
+export function SproutMark({ size = 30, className }: SproutMarkProps): ReactElement {
   return (
     <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 32 32"
+      viewBox="0 0 34 34"
       width={size}
       height={size}
       className={className}
       aria-hidden="true"
       focusable="false"
     >
-      <rect x="1" y="1" width="30" height="30" rx="8" fill="#123A2B" />
-      <path
-        d="M16 26V15M16 15L9.5 8.5M16 15l6.5-6.5"
-        stroke="#46D39A"
-        strokeWidth="2.6"
-        strokeLinecap="round"
+      <g
         fill="none"
-      />
-      <circle cx="16" cy="26" r="2.6" fill="#46D39A" />
-      <circle cx="9" cy="8" r="2.6" fill="#E7ECF2" />
-      <circle cx="23" cy="8" r="2.6" fill="#E7ECF2" />
+        stroke="var(--ink)"
+        strokeWidth="2.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M17 29.5C16.3 25 17.5 20.5 16.8 15.2" />
+        <path d="M16.9 20C13.6 19.2 10.8 16.2 9.9 11" />
+        <path d="M16.9 15.6C19.7 14.6 22.2 12 23.6 7.6" />
+      </g>
+      <g fill="var(--sprout)">
+        <ellipse cx="9.4" cy="8.4" rx="2.3" ry="3.7" transform="rotate(-18 9.4 8.4)" />
+        <ellipse cx="24.1" cy="5.4" rx="2.3" ry="3.7" transform="rotate(20 24.1 5.4)" />
+      </g>
     </svg>
   )
 }

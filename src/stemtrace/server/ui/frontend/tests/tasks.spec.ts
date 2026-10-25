@@ -18,7 +18,7 @@ test.describe('Tasks Page', () => {
       // Set up mock API with default data
       await setupMockApi(page)
     }
-    await page.goto('/')
+    await page.goto('/executions')
   })
 
   test('displays task list', async ({ page }) => {
@@ -81,7 +81,7 @@ test.describe('Tasks Page - State Filtering', () => {
     if (!isRealMode) {
       await setupMockApi(page)
     }
-    await page.goto('/')
+    await page.goto('/executions')
     await page.waitForLoadState('networkidle')
 
     // Look for state filter dropdown
@@ -110,7 +110,7 @@ test.describe('Tasks Page - Mock Scenarios', () => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     expect(mockApi.tasks.length).toBe(0)
 
-    await page.goto('/')
+    await page.goto('/executions')
     await page.waitForLoadState('networkidle')
 
     // Page should load without errors even with no data
@@ -122,7 +122,7 @@ test.describe('Tasks Page - Mock Scenarios', () => {
     const testTask = createSuccessTask('test.my_custom_task', 42)
     mockApi.addTask(testTask)
 
-    await page.goto('/')
+    await page.goto('/executions')
     await page.waitForLoadState('networkidle')
 
     // Should show our custom task
@@ -139,7 +139,7 @@ test.describe('Tasks Page - Mock Scenarios', () => {
     )
     mockApi.addTask(failedTask)
 
-    await page.goto('/')
+    await page.goto('/executions')
     await page.waitForLoadState('networkidle')
 
     // Should show the failed task

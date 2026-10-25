@@ -40,7 +40,7 @@ test.describe('Task names - colliding short names', () => {
     const { root, billing, email } = sendWorkflow()
     mockApi.addTasks([root, billing, email])
 
-    await page.goto(`/graph/${root.task_id}`)
+    await page.goto(`/flows/${root.task_id}`)
     await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
 
     const billingNode = page.locator(`.react-flow__node[data-id="${billing.task_id}"]`)
@@ -85,7 +85,7 @@ test.describe('Task names - colliding short names', () => {
     const { root, billing, email } = sendWorkflow()
     mockApi.addTasks([root, billing, email])
 
-    await page.goto(`/graph/${root.task_id}`)
+    await page.goto(`/flows/${root.task_id}`)
     await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
     await expect(page.getByRole('link', { name: /app\.billing\.send/ })).toHaveCount(1)
     await expect(page.getByRole('link', { name: /app\.email\.send/ })).toHaveCount(1)
