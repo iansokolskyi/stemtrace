@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
-import { DEFAULT_DENSITY } from '@/components/executions/density'
+import { DensityToggle } from '@/components/executions/DensityToggle'
 import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { Filters } from '@/components/Filters'
 import { TaskTimeline } from '@/components/TaskTimeline'
+import { useDensity } from '@/hooks/useDensity'
 import { executionsSearch } from './-search'
 
 export const Route = createFileRoute('/executions')({
@@ -18,6 +19,7 @@ function TasksPage() {
   const navigate = useNavigate()
   const { state, name, name_exact, from_date, to_date, view } = Route.useSearch()
 
+  const [density, setDensity] = useDensity()
   const [viewMode, setViewMode] = useState<ViewMode>(view ?? 'list')
   const filters = {
     state,
@@ -67,38 +69,31 @@ function TasksPage() {
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">Tasks</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Monitor your Celery task execution in real-time
-          </p>
+          <h1 className="text-2xl font-bold text-ink">Tasks</h1>
+          <p className="mt-1 text-sm text-muted">Monitor your Celery task execution in real-time</p>
         </div>
 
-        {/* View toggle */}
-        <div className="flex items-center gap-2 bg-slate-800 rounded-lg p-1">
-          <button
-            type="button"
-            onClick={() => handleViewModeChange('list')}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              viewMode === 'list'
-                ? 'bg-slate-700 text-slate-100'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
+        <div className="flex flex-wrap items-center gap-3">
+          {viewMode === 'list' && <DensityToggle value={density} onChange={setDensity} />}
+          {/* View toggle */}
+          <fieldset
+            aria-label="View"
+            className="m-0 min-w-0 border-0 inline-flex flex-none gap-0.5 rounded-[3px] bg-raised p-0.5"
           >
-            List
-          </button>
-          <button
-            type="button"
-            onClick={() => handleViewModeChange('timeline')}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              viewMode === 'timeline'
-                ? 'bg-slate-700 text-slate-100'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Timeline
-          </button>
+            {(['list', 'timeline'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={viewMode === mode}
+                onClick={() => handleViewModeChange(mode)}
+                className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+              >
+                {mode === 'list' ? 'List' : 'Timeline'}
+              </button>
+            ))}
+          </fieldset>
         </div>
       </div>
 
@@ -115,7 +110,7 @@ function TasksPage() {
             from_date: filters.from_date,
             to_date: filters.to_date,
           }}
-          density={DEFAULT_DENSITY}
+          density={density}
         />
       ) : (
         <TaskTimeline filters={filters} />

@@ -231,3 +231,71 @@ test.describe('Executions table', () => {
     expect(await overflow()).toBeLessThanOrEqual(0)
   })
 })
+
+test.describe('Density toggle', () => {
+  const density = (page: Page, name: 'Compact' | 'Comfortable') =>
+    page.getByRole('group', { name: 'Row density' }).getByRole('button', { name })
+  const rowHeight = async (page: Page) => (await rows(page).first().boundingBox())?.height
+
+  test('rows are comfortable by default and compact on request', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(5))
+    await page.goto('/executions')
+    await expect(rows(page)).toHaveCount(5)
+    await expect(density(page, 'Comfortable')).toHaveAttribute('aria-pressed', 'true')
+    await expect(density(page, 'Compact')).toHaveAttribute('aria-pressed', 'false')
+    expect(await rowHeight(page)).toBe(44)
+
+    await density(page, 'Compact').click()
+    await expect(density(page, 'Compact')).toHaveAttribute('aria-pressed', 'true')
+    expect(await rowHeight(page)).toBe(32)
+    // The rows stay under one another: the second starts where the first ends
+    const [first, second] = await Promise.all([
+      rows(page).nth(0).boundingBox(),
+      rows(page).nth(1).boundingBox(),
+    ])
+    expect((second?.y ?? 0) - (first?.y ?? 0)).toBe(32)
+  })
+
+  test('the choice is kept per viewer in storage, not in the URL, and survives a reload', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(5))
+    await page.goto('/executions')
+    await density(page, 'Compact').click()
+    expect(await page.evaluate(() => localStorage.getItem('stemtrace-density'))).toBe('compact')
+    expect(new URL(page.url()).searchParams.has('density')).toBe(false)
+
+    await page.reload()
+    await expect(density(page, 'Compact')).toHaveAttribute('aria-pressed', 'true')
+    expect(await rowHeight(page)).toBe(32)
+  })
+
+  test('a stored value that is not a density falls back to comfortable', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(5))
+    await page.addInitScript(() => localStorage.setItem('stemtrace-density', 'huge'))
+    await page.goto('/executions')
+    await expect(density(page, 'Comfortable')).toHaveAttribute('aria-pressed', 'true')
+    expect(await rowHeight(page)).toBe(44)
+  })
+
+  test('without usable storage the page works and the toggle still switches', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(5))
+    // Private windows and blocked site data make every access throw
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', {
+        get() {
+          throw new DOMException('denied', 'SecurityError')
+        },
+      })
+    })
+    await page.goto('/executions')
+    await expect(rows(page)).toHaveCount(5)
+    expect(await rowHeight(page)).toBe(44)
+    await density(page, 'Compact').click()
+    expect(await rowHeight(page)).toBe(32)
+  })
+})
