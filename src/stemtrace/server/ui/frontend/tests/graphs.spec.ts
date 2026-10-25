@@ -940,6 +940,10 @@ async function settledViewport(page: Page): Promise<string> {
 }
 
 /** The task node a graph draws for `taskId`. */
+// Chromium's intersectionRatio is a float: a fully visible node at a fractional
+// position (the fitted zoom is rarely a whole number) reports 0.9999997, not 1.
+const FULLY_VISIBLE = 0.99
+
 function graphNode(page: Page, taskId: string) {
   return page.locator(`.react-flow__node[data-id="${taskId}"]`)
 }
@@ -980,7 +984,7 @@ test.describe('Graph Page - Live Updates', () => {
 
     await expect(graphNode(page, third.task_id)).toContainText('step_3')
     // Nobody panned or zoomed, so the view re-fits to show the new task
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
     await expect(page.locator('.react-flow__node')).toHaveCount(3)
     await expect(page.locator('.react-flow__edge')).toHaveCount(2)
     await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
@@ -1045,7 +1049,7 @@ test.describe('Graph Page - Live Updates', () => {
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
 
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
   test('shows a new task in view once its size is known, however late that is', async ({
@@ -1111,7 +1115,7 @@ test.describe('Graph Page - Live Updates', () => {
     await page.mouse.up()
     // Released: the node stays where it was dropped, and the view may now re-fit
     expect(await position()).toBe(dragged)
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 1 })
+    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
   test('keeps the zoom the user chose', async ({ page }) => {
