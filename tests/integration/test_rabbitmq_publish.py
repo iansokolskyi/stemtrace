@@ -185,7 +185,7 @@ class TestRabbitMQPublishFailFastNoBroker:
             real_publish(*args, **kwargs)
 
         monkeypatch.setattr(publisher, "publish", counting_publish)
-        # kombu 5.6.1 retry_over_time calls its module-level ``sleep`` between
+        # kombu 5.6.2 (uv.lock) retry_over_time calls its module-level ``sleep`` between
         # connect attempts; record those calls instead of timing the publish.
         sleeps: list[float] = []
         monkeypatch.setattr(kombu_functional, "sleep", sleeps.append)
