@@ -8,6 +8,7 @@ import { StatusChip } from '../StatusChip'
 import { TaskName } from '../TaskName'
 import { type Column, columnsFor } from './columns'
 import { type Density, ROW_HEIGHT } from './density'
+import { useFrozenRows } from './useFrozenRows'
 
 /** Load the next page when the last visible row is this close to the end of the loaded rows. */
 const LOAD_AHEAD_ROWS = 10
@@ -33,8 +34,10 @@ export function ExecutionsTable({ params, density }: ExecutionsTableProps): Reac
  * the box is as tall as the window allows and scrolls inside, so a long list never makes the
  * page scroll and the virtualiser has a bounded element to measure.
  */
-function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number | undefined {
-  const [height, setHeight] = useState<number | undefined>(undefined)
+function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number {
+  // Bounded from the first render: an unbounded box would show every row, and the virtualiser
+  // would load page after page before the real height is measured
+  const [height, setHeight] = useState(MIN_BOX_HEIGHT)
   useLayoutEffect(() => {
     const measure = () => {
       const box = boxRef.current
@@ -127,7 +130,7 @@ interface TableBoxProps {
 }
 
 function TableBox({
-  rows,
+  rows: liveRows,
   total,
   columns,
   density,
@@ -137,6 +140,17 @@ function TableBox({
 }: TableBoxProps): ReactElement {
   const boxRef = useRef<HTMLDivElement>(null)
   const maxHeight = useBoxMaxHeight(boxRef)
+
+  // While the pointer is over the table, or it is scrolled away from its top, the order the
+  // reader is looking at stays put: updates land in the rows already shown, and tasks that
+  // would be inserted above them wait behind the "N new" button.
+  const [hovered, setHovered] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
+  const { shown: rows, newCount, apply } = useFrozenRows(liveRows, hovered || scrolled)
+  const showNew = () => {
+    apply()
+    boxRef.current?.scrollTo({ top: 0 })
+  }
   const rowHeight = ROW_HEIGHT[density]
 
   const virtualizer = useVirtualizer({
@@ -167,12 +181,25 @@ function TableBox({
         <span>
           Showing {rows.length} of {total} tasks
         </span>
+        {/* The slot is always there, so the button appearing never moves the table */}
+        {newCount > 0 && (
+          <button
+            type="button"
+            onClick={showNew}
+            className="h-6 rounded-[3px] bg-ink px-2.5 text-xs font-semibold text-on-ink"
+          >
+            {newCount} new
+          </button>
+        )}
       </div>
       <div
         ref={boxRef}
         data-testid="executions-scroll"
         className="overflow-auto rounded-lg bg-surface"
         style={{ maxHeight }}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
       >
         <div style={{ minWidth }}>
           <div

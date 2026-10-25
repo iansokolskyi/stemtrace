@@ -1,4 +1,4 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import { createSuccessTask, type MockTask } from './fixtures/mock-data'
@@ -50,6 +50,10 @@ test.describe('Executions requests', () => {
     }
     // The full parameter set, not a substring: nothing extra, nothing missing
     expect(lists[0]).toEqual({ limit: '200', offset: '0', compact: '1', ...filters })
+    // Nothing is scrolled, so the next page is not asked for yet (the table box has a height
+    // from the first paint; an unbounded box would render every row and load page after page)
+    await page.waitForTimeout(500)
+    expect(lists).toHaveLength(1)
   })
 
   test('the next page asks for the next offset with the same parameters', async ({ page }) => {
@@ -59,7 +63,7 @@ test.describe('Executions requests', () => {
 
     await page.goto('/executions?state=SUCCESS')
     await expect(page.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    await scrollToBottom(page)
 
     await expect.poll(() => lists.some((q) => q.offset === '200')).toBe(true)
     const second = lists.find((q) => q.offset === '200')
@@ -297,5 +301,150 @@ test.describe('Density toggle', () => {
     expect(await rowHeight(page)).toBe(44)
     await density(page, 'Compact').click()
     expect(await rowHeight(page)).toBe(32)
+  })
+})
+
+test.describe('Live updates under the cursor', () => {
+  /** Routes the socket so a test can send events; StrictMode (dev) drops the first socket. */
+  async function liveSocket(page: Page): Promise<() => WebSocketRoute> {
+    const sockets: WebSocketRoute[] = []
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      sockets.push(ws)
+    })
+    return () => sockets[sockets.length - 1]
+  }
+
+  /** The event the server sends when `task` changes. */
+  function send(socket: WebSocketRoute, task: MockTask): void {
+    socket.send(
+      JSON.stringify({
+        task_id: task.task_id,
+        name: task.name,
+        state: task.state,
+        timestamp: new Date().toISOString(),
+        parent_id: task.parent_id,
+        root_id: task.root_id,
+        group_id: null,
+        trace_id: null,
+        retries: 0,
+      }),
+    )
+  }
+
+  /** A task updated after every task `manyTasks` makes, so the API lists it first. */
+  function newest(name: string): MockTask {
+    const task = createSuccessTask(name)
+    task.last_updated = '2026-10-17T13:00:00.000Z'
+    return task
+  }
+
+  const newButton = (page: Page, count: number) =>
+    page.getByRole('button', { name: `${count} new` })
+  const names = (page: Page) => rows(page).locator('[data-task-last]')
+
+  test('under the pointer the order is frozen, rows update in place, new tasks are counted', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    const tasks = manyTasks(6)
+    api.addTasks(tasks)
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rows(page)).toHaveCount(6)
+
+    const hovered = rows(page).nth(2)
+    await hovered.hover()
+    const before = await hovered.boundingBox()
+    const boxBefore = await scrollBox(page).boundingBox()
+    await expect(hovered).toContainText('task_0002')
+
+    // Something a visible row shows changes, and a task arrives that sorts above all of them
+    tasks[4].state = 'FAILURE'
+    const added = newest('app.jobs.brand_new')
+    api.addTask(added)
+    send(socket(), added)
+
+    await expect(newButton(page, 1)).toBeVisible()
+    // The failed row updated where it is; the new task is not in the table yet
+    await expect(rows(page).nth(4).locator('[data-state="FAILURE"]')).toBeVisible()
+    await expect(rows(page)).toHaveCount(6)
+    await expect(names(page).first()).toHaveText('task_0000')
+    // The hovered row did not move or change, and the table box did not shift
+    await expect(hovered).toContainText('task_0002')
+    expect(await hovered.boundingBox()).toEqual(before)
+    expect(await scrollBox(page).boundingBox()).toEqual(boxBefore)
+
+    await newButton(page, 1).click()
+    await expect(names(page).first()).toHaveText('brand_new')
+    await expect(rows(page)).toHaveCount(7)
+    await expect(newButton(page, 1)).toHaveCount(0)
+  })
+
+  test('with the pointer outside and the table at its top, new tasks appear first', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(6))
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rows(page)).toHaveCount(6)
+
+    const added = newest('app.jobs.brand_new')
+    api.addTask(added)
+    send(socket(), added)
+
+    await expect(names(page).first()).toHaveText('brand_new')
+    await expect(rows(page)).toHaveCount(7)
+    await expect(page.getByRole('button', { name: /new$/ })).toHaveCount(0)
+  })
+
+  test('scrolled away from the top the order is frozen until it is back at the top', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(60))
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rows(page).first()).toBeVisible()
+
+    await scrollBox(page).evaluate((el) => {
+      el.scrollTop = 600
+    })
+    const added = newest('app.jobs.brand_new')
+    api.addTask(added)
+    send(socket(), added)
+    await expect(newButton(page, 1)).toBeVisible()
+    // Still frozen a moment later: nothing was inserted above what is on screen
+    expect(await scrollBox(page).evaluate((el) => el.scrollTop)).toBe(600)
+
+    // Back at the top, with the pointer outside the table, the new order applies
+    await scrollBox(page).evaluate((el) => {
+      el.scrollTop = 0
+    })
+    await expect(newButton(page, 1)).toHaveCount(0)
+    await expect(names(page).first()).toHaveText('brand_new')
+  })
+
+  test('older pages loaded while frozen are appended, not counted as new', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(450))
+    await page.goto('/executions')
+    await expect(rows(page).first()).toBeVisible()
+
+    // Scrolling down freezes the order; the next pages must still arrive at the end
+    await expect
+      .poll(
+        async () => {
+          await scrollToBottom(page)
+          return page.getByText('task_0449', { exact: true }).isVisible()
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true)
+    await expect(page.getByRole('button', { name: /new$/ })).toHaveCount(0)
+    await expect(page.getByText(/Showing 450 of 450 tasks/)).toBeVisible()
   })
 })
