@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-25
+
 ### Fixed
 - A task list or graphs link whose `from_date` or `to_date` isn't a real `YYYY-MM-DD` date (for example `?from_date=2026-13-45` or a value edited by hand) no longer blanks the dashboard: the invalid date is ignored and the page loads without that filter.
 - `stemtrace server --root-path` no longer shows "Not Found" when you open the
@@ -381,7 +383,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.4...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...v0.4.2
