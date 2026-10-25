@@ -18,6 +18,14 @@ def _is_public(name: str) -> bool:
     return not name.startswith("_") or name.startswith("__")
 
 
+def _display(path: Path) -> str:
+    """Show ``path`` relative to the working directory when it is under it."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
 def missing_docstrings(root: Path) -> list[str]:
     """Return ``path:line - name`` for every public definition under ``root`` without a docstring."""
     missing: list[str] = []
@@ -26,7 +34,7 @@ def missing_docstrings(root: Path) -> list[str]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         missing.extend(
-            f"{path}:{node.lineno} - {node.name}"
+            f"{_display(path)}:{node.lineno} - {node.name}"
             for node in ast.walk(tree)
             if isinstance(node, _DEFINITIONS)
             and _is_public(node.name)
