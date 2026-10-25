@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   lint:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -55,7 +55,7 @@ jobs:
         run: uv run --locked --no-build python scripts/assemble_changelog.py --check
 
   type-check:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -81,7 +81,7 @@ jobs:
         run: uv run --locked --no-build mypy src/ --strict
 
   test:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -140,7 +140,7 @@ jobs:
 
   test-lowest:
     name: Test lowest dependency versions
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -205,7 +205,7 @@ jobs:
         run: uvx --no-build pip-audit==2.10.1 --strict --require-hashes --disable-pip -r requirements-audit.txt
 
   frontend:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -241,7 +241,7 @@ jobs:
   # (npm run test:visual:update uses the same image). The image version must match
   # @playwright/test in package.json (pinned exactly; Dependabot ignores it).
   ui-mock-e2e:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -272,7 +272,7 @@ jobs:
           retention-days: 7
 
   build:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/redesign'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
