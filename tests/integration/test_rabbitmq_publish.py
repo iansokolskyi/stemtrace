@@ -26,6 +26,7 @@ import pytest
 from amqp.exceptions import AMQPError
 from kombu import Connection
 from kombu.exceptions import KombuError
+from kombu.utils import functional as kombu_functional
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.transports import rabbitmq
@@ -184,15 +185,22 @@ class TestRabbitMQPublishFailFastNoBroker:
             real_publish(*args, **kwargs)
 
         monkeypatch.setattr(publisher, "publish", counting_publish)
+        # kombu 5.6.1 retry_over_time calls its module-level ``sleep`` between
+        # connect attempts; record those calls instead of timing the publish.
+        sleeps: list[float] = []
+        monkeypatch.setattr(kombu_functional, "sleep", sleeps.append)
 
         # Fast failures drop only their own event until three in a row open
         # the breaker.
-        attempts = [_timed_publish(transport, f"t-{i}") for i in range(3)]
+        for i in range(3):
+            transport.publish(_event(f"t-{i}"))
         for i in range(3, 103):
             transport.publish(_event(f"t-{i}"))
 
         # A refused connect returns at once; kombu's own retry would sleep 2s.
-        assert max(attempts) < 0.5
+        # Wall time can't tell that from a preempted process (the first publish
+        # also imports kombu lazily: 635 ms under load), a sleep call can.
+        assert sleeps == []
         # Skipped events never reach the connection. Counting the attempts
         # replaces a per-publish time bound, which any scheduler pause beat
         # (19-65ms against 10ms under CPU load, ~7us otherwise).
