@@ -1,29 +1,17 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useMemo } from 'react'
-import type { TaskNode } from '@/api/client'
+import type { ExecutionFilters, TaskNode } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { formatDuration, stateColors, TERMINAL_STATES, TimelineBar } from './TimelineBar'
 
 interface TaskTimelineProps {
-  filters: {
-    state: string | undefined
-    name: string
-    name_exact?: string
-    from_date?: string
-    to_date?: string
-  }
+  filters: ExecutionFilters
 }
 
 export function TaskTimeline({ filters }: TaskTimelineProps) {
-  const { data, isLoading, error } = useTasks({
-    state: filters.state,
-    name: filters.name || undefined,
-    name_exact: filters.name_exact,
-    from_date: filters.from_date,
-    to_date: filters.to_date,
-  })
+  const { data, isLoading, error } = useTasks(filters)
 
   // The names of the rows drawn below (those with timing data)
   const shortNames = useMemo(

@@ -61,6 +61,15 @@ export interface MockRegisteredTask {
   status: 'active' | 'never_run' | 'not_registered'
 }
 
+/** An entry of GET /api/groups (source: where the group came from). */
+export interface MockGroup {
+  name: string
+  source: 'code' | 'auto'
+  tags: string[]
+  color: string | null
+  task_names: string[]
+}
+
 export interface MockWorker {
   hostname: string
   pid: number
