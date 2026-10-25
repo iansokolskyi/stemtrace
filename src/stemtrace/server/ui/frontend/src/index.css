@@ -73,6 +73,11 @@ body {
   }
 }
 
+/* Retry: hatched at 45 degrees with 2px surface gaps, so it never reads by colour alone. */
+.retry-hatch {
+  background-image: repeating-linear-gradient(45deg, var(--retry) 0 3px, var(--surface) 3px 5px);
+}
+
 .task-state-badge {
   @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
 }

@@ -18,6 +18,15 @@ export interface MockTask {
   first_seen: string | null
   last_updated: string | null
   duration_ms: number | null
+  /** Fields the API sends since the worker/queue/group work; a test leaves one out (or null) to
+   *  model a deployment without it. */
+  exception_type?: string | null
+  hostname?: string | null
+  queue?: string | null
+  task_group?: string | null
+  tags?: string[]
+  queue_wait_ms?: number | null
+  runtime_ms?: number | null
 }
 
 export interface MockEvent {
@@ -147,6 +156,8 @@ export function createFailedTask(name: string, exception: string, traceback: str
     first_seen: startTime.toISOString(),
     last_updated: now.toISOString(),
     duration_ms: 500,
+    // The API sends the exception's class: the text before the first colon
+    exception_type: exception.split(':')[0],
     events: [
       createMockEvent(task_id, name, 'PENDING'),
       createMockEvent(task_id, name, 'STARTED'),

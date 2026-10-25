@@ -179,7 +179,27 @@ export interface TaskNode {
   events: TaskEvent[]
   first_seen: string | null
   last_updated: string | null
+  /** Lifetime (first to last event), queue wait included. */
   duration_ms: number | null
+  /** Sent by every current server; null when the worker never reported it. */
+  exception_type?: string | null
+  hostname?: string | null
+  queue?: string | null
+  task_group?: string | null
+  tags?: string[]
+  queue_wait_ms?: number | null
+  /** Time spent running, queue wait excluded. */
+  runtime_ms?: number | null
+}
+
+/** A task as `GET /api/tasks?compact=1` lists it: no events. */
+export type ExecutionRow = Omit<TaskNode, 'events'> & { events: null }
+
+export interface ExecutionListResponse {
+  tasks: ExecutionRow[]
+  total: number
+  limit: number
+  offset: number
 }
 
 export interface TaskListResponse {

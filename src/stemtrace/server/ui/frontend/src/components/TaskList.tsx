@@ -5,7 +5,8 @@
 import { Link } from '@tanstack/react-router'
 import { useTasksInfinite } from '@/api/queries'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
-import { TaskStateBadge } from './TaskStateBadge'
+import { StatusChip } from './StatusChip'
+import { TaskName } from './TaskName'
 
 interface TaskListProps {
   filters: {
@@ -65,9 +66,9 @@ export function TaskList({ filters }: TaskListProps) {
             className="flex items-center justify-between p-4 bg-slate-900 rounded-lg border border-slate-800 hover:border-slate-700 transition-colors"
           >
             <div className="flex items-center gap-4 min-w-0">
-              <TaskStateBadge state={task.state} />
+              <StatusChip state={task.state} title={task.exception_type ?? undefined} />
               <div className="min-w-0">
-                <p className="text-slate-200 truncate">{task.name}</p>
+                <TaskName name={task.name} />
                 <p className="text-xs text-slate-500 font-mono">{task.task_id.slice(0, 8)}...</p>
               </div>
             </div>
