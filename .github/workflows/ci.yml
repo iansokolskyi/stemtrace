@@ -5,7 +5,7 @@ on:
     # redesign: integration branch for the UI redesign until it merges to main as one release
     branches: [main, redesign]
   push:
-    branches: [main]
+    branches: [main, redesign]
   workflow_dispatch:
 
 concurrency:
