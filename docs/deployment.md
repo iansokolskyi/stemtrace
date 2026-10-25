@@ -126,7 +126,9 @@ Use your own `prefix` if you changed it. `telemetry={"tracing": False}` turns tr
 path prefix and strips it before forwarding (e.g. `https://example.com/monitoring/` →
 `http://stemtrace:8000/`). It is passed to uvicorn as its `root_path`, so the UI, login
 redirects and session cookies use the prefixed URLs. Leave it unset when the proxy forwards
-the full path or serves stemtrace at the root of a host. The prefix may only contain
+the full path or serves stemtrace at the root of a host. The dashboard lives at
+`<prefix>/stemtrace/` (for example `https://example.com/monitoring/stemtrace/`); other URLs under
+the prefix, such as `https://example.com/monitoring/`, redirect there. The prefix may only contain
 `/`-separated segments of letters, digits, `.`, `_` and `-` (up to 64 characters each);
 `stemtrace server` refuses to start with anything else, and an embedded app whose `root_path`
 breaks this rule logs a warning and serves UI links without the prefix.
