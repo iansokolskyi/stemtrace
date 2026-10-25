@@ -42,20 +42,6 @@
   --shadow-side: var(--shadow-side);
 }
 
-/* Legacy page bodies (task list, graphs, task detail, registry, workers) still use these until
-   their redesign PRs; they are not Signal box tokens. */
-@theme {
-  /* Task state colors */
-  --color-pending: #6b7280;
-  --color-received: #6b7280;
-  --color-started: #3b82f6;
-  --color-success: #22c55e;
-  --color-failure: #ef4444;
-  --color-retry: #f59e0b;
-  --color-revoked: #8b5cf6;
-  --color-rejected: #dc2626;
-}
-
 body {
   margin: 0;
   background: var(--bg);

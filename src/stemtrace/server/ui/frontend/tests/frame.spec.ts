@@ -195,6 +195,40 @@ test.describe('Sidebar', () => {
     expect(badgeRequests.filter((r) => !r.includes('refresh=false'))).toEqual([])
   })
 
+  for (const theme of ['light', 'dark'] as const) {
+    test(`badges use the status tokens in ${theme}`, async ({ page }) => {
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await setupMockApi(page)
+      await page.goto('/flows')
+      const nav = sidebar(page)
+      const colours = async (link: RegExp, token: string) =>
+        nav
+          .getByRole('link', { name: link })
+          .locator('span', { hasText: /offline|not registered/ })
+          .evaluate((badge, name) => {
+            // Resolve the token through a probe so both sides are rgb() strings
+            const probe = document.createElement('div')
+            probe.style.backgroundColor = `var(--${name})`
+            probe.style.color = `var(--on-${name})`
+            document.body.append(probe)
+            const want = getComputedStyle(probe)
+            const got = getComputedStyle(badge)
+            const result = {
+              bg: [got.backgroundColor, want.backgroundColor],
+              fg: [got.color, want.color],
+            }
+            probe.remove()
+            return result
+          }, token)
+      const offline = await colours(/Workers/, 'failure')
+      expect(offline.bg[0]).toBe(offline.bg[1])
+      expect(offline.fg[0]).toBe(offline.fg[1])
+      const unregistered = await colours(/Registry/, 'anomaly')
+      expect(unregistered.bg[0]).toBe(unregistered.bg[1])
+      expect(unregistered.fg[0]).toBe(unregistered.fg[1])
+    })
+  }
+
   test('no badge when the count is zero or the request fails', async ({ page }) => {
     const api = await setupMockApi(page)
     api.setWorkers(api.workers.filter((w) => w.status === 'online'))
