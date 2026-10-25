@@ -1,3 +1,5 @@
+import { dateSearchParam } from '@/utils/format'
+
 /** Search params of the Executions page (the old task list's, unchanged). */
 export interface ExecutionsSearch {
   state?: string
@@ -17,8 +19,8 @@ export function executionsSearch(search: Record<string, unknown>): ExecutionsSea
     state: str(search.state),
     name: str(search.name),
     name_exact: str(search.name_exact),
-    from_date: str(search.from_date),
-    to_date: str(search.to_date),
+    from_date: dateSearchParam(search.from_date),
+    to_date: dateSearchParam(search.to_date),
     view: search.view === 'list' || search.view === 'timeline' ? search.view : undefined,
   }
 }
@@ -30,5 +32,8 @@ export interface FlowsSearch {
 }
 
 export function flowsSearch(search: Record<string, unknown>): FlowsSearch {
-  return { from_date: str(search.from_date), to_date: str(search.to_date) }
+  return {
+    from_date: dateSearchParam(search.from_date),
+    to_date: dateSearchParam(search.to_date),
+  }
 }
