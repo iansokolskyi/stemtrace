@@ -48,7 +48,7 @@ export function useTasks(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
 /** Rows per Executions page (the API allows 500). */
 export const EXECUTIONS_PAGE_SIZE = 200
 
-/** The Executions list, a page of 200 at a time; the first page is the one polled and invalidated. */
+/** The Executions list, a page of 200 at a time. A refetch (an event, or the poll while the socket is down) reloads every page loaded so far. */
 export function useExecutions(params: FetchExecutionsParams) {
   const { isConnected } = useWebSocketContext()
 

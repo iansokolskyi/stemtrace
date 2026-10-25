@@ -468,4 +468,135 @@ test.describe('Live updates under the cursor', () => {
     await expect(page.getByRole('button', { name: /new$/ })).toHaveCount(0)
     await expect(page.getByText(/Showing 450 of 450 tasks/)).toBeVisible()
   })
+
+  // The server re-sorts by last_updated on every refetch, so an event moves a task to the top and
+  // a new task pushes the bottom row out of a page. These tests model that: they bump
+  // last_updated, and use the three positions of the changed row and one or several new tasks.
+
+  /** A task newer than every `manyTasks` row, `n` seconds after the first new one. */
+  function arrival(name: string, n: number, fields: Partial<MockTask> = {}): MockTask {
+    const task = createSuccessTask(name)
+    task.last_updated = new Date(Date.parse('2026-10-17T13:00:00Z') + n * 1000).toISOString()
+    return Object.assign(task, fields)
+  }
+
+  for (const position of [0, 2, 5]) {
+    for (const arrivals of [1, 3]) {
+      test(`a shown task at row ${position} that moves to the top is not mistaken for the anchor, ${arrivals} new`, async ({
+        page,
+      }) => {
+        const api = await setupMockApi(page, { useDefaults: false })
+        const tasks = manyTasks(6)
+        api.addTasks(tasks)
+        const socket = await liveSocket(page)
+        await page.goto('/executions')
+        await expect(page.getByText('Live', { exact: true })).toBeVisible()
+        await expect(rows(page)).toHaveCount(6)
+        const before = await names(page).allTextContents()
+
+        await rows(page).nth(2).hover()
+        // The task at `position` gets an event: it is now the most recently updated of all
+        tasks[position].state = 'FAILURE'
+        tasks[position].last_updated = '2026-10-17T14:00:00.000Z'
+        const added = Array.from({ length: arrivals }, (_, i) => arrival(`app.jobs.fresh_${i}`, i))
+        api.addTasks(added)
+        send(socket(), added[0])
+
+        await expect(newButton(page, arrivals)).toBeVisible()
+        // The same six rows in the same order; the bumped one shows its new state in place
+        await expect(rows(page)).toHaveCount(6)
+        await expect(names(page)).toHaveText(before)
+        await expect(rows(page).nth(position).locator('[data-state="FAILURE"]')).toBeVisible()
+        await expect(page.getByText(/Showing 6 of /)).toBeVisible()
+      })
+    }
+  }
+
+  for (const arrivals of [1, 3]) {
+    test(`with 250 tasks and only the first page loaded, ${arrivals} new push the last row out of the page and are counted`, async ({
+      page,
+    }) => {
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.addTasks(manyTasks(250))
+      const socket = await liveSocket(page)
+      await page.goto('/executions')
+      await expect(page.getByText('Live', { exact: true })).toBeVisible()
+      await expect(page.getByText(/Showing 200 of 250 tasks/)).toBeVisible()
+
+      await rows(page).first().hover()
+      const added = Array.from({ length: arrivals }, (_, i) => arrival(`app.jobs.fresh_${i}`, i))
+      api.addTasks(added)
+      send(socket(), added[0])
+
+      await expect(newButton(page, arrivals)).toBeVisible()
+      // Nothing was appended at the bottom as an "older page"; the first row is still the first
+      await expect(names(page).first()).toHaveText('task_0000')
+      await expect(page.getByText(new RegExp(`of ${250 + arrivals} tasks`))).toBeVisible()
+      await expect(page.getByText('fresh_0', { exact: true })).toHaveCount(0)
+
+      await newButton(page, arrivals).click()
+      await expect(names(page).first()).toHaveText(`fresh_${arrivals - 1}`)
+    })
+  }
+
+  test('with 250 tasks and the second page loaded, a new task is counted and the rows stay', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(manyTasks(250))
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect
+      .poll(
+        async () => {
+          await scrollToBottom(page)
+          return page.getByText('task_0249', { exact: true }).isVisible()
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true)
+    await expect(page.getByText(/Showing 250 of 250 tasks/)).toBeVisible()
+
+    const added = arrival('app.jobs.fresh_0', 0)
+    api.addTask(added)
+    send(socket(), added)
+
+    await expect(newButton(page, 1)).toBeVisible()
+    await expect(page.getByText(/Showing 250 of 251 tasks/)).toBeVisible()
+    await expect(page.getByText('task_0249', { exact: true })).toBeVisible()
+  })
+
+  for (const position of [0, 2, 5]) {
+    for (const arrivals of [1, 3]) {
+      test(`in a filtered list, the task at row ${position} finishing leaves the list and ${arrivals} new are counted`, async ({
+        page,
+      }) => {
+        const api = await setupMockApi(page, { useDefaults: false })
+        const tasks = manyTasks(6, () => ({ state: 'STARTED' }))
+        api.addTasks(tasks)
+        const socket = await liveSocket(page)
+        await page.goto('/executions?state=STARTED')
+        await expect(page.getByText('Live', { exact: true })).toBeVisible()
+        await expect(rows(page)).toHaveCount(6)
+        const before = await names(page).allTextContents()
+
+        await rows(page).nth(2).hover()
+        // It finishes: no longer STARTED, so the filtered list drops it
+        tasks[position].state = 'SUCCESS'
+        tasks[position].last_updated = '2026-10-17T14:00:00.000Z'
+        const added = Array.from({ length: arrivals }, (_, i) =>
+          arrival(`app.jobs.fresh_${i}`, i, { state: 'STARTED' }),
+        )
+        api.addTasks(added)
+        send(socket(), added[0])
+
+        await expect(newButton(page, arrivals)).toBeVisible()
+        // The finished task is gone, not left showing "Running"; the others keep their order
+        await expect(rows(page)).toHaveCount(5)
+        await expect(names(page)).toHaveText(before.filter((_, i) => i !== position))
+        await expect(page.getByText('fresh_0', { exact: true })).toHaveCount(0)
+      })
+    }
+  }
 })

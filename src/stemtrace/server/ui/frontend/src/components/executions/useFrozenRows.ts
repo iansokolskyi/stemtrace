@@ -10,13 +10,23 @@ interface FrozenRows {
   apply: () => void
 }
 
+/** When a row was last updated, as a number the list is sorted by; unknown sorts last. */
+const updatedAt = (row: ExecutionRow): number =>
+  row.last_updated ? Date.parse(row.last_updated) : Number.NEGATIVE_INFINITY
+
 /**
  * Keeps the visible order still while the reader is looking at it.
  *
- * While `frozen`, the rows already shown keep their order and position but take the live data
- * (a state, a runtime or a worker changing shows in place); a task the live list would insert
- * above the last shown row is only counted, not drawn. A task that sorts after the last shown
- * row is an older page loading, so it is appended. When `frozen` ends the live order applies.
+ * The server lists tasks by `last_updated`, newest first, so any event moves its task to the top
+ * and a new task pushes the bottom row out of a page. Which rows are "new" therefore can't depend
+ * on where one particular held row sits in the live list. A task the reader hasn't been shown is
+ * new when it was updated after the oldest row they were shown (it sorts above something on
+ * screen); one updated before that is an older page loading and is appended.
+ *
+ * While `frozen`, the rows already shown keep their order and position but take the live data (a
+ * state, a runtime or a worker changing shows in place). A shown row that left the live list (it
+ * no longer matches the filters, or the first page no longer reaches it) is dropped, never kept
+ * with stale data. New tasks are counted, not drawn. When `frozen` ends the live order applies.
  */
 export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows {
   // The order held while frozen: the live list as of the last unfrozen render, or the last apply
@@ -28,16 +38,20 @@ export function useFrozenRows(live: ExecutionRow[], frozen: boolean): FrozenRows
   if (!frozen) return { shown: live, newCount: 0, apply }
 
   const latest = new Map(live.map((row) => [row.task_id, row]))
-  const shown = held.map((row) => latest.get(row.task_id) ?? row)
+  const shown: ExecutionRow[] = []
+  for (const row of held) {
+    const current = latest.get(row.task_id)
+    if (current) shown.push(current)
+  }
   const heldIds = new Set(held.map((row) => row.task_id))
-  const lastHeld = held.length ? held[held.length - 1].task_id : null
-  const lastIndex = lastHeld === null ? -1 : live.findIndex((row) => row.task_id === lastHeld)
+  // The oldest update the reader was shown; with nothing held, every row is the first load
+  const floor = held.length ? Math.min(...held.map(updatedAt)) : Number.NEGATIVE_INFINITY
 
   let newCount = 0
-  live.forEach((row, index) => {
-    if (heldIds.has(row.task_id)) return
-    if (lastIndex >= 0 && index < lastIndex) newCount++
+  for (const row of live) {
+    if (heldIds.has(row.task_id)) continue
+    if (updatedAt(row) > floor) newCount++
     else shown.push(row)
-  })
+  }
   return { shown, newCount, apply }
 }
