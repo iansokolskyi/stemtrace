@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A task list or graphs link whose `from_date` or `to_date` isn't a real `YYYY-MM-DD` date (for example `?from_date=2026-13-45` or a value edited by hand) no longer blanks the dashboard: the invalid date is ignored and the page loads without that filter.
+- `stemtrace server --root-path` no longer shows "Not Found" when you open the
+  prefix itself (for example `https://example.com/monitoring/`). The server now
+  redirects it, and any other page URL under the prefix such as a task link, to
+  the dashboard at `<prefix>/stemtrace/`. See
+  [Behind a reverse proxy](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md#behind-a-reverse-proxy-with-a-path-prefix).
+
 ## [0.4.4] - 2026-10-25
 
 **Highlights:**
