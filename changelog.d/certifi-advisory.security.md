@@ -1,1 +1,0 @@
-- The Docker image ships certifi 2026.10.23, which fixes PYSEC-2026-4320 in 2025.11.12.
