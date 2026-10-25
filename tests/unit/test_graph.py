@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+import stemtrace.core.attribution as attribution_module
 import stemtrace.core.graph as graph_module
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
@@ -1491,8 +1492,8 @@ def op_counter(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     Lets complexity tests assert on work done instead of wall-clock time.
     """
     counts = {"digest": 0, "precedence": 0, "eq": 0}
-    real_digest = graph_module._digest
-    real_precedence = graph_module._precedence
+    real_digest = attribution_module._digest
+    real_precedence = attribution_module.precedence
     real_eq = TaskEvent.__eq__
 
     def digest(event: TaskEvent) -> bytes:
@@ -1507,8 +1508,8 @@ def op_counter(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         counts["eq"] += 1
         return real_eq(self, other)
 
-    monkeypatch.setattr(graph_module, "_digest", digest)
-    monkeypatch.setattr(graph_module, "_precedence", precedence)
+    monkeypatch.setattr(attribution_module, "_digest", digest)
+    monkeypatch.setattr(attribution_module, "precedence", precedence)
     monkeypatch.setattr(TaskEvent, "__eq__", eq)
     return counts
 
