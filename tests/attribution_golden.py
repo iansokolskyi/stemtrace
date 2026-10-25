@@ -20,7 +20,7 @@ tests.attribution_golden``.
 import hashlib
 import json
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -72,7 +72,7 @@ def _hosts(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
         if e.state not in _WORKER_STATES:
             stamped.append(e)
             continue
-        name = host[(e.task_id, e.retries)]
+        name: str | None = host[(e.task_id, e.retries)]
         if e.state == TaskState.FAILURE and rng.random() < 0.3:
             name = None
         elif rng.random() < 0.1:
@@ -118,7 +118,7 @@ def variants(raw: list[dict[str, Any]]) -> Iterator[tuple[str, list[TaskEvent]]]
         rng.shuffle(order)
         yield f"shuffle{i}", order
     # Each single event dropped; for big flows, a seeded sample (cost is quadratic).
-    dropped = range(len(events))
+    dropped: Sequence[int] = range(len(events))
     if len(events) > _DROP_ALL_UP_TO:
         dropped = sorted(rng.sample(dropped, _DROP_SAMPLE))
     for i in dropped:
