@@ -23,7 +23,9 @@ for (const value of BAD_DATES) {
       const apiDates: (string | null)[] = []
       page.on('request', (r) => {
         const url = new URL(r.url())
-        if (url.pathname.startsWith('/api/')) apiDates.push(url.searchParams.get('from_date'))
+        if (url.pathname.startsWith('/api/')) {
+          apiDates.push(url.searchParams.get('from_date'), url.searchParams.get('to_date'))
+        }
       })
       await setupMockApi(page)
       await page.goto(`${path}?from_date=${value}&to_date=${value}`)
@@ -34,15 +36,26 @@ for (const value of BAD_DATES) {
   }
 }
 
-test('a real date in the URL is still applied', async ({ page }) => {
-  test.skip(isRealMode, 'Mock-only test')
-  const apiDates: (string | null)[] = []
-  page.on('request', (r) => {
-    const url = new URL(r.url())
-    if (url.pathname === '/api/tasks') apiDates.push(url.searchParams.get('from_date'))
+for (const [path, endpoint, heading] of [
+  ['/', '/api/tasks', 'Tasks'],
+  ['/graphs', '/api/graphs', 'Task Graphs'],
+] as const) {
+  test(`${path} still applies real from_date and to_date`, async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    const sent: { from: string | null; to: string | null }[] = []
+    page.on('request', (r) => {
+      const url = new URL(r.url())
+      if (url.pathname === endpoint) {
+        sent.push({ from: url.searchParams.get('from_date'), to: url.searchParams.get('to_date') })
+      }
+    })
+    await setupMockApi(page)
+    await page.goto(`${path}?from_date=2026-01-01&to_date=2026-01-31`)
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+    await expect
+      .poll(() =>
+        sent.some((s) => s.from?.startsWith('2026-01-01') && s.to?.startsWith('2026-01-31')),
+      )
+      .toBe(true)
   })
-  await setupMockApi(page)
-  await page.goto('/?from_date=2026-01-01')
-  await expect(page.getByRole('heading', { level: 1, name: 'Tasks' })).toBeVisible()
-  await expect.poll(() => apiDates.some((d) => d?.startsWith('2026-01-01'))).toBe(true)
-})
+}
