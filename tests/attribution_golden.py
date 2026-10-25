@@ -8,18 +8,22 @@ committed in ``tests/data/attribution_golden.json``; a refactor of how events
 are attributed to runs must leave every one of them unchanged.
 
 Variants: the captured order; seeded shuffles; each single event dropped (a
-seeded sample of 40 in flows over 100 events); a
-seeded clock offset per task; seeded worker nodenames (the captures have none,
-so the per-worker run pairing would otherwise go unexercised); synthetic\ninputs no flow has (a late retry PENDING, a STARTED without a worker, a late\nIGNORED). The expected
-values are main's own output, not ground truth: this guards equivalence only.
+seeded sample of 40 in flows over 100 events, where it is quadratic); a seeded
+clock offset per task; seeded worker nodenames (the captures have none, so the
+per-worker run pairing would otherwise go unexercised), alone, shuffled, offset
+per task and offset per worker and attempt; and two synthetic variants with
+inputs no flow has (see ``_synthetic`` and ``_edges``). The expected values are
+main's own output, not ground truth: this guards equivalence only.
 
 Regenerate (only when a behavior change is intended): ``uv run python -m
-tests.attribution_golden``.
+tests.attribution_golden``. Show one variant's values: ``uv run python -m
+tests.attribution_golden --show FLOW VARIANT`` (``VARIANT`` may be ``dropN``).
 """
 
 import hashlib
 import json
 import random
+import sys
 from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -36,6 +40,15 @@ _DROP_SAMPLE = 40
 _SEED = 20261025
 _HOSTS = ("celery@a", "celery@b")
 _WORKER_STATES = frozenset(TaskState) - {TaskState.PENDING}
+TERMINAL = frozenset(
+    {
+        TaskState.SUCCESS,
+        TaskState.FAILURE,
+        TaskState.REVOKED,
+        TaskState.REJECTED,
+        TaskState.IGNORED,
+    }
+)
 
 
 def load_flows() -> dict[str, list[dict[str, Any]]]:
@@ -56,6 +69,21 @@ def _offsets(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
     }
     return [
         e.model_copy(update={"timestamp": e.timestamp + shift[e.task_id]})
+        for e in events
+    ]
+
+
+def _run_offsets(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
+    # One clock per worker and attempt: an earlier attempt's events can then
+    # carry later timestamps than the next one's.
+    shift = {
+        key: timedelta(milliseconds=rng.randint(-3000, 3000))
+        for key in sorted({(e.hostname or "", e.retries) for e in events})
+    }
+    return [
+        e.model_copy(
+            update={"timestamp": e.timestamp + shift[(e.hostname or "", e.retries)]}
+        )
         for e in events
     ]
 
@@ -108,6 +136,62 @@ def _synthetic(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
     return out
 
 
+def _edges(events: list[TaskEvent], rng: random.Random) -> list[TaskEvent]:
+    # More inputs no recorded flow has: a bare main-process FAILURE with
+    # retries=0 after a retry (workers up to 0.4.1), a second STARTED of the
+    # same attempt on the other worker (redelivery) so two runs are open
+    # before a bare end, a STARTED tied with its attempt's RETRY, and a
+    # RECEIVED stamped after the first STARTED of a task without parent IDs,
+    # some of those without their PENDING (the RECEIVED is then the only sent
+    # event left).
+    roots = sorted({e.task_id for e in events if e.parent_id is None})
+    no_pending = {task_id for task_id in roots if rng.random() < 0.4}
+    out: list[TaskEvent] = []
+    for e in events:
+        if e.state == TaskState.PENDING and e.task_id in no_pending:
+            continue
+        out.append(e)
+        if e.state == TaskState.STARTED and e.hostname is not None:
+            if rng.random() < 0.3:
+                other = _HOSTS[1 - _HOSTS.index(e.hostname)]
+                out.append(
+                    e.model_copy(
+                        update={
+                            "hostname": other,
+                            "timestamp": e.timestamp + timedelta(milliseconds=1),
+                        }
+                    )
+                )
+            if (
+                e.retries == 0
+                and e.parent_id is None
+                and (e.task_id in no_pending or rng.random() < 0.5)
+            ):
+                out.append(
+                    e.model_copy(
+                        update={
+                            "state": TaskState.RECEIVED,
+                            "timestamp": e.timestamp + timedelta(milliseconds=3),
+                        }
+                    )
+                )
+        if e.state == TaskState.RETRY and rng.random() < 0.5:
+            out.append(e.model_copy(update={"state": TaskState.STARTED}))
+        if e.state in TERMINAL and e.retries > 0 and rng.random() < 0.5:
+            out.append(
+                e.model_copy(
+                    update={
+                        "state": TaskState.FAILURE,
+                        "hostname": None,
+                        "retries": 0,
+                        "timestamp": e.timestamp + timedelta(milliseconds=2),
+                    }
+                )
+            )
+    rng.shuffle(out)
+    return out
+
+
 def variants(raw: list[dict[str, Any]]) -> Iterator[tuple[str, list[TaskEvent]]]:
     """(variant name, events in arrival order) for one flow."""
     events = [TaskEvent.model_validate(e) for e in raw]
@@ -131,6 +215,8 @@ def variants(raw: list[dict[str, Any]]) -> Iterator[tuple[str, list[TaskEvent]]]
     yield "hosts_shuffle", order
     yield "hosts_offsets", _offsets(hosted, rng)
     yield "synthetic", _synthetic(hosted, rng)
+    yield "run_offsets", _run_offsets(hosted, rng)
+    yield "edges", _edges(hosted, rng)
 
 
 def _iso(value: Any) -> Any:
@@ -162,13 +248,17 @@ def node_values(node: TaskNode) -> list[Any]:
     ]
 
 
-def digest(events: list[TaskEvent]) -> str:
-    """Digest of every node's values after replaying ``events`` in order."""
+def values(events: list[TaskEvent]) -> list[list[Any]]:
+    """Every node's values after replaying ``events`` in order, by node ID."""
     graph = TaskGraph()
     for event in events:
         graph.add_event(event)
-    values = [node_values(graph.nodes[k]) for k in sorted(graph.nodes)]
-    payload = json.dumps(values, sort_keys=True, default=str)
+    return [node_values(graph.nodes[k]) for k in sorted(graph.nodes)]
+
+
+def digest(events: list[TaskEvent]) -> str:
+    """Digest of ``values(events)``."""
+    payload = json.dumps(values(events), sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -185,11 +275,16 @@ def flow_digests(raw: list[dict[str, Any]]) -> dict[str, str]:
     return digests
 
 
-def main() -> None:
-    """Write the golden file from the current code."""
+def main(argv: list[str]) -> None:
+    """Write the golden file from the current code, or ``--show FLOW VARIANT``."""
+    if argv[:1] == ["--show"]:
+        flow, variant = argv[1], argv[2]
+        events = dict(variants(load_flows()[flow]))[variant]
+        print(json.dumps(values(events), indent=1, default=str))
+        return
     golden = {key: flow_digests(raw) for key, raw in sorted(load_flows().items())}
     GOLDEN.write_text(json.dumps(golden, indent=1, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

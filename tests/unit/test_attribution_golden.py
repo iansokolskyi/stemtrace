@@ -22,4 +22,9 @@ def test_golden_covers_every_recorded_flow() -> None:
 @pytest.mark.parametrize("key", sorted(_FLOWS))
 def test_replay_of_flow_matches_golden_digests(key: str) -> None:
     raw: list[dict[str, Any]] = _FLOWS[key]
-    assert flow_digests(raw) == _GOLDEN[key]
+    got = flow_digests(raw)
+    changed = sorted(v for v in _GOLDEN[key] if got.get(v) != _GOLDEN[key][v])
+    assert not changed, (
+        f"{key}: variants {changed} changed; inspect one with "
+        f"`uv run python -m tests.attribution_golden --show {key} VARIANT`"
+    )
