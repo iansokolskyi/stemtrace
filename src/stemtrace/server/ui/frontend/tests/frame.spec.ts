@@ -251,18 +251,19 @@ test.describe('Sidebar', () => {
     expect(await status.evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0)
   })
 
-  test('a page wider than 400px still scrolls to its last control', async ({ page }) => {
+  test('a page wider than 400px still scrolls sideways', async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 })
     await setupMockApi(page)
-    // The legacy task list's filter row is wider than 400px until its page is redesigned:
-    // the frame must not clip it (no overflow-x: hidden on the page).
-    await page.goto('/executions')
-    const last = page.getByRole('button', { name: 'Ignored', exact: true })
-    await expect(last).toBeVisible()
-    // Scroll as a user does: overflow-x: hidden still lets a script scroll
+    await page.goto('/workers')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    // Content wider than the viewport, whatever the page bodies look like later
+    await page.addStyleTag({
+      content: 'main::after { content: ""; display: block; width: 1000px; height: 1px; }',
+    })
+    // Scroll as a user does: overflow-x: hidden would still let a script scroll
     await page.mouse.move(200, 400)
     await page.mouse.wheel(1000, 0)
-    await expect(last).toBeInViewport({ ratio: 1 })
+    await expect.poll(() => page.evaluate(() => window.scrollX)).toBeGreaterThan(500)
   })
 
   test('below 900px the sidebar is a drawer', async ({ page }) => {
