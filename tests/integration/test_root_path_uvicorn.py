@@ -190,3 +190,46 @@ def test_cli_login_flow_behind_root_path(
     assert page.headers["location"] == "/proxy/login?next=%2Fproxy%2Fworkers"
     assert login.headers["location"] == "/proxy/"
     assert "Path=/proxy;" in login.headers["set-cookie"]
+
+
+def _standalone_ui_app() -> FastAPI:
+    router = static.get_static_router_with_base("/stemtrace")
+    assert router is not None
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/?state=FAILURE",
+        "/tasks/a%3Fb",
+        "/tasks/a%2Fb",
+        "/tasks/a%23b",
+        "/tasks/100%25",
+    ],
+)
+def test_landing_behind_root_path_redirects_into_the_base_byte_for_byte(
+    fake_dist: Path, serve: Callable[[FastAPI], str], path: str
+) -> None:
+    """A stripped request outside the base is redirected under it, encoding kept."""
+    base = serve(_standalone_ui_app())
+
+    response = httpx.get(base + path, follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"{_ROOT}/stemtrace{path}"
+
+
+@pytest.mark.parametrize("path", [_ROOT, f"{_ROOT}/", f"{_ROOT}/tasks/x"])
+def test_unstripped_prefix_is_served_not_redirected_in_a_loop(
+    fake_dist: Path, serve: Callable[[FastAPI], str], path: str
+) -> None:
+    """A proxy that forwards the prefix too gets the shell instead of a growing redirect."""
+    base = serve(_standalone_ui_app())
+
+    response = httpx.get(base + path, follow_redirects=False)
+
+    assert response.status_code == 200

@@ -1028,6 +1028,7 @@ def _land(client: TestClient, root: str, route_path: str) -> tuple[str, str]:
     """
     url = root + route_path
     for _ in range(3):
+        assert url.startswith(root), f"{url} left the root path {root}"
         route = url[len(root) :] if root else url
         response = client.get(route, follow_redirects=False)
         if response.status_code in (301, 302, 303, 307, 308):
@@ -1065,6 +1066,32 @@ class TestLandingUnderRootPath:
 
         assert base == f"{root}/stemtrace"
         assert final == base or final.startswith(base + "/")
+
+    @pytest.mark.parametrize(
+        "route_path",
+        [
+            "/?state=FAILURE&name=add",
+            "/tasks/a%3Fb",
+            "/tasks/a%2Fb",
+            "/tasks/100%25",
+            "/tasks/a%23b",
+            "/tasks/caf%C3%A9",
+        ],
+    )
+    def test_standalone_landing_under_root_path_keeps_query_and_encoding(
+        self, tmp_path: Path, route_path: str
+    ) -> None:
+        """The redirect target is the request URL under the base, byte for byte."""
+        with patch("stemtrace.server.ui.static._FRONTEND_DIR", _landing_dist(tmp_path)):
+            router = get_static_router_with_base("/stemtrace")
+            assert router is not None
+            app = FastAPI()
+            app.include_router(router)
+            final, _ = _land(
+                TestClient(app, root_path="/monitoring"), "/monitoring", route_path
+            )
+
+        assert final == "/monitoring/stemtrace" + route_path
 
     @pytest.mark.parametrize("route_path", ["/", "/tasks/abc-123"])
     def test_standalone_landing_without_root_path_keeps_serving_in_place(

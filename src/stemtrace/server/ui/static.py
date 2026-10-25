@@ -8,6 +8,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -203,14 +204,23 @@ def _redirect_into_api_base(
     """
     if not root:
         return None
-    route_path = strip_root_path(
-        request.scope["path"], request.scope.get("root_path") or ""
-    )
+    root_path = request.scope.get("root_path") or ""
+    route_path = strip_root_path(request.scope["path"], root_path)
     if route_path == api_base or route_path.startswith(api_base + "/"):
         return None
-    target = root + api_base + route_path
-    if request.url.query:
-        target += "?" + request.url.query
+    # The proxy forwarded the prefix too (it should strip it): redirecting would
+    # prepend it again on every hop, so serve the page and let it show Not Found.
+    if route_path == root or route_path.startswith(root + "/"):
+        return None
+    # Build the target from the undecoded path, so %2F, %3F, %23 and %25 in a
+    # task ID stay escaped (the decoded path would turn them into syntax).
+    raw_path = request.scope.get("raw_path")
+    encoded = raw_path.decode("latin-1") if raw_path else quote(route_path)
+    target = root + api_base + strip_root_path(encoded, root_path)
+    # From the scope: request.url reparses the decoded path, where %3F became "?"
+    query = request.scope.get("query_string", b"").decode("latin-1")
+    if query:
+        target += "?" + query
     return RedirectResponse(target)
 
 
