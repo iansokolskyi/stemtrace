@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-25
+
 **Highlights:**
 - Maintenance release with no change in runtime behavior. The rules that decide which run, attempt and worker each task event belongs to (event order, state, runtimes, ETA, queue wait, and the worker, queue and exception shown) now live in one internal module, checked against a golden snapshot of every recorded workflow.
 
@@ -371,7 +373,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E test suite**: Docker API tests + Playwright browser tests
 - **Comprehensive test suite**: 350+ Python tests, 90%+ coverage
 
-[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...HEAD
+[unreleased]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/iansokolskyi/stemtrace/compare/v0.4.0...v0.4.1
