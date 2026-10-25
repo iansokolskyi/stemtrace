@@ -32,7 +32,18 @@ export function formatDateParam(date: Date | undefined): string | undefined {
  */
 export function parseDateParam(str: string | undefined): Date | undefined {
   if (!str) return undefined
-  // Parse as local date (not UTC)
-  const [year, month, day] = str.split('-').map(Number)
-  return new Date(year, month - 1, day)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str)
+  if (!match) return undefined
+  // Parse as local date (not UTC); Date rolls 2026-02-30 over to March, so check it didn't
+  const [year, month, day] = match.slice(1).map(Number)
+  const date = new Date(year, month - 1, day)
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return undefined
+  }
+  return date
+}
+
+/** A URL date filter if it is a real YYYY-MM-DD date, else undefined. */
+export function dateSearchParam(value: unknown): string | undefined {
+  return typeof value === 'string' && parseDateParam(value) ? value : undefined
 }
