@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useTask } from '@/api/queries'
 import { TaskOutput } from '@/components/TaskOutput'
-import { TaskStateBadge } from '@/components/TaskStateBadge'
+import { ChildTasks } from '@/components/task/ChildTasks'
 import { EventHistory } from '@/components/task/EventHistory'
 import { ExceptionBlock } from '@/components/task/ExceptionBlock'
 import { ExecutionTimeline } from '@/components/task/ExecutionTimeline'
@@ -9,7 +9,6 @@ import { TaskArguments, TaskResult } from '@/components/task/KwargsList'
 import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
-import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -26,9 +25,9 @@ function TaskDetailPage() {
 
   if (error || !data) {
     return (
-      <div className="text-center py-12">
-        <p className="text-red-400">Failed to load task</p>
-        <Link to="/executions" className="text-blue-400 hover:underline mt-2 inline-block">
+      <div className="py-12 text-center">
+        <p className="text-failure-t">Failed to load task</p>
+        <Link to="/executions" className="mt-2 inline-block underline hover:text-muted">
           Back to executions
         </Link>
       </div>
@@ -36,67 +35,41 @@ function TaskDetailPage() {
   }
 
   const { task, children } = data
-  const childNames = shortestUniqueSuffixes(children.map((child) => child.name))
   return (
-    <div className="space-y-6">
+    <div>
       <TaskHeader task={task} />
-      <TimingBar state={task.state} queueWaitMs={task.queue_wait_ms} runtimeMs={task.runtime_ms} />
-      <TaskFacts task={task} />
-
-      <ExceptionBlock events={task.events} exceptionType={task.exception_type} />
-      <TaskArguments events={task.events} />
-      <TaskResult events={task.events} />
-
-      {/* Output per attempt (worker capture_output=True) */}
-      <TaskOutput events={task.events} />
-
-      <ExecutionTimeline events={task.events} />
-      <EventHistory events={task.events} />
-
-      {/* Children */}
-      {children.length > 0 && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Child Tasks</h2>
-          <div className="space-y-2">
-            {children.map((child) => (
-              <Link
-                key={child.task_id}
-                to="/tasks/$taskId"
-                params={{ taskId: child.task_id }}
-                className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 transition-colors"
-              >
-                <div className="flex-1 truncate">
-                  <span className="text-slate-200" title={child.name}>
-                    {childNames.get(child.name) ?? child.name}
-                  </span>
-                  <span className="text-slate-500 text-xs ml-2">{child.task_id.slice(0, 8)}</span>
-                </div>
-                <TaskStateBadge state={child.state} />
-              </Link>
-            ))}
-          </div>
+      <div className="grid items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <TimingBar
+            state={task.state}
+            queueWaitMs={task.queue_wait_ms}
+            runtimeMs={task.runtime_ms}
+          />
+          <ExecutionTimeline events={task.events} />
+          <ExceptionBlock events={task.events} exceptionType={task.exception_type} />
+          <TaskResult events={task.events} />
+          <TaskOutput events={task.events} />
         </div>
-      )}
+        <div className="min-w-0">
+          <TaskFacts task={task} />
+          <TaskArguments events={task.events} />
+          <EventHistory events={task.events} />
+          <ChildTasks tasks={children} />
+        </div>
+      </div>
     </div>
   )
 }
 
+/** The page's own shape while the task loads: a title bar and two panels, no motion. */
 function TaskDetailSkeleton() {
   return (
-    <div className="space-y-6 animate-pulse">
-      <div className="h-4 w-32 bg-slate-800 rounded" />
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <div className="h-6 w-64 bg-slate-800 rounded" />
-        <div className="h-4 w-48 bg-slate-800 rounded mt-2" />
-        <div className="grid grid-cols-4 gap-4 mt-6">
-          {[...Array(4)].map((_, i) => (
-            <div key={i}>
-              <div className="h-3 w-16 bg-slate-800 rounded" />
-              <div className="h-4 w-24 bg-slate-800 rounded mt-2" />
-            </div>
-          ))}
-        </div>
-      </div>
+    <div aria-hidden="true">
+      <div className="mb-2 h-3 w-40 rounded-[3px] bg-raised" />
+      <div className="mb-3 h-6 w-64 rounded-[3px] bg-raised" />
+      <div className="mb-4 h-5 w-80 max-w-full rounded-[3px] bg-raised" />
+      <div className="mb-4 h-24 rounded-lg bg-surface" />
+      <div className="h-40 rounded-lg bg-surface" />
     </div>
   )
 }
