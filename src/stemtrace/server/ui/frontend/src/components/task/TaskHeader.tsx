@@ -11,6 +11,20 @@ const BUTTON_PRIMARY = `${BUTTON} bg-ink text-on-ink hover:opacity-90`
 
 interface TaskHeaderProps {
   task: TaskNode
+  /** The nodes the task lists as its children (a group's members and a chord's callback). */
+  members: TaskNode[]
+}
+
+const firstRoot = (task: TaskNode): string | undefined =>
+  task.events.find((event) => event.root_id)?.root_id ?? undefined
+
+/**
+ * The flow's root. A task's events name it, and a task with none is its own root. A group or
+ * chord has no events and is never a root itself: its flow is its members', or unknown.
+ */
+function flowRootOf(task: TaskNode, members: TaskNode[]): string | undefined {
+  if (task.node_type === 'TASK') return firstRoot(task) ?? task.task_id
+  return members.map(firstRoot).find(Boolean)
 }
 
 /**
@@ -18,12 +32,11 @@ interface TaskHeaderProps {
  * it, the state chip and the copyable ID on one line, and the links onward. A link whose target
  * is unknown is left out, never shown disabled.
  */
-export function TaskHeader({ task }: TaskHeaderProps): ReactElement {
+export function TaskHeader({ task, members }: TaskHeaderProps): ReactElement {
   const cut = task.name.lastIndexOf('.')
   const module = task.name.slice(0, Math.max(0, cut))
   const title = task.name.slice(cut + 1)
-  // Every event of a run names the flow it belongs to; a task that has no events is its own root
-  const rootId = task.events.find((event) => event.root_id)?.root_id ?? task.task_id
+  const rootId = flowRootOf(task, members)
 
   return (
     <header data-testid="task-header" className="mb-4 flex min-w-0 flex-col items-start gap-2">
@@ -42,10 +55,12 @@ export function TaskHeader({ task }: TaskHeaderProps): ReactElement {
         <TaskIdentifier taskId={task.task_id} />
       </div>
       <div className="flex max-w-full flex-wrap gap-1.5">
-        <Link to="/flows/$rootId" params={{ rootId }} className={BUTTON_PRIMARY}>
-          <Icon name="flow" size={13} />
-          Open flow
-        </Link>
+        {rootId && (
+          <Link to="/flows/$rootId" params={{ rootId }} className={BUTTON_PRIMARY}>
+            <Icon name="flow" size={13} />
+            Open flow
+          </Link>
+        )}
         {task.hostname && (
           <Link to="/executions" search={{ hostname: task.hostname }} className={BUTTON_QUIET}>
             <Icon name="server" size={13} className="flex-none" />

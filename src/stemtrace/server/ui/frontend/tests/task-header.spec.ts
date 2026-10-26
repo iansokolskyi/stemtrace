@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
-import { createFailedTask } from './fixtures/mock-data'
+import { createFailedTask, createGroup } from './fixtures/mock-data'
 import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /** The top of the task page: title, state, ID, links. Mock mode: it controls the optional fields. */
@@ -112,5 +112,51 @@ test.describe('TaskHeader', () => {
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     )
     expect(overflow).toBe(0)
+  })
+})
+
+// A GROUP or CHORD node is synthetic: it has no events and is never a flow's root itself, so its
+// flow is the one its members belong to.
+test.describe('TaskHeader on a group page', () => {
+  for (const withCallback of [false, true]) {
+    const kind = withCallback ? 'chord' : 'group'
+
+    test(`a ${kind} opens the flow its members belong to`, async ({ page }) => {
+      const [node, ...members] = createGroup(2, { withCallback })
+      for (const member of members) for (const event of member.events) event.root_id = 'root-xyz'
+      await openTask(page, node, ...members)
+      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
+        'href',
+        '/flows/root-xyz',
+      )
+    })
+
+    test(`a ${kind} skips members that name no root and uses the first that does`, async ({
+      page,
+    }) => {
+      const [node, ...members] = createGroup(3, { withCallback })
+      const [first, ...rest] = members
+      for (const event of first.events) event.root_id = null
+      for (const member of rest) for (const event of member.events) event.root_id = 'root-later'
+      await openTask(page, node, ...members)
+      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
+        'href',
+        '/flows/root-later',
+      )
+    })
+
+    test(`a ${kind} whose members name no root has no flow link`, async ({ page }) => {
+      const [node, ...members] = createGroup(2, { withCallback })
+      for (const member of members) for (const event of member.events) event.root_id = null
+      await openTask(page, node, ...members)
+      await expect(header(page).getByRole('heading', { level: 1 })).toBeVisible()
+      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveCount(0)
+    })
+  }
+
+  test('a group with no members has no flow link', async ({ page }) => {
+    const [node] = createGroup(0)
+    await openTask(page, node)
+    await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveCount(0)
   })
 })
