@@ -1,18 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
-import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { TaskOutput } from '@/components/TaskOutput'
 import { TaskStateBadge } from '@/components/TaskStateBadge'
-import {
-  buildSegments,
-  effectiveTimes,
-  formatDuration,
-  sortEventsChronologically,
-  stateColors,
-  TimelineBar,
-} from '@/components/TimelineBar'
+import { EventHistory } from '@/components/task/EventHistory'
 import { ExceptionBlock } from '@/components/task/ExceptionBlock'
+import { ExecutionTimeline } from '@/components/task/ExecutionTimeline'
 import { TaskArguments, TaskResult } from '@/components/task/KwargsList'
 import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
@@ -58,23 +50,8 @@ function TaskDetailPage() {
       {/* Output per attempt (worker capture_output=True) */}
       <TaskOutput events={task.events} />
 
-      {/* Visual Timeline */}
-      {task.events.length > 1 && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Execution Timeline</h2>
-          <TaskExecutionTimeline events={task.events} />
-        </div>
-      )}
-
-      {/* Event timeline */}
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <h2 className="text-lg font-semibold text-slate-100 mb-4">Event History</h2>
-        <div className="space-y-2">
-          {sortEventsChronologically(task.events).map((event, index) => (
-            <EventRow key={index} event={event} />
-          ))}
-        </div>
-      </div>
+      <ExecutionTimeline events={task.events} />
+      <EventHistory events={task.events} />
 
       {/* Children */}
       {children.length > 0 && (
@@ -100,102 +77,6 @@ function TaskDetailPage() {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function EventRow({ event }: { event: TaskEvent }) {
-  const [expanded, setExpanded] = useState(false)
-  const hasTraceback = event.state === 'FAILURE' || event.state === 'RETRY'
-  // A REJECTED event carries Reject's reason as its exception, without a traceback.
-  const showError = (hasTraceback || event.state === 'REJECTED') && event.exception
-
-  const rowContent = (
-    <>
-      <span className="text-slate-500 font-mono text-xs">{formatTime(event.timestamp)}</span>
-      <TaskStateBadge state={event.state} />
-      {event.retries > 0 && <span className="text-xs text-slate-500">retry #{event.retries}</span>}
-      {showError && <span className="text-xs text-red-400 truncate flex-1">{event.exception}</span>}
-      {hasTraceback && event.traceback && (
-        <span className="text-xs text-slate-500 ml-auto">
-          {expanded ? '▲ collapse' : '▼ expand'}
-        </span>
-      )}
-    </>
-  )
-
-  return (
-    <div className="border-l-2 border-slate-700 pl-4 py-1" data-testid="event-row">
-      {hasTraceback && event.traceback ? (
-        <button
-          type="button"
-          className="flex items-center gap-4 text-sm cursor-pointer w-full text-left hover:bg-slate-800/30 rounded -ml-1 pl-1 py-0.5 transition-colors"
-          onClick={() => setExpanded(!expanded)}
-        >
-          {rowContent}
-        </button>
-      ) : (
-        <div className="flex items-center gap-4 text-sm">{rowContent}</div>
-      )}
-
-      {expanded && event.traceback && (
-        <div className="mt-2 bg-slate-950 rounded-lg p-3 font-mono text-xs text-red-300 overflow-x-auto whitespace-pre">
-          {event.traceback}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function formatTime(timestamp: string | null | undefined): string {
-  if (!timestamp) return '-'
-  return new Date(timestamp).toLocaleTimeString()
-}
-
-function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const segments = useMemo(() => buildSegments(events), [events])
-
-  if (segments.length === 0) return null
-
-  const times = effectiveTimes(sortEventsChronologically(events))
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-slate-800/50 rounded h-10">
-        <TimelineBar events={events} height="lg" showLabels />
-      </div>
-
-      {/* Time markers */}
-      <div className="flex justify-between text-xs text-slate-500">
-        <span>{formatTime(new Date(times[0]).toISOString())}</span>
-        <span>{formatTime(new Date(times[times.length - 1]).toISOString())}</span>
-      </div>
-
-      {/* Duration breakdown */}
-      <div className="flex flex-wrap gap-4 text-sm">
-        {segments.map((segment, i) => {
-          const isHovered = hoveredIndex === i
-          return (
-            <div
-              key={i}
-              data-testid="timeline-segment"
-              role="presentation"
-              className={`flex items-center gap-2 transition-opacity cursor-default ${hoveredIndex !== null && !isHovered ? 'opacity-50' : ''}`}
-              onMouseEnter={() => setHoveredIndex(i)}
-              onMouseLeave={() => setHoveredIndex(null)}
-            >
-              <div
-                className={`rounded transition-transform ${stateColors[segment.state] ?? 'bg-gray-500'} ${segment.isTerminal ? 'w-2 h-4' : 'w-4 h-4'} ${isHovered ? 'scale-110' : ''}`}
-              />
-              <span className="text-slate-400">{segment.state}</span>
-              <span className="text-slate-200 font-mono font-medium">
-                {formatDuration(segment.duration)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
     </div>
   )
 }
