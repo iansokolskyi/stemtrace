@@ -12,6 +12,8 @@ import {
   stateColors,
   TimelineBar,
 } from '@/components/TimelineBar'
+import { ExceptionBlock } from '@/components/task/ExceptionBlock'
+import { TaskArguments, TaskResult } from '@/components/task/KwargsList'
 import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
@@ -43,49 +45,15 @@ function TaskDetailPage() {
 
   const { task, children } = data
   const childNames = shortestUniqueSuffixes(children.map((child) => child.name))
-  const startedEvent = task.events.find((e) => e.state === 'STARTED')
-  const hasParams = startedEvent?.args || startedEvent?.kwargs
-  const successEvent = task.events.find((e) => e.state === 'SUCCESS')
-  const hasResult = successEvent?.result !== null && successEvent?.result !== undefined
-
   return (
     <div className="space-y-6">
       <TaskHeader task={task} />
       <TimingBar state={task.state} queueWaitMs={task.queue_wait_ms} runtimeMs={task.runtime_ms} />
       <TaskFacts task={task} />
 
-      {/* Parameters */}
-      {hasParams && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Parameters</h2>
-          {startedEvent?.args && (
-            <div className="mb-4">
-              <span className="text-xs text-slate-500">args</span>
-              <div className="bg-slate-950 rounded-lg p-3 mt-1 font-mono text-sm text-slate-300 overflow-x-auto">
-                <pre>{JSON.stringify(startedEvent.args, null, 2)}</pre>
-              </div>
-            </div>
-          )}
-          {startedEvent?.kwargs && Object.keys(startedEvent.kwargs).length > 0 && (
-            <div>
-              <span className="text-xs text-slate-500">kwargs</span>
-              <div className="bg-slate-950 rounded-lg p-3 mt-1 font-mono text-sm text-slate-300 overflow-x-auto">
-                <pre>{JSON.stringify(startedEvent.kwargs, null, 2)}</pre>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Result */}
-      {hasResult && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Result</h2>
-          <div className="bg-slate-950 rounded-lg p-3 font-mono text-sm text-emerald-400 overflow-x-auto">
-            <pre>{JSON.stringify(successEvent?.result, null, 2)}</pre>
-          </div>
-        </div>
-      )}
+      <ExceptionBlock events={task.events} exceptionType={task.exception_type} />
+      <TaskArguments events={task.events} />
+      <TaskResult events={task.events} />
 
       {/* Output per attempt (worker capture_output=True) */}
       <TaskOutput events={task.events} />

@@ -8,7 +8,7 @@ import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
-const timing = (page: Page): Locator => page.locator('section', { hasText: 'Timing' })
+const timing = (page: Page): Locator => page.getByRole('region', { name: 'Timing' })
 
 async function width(locator: Locator): Promise<number> {
   const box = await locator.boundingBox()

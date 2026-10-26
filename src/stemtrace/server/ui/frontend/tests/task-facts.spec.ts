@@ -7,7 +7,7 @@ import { at, openTask, successTask } from './fixtures/task-page'
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
-const facts = (page: Page): Locator => page.locator('section', { hasText: 'Details' })
+const facts = (page: Page): Locator => page.getByRole('region', { name: 'Details' })
 
 /** The browser's rendering of a timestamp, so the test doesn't depend on the runner's locale. */
 async function inBrowser(page: Page, iso: string): Promise<string> {
