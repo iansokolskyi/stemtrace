@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
-import { TaskStateBadge } from '@/components/TaskStateBadge'
+import { StatusChip } from '@/components/StatusChip'
 import { sortEventsChronologically } from '@/components/TimelineBar'
+import { Panel } from '@/components/task/Panel'
+import { formatTime } from '@/utils/format'
 
 interface TaskOutputProps {
   events: TaskEvent[]
@@ -12,7 +14,7 @@ interface TaskOutputProps {
  * `capture_output=True`). One block per attempt, latest first; renders nothing
  * when no attempt has output.
  */
-export function TaskOutput({ events }: TaskOutputProps) {
+export function TaskOutput({ events }: TaskOutputProps): ReactElement | null {
   // Newest attempt first, by retry number, then time: attempts can run on
   // workers whose clocks disagree. Events carrying output always come from the
   // process that ran the attempt, so their retry number is reliable (unlike
@@ -26,17 +28,18 @@ export function TaskOutput({ events }: TaskOutputProps) {
   if (attempts.length === 0) return null
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-800 p-6" data-testid="task-output">
-      <h2 className="text-lg font-semibold text-slate-100 mb-4">Output</h2>
-      <div className="space-y-3">
-        {attempts.map((event, index) => (
-          <OutputAttempt
-            key={`${event.state}-${event.retries}-${event.timestamp}`}
-            event={event}
-            defaultExpanded={index === 0}
-          />
-        ))}
-      </div>
+    <div data-testid="task-output">
+      <Panel title="Output">
+        <div className="space-y-3 px-4 pt-1 pb-3.5">
+          {attempts.map((event, index) => (
+            <OutputAttempt
+              key={`${event.state}-${event.retries}-${event.timestamp}`}
+              event={event}
+              defaultExpanded={index === 0}
+            />
+          ))}
+        </div>
+      </Panel>
     </div>
   )
 }
@@ -46,34 +49,30 @@ interface OutputAttemptProps {
   defaultExpanded: boolean
 }
 
-function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps) {
+function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps): ReactElement {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const output = event.output ?? ''
 
   return (
-    <div className="border-l-2 border-slate-700 pl-4" data-testid="output-attempt">
-      <div className="flex items-center gap-4 text-sm">
+    <div data-testid="output-attempt" className="min-w-0">
+      <div className="flex items-center gap-3 text-xs">
         <button
           type="button"
-          className="flex items-center gap-4 flex-1 text-left cursor-pointer hover:bg-slate-800/30 rounded -ml-1 pl-1 py-0.5 transition-colors"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-[3px] py-0.5 text-left hover:bg-hover"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
         >
-          <span className="text-slate-500 font-mono text-xs">{formatTime(event.timestamp)}</span>
-          <TaskStateBadge state={event.state} />
-          {event.retries > 0 && (
-            <span className="text-xs text-slate-500">retry #{event.retries}</span>
-          )}
-          <span className="text-xs text-slate-500 ml-auto">
-            {expanded ? '▲ collapse' : '▼ expand'}
-          </span>
+          <StatusChip state={event.state} label={event.state} quiet />
+          <span className="text-muted">{formatTime(event.timestamp)}</span>
+          {event.retries > 0 && <span className="text-muted">retry #{event.retries}</span>}
+          <span className="ml-auto text-muted">{expanded ? 'collapse' : 'expand'}</span>
         </button>
         <CopyButton text={output} />
       </div>
 
       {expanded && (
         <pre
-          className="mt-2 bg-slate-950 rounded-lg p-3 font-mono text-xs text-slate-300 overflow-auto max-h-96 whitespace-pre"
+          className="mt-2 mb-0 max-h-96 max-w-full overflow-auto rounded-[3px] bg-ground px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre"
           data-testid="output-text"
         >
           {output}
@@ -83,7 +82,7 @@ function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps) {
   )
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text }: { text: string }): ReactElement {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -92,7 +91,7 @@ function CopyButton({ text }: { text: string }) {
     return () => clearTimeout(timer)
   }, [copied])
 
-  const copy = async () => {
+  const copy = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
@@ -105,14 +104,9 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={copy}
-      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+      className="rounded-[3px] px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink"
     >
       {copied ? 'Copied' : 'Copy'}
     </button>
   )
-}
-
-function formatTime(timestamp: string | null | undefined): string {
-  if (!timestamp) return '-'
-  return new Date(timestamp).toLocaleTimeString()
 }

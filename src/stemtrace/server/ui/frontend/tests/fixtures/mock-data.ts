@@ -9,7 +9,7 @@ export interface MockTask {
   name: string
   state: string
   parent_id: string | null
-  root_id: string
+  root_id: string | null
   node_type: 'TASK' | 'GROUP' | 'CHORD'
   group_id: string | null
   chord_id: string | null
@@ -27,6 +27,11 @@ export interface MockTask {
   tags?: string[]
   queue_wait_ms?: number | null
   runtime_ms?: number | null
+  total_runtime_ms?: number | null
+  routing_key?: string | null
+  eta?: string | null
+  /** What the detail's `flow_root_id` says; left out, the mock walks the parents as the server does */
+  flow_root_id?: string | null
 }
 
 export interface MockEvent {
@@ -35,7 +40,7 @@ export interface MockEvent {
   state: string
   timestamp: string
   parent_id: string | null
-  root_id: string
+  root_id: string | null
   group_id: string | null
   args: unknown[] | null
   kwargs: Record<string, unknown> | null

@@ -198,8 +198,14 @@ export interface TaskNode {
   task_group?: string | null
   tags?: string[]
   queue_wait_ms?: number | null
-  /** Time spent running, queue wait excluded. */
+  /** The last run's time, queue wait excluded; null until the task finishes. */
   runtime_ms?: number | null
+  /** All runs together (retries included); null exactly when `runtime_ms` is. */
+  total_runtime_ms?: number | null
+  /** Sent by the task detail and list endpoints; null when no event carried it. */
+  routing_key?: string | null
+  /** When the first attempt was scheduled to run (countdown or eta), ISO 8601. */
+  eta?: string | null
 }
 
 /** A task as `GET /api/tasks?compact=1` lists it: no events. */
@@ -222,6 +228,8 @@ export interface TaskListResponse {
 export interface TaskDetailResponse {
   task: TaskNode
   children: TaskNode[]
+  /** Root of the graph that holds the task (what `/api/graphs/{id}` takes); null when unknown. */
+  flow_root_id?: string | null
 }
 
 export interface GraphNode {

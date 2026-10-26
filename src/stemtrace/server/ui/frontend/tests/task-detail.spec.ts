@@ -166,8 +166,8 @@ test.describe('Task Detail - Mock Scenarios', () => {
     await page.goto(`/tasks/${task.task_id}`)
     await page.waitForLoadState('networkidle')
 
-    // Should show the task name
-    const taskName = page.getByText('test.my_task')
+    // Should show the task name (the title is the last segment, the module path sits above it)
+    const taskName = page.getByRole('heading', { level: 1, name: 'my_task' })
     await expect(taskName.first()).toBeVisible()
 
     // Should show SUCCESS state

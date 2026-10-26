@@ -1,18 +1,15 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
-import type { TaskEvent } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { TaskOutput } from '@/components/TaskOutput'
-import { TaskStateBadge } from '@/components/TaskStateBadge'
-import {
-  buildSegments,
-  effectiveTimes,
-  formatDuration,
-  sortEventsChronologically,
-  stateColors,
-  TimelineBar,
-} from '@/components/TimelineBar'
-import { shortestUniqueSuffixes } from '@/utils/taskNames'
+import { ChildTasks } from '@/components/task/ChildTasks'
+import { EventHistory } from '@/components/task/EventHistory'
+import { ExceptionBlock } from '@/components/task/ExceptionBlock'
+import { ExecutionTimeline } from '@/components/task/ExecutionTimeline'
+import { TaskArguments, TaskResult } from '@/components/task/KwargsList'
+import { retryCount } from '@/components/task/retryCount'
+import { TaskFacts } from '@/components/task/TaskFacts'
+import { TaskHeader } from '@/components/task/TaskHeader'
+import { TimingBar } from '@/components/task/TimingBar'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -29,9 +26,9 @@ function TaskDetailPage() {
 
   if (error || !data) {
     return (
-      <div className="text-center py-12">
-        <p className="text-red-400">Failed to load task</p>
-        <Link to="/executions" className="text-blue-400 hover:underline mt-2 inline-block">
+      <div className="py-12 text-center">
+        <p className="text-failure-t">Failed to load task</p>
+        <Link to="/executions" className="mt-2 inline-block underline hover:text-muted">
           Back to executions
         </Link>
       </div>
@@ -39,235 +36,43 @@ function TaskDetailPage() {
   }
 
   const { task, children } = data
-  const childNames = shortestUniqueSuffixes(children.map((child) => child.name))
-  const startedEvent = task.events.find((e) => e.state === 'STARTED')
-  const hasParams = startedEvent?.args || startedEvent?.kwargs
-  const successEvent = task.events.find((e) => e.state === 'SUCCESS')
-  const hasResult = successEvent?.result !== null && successEvent?.result !== undefined
-
-  return (
-    <div className="space-y-6">
-      {/* Task header */}
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-slate-100">{task.name}</h1>
-            <p className="text-sm text-slate-500 font-mono mt-1">{task.task_id}</p>
-          </div>
-          <TaskStateBadge state={task.state} />
-        </div>
-
-        <dl className="grid grid-cols-4 gap-4 mt-6">
-          <InfoCard label="Duration" value={formatDuration(task.duration_ms ?? 0)} />
-          <InfoCard label="First seen" value={formatTime(task.first_seen)} />
-          <InfoCard label="Last update" value={formatTime(task.last_updated)} />
-          <InfoCard label="Children" value={String(children.length)} />
-        </dl>
-      </div>
-
-      {/* Parameters */}
-      {hasParams && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Parameters</h2>
-          {startedEvent?.args && (
-            <div className="mb-4">
-              <span className="text-xs text-slate-500">args</span>
-              <div className="bg-slate-950 rounded-lg p-3 mt-1 font-mono text-sm text-slate-300 overflow-x-auto">
-                <pre>{JSON.stringify(startedEvent.args, null, 2)}</pre>
-              </div>
-            </div>
-          )}
-          {startedEvent?.kwargs && Object.keys(startedEvent.kwargs).length > 0 && (
-            <div>
-              <span className="text-xs text-slate-500">kwargs</span>
-              <div className="bg-slate-950 rounded-lg p-3 mt-1 font-mono text-sm text-slate-300 overflow-x-auto">
-                <pre>{JSON.stringify(startedEvent.kwargs, null, 2)}</pre>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Result */}
-      {hasResult && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Result</h2>
-          <div className="bg-slate-950 rounded-lg p-3 font-mono text-sm text-emerald-400 overflow-x-auto">
-            <pre>{JSON.stringify(successEvent?.result, null, 2)}</pre>
-          </div>
-        </div>
-      )}
-
-      {/* Output per attempt (worker capture_output=True) */}
-      <TaskOutput events={task.events} />
-
-      {/* Visual Timeline */}
-      {task.events.length > 1 && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Execution Timeline</h2>
-          <TaskExecutionTimeline events={task.events} />
-        </div>
-      )}
-
-      {/* Event timeline */}
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <h2 className="text-lg font-semibold text-slate-100 mb-4">Event History</h2>
-        <div className="space-y-2">
-          {sortEventsChronologically(task.events).map((event, index) => (
-            <EventRow key={index} event={event} />
-          ))}
-        </div>
-      </div>
-
-      {/* Children */}
-      {children.length > 0 && (
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 className="text-lg font-semibold text-slate-100 mb-4">Child Tasks</h2>
-          <div className="space-y-2">
-            {children.map((child) => (
-              <Link
-                key={child.task_id}
-                to="/tasks/$taskId"
-                params={{ taskId: child.task_id }}
-                className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 transition-colors"
-              >
-                <div className="flex-1 truncate">
-                  <span className="text-slate-200" title={child.name}>
-                    {childNames.get(child.name) ?? child.name}
-                  </span>
-                  <span className="text-slate-500 text-xs ml-2">{child.task_id.slice(0, 8)}</span>
-                </div>
-                <TaskStateBadge state={child.state} />
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function EventRow({ event }: { event: TaskEvent }) {
-  const [expanded, setExpanded] = useState(false)
-  const hasTraceback = event.state === 'FAILURE' || event.state === 'RETRY'
-  // A REJECTED event carries Reject's reason as its exception, without a traceback.
-  const showError = (hasTraceback || event.state === 'REJECTED') && event.exception
-
-  const rowContent = (
-    <>
-      <span className="text-slate-500 font-mono text-xs">{formatTime(event.timestamp)}</span>
-      <TaskStateBadge state={event.state} />
-      {event.retries > 0 && <span className="text-xs text-slate-500">retry #{event.retries}</span>}
-      {showError && <span className="text-xs text-red-400 truncate flex-1">{event.exception}</span>}
-      {hasTraceback && event.traceback && (
-        <span className="text-xs text-slate-500 ml-auto">
-          {expanded ? '▲ collapse' : '▼ expand'}
-        </span>
-      )}
-    </>
-  )
-
-  return (
-    <div className="border-l-2 border-slate-700 pl-4 py-1" data-testid="event-row">
-      {hasTraceback && event.traceback ? (
-        <button
-          type="button"
-          className="flex items-center gap-4 text-sm cursor-pointer w-full text-left hover:bg-slate-800/30 rounded -ml-1 pl-1 py-0.5 transition-colors"
-          onClick={() => setExpanded(!expanded)}
-        >
-          {rowContent}
-        </button>
-      ) : (
-        <div className="flex items-center gap-4 text-sm">{rowContent}</div>
-      )}
-
-      {expanded && event.traceback && (
-        <div className="mt-2 bg-slate-950 rounded-lg p-3 font-mono text-xs text-red-300 overflow-x-auto whitespace-pre">
-          {event.traceback}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function InfoCard({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="text-sm text-slate-200 font-mono mt-1">{value}</dd>
-    </div>
-  )
-}
-
-function formatTime(timestamp: string | null | undefined): string {
-  if (!timestamp) return '-'
-  return new Date(timestamp).toLocaleTimeString()
-}
-
-function TaskExecutionTimeline({ events }: { events: TaskEvent[] }) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const segments = useMemo(() => buildSegments(events), [events])
-
-  if (segments.length === 0) return null
-
-  const times = effectiveTimes(sortEventsChronologically(events))
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-slate-800/50 rounded h-10">
-        <TimelineBar events={events} height="lg" showLabels />
-      </div>
-
-      {/* Time markers */}
-      <div className="flex justify-between text-xs text-slate-500">
-        <span>{formatTime(new Date(times[0]).toISOString())}</span>
-        <span>{formatTime(new Date(times[times.length - 1]).toISOString())}</span>
-      </div>
-
-      {/* Duration breakdown */}
-      <div className="flex flex-wrap gap-4 text-sm">
-        {segments.map((segment, i) => {
-          const isHovered = hoveredIndex === i
-          return (
-            <div
-              key={i}
-              data-testid="timeline-segment"
-              role="presentation"
-              className={`flex items-center gap-2 transition-opacity cursor-default ${hoveredIndex !== null && !isHovered ? 'opacity-50' : ''}`}
-              onMouseEnter={() => setHoveredIndex(i)}
-              onMouseLeave={() => setHoveredIndex(null)}
-            >
-              <div
-                className={`rounded transition-transform ${stateColors[segment.state] ?? 'bg-gray-500'} ${segment.isTerminal ? 'w-2 h-4' : 'w-4 h-4'} ${isHovered ? 'scale-110' : ''}`}
-              />
-              <span className="text-slate-400">{segment.state}</span>
-              <span className="text-slate-200 font-mono font-medium">
-                {formatDuration(segment.duration)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function TaskDetailSkeleton() {
-  return (
-    <div className="space-y-6 animate-pulse">
-      <div className="h-4 w-32 bg-slate-800 rounded" />
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <div className="h-6 w-64 bg-slate-800 rounded" />
-        <div className="h-4 w-48 bg-slate-800 rounded mt-2" />
-        <div className="grid grid-cols-4 gap-4 mt-6">
-          {[...Array(4)].map((_, i) => (
-            <div key={i}>
-              <div className="h-3 w-16 bg-slate-800 rounded" />
-              <div className="h-4 w-24 bg-slate-800 rounded mt-2" />
-            </div>
-          ))}
+      <TaskHeader task={task} flowRootId={data.flow_root_id} />
+      <div className="grid items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <TimingBar
+            state={task.state}
+            queueWaitMs={task.queue_wait_ms}
+            runtimeMs={task.runtime_ms}
+            totalRuntimeMs={task.total_runtime_ms}
+            retries={retryCount(task)}
+          />
+          <ExecutionTimeline events={task.events} />
+          <ExceptionBlock events={task.events} exceptionType={task.exception_type} />
+          <TaskResult events={task.events} />
+          <TaskOutput events={task.events} />
+        </div>
+        <div className="min-w-0">
+          <TaskFacts task={task} />
+          <TaskArguments events={task.events} />
+          <EventHistory events={task.events} />
+          <ChildTasks tasks={children} />
         </div>
       </div>
+    </div>
+  )
+}
+
+/** The page's own shape while the task loads: a title bar and two panels, no motion. */
+function TaskDetailSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="mb-2 h-3 w-40 rounded-[3px] bg-raised" />
+      <div className="mb-3 h-6 w-64 rounded-[3px] bg-raised" />
+      <div className="mb-4 h-5 w-80 max-w-full rounded-[3px] bg-raised" />
+      <div className="mb-4 h-24 rounded-lg bg-surface" />
+      <div className="h-40 rounded-lg bg-surface" />
     </div>
   )
 }

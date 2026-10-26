@@ -16,6 +16,13 @@ export function formatTime(timestamp: string | null): string {
   })
 }
 
+/** A timestamp as a date and a 24 h time (`Oct 17, 2026 11:58:00`); empty when none. */
+export function formatDateTime(timestamp: string | null | undefined): string {
+  if (!timestamp) return ''
+  const date = new Date(timestamp).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return `${date} ${formatTime(timestamp)}`
+}
+
 /**
  * Format date as YYYY-MM-DD for clean URLs.
  */

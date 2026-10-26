@@ -174,17 +174,16 @@ def test_a_parent_cycle_ends_with_none_in_a_bounded_walk() -> None:
     nodes = store._graph.nodes
     nodes["a"].parent_id = "b"
     nodes["b"].parent_id = "a"
+    # The walk only reads `.nodes`, so a namespace stands in for the graph
     graph = SimpleNamespace(nodes=_BoundedNodes(nodes, limit=10))
-    assert _flow_root_id(graph, "a") is None  # type: ignore[arg-type]
-    assert _flow_root_id(graph, "b") is None  # type: ignore[arg-type]
+    assert _flow_root_id(graph, "a") is None
+    assert _flow_root_id(graph, "b") is None
 
 
 def test_a_parent_missing_from_the_store_gives_no_flow_root() -> None:
     store = GraphStore()
     store.add_event(_event("a"))
-    store._graph.nodes[
-        "a"
-    ].parent_id = (
-        "gone"  # a parent the store no longer holds (a link the graph never makes)
-    )
+    # A parent the store no longer holds: a link the graph never makes
+    node = store._graph.nodes["a"]
+    node.parent_id = "gone"
     assert _flow_root(store, "a") is None

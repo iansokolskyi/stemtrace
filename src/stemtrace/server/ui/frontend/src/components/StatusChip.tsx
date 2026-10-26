@@ -38,6 +38,10 @@ interface StatusChipProps {
   state: string
   /** Hover text, for example the exception type of a failure. */
   title?: string
+  /** Text in place of the state's word, for example the raw event name in a history. */
+  label?: string
+  /** Show the quiet look even for failure and retry (all but the one row that matters). */
+  quiet?: boolean
   className?: string
 }
 
@@ -46,16 +50,23 @@ interface StatusChipProps {
  * states are quiet (muted regular text, outline icon); failure and retry are loud (a filled
  * icon block and bold ink text).
  */
-export function StatusChip({ state, title, className }: StatusChipProps): ReactElement {
+export function StatusChip({
+  state,
+  title,
+  label,
+  quiet = false,
+  className,
+}: StatusChipProps): ReactElement {
   const look = lookOf(state)
+  const loud = look.loud && !quiet
   return (
     <span
       data-state={state}
-      data-variant={look.loud ? 'loud' : 'quiet'}
+      data-variant={loud ? 'loud' : 'quiet'}
       title={title}
       className={clsx(
         'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-xs leading-5',
-        look.loud ? 'font-bold text-ink' : 'font-normal text-muted',
+        loud ? 'font-bold text-ink' : 'font-normal text-muted',
         className,
       )}
     >
@@ -63,16 +74,12 @@ export function StatusChip({ state, title, className }: StatusChipProps): ReactE
         data-status-icon
         className={clsx(
           'inline-flex size-4 shrink-0 items-center justify-center rounded-[3px]',
-          look.loud && look.block,
+          loud && look.block,
         )}
       >
-        <Icon
-          name={look.icon}
-          size={look.loud ? 12 : 14}
-          className={look.loud ? '[stroke-width:2.5]' : ''}
-        />
+        <Icon name={look.icon} size={loud ? 12 : 14} className={loud ? '[stroke-width:2.5]' : ''} />
       </span>
-      {look.word}
+      {label ?? look.word}
     </span>
   )
 }
