@@ -26,14 +26,10 @@ export function ExceptionBlock({
   return (
     <Panel
       title="Exception"
-      aside={
-        exceptionType && <span className="font-mono text-xs text-failure-t">{exceptionType}</span>
-      }
+      aside={exceptionType && <span className="text-xs text-failure-t">{exceptionType}</span>}
     >
       {last.exception && (
-        <p className="m-0 px-4 pt-0 pb-2.5 font-mono text-xs [overflow-wrap:anywhere]">
-          {last.exception}
-        </p>
+        <p className="m-0 px-4 pt-0 pb-2.5 text-xs [overflow-wrap:anywhere]">{last.exception}</p>
       )}
       {last.traceback && (
         <div className={open ? undefined : 'pb-3.5'}>

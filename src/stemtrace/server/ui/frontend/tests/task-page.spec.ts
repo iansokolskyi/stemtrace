@@ -118,4 +118,39 @@ test.describe('Task page layout', () => {
       await expect(page.getByRole('region', { name })).toHaveCount(0)
     }
   })
+
+  test('mono type is for IDs, names, tracebacks, arguments and output only', async ({ page }) => {
+    const { task, child } = fullTask()
+    await openTask(page, task, child)
+    const MONO = /Overpass Mono Variable/
+    const page_ = page.getByTestId('task-header')
+
+    for (const mono of [
+      page_.locator('[data-task-module]'),
+      page_.getByText(task.task_id, { exact: true }),
+      page.getByRole('region', { name: 'Arguments' }).locator('dd').first(),
+      page.getByTestId('output-text').first(),
+    ]) {
+      await expect(mono).toHaveCSS('font-family', MONO)
+    }
+    for (const toggle of await page.getByRole('button', { name: 'Show traceback' }).all()) {
+      await toggle.click()
+      break
+    }
+    await expect(page.getByRole('region', { name: 'Exception' }).locator('pre')).toHaveCSS(
+      'font-family',
+      MONO,
+    )
+
+    // Everything else is the sans: facts, exception type and message, history reasons
+    const exception = page.getByRole('region', { name: 'Exception' })
+    const sans = [
+      ...(await page.getByRole('region', { name: 'Details' }).locator('dd').all()),
+      exception.getByText('GatewayTimeout', { exact: true }),
+      exception.getByText(/^GatewayTimeout: /),
+      page.getByRole('region', { name: 'Event History' }).getByText(/^ConnectionError: /),
+    ]
+    expect(sans.length).toBeGreaterThan(8)
+    for (const element of sans) await expect(element).not.toHaveCSS('font-family', MONO)
+  })
 })

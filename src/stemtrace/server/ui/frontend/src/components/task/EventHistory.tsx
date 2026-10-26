@@ -44,9 +44,7 @@ function EventRow({ event, loud }: { event: TaskEvent; loud: boolean }): ReactEl
       <div className="min-w-0 text-xs">
         <span className="text-muted">{formatTime(event.timestamp)}</span>
         {event.retries > 0 && <span className="ml-2.5 text-muted">retry #{event.retries}</span>}
-        {reason && (
-          <div className="mt-0.5 font-mono text-muted [overflow-wrap:anywhere]">{reason}</div>
-        )}
+        {reason && <div className="mt-0.5 text-muted [overflow-wrap:anywhere]">{reason}</div>}
         {traceback && (
           <>
             <button
