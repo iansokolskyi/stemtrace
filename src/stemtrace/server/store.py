@@ -170,6 +170,24 @@ def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
     return [], None
 
 
+def _flow_root_id(graph: TaskGraph, task_id: str) -> str | None:
+    """The root of the graph ``task_id`` sits in: the node ``/api/graphs`` lists for it.
+
+    Follows ``parent_id`` (where the graph places a node), not any event's
+    ``root_id``: Celery sets ``root_id`` to the task's own ID for a task sent
+    without a parent, which is wrong for a group member or a chord header.
+    None when the task isn't stored, a parent is missing, or the walk loops.
+    """
+    seen: set[str] = set()
+    node = graph.nodes.get(task_id)
+    while node is not None and node.task_id not in seen:
+        if node.parent_id is None:
+            return node.task_id
+        seen.add(node.task_id)
+        node = graph.nodes.get(node.parent_id)
+    return None
+
+
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
     """Get the first timestamp for a node (including children for synthetic nodes)."""
     if node.first_seen is not None:
@@ -861,6 +879,16 @@ class GraphStore:
                 if cid in self._graph.nodes
             ]
             return snapshot, children
+
+    def get_flow_root_id(self, task_id: str) -> str | None:
+        """The ID of the root of the graph that holds ``task_id``.
+
+        Returns:
+            The root's task ID (the one ``/api/graphs`` lists), or None if the
+            task isn't stored or its parent chain doesn't reach a root.
+        """
+        with self._lock:
+            return _flow_root_id(self._graph, task_id)
 
     def get_children(self, task_id: str) -> list[TaskNode]:
         """Get child nodes of a task."""

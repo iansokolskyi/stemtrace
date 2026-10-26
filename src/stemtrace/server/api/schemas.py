@@ -93,6 +93,9 @@ class TaskNodeResponse(BaseModel):
     hostname: str | None = None
     queue: str | None = None
     routing_key: str | None = None
+    # The root of the graph the task sits in (the ID /api/graphs/{id} takes). Only
+    # the task detail sets it; None elsewhere, or when the graph has no root yet.
+    flow_root_id: str | None = None
 
 
 class TaskListResponse(BaseModel):

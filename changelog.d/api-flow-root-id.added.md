@@ -1,0 +1,1 @@
+- `GET /api/tasks/{task_id}` returns `flow_root_id`: the root of the graph that holds the task, which is the ID `GET /api/graphs/{id}` takes. It follows where stemtrace places the task, not Celery's `root_id` (Celery sets that to the task's own ID for a group member or any task sent without a parent). The task lists leave it `null`.
