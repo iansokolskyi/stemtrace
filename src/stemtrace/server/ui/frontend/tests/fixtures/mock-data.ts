@@ -27,6 +27,7 @@ export interface MockTask {
   tags?: string[]
   queue_wait_ms?: number | null
   runtime_ms?: number | null
+  total_runtime_ms?: number | null
   routing_key?: string | null
   eta?: string | null
 }

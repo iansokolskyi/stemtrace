@@ -212,6 +212,7 @@ export async function setupMockApi(
     tags: t.tags ?? [],
     queue_wait_ms: t.queue_wait_ms ?? null,
     runtime_ms: t.runtime_ms ?? null,
+    total_runtime_ms: t.total_runtime_ms ?? null,
     routing_key: t.routing_key ?? null,
     eta: t.eta ?? null,
   })

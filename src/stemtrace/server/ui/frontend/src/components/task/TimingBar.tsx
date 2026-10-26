@@ -8,26 +8,40 @@ interface TimingBarProps {
   state: string
   /** Time between publish and the worker starting the attempt; null when unknown. */
   queueWaitMs?: number | null
-  /** Time spent running, queue wait excluded; null when unknown. */
+  /** The last run's time, queue wait excluded; null when unknown. */
   runtimeMs?: number | null
+  /** All runs together; null when unknown. */
+  totalRuntimeMs?: number | null
+  /** The highest retry number the events report. */
+  retries?: number
 }
 
 /**
  * Queue wait as a grey lead-in, then the runtime block, drawn to one scale. Shows only the
  * parts that are known, and nothing when neither is.
  */
-export function TimingBar({ state, queueWaitMs, runtimeMs }: TimingBarProps): ReactElement | null {
+export function TimingBar({
+  state,
+  queueWaitMs,
+  runtimeMs,
+  totalRuntimeMs,
+  retries = 0,
+}: TimingBarProps): ReactElement | null {
   const hasWait = typeof queueWaitMs === 'number'
   const hasRuntime = typeof runtimeMs === 'number'
   if (!hasWait && !hasRuntime) return null
 
   const wait = hasWait ? queueWaitMs : 0
   const runtime = hasRuntime ? runtimeMs : 0
-  const total = wait + runtime
-  const waitPct = total > 0 ? (wait / total) * 100 : 0
+  const scale = wait + runtime
+  const waitPct = scale > 0 ? (wait / scale) * 100 : 0
+  // Queue wait is the first attempt's and the runtime the last run's, so they are never summed;
+  // the sum over every run is the API's `total_runtime_ms`.
+  const ranMoreThanOnce =
+    typeof totalRuntimeMs === 'number' && (retries > 0 || (hasRuntime && totalRuntimeMs > runtime))
   const label = [
     hasWait && `Queue wait ${formatSpan(wait)}`,
-    hasRuntime && `runtime ${formatSpan(runtime)}`,
+    hasRuntime && `last run ${formatSpan(runtime)}`,
   ]
     .filter(Boolean)
     .join(', ')
@@ -57,8 +71,8 @@ export function TimingBar({ state, queueWaitMs, runtimeMs }: TimingBarProps): Re
         </div>
         <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs">
           {hasWait && <Figure term="Queue wait" value={formatSpan(wait)} />}
-          {hasRuntime && <Figure term="Runtime" value={formatSpan(runtime)} />}
-          {hasWait && hasRuntime && <Figure term="Total" value={formatSpan(total)} />}
+          {hasRuntime && <Figure term="Last run" value={formatSpan(runtime)} />}
+          {ranMoreThanOnce && <Figure term="All runs" value={formatSpan(totalRuntimeMs)} />}
         </dl>
       </div>
     </Panel>

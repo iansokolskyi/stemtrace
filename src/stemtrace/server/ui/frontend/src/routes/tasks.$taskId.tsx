@@ -6,6 +6,7 @@ import { EventHistory } from '@/components/task/EventHistory'
 import { ExceptionBlock } from '@/components/task/ExceptionBlock'
 import { ExecutionTimeline } from '@/components/task/ExecutionTimeline'
 import { TaskArguments, TaskResult } from '@/components/task/KwargsList'
+import { retryCount } from '@/components/task/retryCount'
 import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
@@ -44,6 +45,8 @@ function TaskDetailPage() {
             state={task.state}
             queueWaitMs={task.queue_wait_ms}
             runtimeMs={task.runtime_ms}
+            totalRuntimeMs={task.total_runtime_ms}
+            retries={retryCount(task)}
           />
           <ExecutionTimeline events={task.events} />
           <ExceptionBlock events={task.events} exceptionType={task.exception_type} />

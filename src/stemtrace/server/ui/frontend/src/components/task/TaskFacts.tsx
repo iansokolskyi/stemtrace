@@ -2,16 +2,12 @@ import type { ReactElement, ReactNode } from 'react'
 import type { TaskNode } from '@/api/client'
 import { formatDateTime, formatSpan } from '@/utils/format'
 import { Panel } from './Panel'
+import { retryCount } from './retryCount'
 
 interface Fact {
   label: string
   value: ReactNode
   mono?: boolean
-}
-
-/** The highest retry number any event reports; 0 when the task never retried. */
-function retryCount(task: TaskNode): number {
-  return task.events.reduce((most, event) => Math.max(most, event.retries ?? 0), 0)
 }
 
 /** The facts the API knows for this task, in reading order. A fact without a value is left out. */

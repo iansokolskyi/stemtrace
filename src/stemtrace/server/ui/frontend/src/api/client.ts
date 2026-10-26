@@ -198,8 +198,10 @@ export interface TaskNode {
   task_group?: string | null
   tags?: string[]
   queue_wait_ms?: number | null
-  /** Time spent running, queue wait excluded. */
+  /** The last run's time, queue wait excluded; null until the task finishes. */
   runtime_ms?: number | null
+  /** All runs together (retries included); null exactly when `runtime_ms` is. */
+  total_runtime_ms?: number | null
   /** Sent by the task detail and list endpoints; null when no event carried it. */
   routing_key?: string | null
   /** When the first attempt was scheduled to run (countdown or eta), ISO 8601. */
