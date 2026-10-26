@@ -41,6 +41,23 @@ test.describe('Arguments', () => {
     await expect(cellOf(list, 'amount')).toHaveCSS('font-family', /Overpass Mono Variable/)
   })
 
+  test('a kwarg named args is its own line next to the positional args', async ({ page }) => {
+    const warnings: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error') warnings.push(message.text())
+    })
+    const task = withEvents(successTask(), (id, name) => [
+      createMockEvent(id, name, 'PENDING', { timestamp: at(0), args: [7] }),
+      createMockEvent(id, name, 'STARTED', { timestamp: at(1), kwargs: { args: 'named' } }),
+      createMockEvent(id, name, 'SUCCESS', { timestamp: at(2) }),
+    ])
+    await openTask(page, task)
+    const list = args(page)
+    await expect(list.locator('dt')).toHaveText(['args', 'args'])
+    await expect(list.locator('dd')).toHaveText(['[7]', '"named"'])
+    expect(warnings.filter((text) => text.includes('same key'))).toEqual([])
+  })
+
   test('args alone give one line and no kwargs', async ({ page }) => {
     await openTask(page, successTask())
     await expect(cellOf(args(page), 'args')).toHaveText('[7]')
