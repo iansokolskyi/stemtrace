@@ -77,7 +77,7 @@ const canonical = (filters: ExecutionFilters): string =>
   JSON.stringify(
     Object.entries(filters)
       .filter(([, value]) => value !== undefined)
-      .sort(),
+      .sort(([a], [b]) => a.localeCompare(b)),
   )
 
 /** What removing a chip clears. */
