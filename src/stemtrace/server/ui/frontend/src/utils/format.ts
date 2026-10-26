@@ -16,10 +16,11 @@ export function formatTime(timestamp: string | null): string {
   })
 }
 
-/** A timestamp as a date and a time in the viewer's locale; empty when none. */
+/** A timestamp as a date and a 24 h time (`Oct 17, 2026 11:58:00`); empty when none. */
 export function formatDateTime(timestamp: string | null | undefined): string {
   if (!timestamp) return ''
-  return new Date(timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
+  const date = new Date(timestamp).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return `${date} ${formatTime(timestamp)}`
 }
 
 /**

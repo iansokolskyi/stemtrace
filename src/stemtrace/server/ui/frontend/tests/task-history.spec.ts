@@ -126,6 +126,22 @@ test.describe('ExecutionTimeline', () => {
     )
   })
 
+  test('durations use the same format as the rest of the page', async ({ page }) => {
+    const task = successTask()
+    const { task_id, name } = task
+    task.events = [
+      createMockEvent(task_id, name, 'PENDING', { timestamp: at(0) }),
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(125) }),
+      createMockEvent(task_id, name, 'SUCCESS', { timestamp: at(125.4) }),
+    ]
+    await openTask(page, task)
+    const segments = timeline(page).getByTestId('timeline-segment')
+    // 125 s is `2m 5s` everywhere, not `2.1m`
+    await expect(segments.nth(0)).toContainText('2m 5s')
+    await expect(segments.nth(1)).toContainText('400ms')
+    await expect(segments.nth(2)).toContainText('0ms')
+  })
+
   test('a failure segment takes the failure colour', async ({ page }) => {
     await openTask(page, retriedThenFailed())
     const last = timeline(page).getByTestId('timeline-segment').last()

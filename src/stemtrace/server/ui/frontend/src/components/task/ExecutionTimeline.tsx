@@ -1,13 +1,8 @@
 import { clsx } from 'clsx'
 import { type ReactElement, useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
-import {
-  buildSegments,
-  effectiveTimes,
-  formatDuration,
-  sortEventsChronologically,
-} from '@/components/TimelineBar'
-import { formatTime } from '@/utils/format'
+import { buildSegments, effectiveTimes, sortEventsChronologically } from '@/components/TimelineBar'
+import { formatSpan, formatTime } from '@/utils/format'
 import { Panel } from './Panel'
 import { stateFill } from './stateFill'
 
@@ -69,7 +64,7 @@ export function ExecutionTimeline({ events }: { events: TaskEvent[] }): ReactEle
                 )}
               />
               <span className="text-muted">{segment.state}</span>
-              <span className="font-bold">{formatDuration(segment.duration)}</span>
+              <span className="font-bold">{formatSpan(segment.duration)}</span>
             </div>
           ))}
         </div>

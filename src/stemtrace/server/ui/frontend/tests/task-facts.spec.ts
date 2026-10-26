@@ -9,15 +9,6 @@ test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
 const facts = (page: Page): Locator => page.getByRole('region', { name: 'Details' })
 
-/** The browser's rendering of a timestamp, so the test doesn't depend on the runner's locale. */
-async function inBrowser(page: Page, iso: string): Promise<string> {
-  return page.evaluate(
-    (value) =>
-      new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' }),
-    iso,
-  )
-}
-
 interface FactCase {
   label: string
   /** Fields that make the row appear, and the text it shows. */
@@ -68,15 +59,22 @@ test.describe('Facts', () => {
     await expect(page.getByRole('heading', { name: 'Details' })).toHaveCount(0)
   })
 
-  test('First seen, Last update and ETA are shown as dates when known', async ({ page }) => {
+  test('dates carry a 24 h time, the same as the event history shows', async ({ page }) => {
     await openTask(page, successTask({ eta: at(-30) }))
     const dd = (label: string) =>
       facts(page)
         .locator('dt', { hasText: new RegExp(`^${label}$`) })
         .locator('xpath=following-sibling::dd[1]')
-    await expect(dd('First seen')).toHaveText(await inBrowser(page, at(0)))
-    await expect(dd('Last update')).toHaveText(await inBrowser(page, at(2)))
-    await expect(dd('ETA')).toHaveText(await inBrowser(page, at(-30)))
+    const DATE_TIME = /^[A-Z][a-z]{2} \d{1,2}, \d{4} \d{2}:\d{2}:\d{2}$/
+    for (const label of ['First seen', 'Last update', 'ETA']) {
+      await expect(dd(label)).toHaveText(DATE_TIME)
+    }
+    // First seen is the PENDING event's time and Last update the SUCCESS event's: same clock text
+    const rows = page.getByRole('region', { name: 'Event History' }).getByTestId('event-row')
+    const timeOf = async (row: number): Promise<string> =>
+      (((await rows.nth(row).textContent()) ?? '').match(/\d{2}:\d{2}:\d{2}/) ?? [''])[0]
+    await expect(dd('First seen')).toContainText(await timeOf(0))
+    await expect(dd('Last update')).toContainText(await timeOf(2))
   })
 
   test('ETA has no row without one', async ({ page }) => {
