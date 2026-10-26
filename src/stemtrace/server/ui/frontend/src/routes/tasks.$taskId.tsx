@@ -12,6 +12,7 @@ import {
   stateColors,
   TimelineBar,
 } from '@/components/TimelineBar'
+import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
@@ -51,14 +52,7 @@ function TaskDetailPage() {
     <div className="space-y-6">
       <TaskHeader task={task} />
       <TimingBar state={task.state} queueWaitMs={task.queue_wait_ms} runtimeMs={task.runtime_ms} />
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <dl className="grid grid-cols-4 gap-4">
-          <InfoCard label="Duration" value={formatDuration(task.duration_ms ?? 0)} />
-          <InfoCard label="First seen" value={formatTime(task.first_seen)} />
-          <InfoCard label="Last update" value={formatTime(task.last_updated)} />
-          <InfoCard label="Children" value={String(children.length)} />
-        </dl>
-      </div>
+      <TaskFacts task={task} />
 
       {/* Parameters */}
       {hasParams && (
@@ -181,15 +175,6 @@ function EventRow({ event }: { event: TaskEvent }) {
           {event.traceback}
         </div>
       )}
-    </div>
-  )
-}
-
-function InfoCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="text-sm text-slate-200 font-mono mt-1">{value}</dd>
     </div>
   )
 }

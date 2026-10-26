@@ -16,6 +16,12 @@ export function formatTime(timestamp: string | null): string {
   })
 }
 
+/** A timestamp as a date and a time in the viewer's locale; empty when none. */
+export function formatDateTime(timestamp: string | null | undefined): string {
+  if (!timestamp) return ''
+  return new Date(timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
+}
+
 /**
  * Format date as YYYY-MM-DD for clean URLs.
  */
