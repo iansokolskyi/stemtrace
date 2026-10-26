@@ -112,7 +112,7 @@ class TestGraphStoreConsistency:
         found = store.get_node_with_children("parent")
 
         assert found is not None
-        node, children = found
+        node, children, _ = found
         assert node.children == [c.task_id for c in children]
         assert lock.interleavings == 1
 

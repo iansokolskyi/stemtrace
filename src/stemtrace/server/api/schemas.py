@@ -109,6 +109,14 @@ class TaskDetailResponse(BaseModel):
 
     task: TaskNodeResponse
     children: list[TaskNodeResponse] = Field(default_factory=list)
+    flow_root_id: str | None = Field(
+        default=None,
+        description=(
+            "Root of the graph that holds the task: the ID GET /api/graphs/{id} "
+            "takes. It follows where the graph places the task, not Celery's "
+            "root_id. Null when the walk up from the task reaches no root."
+        ),
+    )
 
 
 class GraphNodeResponse(BaseModel):

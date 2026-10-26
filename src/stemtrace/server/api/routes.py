@@ -849,11 +849,12 @@ def _add_task_routes(
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        node, children = found
+        node, children, flow_root_id = found
         group_of = group_lookup(groups)
         return TaskDetailResponse(
             task=_node_to_response(node, include_output=True, group_of=group_of),
             children=[_node_to_response(c, group_of=group_of) for c in children],
+            flow_root_id=flow_root_id,
         )
 
     @router.get(
@@ -872,7 +873,7 @@ def _add_task_routes(
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        _, children = found
+        children = found.children
         group_of = group_lookup(groups)
         return [
             _node_to_response(c, include_events=not compact, group_of=group_of)

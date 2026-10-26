@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel
 
@@ -53,6 +53,14 @@ def _ensure_end_of_day(dt: datetime) -> datetime:
     if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
         dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
     return dt
+
+
+class NodeWithChildren(NamedTuple):
+    """A node snapshot, its direct children and the root of its graph."""
+
+    node: TaskNode
+    children: list[TaskNode]
+    flow_root_id: str | None
 
 
 def _snapshot(node: TaskNode) -> TaskNode:
@@ -168,6 +176,27 @@ def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
         steps.append(parent.task_id)
         current = parent
     return [], None
+
+
+def _flow_root_id(graph: TaskGraph, task_id: str) -> str | None:
+    """The root of the graph ``task_id`` sits in: the node ``/api/graphs`` lists for it.
+
+    Follows ``parent_id`` (where the graph places a node), not any event's
+    ``root_id``: Celery sets ``root_id`` to the task's own ID for a task sent
+    without a parent, which is wrong for a group member or a chord header.
+    None when the task isn't stored. The None cases below are defensive: a rebuild
+    relinks nodes from events, ``remove_node`` turns orphaned children into roots,
+    and ``_link`` refuses cycles, so a missing parent or a loop is a link the graph
+    never makes.
+    """
+    seen: set[str] = set()
+    node = graph.nodes.get(task_id)
+    while node is not None and node.task_id not in seen:
+        if node.parent_id is None:
+            return node.task_id
+        seen.add(node.task_id)
+        node = graph.nodes.get(node.parent_id)
+    return None
 
 
 def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
@@ -842,13 +871,13 @@ class GraphStore:
                 current = parent
         return found
 
-    def get_node_with_children(
-        self, task_id: str
-    ) -> tuple[TaskNode, list[TaskNode]] | None:
-        """Get a node and its direct children from one consistent snapshot.
+    def get_node_with_children(self, task_id: str) -> NodeWithChildren | None:
+        """Get a node, its direct children and its flow root from one consistent snapshot.
 
         Returns:
-            Tuple of (node, children), or None if the node doesn't exist.
+            The node, its children and the root of its graph (the ID
+            ``/api/graphs`` lists; None if the walk up can't reach one), or None
+            if the node doesn't exist.
         """
         with self._lock:
             node = self._graph.get_node(task_id)
@@ -860,7 +889,9 @@ class GraphStore:
                 for cid in snapshot.children
                 if cid in self._graph.nodes
             ]
-            return snapshot, children
+            return NodeWithChildren(
+                snapshot, children, _flow_root_id(self._graph, task_id)
+            )
 
     def get_children(self, task_id: str) -> list[TaskNode]:
         """Get child nodes of a task."""
