@@ -1014,3 +1014,107 @@ test.describe('Presses on targets, with a date typed', () => {
     }
   }
 })
+
+test.describe('The popover closes when the filters change under it', () => {
+  // From the keyboard nothing presses outside the popover, so only the filters changing tells
+  // it that the edit is over: whatever was typed must go, and the next edit must push.
+  const setup = async (page: Page, start: string) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    api.setGroups([
+      { name: 'Billing', source: 'code', tags: ['money'], color: null, task_names: [] },
+    ])
+    await logHistoryWrites(page)
+    await page.goto(start)
+  }
+
+  const leaves: {
+    name: string
+    keys: string[]
+    target: (page: Page) => Locator
+    url: Record<string, string>
+  }[] = [
+    {
+      name: 'Clear',
+      keys: ['Enter', 'Space'],
+      target: (page) => page.getByRole('button', { name: 'Clear' }),
+      url: {},
+    },
+    {
+      name: "a chip's ×",
+      keys: ['Enter', 'Space'],
+      target: (page) => page.getByRole('button', { name: 'Remove queue filter' }),
+      url: {},
+    },
+    {
+      name: 'a sidebar group link',
+      keys: ['Enter'],
+      target: (page) =>
+        page.getByRole('navigation', { name: 'Groups' }).getByRole('link', { name: 'Billing' }),
+      url: { task_group: 'Billing' },
+    },
+    {
+      name: 'a sidebar tag link',
+      keys: ['Enter'],
+      target: (page) =>
+        page.getByRole('navigation', { name: 'Tags' }).getByRole('link', { name: '#money' }),
+      url: { tag: 'money' },
+    },
+  ]
+  for (const { name, keys, target, url } of leaves) {
+    for (const key of keys) {
+      test(`${key} on ${name} closes the popover and drops the typed date`, async ({ page }) => {
+        await setup(page, '/executions?queue=payments')
+        await open(page, 'Time')
+        await typeInto(page, 'From', '01011950')
+        await target(page).focus()
+        await page.keyboard.press(key)
+        await expect.poll(() => search(page)).toEqual(url)
+        await expect(popover(page)).toHaveCount(0)
+        // Nothing of the typed date got through, then or later
+        expect((await writtenDates(page, 'from_date')).filter((d) => d !== null)).toEqual([])
+        expect(search(page).from_date).toBeUndefined()
+      })
+    }
+  }
+
+  test('a change from the keyboard ends the edit, so the next one pushes instead of replacing', async ({
+    page,
+  }) => {
+    await setup(page, '/workers')
+    await page.goto('/executions')
+    await open(page, 'State')
+    await popover(page).getByRole('checkbox', { name: 'Failure' }).check()
+    await expect.poll(() => search(page)).toEqual({ state: 'FAILURE' })
+
+    // Enter on the sidebar link: a new entry, and the popover is over
+    await page
+      .getByRole('navigation', { name: 'Groups' })
+      .getByRole('link', { name: 'Billing' })
+      .focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => search(page)).toEqual({ task_group: 'Billing' })
+    await expect(popover(page)).toHaveCount(0)
+
+    // The next edit is its own entry: Back reaches the Billing page, not the one before it
+    await open(page, 'State')
+    await popover(page).getByRole('checkbox', { name: 'Success' }).check()
+    await expect.poll(() => search(page)).toEqual({ task_group: 'Billing', state: 'SUCCESS' })
+    await page.goBack()
+    expect(search(page)).toEqual({ task_group: 'Billing' })
+    await page.goBack()
+    expect(search(page)).toEqual({ state: 'FAILURE' })
+  })
+
+  test('Back to an entry with the same filters still ends the edit', async ({ page }) => {
+    await setup(page, '/executions')
+    // Two history entries with the same filters: going back changes no filter, so only the
+    // browser's own Back tells the popover its edit is over
+    await page.evaluate(() => window.history.pushState({}, '', window.location.href))
+    await open(page, 'Time')
+    await typeInto(page, 'From', '01011950')
+    await page.goBack()
+    await expect(popover(page)).toHaveCount(0)
+    expect(search(page)).toEqual({})
+  })
+})
