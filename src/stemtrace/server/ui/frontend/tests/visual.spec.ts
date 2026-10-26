@@ -184,7 +184,9 @@ function taskPageRuns(): { failed: MockTask; retrying: MockTask; child: MockTask
     root_id: task_id,
     children: [child.task_id],
     queue_wait_ms: 1800,
+    // Two runs of 30 s each: the API reports the last run and all of them
     runtime_ms: 30_000,
+    total_runtime_ms: 60_000,
     first_seen: at(0),
     last_updated: at(70),
     duration_ms: 70_000,
@@ -230,7 +232,9 @@ function taskPageRuns(): { failed: MockTask; retrying: MockTask; child: MockTask
     task_group: 'Email',
     tags: [],
     queue_wait_ms: 130_000,
-    runtime_ms: 4200,
+    // A task that is retrying has not finished, so the API has no runtime yet (only its queue wait)
+    runtime_ms: null,
+    total_runtime_ms: null,
     first_seen: at(0),
     last_updated: at(140),
     duration_ms: 140_000,

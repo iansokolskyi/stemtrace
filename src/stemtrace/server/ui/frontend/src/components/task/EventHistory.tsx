@@ -5,6 +5,21 @@ import { sortEventsChronologically } from '@/components/TimelineBar'
 import { formatTime } from '@/utils/format'
 import { Panel } from './Panel'
 
+/**
+ * A key that follows the event, not its position: an earlier event arriving live shifts every
+ * index, and an open traceback must stay with its own row. Events have no id of their own, so
+ * the key is what tells them apart, plus a count for identical ones.
+ */
+function rowKeys(events: TaskEvent[]): string[] {
+  const seen = new Map<string, number>()
+  return events.map((event) => {
+    const identity = `${event.state}|${event.retries}|${event.timestamp}`
+    const count = seen.get(identity) ?? 0
+    seen.set(identity, count + 1)
+    return `${identity}|${count}`
+  })
+}
+
 const isFailureLike = (event: TaskEvent): boolean =>
   event.state === 'FAILURE' || event.state === 'RETRY'
 
@@ -15,17 +30,13 @@ const isFailureLike = (event: TaskEvent): boolean =>
 export function EventHistory({ events }: { events: TaskEvent[] }): ReactElement {
   const ordered = sortEventsChronologically(events)
   const loudIndex = ordered.map(isFailureLike).lastIndexOf(true)
+  const keys = rowKeys(ordered)
 
   return (
     <Panel title="Event History">
       <ol className="m-0 list-none px-4 pt-1 pb-3.5">
         {ordered.map((event, index) => (
-          <EventRow
-            // Rows are positional: a re-sort of the same events gives the same list
-            key={index}
-            event={event}
-            loud={index === loudIndex}
-          />
+          <EventRow key={keys[index]} event={event} loud={index === loudIndex} />
         ))}
       </ol>
     </Panel>

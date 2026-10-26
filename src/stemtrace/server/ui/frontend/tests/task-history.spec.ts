@@ -1,5 +1,6 @@
-import { expect, type Locator, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
+import { setupMockApi } from './fixtures/mock-api'
 import { createFailedTask, createMockEvent, type MockTask } from './fixtures/mock-data'
 import { at, openTask, successTask, tokenColour } from './fixtures/task-page'
 
@@ -91,6 +92,58 @@ test.describe('EventHistory', () => {
     await expect(row.locator('pre')).toHaveText('tb-first')
     await row.getByRole('button', { name: 'Hide traceback' }).click()
     await expect(row.locator('pre')).toHaveCount(0)
+  })
+
+  test('an open traceback stays with its event when an earlier event arrives live', async ({
+    page,
+  }) => {
+    const sockets: WebSocketRoute[] = []
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      sockets.push(ws)
+    })
+    const api = await setupMockApi(page, { useDefaults: false })
+    const task = retriedThenFailed()
+    api.addTask(task)
+    await page.goto(`/tasks/${task.task_id}`)
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+
+    const rows = history(page).getByTestId('event-row')
+    const retryRow = rows.filter({ hasText: 'RuntimeError: first' })
+    await retryRow.getByRole('button', { name: 'Show traceback' }).click()
+    await expect(retryRow.locator('pre')).toHaveText('tb-first')
+
+    // A RECEIVED stamped before the first run sorts in above the retry row, shifting every index
+    task.events.push(
+      createMockEvent(task.task_id, task.name, 'RECEIVED', { timestamp: at(0.5), retries: 0 }),
+    )
+    const refetched = page.waitForResponse(
+      (response) =>
+        response.request().resourceType() === 'fetch' &&
+        new URL(response.url()).pathname === `/api/tasks/${task.task_id}`,
+    )
+    sockets[sockets.length - 1].send(JSON.stringify({ task_id: task.task_id, state: 'RECEIVED' }))
+    await refetched
+    await expect(rows).toHaveCount(6)
+
+    await expect(retryRow.locator('pre')).toHaveText('tb-first')
+    await expect(history(page).locator('pre')).toHaveCount(1)
+  })
+
+  test('identical events are separate rows and give no duplicate-key warning', async ({ page }) => {
+    const warnings: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error') warnings.push(message.text())
+    })
+    const task = successTask()
+    const { task_id, name } = task
+    task.events = [
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), retries: 0 }),
+      createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), retries: 0 }),
+      createMockEvent(task_id, name, 'SUCCESS', { timestamp: at(2), retries: 0 }),
+    ]
+    await openTask(page, task)
+    await expect(history(page).getByTestId('event-row')).toHaveCount(3)
+    expect(warnings.filter((text) => text.includes('same key'))).toEqual([])
   })
 
   test('rows without a traceback have no toggle', async ({ page }) => {
