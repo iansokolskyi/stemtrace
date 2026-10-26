@@ -17,6 +17,19 @@ import {
 
 const isRealMode = process.env.E2E_MODE === 'real'
 
+/**
+ * Opens the first task in the list that has events. Group and chord nodes are synthetic and have
+ * none, so their page has no timeline; whether one is the first row depends on which task was
+ * updated last, which a test must not leave to timing.
+ */
+async function openTaskWithTimeline(page: Page): Promise<void> {
+  // By href, which the mock and the real server share (a group node's id starts with `group:`)
+  const taskLink = page.locator('a[href*="/tasks/"]:not([href*="/tasks/group"])').first()
+  await expect(taskLink).toBeVisible()
+  await taskLink.click()
+  await expect(page).toHaveURL(/\/tasks\/(?!group)/)
+}
+
 test.describe('Task Detail Page', () => {
   test.beforeEach(async ({ page }) => {
     if (!isRealMode) {
@@ -28,18 +41,32 @@ test.describe('Task Detail Page', () => {
   })
 
   test('displays task timeline', async ({ page }) => {
-    // Find and click a task
-    const taskLink = page.locator('a[href*="/tasks/"]').first()
-    await expect(taskLink).toBeVisible()
-
-    await taskLink.click()
-    await page.waitForLoadState('networkidle')
+    await openTaskWithTimeline(page)
 
     // Look for timeline section - the heading "Execution Timeline" should be visible
     const timelineHeading = page.getByText('Execution Timeline')
 
     // Wait for heading to be visible using expect assertion with auto-retry
     await expect(timelineHeading).toBeVisible()
+  })
+
+  test('opens a task with a timeline even when a group node is the newest row', async ({
+    page,
+  }) => {
+    // The list shows the most recently updated first. The real store leaves a group node's
+    // last update unset, so it sorts last, but that is not something this test may rely on:
+    // here it is made the newest row on purpose, and its page (no events) has no timeline.
+    const api = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('tasks.with_timeline')
+    task.last_updated = '2026-10-17T12:00:00.000Z'
+    const [groupNode] = createGroup(2)
+    groupNode.last_updated = '2026-10-17T12:30:00.000Z'
+    api.addTasks([task, groupNode])
+    await page.goto('/executions')
+    await expect(page.locator('a[href*="/tasks/"]').first()).toContainText('group:')
+
+    await openTaskWithTimeline(page)
+    await expect(page.getByText('Execution Timeline')).toBeVisible()
   })
 
   test('shows task metadata', async ({ page }) => {

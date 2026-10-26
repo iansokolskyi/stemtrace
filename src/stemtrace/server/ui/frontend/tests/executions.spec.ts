@@ -362,6 +362,15 @@ test.describe('Live updates under the cursor', () => {
   const newButton = (page: Page, count: number) =>
     page.getByRole('button', { name: `${count} new` })
   const names = (page: Page) => rows(page).locator('[data-task-last]')
+  /**
+   * Presses "N new" from the keyboard. Moving the mouse to the button leaves the table, and
+   * leaving it releases the freeze (the new rows apply and the button goes), so a mouse click
+   * races with its own cause; focus and Enter keep the pointer where it is.
+   */
+  async function applyNew(page: Page, count: number): Promise<void> {
+    await newButton(page, count).focus()
+    await page.keyboard.press('Enter')
+  }
 
   test('under the pointer the order is frozen, rows update in place, new tasks are counted', async ({
     page,
@@ -396,7 +405,7 @@ test.describe('Live updates under the cursor', () => {
     expect(await hovered.boundingBox()).toEqual(before)
     expect(await scrollBox(page).boundingBox()).toEqual(boxBefore)
 
-    await newButton(page, 1).click()
+    await applyNew(page, 1)
     await expect(names(page).first()).toHaveText('brand_new')
     await expect(rows(page)).toHaveCount(7)
     await expect(newButton(page, 1)).toHaveCount(0)
@@ -534,7 +543,7 @@ test.describe('Live updates under the cursor', () => {
       await expect(page.getByText(new RegExp(`of ${250 + arrivals} tasks`))).toBeVisible()
       await expect(page.getByText('fresh_0', { exact: true })).toHaveCount(0)
 
-      await newButton(page, arrivals).click()
+      await applyNew(page, arrivals)
       await expect(names(page).first()).toHaveText(`fresh_${arrivals - 1}`)
     })
   }
@@ -687,7 +696,7 @@ test.describe('Live updates under the cursor', () => {
     await expect(newButton(page, 1)).toBeVisible()
     await expect(departed(page)).toHaveCount(1)
 
-    await newButton(page, 1).click()
+    await applyNew(page, 1)
     await expect(departed(page)).toHaveCount(0)
     await expect(rows(page)).toHaveCount(6)
     await expect(names(page).first()).toHaveText('fresh_0')
@@ -739,20 +748,43 @@ test.describe('Live updates under the cursor', () => {
 
   /** Scrolls the box until `count` rows are loaded, then parks row `index` at the top. */
   async function parkAt(page: Page, count: number, index: number): Promise<void> {
+    // Scrolling to the bottom can start one more page than the test asked for: count the list
+    // requests in flight so the page count is settled before the test relies on it
+    let inflight = 0
+    const isList = (r: { url(): string }) => new URL(r.url()).pathname === '/api/tasks'
+    const started = (r: { url(): string }) => {
+      if (isList(r)) inflight++
+    }
+    const ended = (r: { url(): string }) => {
+      if (isList(r)) inflight--
+    }
+    page.on('request', started)
+    page.on('requestfinished', ended)
+    page.on('requestfailed', ended)
     await expect
       .poll(
         async () => {
           await scrollToBottom(page)
-          return page.getByText(new RegExp(`Showing ${count} of `)).isVisible()
+          return loadedRows(page)
         },
         { timeout: 20000 },
       )
-      .toBe(true)
+      .toBeGreaterThanOrEqual(count)
     await scrollBox(page).evaluate((el, top) => {
       el.scrollTop = top
     }, index * ROW)
     await expect(names(page).first()).toBeVisible()
     await expect.poll(() => topHref(page)).not.toBeNull()
+    await expect.poll(() => inflight).toBe(0)
+    page.off('request', started)
+    page.off('requestfinished', ended)
+    page.off('requestfailed', ended)
+  }
+
+  /** How many rows the table says it has loaded ("Showing N of M tasks"). */
+  async function loadedRows(page: Page): Promise<number> {
+    const text = (await page.getByText(/^Showing \d+ of /).textContent()) ?? ''
+    return Number(/Showing (\d+)/.exec(text)?.[1] ?? 0)
   }
 
   /** The task under a point just below the sticky header: the row at the viewport top. */
@@ -762,12 +794,9 @@ test.describe('Live updates under the cursor', () => {
   }
 
   /** Sends the event and waits until every loaded page has been refetched and drawn. */
-  async function sendAndSettle(
-    page: Page,
-    socket: WebSocketRoute,
-    task: MockTask,
-    pages: number,
-  ): Promise<void> {
+  async function sendAndSettle(page: Page, socket: WebSocketRoute, task: MockTask): Promise<void> {
+    // A refetch reloads every page loaded so far, 200 rows each
+    const pages = Math.ceil((await loadedRows(page)) / 200)
     let answered = 0
     const count = (response: { url(): string }) => {
       if (new URL(response.url()).pathname === '/api/tasks') answered++
@@ -796,9 +825,9 @@ test.describe('Live updates under the cursor', () => {
     await expect(rowOf(page, index)).toBeVisible()
   }
 
-  for (const { label, count, park, pages } of [
-    { label: 'page 2', count: 400, park: 260, pages: 2 },
-    { label: 'page 3', count: 450, park: 420, pages: 3 },
+  for (const { label, count, park } of [
+    { label: 'page 2', count: 400, park: 260 },
+    { label: 'page 3', count: 450, park: 420 },
   ]) {
     // Row to change, relative to the viewport top (`park`)
     const targets = [
@@ -827,7 +856,7 @@ test.describe('Live updates under the cursor', () => {
           const changed = tasks[index]
           changed.state = filtered ? 'SUCCESS' : 'FAILURE'
           changed.last_updated = '2026-10-17T14:00:00.000Z'
-          await sendAndSettle(page, socket(), changed, pages)
+          await sendAndSettle(page, socket(), changed)
 
           // The top row did not change, and nothing was counted as new
           expect(await topHref(page)).toBe(before)
@@ -867,12 +896,12 @@ test.describe('Live updates under the cursor', () => {
     tasks[230].last_updated = '2026-10-17T14:00:00.000Z'
     const added = arrival('app.jobs.fresh_0', 0)
     api.addTask(added)
-    await sendAndSettle(page, socket(), added, 3)
+    await sendAndSettle(page, socket(), added)
 
     // Only the genuinely new task is counted; the appended row with an event is not
     await expect(newButton(page, 1)).toBeVisible()
     expect(await hrefAt(page, x, y)).toBe(hovered)
-    await newButton(page, 1).click()
+    await applyNew(page, 1)
     await expect(newButton(page, 1)).toHaveCount(0)
   })
 })

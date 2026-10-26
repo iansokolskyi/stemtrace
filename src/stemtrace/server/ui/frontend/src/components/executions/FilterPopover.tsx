@@ -1,5 +1,5 @@
 import { subDays } from 'date-fns'
-import { type ReactElement, useEffect, useId, useRef, useState } from 'react'
+import { type ReactElement, useId, useState } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { TASK_STATES } from '@/routes/-search'
 import { dateSearchParam, formatDateParam } from '@/utils/format'
@@ -41,8 +41,13 @@ interface FilterPopoverProps {
   exact: boolean
   filters: ExecutionFilters
   suggestions: FilterSuggestions
-  /** Applies the filters; `close` ends the edit (a text value is one edit, state toggles stay open). */
-  onCommit: (next: ExecutionFilters, close: boolean) => void
+  /**
+   * Sets some filters on top of the latest ones; `close` ends the edit (a text value is one
+   * edit, state toggles stay open).
+   */
+  onCommit: (patch: ExecutionFilters, close: boolean) => void
+  /** Ends the edit without changing anything. */
+  onClose: () => void
   onPickField: (field: FilterField) => void
 }
 
@@ -78,7 +83,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
   const toggle = (state: string, on: boolean) => {
     // New states go at the end: the URL keeps the order they were picked in
     const next = on ? [...chosen, state] : chosen.filter((s) => s !== state)
-    onCommit({ ...filters, state: next.length ? next.join(',') : undefined }, false)
+    onCommit({ state: next.length ? next.join(',') : undefined }, false)
   }
   return (
     <div className="flex flex-col gap-0.5">
@@ -93,7 +98,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
             onChange={(event) => toggle(state, event.target.checked)}
             className="size-3.5 accent-[var(--ink)]"
           />
-          {stateWord(state)}
+          <span>{stateWord(state)}</span>
         </label>
       ))}
     </div>
@@ -106,7 +111,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
   const id = useId()
   const apply = () => {
     const value = text.trim() || undefined
-    onCommit(exact ? { ...filters, name_exact: value } : { ...filters, name: value }, true)
+    onCommit(exact ? { name_exact: value } : { name: value }, true)
   }
   return (
     <form
@@ -137,7 +142,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
           }}
           className="size-3.5 accent-[var(--ink)]"
         />
-        Exact name
+        <span>Exact name</span>
       </label>
       <ApplyButton />
     </form>
@@ -158,8 +163,7 @@ function TextEditor({
   const offered = suggestions[field]
     .filter((value) => value.toLowerCase().includes(wanted))
     .slice(0, MAX_SUGGESTIONS)
-  const apply = (value: string) =>
-    onCommit({ ...filters, [field]: value.trim() || undefined }, true)
+  const apply = (value: string) => onCommit({ [field]: value.trim() || undefined }, true)
   return (
     <form
       className="flex flex-col gap-2 p-1"
@@ -197,11 +201,12 @@ function TextEditor({
   )
 }
 
-function ApplyButton(): ReactElement {
+function ApplyButton({ disabled = false }: { disabled?: boolean }): ReactElement {
   return (
     <button
       type="submit"
-      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-xs font-semibold text-on-ink"
+      disabled={disabled}
+      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-xs font-semibold text-on-ink disabled:cursor-not-allowed disabled:opacity-40"
     >
       Apply
     </button>
@@ -216,14 +221,44 @@ const PRESETS: { label: string; from: (today: Date) => Date; to: (today: Date) =
   { label: 'Last 30 days', from: (d) => subDays(d, 29), to: (d) => d },
 ]
 
-/** How long a date has to stay as typed before it counts as finished (a person typing a year). */
-const DATE_SETTLE_MS = 400
-/** The oldest year a date typed digit by digit may have to commit by itself: `0202` is not a year. */
-const EARLIEST_AUTO_YEAR = 1970
+/** What a date input holds: its text, and whether it is only partly typed. */
+interface DateEntry {
+  value: string
+  /** The browser has some segments of a date but not a whole one (`validity.badInput`). */
+  unfinished: boolean
+}
 
-function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
+/** Whether an entry is empty or a finished date `dateSearchParam` accepts. */
+const entryIsValid = (entry: DateEntry): boolean =>
+  !entry.unfinished && (entry.value === '' || dateSearchParam(entry.value) !== undefined)
+
+/**
+ * The Time editor. A preset applies at once. Typed dates stay here, in this popover's own
+ * state, and are applied only by Apply or by Enter in a date field, as one edit, and only when
+ * both are empty or finished valid dates. Every other way of leaving drops them: the popover
+ * closing unmounts this, so nothing typed can reach the URL by itself (a date input reports a
+ * value on every digit of the year, so applying as it goes would apply 0002, 0020, 0202).
+ */
+function TimeEditor({ filters, onCommit, onClose }: FilterPopoverProps): ReactElement {
+  const [from, setFrom] = useState<DateEntry>({ value: filters.from_date ?? '', unfinished: false })
+  const [to, setTo] = useState<DateEntry>({ value: filters.to_date ?? '', unfinished: false })
+  const valid = entryIsValid(from) && entryIsValid(to)
+
+  const apply = () => {
+    if (!valid) return
+    const next = { from_date: dateSearchParam(from.value), to_date: dateSearchParam(to.value) }
+    if (next.from_date === filters.from_date && next.to_date === filters.to_date) onClose()
+    else onCommit(next, true)
+  }
+
   return (
-    <div className="flex flex-col gap-2 p-1">
+    <form
+      className="flex flex-col gap-2 p-1"
+      onSubmit={(event) => {
+        event.preventDefault()
+        apply()
+      }}
+    >
       <div className="flex flex-wrap gap-1">
         {PRESETS.map((preset) => (
           <button
@@ -234,7 +269,6 @@ function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
               const today = new Date()
               onCommit(
                 {
-                  ...filters,
                   from_date: formatDateParam(preset.from(today)),
                   to_date: formatDateParam(preset.to(today)),
                 },
@@ -246,104 +280,44 @@ function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
           </button>
         ))}
       </div>
-      <DateField
-        label="From"
-        committed={filters.from_date}
-        onCommit={(value) => onCommit({ ...filters, from_date: value }, false)}
-      />
-      <DateField
-        label="To"
-        committed={filters.to_date}
-        onCommit={(value) => onCommit({ ...filters, to_date: value }, false)}
-      />
-    </div>
+      <DateInput label="From" entry={from} onEntry={setFrom} />
+      <DateInput label="To" entry={to} onEntry={setTo} />
+      <ApplyButton disabled={!valid} />
+    </form>
   )
 }
 
-interface DateFieldProps {
+interface DateInputProps {
   label: string
-  /** The date in the URL, a finished YYYY-MM-DD or nothing. */
-  committed: string | undefined
-  onCommit: (value: string | undefined) => void
+  entry: DateEntry
+  onEntry: (entry: DateEntry) => void
 }
 
-/**
- * A date input whose typing stays local. A date input reports a value on every digit of the
- * year (2025 passes through 0002, 0020 and 0202), so what is typed is only committed when it is
- * a finished date: on Enter or when the field loses focus, or once it has settled as a valid
- * date from 1970 on. An unfinished or rejected entry is never written to the URL, and leaving
- * the field with one puts the committed date back. Escape cancels an edit before it closes
- * the popover.
- */
-function DateField({ label, committed, onCommit }: DateFieldProps): ReactElement {
+/** A date input that only reports what it holds; applying is the editor's business. */
+function DateInput({ label, entry, onEntry }: DateInputProps): ReactElement {
   const id = useId()
-  const [text, setText] = useState(committed ?? '')
-  // Remounts the input to drop segments typed so far, which a controlled value can't reset
-  const [epoch, setEpoch] = useState(0)
-  const timer = useRef<number | undefined>(undefined)
-  // The latest props, for a timer that fires after the page has moved on: a stale `onCommit`
-  // would write the other date's old value back
-  const latest = useRef({ committed, onCommit })
-  latest.current = { committed, onCommit }
-
-  // A date set from outside (a preset) shows here too
-  useEffect(() => setText(committed ?? ''), [committed])
-  useEffect(() => () => window.clearTimeout(timer.current), [])
-
-  const revert = () => {
-    window.clearTimeout(timer.current)
-    setText(committed ?? '')
-    setEpoch((n) => n + 1)
-  }
-
-  /** Commits what is in the input if it is finished; an unfinished entry is put back. */
-  const settle = (input: HTMLInputElement) => {
-    window.clearTimeout(timer.current)
-    if (input.validity.badInput) return revert()
-    const value = input.value
-    if (value === '') {
-      if (committed) onCommit(undefined)
-      return
+  const report = (input: HTMLInputElement) => {
+    const unfinished = input.validity.badInput
+    if (input.value !== entry.value || unfinished !== entry.unfinished) {
+      onEntry({ value: input.value, unfinished })
     }
-    const valid = dateSearchParam(value)
-    if (valid === undefined) return revert()
-    if (valid !== committed) onCommit(valid)
   }
-
   return (
     <>
       <label htmlFor={id} className="text-xs text-muted">
         {label}
       </label>
       <input
-        key={epoch}
         id={id}
         type="date"
-        value={text}
-        onChange={(event) => {
-          const input = event.target
-          setText(input.value)
-          window.clearTimeout(timer.current)
-          const valid = dateSearchParam(input.value)
-          if (valid === undefined || Number(valid.slice(0, 4)) < EARLIEST_AUTO_YEAR) return
-          timer.current = window.setTimeout(() => {
-            if (valid !== latest.current.committed) latest.current.onCommit(valid)
-          }, DATE_SETTLE_MS)
-        }}
-        onBlur={(event) => settle(event.currentTarget)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            settle(event.currentTarget)
-          } else if (
-            event.key === 'Escape' &&
-            (event.currentTarget.validity.badInput || text !== (committed ?? ''))
-          ) {
-            // Cancel the edit; the next Escape closes the popover
-            event.stopPropagation()
-            revert()
-          }
-        }}
+        // Not controlled: while a date is half typed the browser's own value is the truth
+        defaultValue={entry.value}
+        // A date typed from nothing to "month only" changes no value, so no change event says so:
+        // the key that typed it is the signal
+        onChange={(event) => report(event.target)}
+        onKeyUp={(event) => report(event.currentTarget)}
+        onBlur={(event) => report(event.currentTarget)}
+        aria-invalid={!entryIsValid(entry)}
         className={control}
       />
     </>

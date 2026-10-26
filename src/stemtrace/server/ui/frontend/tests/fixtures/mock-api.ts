@@ -62,8 +62,11 @@ export interface MockApiContext {
   /** Clear all workers */
   clearWorkers: () => void
 
-  /** Replace the groups GET /groups lists; null makes the endpoint answer 404 (no such route) */
-  setGroups: (groups: MockGroup[] | null) => void
+  /**
+   * Replace the groups GET /groups lists; null makes the endpoint answer 404 (no such route),
+   * 'error' a 500 (a server that has the route but fails this time)
+   */
+  setGroups: (groups: MockGroup[] | null | 'error') => void
 
   /** Stop intercepting (cleanup) */
   teardown: () => Promise<void>
@@ -123,7 +126,7 @@ export async function setupMockApi(
   let workers: MockWorker[] = useDefaults ? [...DEFAULT_WORKERS] : []
   let registry: MockRegisteredTask[] = useDefaults ? [...DEFAULT_REGISTRY] : []
   // No groups by default: the sidebar shows no Groups or Tags section
-  let groups: MockGroup[] | null = []
+  let groups: MockGroup[] | null | 'error' = []
 
   const context: MockApiContext = {
     get tasks() {
@@ -173,7 +176,7 @@ export async function setupMockApi(
       workers = []
     },
 
-    setGroups(newGroups: MockGroup[] | null) {
+    setGroups(newGroups: MockGroup[] | null | 'error') {
       groups = newGroups
     },
 
@@ -235,6 +238,14 @@ export async function setupMockApi(
   await page.route(new RegExp(`${apiPath}/groups(\\?|$)`), async (route: Route) => {
     if (route.request().method() !== 'GET') {
       await route.continue()
+      return
+    }
+    if (groups === 'error') {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Internal Server Error' }),
+      })
       return
     }
     if (groups === null) {
@@ -366,7 +377,7 @@ export async function setupMockApi(
     const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const offset = Number.parseInt(url.searchParams.get('offset') || '0', 10)
     // compact=1 leaves out each task's events (`events: null`), as the real API does
-    const compact = ['1', 'true'].includes(url.searchParams.get('compact') ?? '')
+    const compact = new Set(['1', 'true']).has(url.searchParams.get('compact') ?? '')
 
     // The real API lists the most recently updated first (store.list_nodes sorts by
     // last_updated, newest first); a task without one sorts last. Array.sort is stable.
@@ -375,8 +386,8 @@ export async function setupMockApi(
 
     if (state) {
       // A comma-separated list matches any of the states, in any case, as the real API does
-      const wanted = state.toUpperCase().split(',')
-      filtered = filtered.filter((t) => wanted.includes(t.state))
+      const wanted = new Set(state.toUpperCase().split(','))
+      filtered = filtered.filter((t) => wanted.has(t.state))
     }
     if (hostname) filtered = filtered.filter((t) => t.hostname === hostname)
     if (queue) filtered = filtered.filter((t) => t.queue === queue)

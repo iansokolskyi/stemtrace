@@ -24,51 +24,43 @@ const day = (value: string | undefined): string | undefined => {
   return date?.toLocaleDateString('en-US', SHORT_DATE)
 }
 
+const FIELD_CHIPS = [
+  { key: 'exception_type', label: 'Exception' },
+  { key: 'hostname', label: 'Worker' },
+  { key: 'queue', label: 'Queue' },
+  { key: 'task_group', label: 'Group' },
+  { key: 'tag', label: 'Tag' },
+] as const
+
+/** What the time chip says: both dates, one date, or "From"/"Until" for an open end. */
+function timeValue(filters: ExecutionFilters): string | undefined {
+  const from = day(filters.from_date)
+  const to = day(filters.to_date)
+  if (from && to) return from === to ? from : `${from} - ${to}`
+  if (from) return `From ${from}`
+  return to ? `Until ${to}` : undefined
+}
+
 /** The chips for the filters that are set, in a fixed order. */
 function chipsOf(filters: ExecutionFilters): Chip[] {
   const chips: Chip[] = []
-  const add = (chip: Chip | false | undefined | '') => {
-    if (chip) chips.push(chip)
+  if (filters.state) {
+    const value = filters.state.split(',').map(stateWord).join(', ')
+    chips.push({ key: 'state', label: 'State', value, field: 'state' })
   }
-  add(
-    filters.state && {
-      key: 'state',
-      label: 'State',
-      value: filters.state.split(',').map(stateWord).join(', '),
-      field: 'state',
-    },
-  )
-  add(filters.name && { key: 'name', label: 'Name', value: filters.name, field: 'name' })
-  add(
-    filters.name_exact && {
-      key: 'name_exact',
-      label: 'Task',
-      value: filters.name_exact,
-      field: 'name',
-      exact: true,
-    },
-  )
-  for (const key of ['exception_type', 'hostname', 'queue', 'task_group', 'tag'] as const) {
+  if (filters.name) {
+    chips.push({ key: 'name', label: 'Name', value: filters.name, field: 'name' })
+  }
+  if (filters.name_exact) {
+    const value = filters.name_exact
+    chips.push({ key: 'name_exact', label: 'Task', value, field: 'name', exact: true })
+  }
+  for (const { key, label } of FIELD_CHIPS) {
     const value = filters[key]
-    const field = key
-    if (value) {
-      const label = {
-        exception_type: 'Exception',
-        hostname: 'Worker',
-        queue: 'Queue',
-        task_group: 'Group',
-        tag: 'Tag',
-      }[key]
-      chips.push({ key, label, value, field })
-    }
+    if (value) chips.push({ key, label, value, field: key })
   }
-  if (filters.from_date || filters.to_date) {
-    const from = day(filters.from_date)
-    const to = day(filters.to_date)
-    const value =
-      from && to ? (from === to ? from : `${from} - ${to}`) : from ? `From ${from}` : `Until ${to}`
-    chips.push({ key: 'time', label: 'Time', value, field: 'time' })
-  }
+  const time = timeValue(filters)
+  if (time) chips.push({ key: 'time', label: 'Time', value: time, field: 'time' })
   return chips
 }
 
@@ -115,16 +107,13 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   // One edit is one history entry: its first change is pushed, the rest replace it
   const pushed = useRef(false)
   const [left, setLeft] = useState(0)
-  // The filters the open popover last produced. If they change any other way (the browser's Back
-  // or Forward), the popover closes: its edit is over, and the next one must push a new entry.
+  // Used to re-anchor the popover when a chip is added or removed ahead of its opener
   const filtersKey = canonical(filters)
-  const expected = useRef(filtersKey)
 
   const openFrom = (opener: HTMLElement, next: Editing) => {
     if (editing?.by === next.by) return close()
     openerRef.current = opener
     pushed.current = false
-    expected.current = filtersKey
     setEditing(next)
   }
 
@@ -136,19 +125,24 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     requestAnimationFrame(() => target?.focus())
   }
 
-  const commit = (next: ExecutionFilters, shouldClose: boolean) => {
-    expected.current = canonical(next)
-    onChange(next, { replace: pushed.current })
+  const commit = (patch: ExecutionFilters, shouldClose: boolean) => {
+    onChange({ ...filters, ...patch }, { replace: pushed.current })
     pushed.current = true
     if (shouldClose) close()
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is the trigger
+  // The browser's Back and Forward end the edit: whatever was typed is dropped with the popover,
+  // and the next edit starts a new session that pushes
   useEffect(() => {
-    if (editing && filtersKey !== expected.current) setEditing(null)
-  }, [filtersKey])
+    if (!editing) return
+    const end = () => setEditing(null)
+    window.addEventListener('popstate', end)
+    return () => window.removeEventListener('popstate', end)
+  }, [editing])
 
-  // Keep the popover under its chip when the window resizes or the chips wrap differently
+  // Keep the popover under its opener when the window resizes, the chips wrap differently, or a
+  // chip is added or removed ahead of it (which moves the opener without resizing the bar)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is a trigger
   useLayoutEffect(() => {
     if (!editing) return
     const measure = () => {
@@ -166,7 +160,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
       observer.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [editing])
+  }, [editing, filtersKey])
 
   // Focus the first control when the popover opens or switches field
   const shown = editing === null ? null : (editing.field ?? 'list')
@@ -182,16 +176,18 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close()
     }
-    const onDown = (event: MouseEvent) => {
+    const onDown = (event: PointerEvent) => {
       const target = event.target as Node
       if (popoverRef.current?.contains(target) || openerRef.current?.contains(target)) return
+      // Closing drops what was typed in the popover; the popover floats over the page, so
+      // nothing under the pointer moves
       setEditing(null)
     }
     document.addEventListener('keydown', onKey)
-    document.addEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown)
     return () => {
       document.removeEventListener('keydown', onKey)
-      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('pointerdown', onDown)
     }
   }, [editing])
 
@@ -265,6 +261,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
             filters={filters}
             suggestions={suggestions}
             onCommit={commit}
+            onClose={close}
             onPickField={(field) => setEditing({ by: editing.by, field, exact: false })}
           />
         </dialog>

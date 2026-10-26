@@ -17,6 +17,16 @@ export const getApiBase = (): string => (import.meta.env.DEV ? '/api' : `${getBa
 // For backwards compatibility (but prefer getApiBase() for lazy evaluation)
 export const API_BASE = getApiBase()
 
+/** Thrown when the API answers with an error status other than 401; `status` tells them apart. */
+export class HttpError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
 /** Thrown when the API responds 401 (session missing or expired). */
 export class UnauthorizedError extends Error {
   constructor() {
@@ -120,7 +130,7 @@ async function apiFetch<T>(url: string, errorMessage: string): Promise<T> {
     }
     throw new UnauthorizedError()
   }
-  if (!response.ok) throw new Error(errorMessage)
+  if (!response.ok) throw new HttpError(errorMessage, response.status)
   return (await response.json()) as T
 }
 
