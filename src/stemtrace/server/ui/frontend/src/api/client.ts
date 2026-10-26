@@ -228,6 +228,8 @@ export interface TaskListResponse {
 export interface TaskDetailResponse {
   task: TaskNode
   children: TaskNode[]
+  /** Root of the graph that holds the task (what `/api/graphs/{id}` takes); null when unknown. */
+  flow_root_id?: string | null
 }
 
 export interface GraphNode {

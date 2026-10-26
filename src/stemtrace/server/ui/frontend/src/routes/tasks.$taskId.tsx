@@ -38,7 +38,7 @@ function TaskDetailPage() {
   const { task, children } = data
   return (
     <div>
-      <TaskHeader task={task} members={children} />
+      <TaskHeader task={task} flowRootId={data.flow_root_id} />
       <div className="grid items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="min-w-0">
           <TimingBar

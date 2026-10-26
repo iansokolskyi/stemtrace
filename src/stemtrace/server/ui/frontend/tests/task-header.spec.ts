@@ -1,6 +1,13 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
-import { createFailedTask, createGroup } from './fixtures/mock-data'
+import { setupMockApi } from './fixtures/mock-api'
+import {
+  createChain,
+  createFailedTask,
+  createGroup,
+  createWorkflowWithGroup,
+  type MockTask,
+} from './fixtures/mock-data'
 import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /** The top of the task page: title, state, ID, links. Mock mode: it controls the optional fields. */
@@ -59,8 +66,7 @@ test.describe('TaskHeader', () => {
   })
 
   test('links go to the flow, the worker and every run of the task', async ({ page }) => {
-    const task = successTask({ hostname: 'celery@worker-1' })
-    for (const event of task.events) event.root_id = 'root-abc'
+    const task = successTask({ hostname: 'celery@worker-1', flow_root_id: 'root-abc' })
     await openTask(page, task)
 
     const flow = header(page).getByRole('link', { name: 'Open flow' })
@@ -76,18 +82,6 @@ test.describe('TaskHeader', () => {
     const runsUrl = new URL((await runs.getAttribute('href')) ?? '', 'http://x')
     expect(runsUrl.pathname).toBe('/executions')
     expect([...runsUrl.searchParams]).toEqual([['name_exact', task.name]])
-  })
-
-  test('the flow link falls back to the task itself when no event names a root', async ({
-    page,
-  }) => {
-    const task = successTask()
-    for (const event of task.events) event.root_id = null
-    await openTask(page, task)
-    await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
-      'href',
-      `/flows/${task.task_id}`,
-    )
   })
 
   test('the worker link is omitted when no worker is known', async ({ page }) => {
@@ -115,48 +109,99 @@ test.describe('TaskHeader', () => {
   })
 })
 
-// A GROUP or CHORD node is synthetic: it has no events and is never a flow's root itself, so its
-// flow is the one its members belong to.
-test.describe('TaskHeader on a group page', () => {
-  for (const withCallback of [false, true]) {
-    const kind = withCallback ? 'chord' : 'group'
-
-    test(`a ${kind} opens the flow its members belong to`, async ({ page }) => {
-      const [node, ...members] = createGroup(2, { withCallback })
-      for (const member of members) for (const event of member.events) event.root_id = 'root-xyz'
-      await openTask(page, node, ...members)
-      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
-        'href',
-        '/flows/root-xyz',
-      )
-    })
-
-    test(`a ${kind} skips members that name no root and uses the first that does`, async ({
-      page,
-    }) => {
-      const [node, ...members] = createGroup(3, { withCallback })
-      const [first, ...rest] = members
-      for (const event of first.events) event.root_id = null
-      for (const member of rest) for (const event of member.events) event.root_id = 'root-later'
-      await openTask(page, node, ...members)
-      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
-        'href',
-        '/flows/root-later',
-      )
-    })
-
-    test(`a ${kind} whose members name no root has no flow link`, async ({ page }) => {
-      const [node, ...members] = createGroup(2, { withCallback })
-      for (const member of members) for (const event of member.events) event.root_id = null
-      await openTask(page, node, ...members)
-      await expect(header(page).getByRole('heading', { level: 1 })).toBeVisible()
-      await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveCount(0)
-    })
+// The flow root is the API's `flow_root_id` (where the graph places the task). Celery sets every
+// event's `root_id` to the task's own ID for a group member or any task sent without a parent, so
+// these tests give the events that wrong answer and expect the link to ignore it.
+test.describe('TaskHeader flow link', () => {
+  /** Serves `tasks` and returns the "Open flow" href of each task page, by task ID. */
+  async function flowHrefs(
+    page: Page,
+    tasks: MockTask[],
+    ids: string[],
+  ): Promise<Record<string, string | null>> {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(tasks)
+    const hrefs: Record<string, string | null> = {}
+    for (const id of ids) {
+      await page.goto(`/tasks/${id}`)
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+      const link = header(page).getByRole('link', { name: 'Open flow' })
+      // The router writes `group:` IDs with the colon encoded
+      hrefs[id] = (await link.count())
+        ? decodeURIComponent((await link.getAttribute('href')) ?? '')
+        : null
+    }
+    return hrefs
   }
 
-  test('a group with no members has no flow link', async ({ page }) => {
-    const [node] = createGroup(0)
-    await openTask(page, node)
+  /** Gives every event the Celery default: this task is its own root. */
+  const selfRooted = (tasks: MockTask[]): void => {
+    for (const task of tasks) for (const event of task.events) event.root_id = task.task_id
+  }
+
+  test('a top-level group page and its member pages open the group node', async ({ page }) => {
+    const [node, ...members] = createGroup(2)
+    selfRooted(members)
+    const hrefs = await flowHrefs(
+      page,
+      [node, ...members],
+      [node.task_id, ...members.map((m) => m.task_id)],
+    )
+    for (const id of Object.keys(hrefs)) expect(hrefs[id]).toBe(`/flows/${node.task_id}`)
+  })
+
+  test('every step of a chain opens the first task', async ({ page }) => {
+    const chain = createChain('app.chain', 3)
+    selfRooted(chain)
+    const hrefs = await flowHrefs(
+      page,
+      chain,
+      chain.map((t) => t.task_id),
+    )
+    for (const task of chain) expect(hrefs[task.task_id]).toBe(`/flows/${chain[0].task_id}`)
+  })
+
+  test('a chord header and its callback open the chord node', async ({ page }) => {
+    const [node, ...rest] = createGroup(2, { withCallback: true })
+    selfRooted(rest)
+    const header0 = rest[0]
+    const callback = rest[rest.length - 1]
+    const hrefs = await flowHrefs(
+      page,
+      [node, ...rest],
+      [node.task_id, header0.task_id, callback.task_id],
+    )
+    for (const id of Object.keys(hrefs)) expect(hrefs[id]).toBe(`/flows/${node.task_id}`)
+  })
+
+  test('a group started inside a task opens that task, from every node', async ({ page }) => {
+    const [parent, node, ...members] = createWorkflowWithGroup(2)
+    selfRooted(members)
+    const hrefs = await flowHrefs(
+      page,
+      [parent, node, ...members],
+      [parent.task_id, node.task_id, ...members.map((m) => m.task_id)],
+    )
+    for (const id of Object.keys(hrefs)) expect(hrefs[id]).toBe(`/flows/${parent.task_id}`)
+  })
+
+  test('the link uses what the API says even when the events name another root', async ({
+    page,
+  }) => {
+    const task = successTask({ flow_root_id: 'root-from-api' })
+    for (const event of task.events) event.root_id = 'root-from-events'
+    await openTask(page, task)
+    await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveAttribute(
+      'href',
+      '/flows/root-from-api',
+    )
+  })
+
+  test('with no flow root there is no link, whatever the events say', async ({ page }) => {
+    const task = successTask({ flow_root_id: null })
+    for (const event of task.events) event.root_id = task.task_id
+    await openTask(page, task)
+    await expect(header(page).getByRole('heading', { level: 1 })).toBeVisible()
     await expect(header(page).getByRole('link', { name: 'Open flow' })).toHaveCount(0)
   })
 })

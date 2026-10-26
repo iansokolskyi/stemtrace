@@ -30,6 +30,8 @@ export interface MockTask {
   total_runtime_ms?: number | null
   routing_key?: string | null
   eta?: string | null
+  /** What the detail's `flow_root_id` says; left out, the mock walks the parents as the server does */
+  flow_root_id?: string | null
 }
 
 export interface MockEvent {

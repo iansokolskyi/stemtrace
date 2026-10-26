@@ -73,6 +73,26 @@ export interface MockApiContext {
 }
 
 /**
+ * The root of the graph that holds `task`, found as the server does: follow the node's parent
+ * (a group member's is its group node) up to a node with none. Never read from events' root_id:
+ * Celery sets that to the task's own ID for a group member or any task sent without a parent.
+ */
+function flowRootOf(tasks: MockTask[], task: MockTask): string | null {
+  const byId = new Map(tasks.map((t) => [t.task_id, t]))
+  const seen = new Set<string>()
+  let node: MockTask | undefined = task
+  while (node && !seen.has(node.task_id)) {
+    seen.add(node.task_id)
+    const parentId: string | null =
+      node.parent_id ??
+      (node.group_id && byId.has(`group:${node.group_id}`) ? `group:${node.group_id}` : null)
+    if (parentId === null || parentId === node.task_id) return node.task_id
+    node = byId.get(parentId)
+  }
+  return null
+}
+
+/**
  * Build nodes map for graph response from tasks
  */
 function buildNodesMap(tasks: MockTask[], rootId: string): Record<string, unknown> {
@@ -357,6 +377,7 @@ export async function setupMockApi(
       body: JSON.stringify({
         task: serializeTask(task),
         children: children.map(serializeTask),
+        flow_root_id: task.flow_root_id === undefined ? flowRootOf(tasks, task) : task.flow_root_id,
       }),
     })
   })
