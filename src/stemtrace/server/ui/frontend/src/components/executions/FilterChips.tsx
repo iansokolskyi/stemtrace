@@ -1,6 +1,7 @@
 import { type ReactElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { parseDateParam } from '@/utils/format'
+import { afterPointerRelease, isPointerDown } from '@/utils/pointer'
 import { Icon } from '../Icon'
 import { FIELD_LABEL, type FilterField, FilterPopover, stateWord } from './FilterPopover'
 import type { FilterSuggestions } from './suggestions'
@@ -111,9 +112,29 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   // or Forward), the popover closes: its edit is over, and the next one must push a new entry.
   const filtersKey = canonical(filters)
   const expected = useRef(filtersKey)
+  // The latest filters, including ones just emitted that the URL hasn't caught up with, so a
+  // change made right after another builds on it instead of on stale props
+  const latest = useRef(filters)
+  const seenKey = useRef(filtersKey)
+  if (seenKey.current !== filtersKey) {
+    seenKey.current = filtersKey
+    latest.current = filters
+  }
+  // Bumped when a half-typed date must be dropped rather than applied (see DateField)
+  const discard = useRef(0)
+  // A press outside the popover is waiting for its release to close it
+  const outsidePress = useRef(false)
+
+  const emit = (next: ExecutionFilters, replace: boolean) => {
+    latest.current = next
+    onChange(next, { replace })
+  }
 
   const openFrom = (opener: HTMLElement, next: Editing) => {
+    // This click is the press's outcome: the popover is not to be closed behind it
+    outsidePress.current = false
     if (editing?.by === next.by) return close()
+    settleFocused()
     openerRef.current = opener
     pushed.current = false
     expected.current = filtersKey
@@ -135,9 +156,10 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     requestAnimationFrame(() => target?.focus())
   }
 
-  const commit = (next: ExecutionFilters, shouldClose: boolean) => {
+  const commit = (patch: ExecutionFilters, shouldClose: boolean) => {
+    const next = { ...latest.current, ...patch }
     expected.current = canonical(next)
-    onChange(next, { replace: pushed.current })
+    emit(next, pushed.current)
     pushed.current = true
     if (shouldClose) close()
   }
@@ -153,6 +175,8 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   useLayoutEffect(() => {
     if (!editing) return
     const measure = () => {
+      // Nothing moves while a button is down: wait for the release, then place it
+      if (isPointerDown()) return afterPointerRelease(measure)
       const bar = barRef.current
       const opener = openerRef.current
       if (!bar || !opener?.isConnected) return
@@ -183,18 +207,25 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close()
     }
-    const onDown = (event: MouseEvent) => {
+    const onDown = (event: PointerEvent) => {
       const target = event.target as Node
       if (popoverRef.current?.contains(target) || openerRef.current?.contains(target)) return
-      // Closing unmounts the field before it would lose focus: let it commit first
-      settleFocused()
-      setEditing(null)
+      // Close on the release, not the press: closing (and what a field commits as it goes)
+      // would move things under a button that is still down. A click that follows has already
+      // run by then, and cancels this if it opened something itself.
+      outsidePress.current = true
+      afterPointerRelease(() => {
+        if (!outsidePress.current) return
+        outsidePress.current = false
+        // After the fields' own release handlers (a half-typed date commits first)
+        window.setTimeout(() => setEditing(null), 0)
+      })
     }
     document.addEventListener('keydown', onKey)
-    document.addEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown)
     return () => {
       document.removeEventListener('keydown', onKey)
-      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('pointerdown', onDown)
     }
   }, [editing])
 
@@ -227,7 +258,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
           <button
             type="button"
             aria-label={`Remove ${chip.label.toLowerCase()} filter`}
-            onClick={() => onChange(without(filters, chip.key), { replace: false })}
+            onClick={() => emit(without(latest.current, chip.key), false)}
             className="mr-0.5 flex size-[18px] flex-none items-center justify-center rounded-[2px] text-muted hover:bg-hover hover:text-ink"
           >
             ×
@@ -248,7 +279,14 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
       {chips.length > 0 && (
         <button
           type="button"
-          onClick={() => onChange({}, { replace: false })}
+          onClick={() => {
+            // Clear means everything, a half-typed date included: nothing of it is applied
+            discard.current++
+            outsidePress.current = false
+            expected.current = canonical({})
+            setEditing(null)
+            emit({}, false)
+          }}
           className="h-[26px] rounded-[3px] px-2 text-xs text-muted hover:text-ink"
         >
           Clear
@@ -268,6 +306,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
             filters={filters}
             suggestions={suggestions}
             onCommit={commit}
+            discard={discard}
             onPickField={(field) => setEditing({ by: editing.by, field, exact: false })}
           />
         </dialog>

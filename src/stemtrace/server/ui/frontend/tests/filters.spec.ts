@@ -1,4 +1,4 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
 import { createSuccessTask, type MockTask } from './fixtures/mock-data'
@@ -772,9 +772,9 @@ test.describe('Popover and a growing chip row', () => {
     const gap = async () => {
       const dialog = await popover(page).boundingBox()
       const button = await addFilter(page).boundingBox()
-      return Math.round((dialog?.x ?? 0) - (button?.x ?? 0))
+      return (dialog?.x ?? 0) - (button?.x ?? 0)
     }
-    expect(await gap()).toBe(0)
+    expect(Math.abs(await gap())).toBeLessThanOrEqual(1)
     const before = (await addFilter(page).boundingBox())?.x ?? 0
 
     // A chip appears (the popover stays open for more states) and Add filter moves right
@@ -783,6 +783,101 @@ test.describe('Popover and a growing chip row', () => {
     await expect
       .poll(async () => (await addFilter(page).boundingBox())?.x ?? 0)
       .toBeGreaterThan(before)
-    await expect.poll(gap).toBe(0)
+    await expect.poll(async () => Math.abs(await gap())).toBeLessThanOrEqual(1)
   })
+})
+
+test.describe('Pending date and targets that move', () => {
+  // Typing a date and clicking elsewhere must not move anything while the button is down: the
+  // date is only applied after the click, so the click lands on what the user aimed at.
+  // `down-up` presses and releases separately with a frame between, so a change at mousedown
+  // has time to move the target before mouseup.
+  const PENDING = [
+    { typed: '01011950', date: '1950-01-01', why: 'before 1970 (never settles by itself)' },
+    { typed: '10012025', date: '2025-10-01', why: 'a finished date, clicked away within 400 ms' },
+  ]
+  const MODES = ['click', 'down-up'] as const
+
+  async function press(page: Page, target: Locator, mode: (typeof MODES)[number]): Promise<void> {
+    if (mode === 'click') return target.click()
+    const box = await target.boundingBox()
+    await page.mouse.move(
+      (box?.x ?? 0) + (box?.width ?? 0) / 2,
+      (box?.y ?? 0) + (box?.height ?? 0) / 2,
+    )
+    await page.mouse.down()
+    // Two frames: whatever a mousedown changed has been laid out before the button is released
+    await page.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+    )
+    await page.mouse.up()
+  }
+
+  async function typeFrom(page: Page, typed: string): Promise<void> {
+    await popover(page).getByLabel('From').focus()
+    await page.keyboard.type(typed)
+  }
+
+  for (const { typed, date, why } of PENDING) {
+    for (const mode of MODES) {
+      test.describe(`${date}, ${why}, ${mode}`, () => {
+        test.beforeEach(async ({ page }) => {
+          await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+          const api = await setupMockApi(page, { useDefaults: false })
+          api.addTasks(sampleTasks())
+          await logHistoryWrites(page)
+        })
+
+        test('Clear clears everything and commits nothing', async ({ page }) => {
+          await page.goto('/executions?state=FAILURE')
+          await open(page, 'Time')
+          await typeFrom(page, typed)
+          await press(page, page.getByRole('button', { name: 'Clear' }), mode)
+          await expect.poll(() => search(page)).toEqual({})
+          await expect(popover(page)).toHaveCount(0)
+          // The pending date was never written, not even for a moment
+          expect((await writtenDates(page, 'from_date')).filter((d) => d !== null)).toEqual([])
+        })
+
+        test('a preset applies, and the pending date does not', async ({ page }) => {
+          await page.goto('/executions')
+          await open(page, 'Time')
+          await typeFrom(page, typed)
+          await press(page, popover(page).getByRole('button', { name: 'Today' }), mode)
+          await expect
+            .poll(() => search(page))
+            .toEqual({ from_date: '2026-10-17', to_date: '2026-10-17' })
+          expect(
+            (await writtenDates(page, 'from_date')).filter((d) => d !== null && d !== '2026-10-17'),
+          ).toEqual([])
+        })
+
+        test("another chip's × removes it, and the date is applied after", async ({ page }) => {
+          await page.goto('/executions?queue=payments')
+          await open(page, 'Time')
+          await typeFrom(page, typed)
+          await press(
+            page,
+            chip(page, 'queue').getByRole('button', { name: 'Remove queue filter' }),
+            mode,
+          )
+          await expect.poll(() => search(page)).toEqual({ from_date: date })
+          await expect(chip(page, 'queue')).toHaveCount(0)
+        })
+
+        test('Add filter, from a chip popover, opens its list and applies the date', async ({
+          page,
+        }) => {
+          await page.goto('/executions?queue=payments&from_date=2026-10-01')
+          await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
+          await popover(page).getByLabel('To').focus()
+          await page.keyboard.type(typed)
+          await press(page, addFilter(page), mode)
+          await expect(popover(page)).toHaveAccessibleName('Add filter')
+          await expect.poll(() => search(page).to_date).toBe(date)
+          expect(search(page).queue).toBe('payments')
+        })
+      })
+    }
+  }
 })

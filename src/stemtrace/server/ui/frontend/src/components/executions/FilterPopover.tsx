@@ -3,6 +3,7 @@ import { type ReactElement, useEffect, useId, useRef, useState } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { TASK_STATES } from '@/routes/-search'
 import { dateSearchParam, formatDateParam } from '@/utils/format'
+import { afterPointerRelease } from '@/utils/pointer'
 import type { FilterSuggestions } from './suggestions'
 
 /** The filters a popover edits (the Name editor covers `name` and `name_exact`). */
@@ -41,8 +42,13 @@ interface FilterPopoverProps {
   exact: boolean
   filters: ExecutionFilters
   suggestions: FilterSuggestions
-  /** Applies the filters; `close` ends the edit (a text value is one edit, state toggles stay open). */
-  onCommit: (next: ExecutionFilters, close: boolean) => void
+  /**
+   * Sets some filters on top of the latest ones; `close` ends the edit (a text value is one
+   * edit, state toggles stay open).
+   */
+  onCommit: (patch: ExecutionFilters, close: boolean) => void
+  /** Bumped when what is typed in a date field must be dropped, not applied (Clear, a preset). */
+  discard: { current: number }
   onPickField: (field: FilterField) => void
 }
 
@@ -78,7 +84,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
   const toggle = (state: string, on: boolean) => {
     // New states go at the end: the URL keeps the order they were picked in
     const next = on ? [...chosen, state] : chosen.filter((s) => s !== state)
-    onCommit({ ...filters, state: next.length ? next.join(',') : undefined }, false)
+    onCommit({ state: next.length ? next.join(',') : undefined }, false)
   }
   return (
     <div className="flex flex-col gap-0.5">
@@ -106,7 +112,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
   const id = useId()
   const apply = () => {
     const value = text.trim() || undefined
-    onCommit(exact ? { ...filters, name_exact: value } : { ...filters, name: value }, true)
+    onCommit(exact ? { name_exact: value } : { name: value }, true)
   }
   return (
     <form
@@ -158,8 +164,7 @@ function TextEditor({
   const offered = suggestions[field]
     .filter((value) => value.toLowerCase().includes(wanted))
     .slice(0, MAX_SUGGESTIONS)
-  const apply = (value: string) =>
-    onCommit({ ...filters, [field]: value.trim() || undefined }, true)
+  const apply = (value: string) => onCommit({ [field]: value.trim() || undefined }, true)
   return (
     <form
       className="flex flex-col gap-2 p-1"
@@ -221,7 +226,7 @@ const DATE_SETTLE_MS = 400
 /** The oldest year a date typed digit by digit may have to commit by itself: `0202` is not a year. */
 const EARLIEST_AUTO_YEAR = 1970
 
-function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
+function TimeEditor({ filters, onCommit, discard }: FilterPopoverProps): ReactElement {
   return (
     <div className="flex flex-col gap-2 p-1">
       <div className="flex flex-wrap gap-1">
@@ -231,10 +236,13 @@ function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
             type="button"
             className="h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
             onClick={() => {
+              // The preset replaces whatever date is half typed
+              discard.current++
+              const focused = document.activeElement
+              if (focused instanceof HTMLElement) focused.blur()
               const today = new Date()
               onCommit(
                 {
-                  ...filters,
                   from_date: formatDateParam(preset.from(today)),
                   to_date: formatDateParam(preset.to(today)),
                 },
@@ -249,12 +257,14 @@ function TimeEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
       <DateField
         label="From"
         committed={filters.from_date}
-        onCommit={(value) => onCommit({ ...filters, from_date: value }, false)}
+        discard={discard}
+        onCommit={(value) => onCommit({ from_date: value }, false)}
       />
       <DateField
         label="To"
         committed={filters.to_date}
-        onCommit={(value) => onCommit({ ...filters, to_date: value }, false)}
+        discard={discard}
+        onCommit={(value) => onCommit({ to_date: value }, false)}
       />
     </div>
   )
@@ -264,6 +274,7 @@ interface DateFieldProps {
   label: string
   /** The date in the URL, a finished YYYY-MM-DD or nothing. */
   committed: string | undefined
+  discard: { current: number }
   onCommit: (value: string | undefined) => void
 }
 
@@ -275,7 +286,7 @@ interface DateFieldProps {
  * the field with one puts the committed date back. Escape cancels an edit before it closes
  * the popover.
  */
-function DateField({ label, committed, onCommit }: DateFieldProps): ReactElement {
+function DateField({ label, committed, discard, onCommit }: DateFieldProps): ReactElement {
   const id = useId()
   const [text, setText] = useState(committed ?? '')
   // Remounts the input to drop segments typed so far, which a controlled value can't reset
@@ -290,24 +301,29 @@ function DateField({ label, committed, onCommit }: DateFieldProps): ReactElement
   useEffect(() => setText(committed ?? ''), [committed])
   useEffect(() => () => window.clearTimeout(timer.current), [])
 
+  // The discard count when this field got focus: if it has moved on by the time what is typed
+  // would be applied, the entry is dropped instead (Clear and the presets bump it)
+  const focusedAt = useRef(discard.current)
+
   const revert = () => {
     window.clearTimeout(timer.current)
-    setText(committed ?? '')
+    setText(latest.current.committed ?? '')
     setEpoch((n) => n + 1)
   }
 
   /** Commits what is in the input if it is finished; an unfinished entry is put back. */
   const settle = (input: HTMLInputElement) => {
     window.clearTimeout(timer.current)
-    if (input.validity.badInput) return revert()
+    if (discard.current !== focusedAt.current || input.validity.badInput) return revert()
+    const { committed: current, onCommit: commit } = latest.current
     const value = input.value
     if (value === '') {
-      if (committed) onCommit(undefined)
+      if (current) commit(undefined)
       return
     }
     const valid = dateSearchParam(value)
     if (valid === undefined) return revert()
-    if (valid !== committed) onCommit(valid)
+    if (valid !== current) commit(valid)
   }
 
   return (
@@ -330,7 +346,14 @@ function DateField({ label, committed, onCommit }: DateFieldProps): ReactElement
             if (valid !== latest.current.committed) latest.current.onCommit(valid)
           }, DATE_SETTLE_MS)
         }}
-        onBlur={(event) => settle(event.currentTarget)}
+        onFocus={() => {
+          focusedAt.current = discard.current
+        }}
+        onBlur={(event) => {
+          // Losing focus to a press moves nothing until the button is released
+          const input = event.currentTarget
+          afterPointerRelease(() => settle(input))
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault()

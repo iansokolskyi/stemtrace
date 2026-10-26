@@ -23,10 +23,8 @@ const isRealMode = process.env.E2E_MODE === 'real'
  * updated last, which a test must not leave to timing.
  */
 async function openTaskWithTimeline(page: Page): Promise<void> {
-  const taskLink = page
-    .locator('a[href*="/tasks/"]')
-    .filter({ hasNotText: /group:[0-9a-f]{8}/ })
-    .first()
+  // By href, which the mock and the real server share (a group node's id starts with `group:`)
+  const taskLink = page.locator('a[href*="/tasks/"]:not([href*="/tasks/group"])').first()
   await expect(taskLink).toBeVisible()
   await taskLink.click()
   await expect(page).toHaveURL(/\/tasks\/(?!group)/)
@@ -55,8 +53,9 @@ test.describe('Task Detail Page', () => {
   test('opens a task with a timeline even when a group node is the newest row', async ({
     page,
   }) => {
-    // The list shows the most recently updated first, and a group node (synthetic, no events,
-    // so no timeline) can be the newest: the first row is not always a task with events.
+    // The list shows the most recently updated first. The real store leaves a group node's
+    // last update unset, so it sorts last, but that is not something this test may rely on:
+    // here it is made the newest row on purpose, and its page (no events) has no timeline.
     const api = await setupMockApi(page, { useDefaults: false })
     const task = createSuccessTask('tasks.with_timeline')
     task.last_updated = '2026-10-17T12:00:00.000Z'

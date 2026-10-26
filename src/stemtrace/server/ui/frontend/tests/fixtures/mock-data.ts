@@ -247,7 +247,9 @@ export function createGroup(
     chord_id: null,
     children: [],
     first_seen: startTime.toISOString(),
-    last_updated: now.toISOString(),
+    // The real store leaves a synthetic node's last_updated unset (it has no events of its
+    // own), and the list sorts such nodes last
+    last_updated: null,
     duration_ms: 2000,
     events: [], // Synthetic nodes have no events
   }
@@ -368,7 +370,7 @@ export function createWorkflowWithGroup(memberCount: number): MockTask[] {
     chord_id: null,
     children: [],
     first_seen: startTime.toISOString(),
-    last_updated: now.toISOString(),
+    last_updated: null, // as for any synthetic node: see createGroup
     duration_ms: 2000,
     events: [],
   }
