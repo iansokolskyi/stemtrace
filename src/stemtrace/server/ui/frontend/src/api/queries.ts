@@ -24,6 +24,7 @@ import {
   type GraphListResponse,
   type GraphResponse,
   type HealthResponse,
+  HttpError,
   type TaskDetailResponse,
   type TaskGroupListResponse,
   type TaskListResponse,
@@ -183,8 +184,12 @@ export function useGroups() {
   return useQuery<TaskGroupListResponse>({
     queryKey: ['groups'],
     queryFn: fetchGroups,
-    // Stop asking once it fails: a server without the endpoint will not grow one in 30 seconds
-    refetchInterval: (query) => (query.state.status === 'error' ? false : GROUPS_POLL_MS),
+    // A 404 means this server has no such endpoint and will not grow one: stop asking. Any other
+    // failure may pass, so the next refresh is still due.
+    refetchInterval: (query) => {
+      const error = query.state.error
+      return error instanceof HttpError && error.status === 404 ? false : GROUPS_POLL_MS
+    },
     retry: false,
   })
 }

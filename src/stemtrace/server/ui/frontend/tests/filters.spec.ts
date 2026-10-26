@@ -486,10 +486,9 @@ test.describe('Time chip typing', () => {
         await input.focus()
         // month, day, then the four digits of the year, as a person types them
         await page.keyboard.type('10012025')
-        await page.waitForTimeout(800)
-
+        // The finished date settles into the URL by itself
+        await expect.poll(() => search(page)[key]).toBe('2025-10-01')
         expect(await input.inputValue()).toBe('2025-10-01')
-        expect(search(page)[key]).toBe('2025-10-01')
         // Nothing but the finished date, and the date that was there, ever reached the URL
         const written = await writtenDates(page, key)
         expect(written.filter((d) => d !== '2025-10-01' && d !== '2026-10-01')).toEqual([])
@@ -503,6 +502,8 @@ test.describe('Time chip typing', () => {
   test('an unfinished date is not written, and leaving the field puts the old value back', async ({
     page,
   }) => {
+    // A fake clock: the time a date has to sit unfinished before it could count is the subject
+    await page.clock.install()
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(sampleTasks())
     await logHistoryWrites(page)
@@ -511,7 +512,7 @@ test.describe('Time chip typing', () => {
     const from = popover(page).getByLabel('From')
     await from.focus()
     await page.keyboard.press('Backspace') // clears the month segment: an incomplete date
-    await page.waitForTimeout(800)
+    await page.clock.fastForward(5000)
     expect(await writtenDates(page, 'from_date')).toEqual([])
     expect(search(page)).toEqual({ from_date: '2026-10-01', to_date: '2026-10-20' })
 
@@ -632,7 +633,8 @@ test.describe('Groups polling', () => {
     await expect.poll(() => seen.count).toBeGreaterThanOrEqual(1)
     const first = seen.count
     await page.clock.fastForward(5 * 60 * 1000)
-    await page.waitForTimeout(300)
+    // Any request the timers fired is reported before the answer to a later round trip
+    await page.evaluate(() => fetch('/api/health').then((r) => r.status))
     expect(seen.count).toBe(first)
   })
 
@@ -679,5 +681,108 @@ test.describe('Popover position', () => {
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     )
     expect(overflow).toBeLessThanOrEqual(0)
+  })
+})
+
+test.describe('Typed date and an outside click', () => {
+  // A click outside closes the popover. The date typed so far must not be lost with it, whether
+  // or not the 400 ms it takes to settle on its own has passed (a year before 1970 never does).
+  for (const { typed, date } of [
+    { typed: '10012025', date: '2025-10-01' },
+    { typed: '01011950', date: '1950-01-01' },
+  ]) {
+    test(`${date} typed and then a click outside is kept`, async ({ page }) => {
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.addTasks(sampleTasks())
+      await page.goto('/executions')
+      await addFilter(page).click()
+      await popover(page).getByRole('button', { name: 'Time', exact: true }).click()
+      await popover(page).getByLabel('From').focus()
+      await page.keyboard.type(typed)
+      await page.getByRole('heading', { level: 1 }).click()
+      await expect(popover(page)).toHaveCount(0)
+      await expect.poll(() => search(page)).toEqual({ from_date: date })
+      await expect(chip(page, 'time')).toBeVisible()
+    })
+  }
+
+  test('an unfinished date is dropped by a click outside, not written', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto('/executions?from_date=2026-10-01')
+    await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
+    await popover(page).getByLabel('From').focus()
+    await page.keyboard.press('Backspace')
+    await page.getByRole('heading', { level: 1 }).click()
+    await expect(popover(page)).toHaveCount(0)
+    expect(search(page)).toEqual({ from_date: '2026-10-01' })
+  })
+})
+
+test.describe('Groups after a failed refresh', () => {
+  test('one failed refresh does not stop the next ones', async ({ page }) => {
+    await page.clock.install()
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups([{ name: 'First', source: 'code', tags: [], color: null, task_names: [] }])
+    await page.goto('/executions')
+    const groups = page.getByRole('navigation', { name: 'Groups' })
+    await expect(groups.getByRole('link', { name: 'First' })).toBeVisible()
+
+    // The server fails once ...
+    api.setGroups('error')
+    await page.clock.fastForward(31 * 1000)
+    await page.evaluate(() => fetch('/api/health').then((r) => r.status))
+    // ... and then answers again with a group that did not exist
+    api.setGroups([
+      { name: 'First', source: 'code', tags: [], color: null, task_names: [] },
+      { name: 'Second', source: 'code', tags: [], color: null, task_names: [] },
+    ])
+    await page.clock.fastForward(31 * 1000)
+    await expect(groups.getByRole('link', { name: 'Second' })).toBeVisible()
+  })
+
+  test('a 404 stops the refreshes for good', async ({ page }) => {
+    await page.clock.install()
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups(null)
+    let count = 0
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/api/groups') count++
+    })
+    await page.goto('/executions')
+    await expect.poll(() => count).toBeGreaterThanOrEqual(1)
+    const first = count
+    // Even if the route appears later, a server that lacked it is not asked again
+    api.setGroups([{ name: 'Late', source: 'code', tags: [], color: null, task_names: [] }])
+    await page.clock.fastForward(5 * 60 * 1000)
+    await page.evaluate(() => fetch('/api/health').then((r) => r.status))
+    expect(count).toBe(first)
+  })
+})
+
+test.describe('Popover and a growing chip row', () => {
+  test('a popover opened from Add filter follows the button when a chip pushes it right', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto('/executions')
+    await addFilter(page).click()
+    await popover(page).getByRole('button', { name: 'State', exact: true }).click()
+    const gap = async () => {
+      const dialog = await popover(page).boundingBox()
+      const button = await addFilter(page).boundingBox()
+      return Math.round((dialog?.x ?? 0) - (button?.x ?? 0))
+    }
+    expect(await gap()).toBe(0)
+    const before = (await addFilter(page).boundingBox())?.x ?? 0
+
+    // A chip appears (the popover stays open for more states) and Add filter moves right
+    await popover(page).getByRole('checkbox', { name: 'Failure' }).check()
+    await expect(chip(page, 'state')).toBeVisible()
+    await expect
+      .poll(async () => (await addFilter(page).boundingBox())?.x ?? 0)
+      .toBeGreaterThan(before)
+    await expect.poll(gap).toBe(0)
   })
 })

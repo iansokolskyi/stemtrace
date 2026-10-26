@@ -93,7 +93,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
             onChange={(event) => toggle(state, event.target.checked)}
             className="size-3.5 accent-[var(--ink)]"
           />
-          {stateWord(state)}
+          <span>{stateWord(state)}</span>
         </label>
       ))}
     </div>
@@ -137,7 +137,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
           }}
           className="size-3.5 accent-[var(--ink)]"
         />
-        Exact name
+        <span>Exact name</span>
       </label>
       <ApplyButton />
     </form>

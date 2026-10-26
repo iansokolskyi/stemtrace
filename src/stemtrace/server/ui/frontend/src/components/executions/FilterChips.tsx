@@ -24,51 +24,43 @@ const day = (value: string | undefined): string | undefined => {
   return date?.toLocaleDateString('en-US', SHORT_DATE)
 }
 
+const FIELD_CHIPS = [
+  { key: 'exception_type', label: 'Exception' },
+  { key: 'hostname', label: 'Worker' },
+  { key: 'queue', label: 'Queue' },
+  { key: 'task_group', label: 'Group' },
+  { key: 'tag', label: 'Tag' },
+] as const
+
+/** What the time chip says: both dates, one date, or "From"/"Until" for an open end. */
+function timeValue(filters: ExecutionFilters): string | undefined {
+  const from = day(filters.from_date)
+  const to = day(filters.to_date)
+  if (from && to) return from === to ? from : `${from} - ${to}`
+  if (from) return `From ${from}`
+  return to ? `Until ${to}` : undefined
+}
+
 /** The chips for the filters that are set, in a fixed order. */
 function chipsOf(filters: ExecutionFilters): Chip[] {
   const chips: Chip[] = []
-  const add = (chip: Chip | false | undefined | '') => {
-    if (chip) chips.push(chip)
+  if (filters.state) {
+    const value = filters.state.split(',').map(stateWord).join(', ')
+    chips.push({ key: 'state', label: 'State', value, field: 'state' })
   }
-  add(
-    filters.state && {
-      key: 'state',
-      label: 'State',
-      value: filters.state.split(',').map(stateWord).join(', '),
-      field: 'state',
-    },
-  )
-  add(filters.name && { key: 'name', label: 'Name', value: filters.name, field: 'name' })
-  add(
-    filters.name_exact && {
-      key: 'name_exact',
-      label: 'Task',
-      value: filters.name_exact,
-      field: 'name',
-      exact: true,
-    },
-  )
-  for (const key of ['exception_type', 'hostname', 'queue', 'task_group', 'tag'] as const) {
+  if (filters.name) {
+    chips.push({ key: 'name', label: 'Name', value: filters.name, field: 'name' })
+  }
+  if (filters.name_exact) {
+    const value = filters.name_exact
+    chips.push({ key: 'name_exact', label: 'Task', value, field: 'name', exact: true })
+  }
+  for (const { key, label } of FIELD_CHIPS) {
     const value = filters[key]
-    const field = key
-    if (value) {
-      const label = {
-        exception_type: 'Exception',
-        hostname: 'Worker',
-        queue: 'Queue',
-        task_group: 'Group',
-        tag: 'Tag',
-      }[key]
-      chips.push({ key, label, value, field })
-    }
+    if (value) chips.push({ key, label, value, field: key })
   }
-  if (filters.from_date || filters.to_date) {
-    const from = day(filters.from_date)
-    const to = day(filters.to_date)
-    const value =
-      from && to ? (from === to ? from : `${from} - ${to}`) : from ? `From ${from}` : `Until ${to}`
-    chips.push({ key: 'time', label: 'Time', value, field: 'time' })
-  }
+  const time = timeValue(filters)
+  if (time) chips.push({ key: 'time', label: 'Time', value: time, field: 'time' })
   return chips
 }
 
@@ -128,7 +120,14 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     setEditing(next)
   }
 
+  /** Hands what a field in the popover is still holding (a typed date) to its own blur handler. */
+  const settleFocused = () => {
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && popoverRef.current?.contains(focused)) focused.blur()
+  }
+
   const close = () => {
+    settleFocused()
     setEditing(null)
     const opener = openerRef.current
     // The opener can be gone (its chip was cleared): fall back to the add button
@@ -148,7 +147,9 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     if (editing && filtersKey !== expected.current) setEditing(null)
   }, [filtersKey])
 
-  // Keep the popover under its chip when the window resizes or the chips wrap differently
+  // Keep the popover under its opener when the window resizes, the chips wrap differently, or a
+  // chip is added or removed ahead of it (which moves the opener without resizing the bar)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is a trigger
   useLayoutEffect(() => {
     if (!editing) return
     const measure = () => {
@@ -166,7 +167,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
       observer.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [editing])
+  }, [editing, filtersKey])
 
   // Focus the first control when the popover opens or switches field
   const shown = editing === null ? null : (editing.field ?? 'list')
@@ -185,6 +186,8 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node
       if (popoverRef.current?.contains(target) || openerRef.current?.contains(target)) return
+      // Closing unmounts the field before it would lose focus: let it commit first
+      settleFocused()
       setEditing(null)
     }
     document.addEventListener('keydown', onKey)

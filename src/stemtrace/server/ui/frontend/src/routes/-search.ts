@@ -9,7 +9,9 @@ export interface ExecutionsSearch extends ExecutionFilters {
 // The router parses `?name=123` as the number 123: keep it as the text the user typed. Blank
 // text is no filter.
 const str = (v: unknown): string | undefined => {
-  const text = typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined
+  let text: string | undefined
+  if (typeof v === 'string') text = v
+  else if (typeof v === 'number') text = String(v)
   return text?.trim() ? text : undefined
 }
 
