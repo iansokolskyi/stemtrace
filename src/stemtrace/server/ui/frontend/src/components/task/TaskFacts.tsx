@@ -1,6 +1,6 @@
 import type { ReactElement, ReactNode } from 'react'
 import type { TaskNode } from '@/api/client'
-import { formatDateTime, formatDuration } from '@/utils/format'
+import { formatDateTime, formatSpan } from '@/utils/format'
 import { Panel } from './Panel'
 
 interface Fact {
@@ -30,7 +30,7 @@ function factsOf(task: TaskNode): Fact[] {
     task.last_updated && { label: 'Last update', value: formatDateTime(task.last_updated) },
     task.duration_ms !== null && {
       label: 'Duration',
-      value: formatDuration(task.duration_ms),
+      value: formatSpan(task.duration_ms),
       mono: true,
     },
   ]
