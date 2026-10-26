@@ -1,61 +1,11 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
-import { setupMockApi } from './fixtures/mock-api'
-import {
-  createFailedTask,
-  createMockEvent,
-  createSuccessTask,
-  type MockTask,
-} from './fixtures/mock-data'
+import { createFailedTask } from './fixtures/mock-data'
+import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
-/**
- * The task page, piece by piece: header, timing, facts, arguments, exception, history, children.
- * Mock mode only: it controls which optional fields the API sends.
- */
+/** The top of the task page: title, state, ID, links. Mock mode: it controls the optional fields. */
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
-
-const BASE = Date.parse('2026-10-17T12:00:00Z')
-const at = (seconds: number): string => new Date(BASE + seconds * 1000).toISOString()
-
-/** Resolves `var(--token)` through a probe, so both sides of a comparison are rgb() strings. */
-async function tokenColour(page: Page, token: string): Promise<string> {
-  return page.evaluate((name) => {
-    const probe = document.createElement('div')
-    probe.style.color = `var(--${name})`
-    document.body.append(probe)
-    const colour = getComputedStyle(probe).color
-    probe.remove()
-    return colour
-  }, token)
-}
-
-/** A successful task with fixed times, plus any optional fields a test wants. */
-function successTask(overrides: Partial<MockTask> = {}): MockTask {
-  const task = createSuccessTask('billing.invoices.send_receipt', { sent: true })
-  const { task_id, name } = task
-  task.events = [
-    createMockEvent(task_id, name, 'PENDING', { timestamp: at(0), args: [7], root_id: task_id }),
-    createMockEvent(task_id, name, 'STARTED', { timestamp: at(1), root_id: task_id }),
-    createMockEvent(task_id, name, 'SUCCESS', {
-      timestamp: at(2),
-      result: { sent: true },
-      root_id: task_id,
-    }),
-  ]
-  task.first_seen = at(0)
-  task.last_updated = at(2)
-  task.duration_ms = 2000
-  return Object.assign(task, overrides)
-}
-
-async function openTask(page: Page, ...tasks: MockTask[]): Promise<MockTask> {
-  const api = await setupMockApi(page, { useDefaults: false })
-  api.addTasks(tasks)
-  await page.goto(`/tasks/${tasks[0].task_id}`)
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-  return tasks[0]
-}
 
 const header = (page: Page): Locator => page.getByTestId('task-header')
 

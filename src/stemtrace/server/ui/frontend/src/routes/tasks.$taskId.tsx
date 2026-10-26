@@ -13,6 +13,7 @@ import {
   TimelineBar,
 } from '@/components/TimelineBar'
 import { TaskHeader } from '@/components/task/TaskHeader'
+import { TimingBar } from '@/components/task/TimingBar'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/tasks/$taskId')({
@@ -49,6 +50,7 @@ function TaskDetailPage() {
   return (
     <div className="space-y-6">
       <TaskHeader task={task} />
+      <TimingBar state={task.state} queueWaitMs={task.queue_wait_ms} runtimeMs={task.runtime_ms} />
       <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
         <dl className="grid grid-cols-4 gap-4">
           <InfoCard label="Duration" value={formatDuration(task.duration_ms ?? 0)} />
