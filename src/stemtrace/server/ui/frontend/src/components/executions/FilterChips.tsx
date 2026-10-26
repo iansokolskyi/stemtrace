@@ -1,7 +1,6 @@
 import { type ReactElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { parseDateParam } from '@/utils/format'
-import { afterPointerRelease } from '@/utils/pointer'
 import { Icon } from '../Icon'
 import { FIELD_LABEL, type FilterField, FilterPopover, stateWord } from './FilterPopover'
 import type { FilterSuggestions } from './suggestions'
@@ -108,47 +107,17 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   // One edit is one history entry: its first change is pushed, the rest replace it
   const pushed = useRef(false)
   const [left, setLeft] = useState(0)
-  // The filters the open popover last produced. If they change any other way (the browser's Back
-  // or Forward), the popover closes: its edit is over, and the next one must push a new entry.
+  // Used to re-anchor the popover when a chip is added or removed ahead of its opener
   const filtersKey = canonical(filters)
-  const expected = useRef(filtersKey)
-  // The latest filters, including ones just emitted that the URL hasn't caught up with, so a
-  // change made right after another builds on it instead of on stale props
-  const latest = useRef(filters)
-  const seenKey = useRef(filtersKey)
-  if (seenKey.current !== filtersKey) {
-    seenKey.current = filtersKey
-    latest.current = filters
-  }
-  // Bumped when a half-typed date must be dropped rather than applied (see DateField)
-  const discard = useRef(0)
-  // A press outside the popover is waiting for its release to close it
-  const outsidePress = useRef(false)
-
-  const emit = (next: ExecutionFilters, replace: boolean) => {
-    latest.current = next
-    onChange(next, { replace })
-  }
 
   const openFrom = (opener: HTMLElement, next: Editing) => {
-    // This click is the press's outcome: the popover is not to be closed behind it
-    outsidePress.current = false
     if (editing?.by === next.by) return close()
-    settleFocused()
     openerRef.current = opener
     pushed.current = false
-    expected.current = filtersKey
     setEditing(next)
   }
 
-  /** Hands what a field in the popover is still holding (a typed date) to its own blur handler. */
-  const settleFocused = () => {
-    const focused = document.activeElement
-    if (focused instanceof HTMLElement && popoverRef.current?.contains(focused)) focused.blur()
-  }
-
   const close = () => {
-    settleFocused()
     setEditing(null)
     const opener = openerRef.current
     // The opener can be gone (its chip was cleared): fall back to the add button
@@ -157,17 +126,19 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   }
 
   const commit = (patch: ExecutionFilters, shouldClose: boolean) => {
-    const next = { ...latest.current, ...patch }
-    expected.current = canonical(next)
-    emit(next, pushed.current)
+    onChange({ ...filters, ...patch }, { replace: pushed.current })
     pushed.current = true
     if (shouldClose) close()
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is the trigger
+  // The browser's Back and Forward end the edit: whatever was typed is dropped with the popover,
+  // and the next edit starts a new session that pushes
   useEffect(() => {
-    if (editing && filtersKey !== expected.current) setEditing(null)
-  }, [filtersKey])
+    if (!editing) return
+    const end = () => setEditing(null)
+    window.addEventListener('popstate', end)
+    return () => window.removeEventListener('popstate', end)
+  }, [editing])
 
   // Keep the popover under its opener when the window resizes, the chips wrap differently, or a
   // chip is added or removed ahead of it (which moves the opener without resizing the bar)
@@ -208,16 +179,9 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
     const onDown = (event: PointerEvent) => {
       const target = event.target as Node
       if (popoverRef.current?.contains(target) || openerRef.current?.contains(target)) return
-      // Close on the release, not the press: closing (and what a field commits as it goes)
-      // would move things under a button that is still down. A click that follows has already
-      // run by then, and cancels this if it opened something itself.
-      outsidePress.current = true
-      afterPointerRelease(() => {
-        if (!outsidePress.current) return
-        outsidePress.current = false
-        // After the fields' own release handlers (a half-typed date commits first)
-        window.setTimeout(() => setEditing(null), 0)
-      })
+      // Closing drops what was typed in the popover; the popover floats over the page, so
+      // nothing under the pointer moves
+      setEditing(null)
     }
     document.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onDown)
@@ -256,7 +220,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
           <button
             type="button"
             aria-label={`Remove ${chip.label.toLowerCase()} filter`}
-            onClick={() => emit(without(latest.current, chip.key), false)}
+            onClick={() => onChange(without(filters, chip.key), { replace: false })}
             className="mr-0.5 flex size-[18px] flex-none items-center justify-center rounded-[2px] text-muted hover:bg-hover hover:text-ink"
           >
             ×
@@ -277,14 +241,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
       {chips.length > 0 && (
         <button
           type="button"
-          onClick={() => {
-            // Clear means everything, a half-typed date included: nothing of it is applied
-            discard.current++
-            outsidePress.current = false
-            expected.current = canonical({})
-            setEditing(null)
-            emit({}, false)
-          }}
+          onClick={() => onChange({}, { replace: false })}
           className="h-[26px] rounded-[3px] px-2 text-xs text-muted hover:text-ink"
         >
           Clear
@@ -304,7 +261,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
             filters={filters}
             suggestions={suggestions}
             onCommit={commit}
-            discard={discard}
+            onClose={close}
             onPickField={(field) => setEditing({ by: editing.by, field, exact: false })}
           />
         </dialog>
