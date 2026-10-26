@@ -8,13 +8,14 @@ node), so they don't share the code under test. Captures are real Celery events
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType
-from stemtrace.server.store import GraphStore
+from stemtrace.core.graph import NodeType, TaskNode
+from stemtrace.server.store import GraphStore, _flow_root_id
 
 _CAPTURES: dict[str, list[dict[str, Any]]] = json.loads(
     (Path(__file__).parents[1] / "data" / "celery_flows.json").read_text()
@@ -32,6 +33,28 @@ _FLOWS = [
     "chord_in_chord_body",
     "nested_replace_header@worker_process@field",
 ]
+
+
+def _flow_root(store: GraphStore, task_id: str) -> str | None:
+    """What the task detail reports: None for a task that isn't stored."""
+    found = store.get_node_with_children(task_id)
+    return found.flow_root_id if found else None
+
+
+class _BoundedNodes(dict[str, TaskNode]):
+    """A node map that fails the test, not the run, when a walk looks nodes up too often."""
+
+    def __init__(self, nodes: dict[str, TaskNode], limit: int) -> None:
+        super().__init__(nodes)
+        self.limit = limit
+        self.lookups = 0
+
+    def get(self, key: str, default: Any = None) -> Any:
+        self.lookups += 1
+        assert self.lookups <= self.limit, (
+            f"walk did {self.lookups} lookups on {len(self)} nodes"
+        )
+        return super().get(key, default)
 
 
 def _store(flow: str) -> GraphStore:
@@ -71,7 +94,7 @@ def test_flow_root_id_of_every_node_is_the_listed_graph_root(flow: str) -> None:
         ids.update(store.get_graph_from_root(root.task_id))
 
     for node_id in sorted(ids):
-        assert store.get_flow_root_id(node_id) == _listed_root_of(store, node_id)
+        assert _flow_root(store, node_id) == _listed_root_of(store, node_id)
 
 
 def test_top_level_group_members_have_the_group_node_as_flow_root() -> None:
@@ -88,7 +111,7 @@ def test_top_level_group_members_have_the_group_node_as_flow_root() -> None:
     assert len(group_node_ids) == 1
     for task_id, raw in members.items():
         assert raw["root_id"] == task_id  # what the events say
-        assert store.get_flow_root_id(task_id) in group_node_ids  # what the graph says
+        assert _flow_root(store, task_id) in group_node_ids  # what the graph says
 
 
 def test_top_level_chord_header_flow_root_is_the_chord_node() -> None:
@@ -98,7 +121,7 @@ def test_top_level_chord_header_flow_root_is_the_chord_node() -> None:
         for root in store.get_root_nodes()[0]
         for nid, n in store.get_graph_from_root(root.task_id).items()
     }
-    roots = {store.get_flow_root_id(raw["task_id"]) for raw in _CAPTURES["chord"]}
+    roots = {_flow_root(store, raw["task_id"]) for raw in _CAPTURES["chord"]}
     assert len(roots) == 1
     (root,) = roots
     assert root is not None
@@ -109,14 +132,14 @@ def test_chain_steps_share_the_first_task_as_flow_root() -> None:
     store = _store("chain")
     first = next(r["task_id"] for r in _CAPTURES["chain"] if not r.get("parent_id"))
     for raw in _CAPTURES["chain"]:
-        assert store.get_flow_root_id(raw["task_id"]) == first
+        assert _flow_root(store, raw["task_id"]) == first
 
 
 def test_a_task_sent_without_a_parent_is_its_own_flow_root() -> None:
     """Celery's default: ``root_id == task_id`` and no parent."""
     store = GraphStore()
     store.add_event(_event("solo", root_id="solo"))
-    assert store.get_flow_root_id("solo") == "solo"
+    assert _flow_root(store, "solo") == "solo"
 
 
 def test_a_child_reports_the_root_of_its_parent() -> None:
@@ -124,7 +147,7 @@ def test_a_child_reports_the_root_of_its_parent() -> None:
     store.add_event(_event("top", root_id="top"))
     store.add_event(_event("mid", parent_id="top", root_id="top"))
     store.add_event(_event("leaf", parent_id="mid", root_id="top"))
-    assert [store.get_flow_root_id(t) for t in ("top", "mid", "leaf")] == ["top"] * 3
+    assert [_flow_root(store, t) for t in ("top", "mid", "leaf")] == ["top"] * 3
 
 
 def test_flow_root_id_ignores_what_events_say_the_root_is() -> None:
@@ -132,27 +155,36 @@ def test_flow_root_id_ignores_what_events_say_the_root_is() -> None:
     store = GraphStore()
     store.add_event(_event("top", root_id="elsewhere"))
     store.add_event(_event("kid", parent_id="top", root_id="elsewhere"))
-    assert store.get_flow_root_id("kid") == "top"
+    assert _flow_root(store, "kid") == "top"
 
 
 def test_unknown_task_has_no_flow_root() -> None:
-    assert GraphStore().get_flow_root_id("missing") is None
+    assert _flow_root(GraphStore(), "missing") is None
 
 
-def test_a_hand_made_parent_cycle_ends_with_none() -> None:
-    """Corrupt links (a store restored from bad data): the walk must not loop."""
+def test_a_parent_cycle_ends_with_none_in_a_bounded_walk() -> None:
+    """Links the graph never makes (it refuses cycles): the walk must still end.
+
+    A walk with no visited set loops forever, so the node map fails the test
+    once it has been asked more often than two nodes can need.
+    """
     store = GraphStore()
     store.add_event(_event("a"))
     store.add_event(_event("b"))
-    graph = store._graph  # pin the guard against links the graph never makes
-    graph.nodes["a"].parent_id = "b"
-    graph.nodes["b"].parent_id = "a"
-    assert store.get_flow_root_id("a") is None
-    assert store.get_flow_root_id("b") is None
+    nodes = store._graph.nodes
+    nodes["a"].parent_id = "b"
+    nodes["b"].parent_id = "a"
+    graph = SimpleNamespace(nodes=_BoundedNodes(nodes, limit=10))
+    assert _flow_root_id(graph, "a") is None  # type: ignore[arg-type]
+    assert _flow_root_id(graph, "b") is None  # type: ignore[arg-type]
 
 
 def test_a_parent_missing_from_the_store_gives_no_flow_root() -> None:
     store = GraphStore()
     store.add_event(_event("a"))
-    store._graph.nodes["a"].parent_id = "gone"  # an evicted parent
-    assert store.get_flow_root_id("a") is None
+    store._graph.nodes[
+        "a"
+    ].parent_id = (
+        "gone"  # a parent the store no longer holds (a link the graph never makes)
+    )
+    assert _flow_root(store, "a") is None

@@ -177,7 +177,6 @@ def _node_to_response(
     include_output: bool = False,
     include_events: bool = True,
     group_of: Callable[[str], ResolvedGroup],
-    flow_root_id: str | None = None,
 ) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
@@ -189,7 +188,6 @@ def _node_to_response(
         include_events: Embed the events; off for ``compact=1`` lists, which
             then carry ``events: null``.
         group_of: Task group by task name (see ``group_lookup``).
-        flow_root_id: Root of the node's graph, when the caller looked it up.
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -229,7 +227,6 @@ def _node_to_response(
         hostname=node.hostname,
         queue=node.queue,
         routing_key=node.routing_key,
-        flow_root_id=flow_root_id,
     )
 
 
@@ -852,16 +849,12 @@ def _add_task_routes(
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        node, children = found
+        node, children, flow_root_id = found
         group_of = group_lookup(groups)
         return TaskDetailResponse(
-            task=_node_to_response(
-                node,
-                include_output=True,
-                group_of=group_of,
-                flow_root_id=store.get_flow_root_id(task_id),
-            ),
+            task=_node_to_response(node, include_output=True, group_of=group_of),
             children=[_node_to_response(c, group_of=group_of) for c in children],
+            flow_root_id=flow_root_id,
         )
 
     @router.get(
@@ -880,7 +873,7 @@ def _add_task_routes(
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        _, children = found
+        children = found.children
         group_of = group_lookup(groups)
         return [
             _node_to_response(c, include_events=not compact, group_of=group_of)

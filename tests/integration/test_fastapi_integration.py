@@ -946,7 +946,7 @@ class TestGraphApiShapes:
 
 
 class TestTaskFlowRootId:
-    """``flow_root_id`` on the task detail: the graph root ``/api/graphs`` lists for the task."""
+    """``flow_root_id`` on the task detail response: the graph root ``/api/graphs`` lists for the task."""
 
     @staticmethod
     def _client(flow: str) -> TestClient:
@@ -973,16 +973,16 @@ class TestTaskFlowRootId:
         task_ids = {raw["task_id"] for raw in _CELERY_FLOWS[flow]}
         assert task_ids <= held_by.keys()
         for task_id in task_ids:
-            task = client.get(f"/api/tasks/{task_id}").json()["task"]
-            assert task["flow_root_id"] == held_by[task_id]
+            detail = client.get(f"/api/tasks/{task_id}").json()
+            assert detail["flow_root_id"] == held_by[task_id]
 
     def test_group_member_page_points_at_the_group_node_not_the_member(self) -> None:
         client = self._client("group")
         member = next(r for r in _CELERY_FLOWS["group"] if r.get("group_id"))
         # Celery's own default: the member's events name itself as root
         assert member["root_id"] == member["task_id"]
-        task = client.get(f"/api/tasks/{member['task_id']}").json()["task"]
-        assert task["flow_root_id"] == f"group:{member['group_id']}"
+        detail = client.get(f"/api/tasks/{member['task_id']}").json()
+        assert detail["flow_root_id"] == f"group:{member['group_id']}"
 
     def test_a_task_sent_without_a_parent_is_its_own_flow_root(self) -> None:
         store = GraphStore()
@@ -997,17 +997,5 @@ class TestTaskFlowRootId:
         )
         app = FastAPI()
         app.include_router(create_router(store=store))
-        task = TestClient(app).get("/api/tasks/solo").json()["task"]
-        assert task["flow_root_id"] == "solo"
-
-    def test_lists_and_children_leave_it_unset(self) -> None:
-        client = self._client("chain")
-        first = next(
-            r["task_id"] for r in _CELERY_FLOWS["chain"] if not r.get("parent_id")
-        )
-        listed = client.get("/api/tasks").json()["tasks"]
-        assert [t["flow_root_id"] for t in listed] == [None] * len(listed)
-        detail = client.get(f"/api/tasks/{first}").json()
-        assert [c["flow_root_id"] for c in detail["children"]] == [None] * len(
-            detail["children"]
-        )
+        detail = TestClient(app).get("/api/tasks/solo").json()
+        assert detail["flow_root_id"] == "solo"
