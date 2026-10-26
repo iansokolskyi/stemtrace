@@ -107,13 +107,17 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   // One edit is one history entry: its first change is pushed, the rest replace it
   const pushed = useRef(false)
   const [left, setLeft] = useState(0)
-  // Used to re-anchor the popover when a chip is added or removed ahead of its opener
   const filtersKey = canonical(filters)
+  // The filters the open popover last produced. If they change any other way (Clear, a chip's ×
+  // or a sidebar link used from the keyboard, where no press outside the popover closes it), its
+  // edit is over: what was typed goes, and the next edit starts a new session that pushes.
+  const expected = useRef(filtersKey)
 
   const openFrom = (opener: HTMLElement, next: Editing) => {
     if (editing?.by === next.by) return close()
     openerRef.current = opener
     pushed.current = false
+    expected.current = filtersKey
     setEditing(next)
   }
 
@@ -126,10 +130,17 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   }
 
   const commit = (patch: ExecutionFilters, shouldClose: boolean) => {
-    onChange({ ...filters, ...patch }, { replace: pushed.current })
+    const next = { ...filters, ...patch }
+    expected.current = canonical(next)
+    onChange(next, { replace: pushed.current })
     pushed.current = true
     if (shouldClose) close()
   }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is the trigger
+  useEffect(() => {
+    if (editing && filtersKey !== expected.current) setEditing(null)
+  }, [filtersKey])
 
   // The browser's Back and Forward end the edit: whatever was typed is dropped with the popover,
   // and the next edit starts a new session that pushes

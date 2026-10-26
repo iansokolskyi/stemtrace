@@ -547,9 +547,9 @@ test.describe('Graph Page - Mock Scenarios', () => {
 
     // Should have 5 nodes: 1 GROUP container + 1 header label + 3 members
     // (React Flow renders the container header as a separate node)
+    // The graph is laid out after its data arrives: wait for the count, not a snapshot of the DOM
     const nodes = page.locator('.react-flow__node')
-    const nodeCount = await nodes.count()
-    expect(nodeCount).toBe(5)
+    await expect(nodes).toHaveCount(5)
   })
 
   test('renders workflow with parent spawning group', async ({ page }) => {
@@ -568,14 +568,13 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await page.waitForLoadState('networkidle')
 
     // Should have nodes: 1 parent + 1 GROUP container + 1 header label + 2 members = 5 nodes
+    // The graph is laid out after its data arrives: wait for the count, not a snapshot of the DOM
     const nodes = page.locator('.react-flow__node')
-    const nodeCount = await nodes.count()
-    expect(nodeCount).toBe(5)
+    await expect(nodes).toHaveCount(5)
 
-    // Should have edges connecting parent to group
+    // Should have edges connecting parent to group (drawn a moment after their nodes)
     const edges = page.locator('.react-flow__edge')
-    const edgeCount = await edges.count()
-    expect(edgeCount).toBeGreaterThan(0)
+    await expect(edges.first()).toBeAttached()
   })
 
   test('renders chord with callback', async ({ page }) => {
