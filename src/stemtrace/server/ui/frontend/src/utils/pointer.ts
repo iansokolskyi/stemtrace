@@ -29,9 +29,6 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pointercancel', released, true)
 }
 
-/** True while a pointer button is held. */
-export const isPointerDown = (): boolean => down
-
 /** Runs `run` now if no button is down, otherwise after the next release and its click. */
 export function afterPointerRelease(run: () => void): void {
   if (down) waiting.push(run)

@@ -881,3 +881,35 @@ test.describe('Pending date and targets that move', () => {
     }
   }
 })
+
+test.describe('Edits in one task', () => {
+  test('two date edits made before the page has caught up with the first keep both', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto('/executions?queue=payments')
+    await addFilter(page).click()
+    await popover(page).getByRole('button', { name: 'Time', exact: true }).click()
+    // Both fields are set and left in one task: React has rendered after each event, but the
+    // router has not yet put the first date into the props the second edit would build on
+    await page.evaluate(() => {
+      const set = (label: string, value: string) => {
+        const field = [...document.querySelectorAll<HTMLInputElement>('input[type="date"]')].find(
+          (el) => el.labels?.[0]?.textContent === label,
+        )
+        if (!field) throw new Error(`no ${label} field`)
+        field.focus()
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+        setter?.call(field, value)
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        field.blur()
+      }
+      set('From', '2026-10-01')
+      set('To', '2026-10-07')
+    })
+    await expect
+      .poll(() => search(page))
+      .toEqual({ queue: 'payments', from_date: '2026-10-01', to_date: '2026-10-07' })
+  })
+})

@@ -1,7 +1,7 @@
 import { type ReactElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { parseDateParam } from '@/utils/format'
-import { afterPointerRelease, isPointerDown } from '@/utils/pointer'
+import { afterPointerRelease } from '@/utils/pointer'
 import { Icon } from '../Icon'
 import { FIELD_LABEL, type FilterField, FilterPopover, stateWord } from './FilterPopover'
 import type { FilterSuggestions } from './suggestions'
@@ -175,8 +175,6 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   useLayoutEffect(() => {
     if (!editing) return
     const measure = () => {
-      // Nothing moves while a button is down: wait for the release, then place it
-      if (isPointerDown()) return afterPointerRelease(measure)
       const bar = barRef.current
       const opener = openerRef.current
       if (!bar || !opener?.isConnected) return
