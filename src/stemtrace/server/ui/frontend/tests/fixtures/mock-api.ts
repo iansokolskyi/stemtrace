@@ -212,6 +212,8 @@ export async function setupMockApi(
     tags: t.tags ?? [],
     queue_wait_ms: t.queue_wait_ms ?? null,
     runtime_ms: t.runtime_ms ?? null,
+    routing_key: t.routing_key ?? null,
+    eta: t.eta ?? null,
   })
 
   // Health endpoint (use regex like other routes)

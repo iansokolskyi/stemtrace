@@ -12,6 +12,7 @@ import {
   stateColors,
   TimelineBar,
 } from '@/components/TimelineBar'
+import { TaskHeader } from '@/components/task/TaskHeader'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/tasks/$taskId')({
@@ -47,17 +48,9 @@ function TaskDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Task header */}
+      <TaskHeader task={task} />
       <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-slate-100">{task.name}</h1>
-            <p className="text-sm text-slate-500 font-mono mt-1">{task.task_id}</p>
-          </div>
-          <TaskStateBadge state={task.state} />
-        </div>
-
-        <dl className="grid grid-cols-4 gap-4 mt-6">
+        <dl className="grid grid-cols-4 gap-4">
           <InfoCard label="Duration" value={formatDuration(task.duration_ms ?? 0)} />
           <InfoCard label="First seen" value={formatTime(task.first_seen)} />
           <InfoCard label="Last update" value={formatTime(task.last_updated)} />

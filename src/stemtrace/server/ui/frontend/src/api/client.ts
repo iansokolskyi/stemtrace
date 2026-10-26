@@ -200,6 +200,10 @@ export interface TaskNode {
   queue_wait_ms?: number | null
   /** Time spent running, queue wait excluded. */
   runtime_ms?: number | null
+  /** Sent by the task detail and list endpoints; null when no event carried it. */
+  routing_key?: string | null
+  /** When the first attempt was scheduled to run (countdown or eta), ISO 8601. */
+  eta?: string | null
 }
 
 /** A task as `GET /api/tasks?compact=1` lists it: no events. */
