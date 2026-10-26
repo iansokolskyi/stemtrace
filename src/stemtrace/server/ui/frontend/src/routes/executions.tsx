@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useMemo } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { useExecutions, useGroups, useTasks } from '@/api/queries'
 import { DensityToggle } from '@/components/executions/DensityToggle'
@@ -29,11 +30,19 @@ function TasksPage() {
   const listRows = useExecutions(filters, { enabled: viewMode === 'list' })
   const timelineRows = useTasks(filters, { enabled: viewMode === 'timeline' })
   const { data: groups } = useGroups()
-  const loaded =
-    viewMode === 'list'
-      ? (listRows.data?.pages.flatMap((page) => page.tasks) ?? [])
-      : (timelineRows.data?.tasks ?? [])
-  const suggestions = suggestionsFrom(loaded, groups?.groups)
+  const listPages = listRows.data
+  const timelineTasks = timelineRows.data?.tasks
+  const groupList = groups?.groups
+  const suggestions = useMemo(
+    () =>
+      suggestionsFrom(
+        viewMode === 'list'
+          ? (listPages?.pages.flatMap((page) => page.tasks) ?? [])
+          : (timelineTasks ?? []),
+        groupList,
+      ),
+    [viewMode, listPages, timelineTasks, groupList],
+  )
 
   // Filters are history entries (Back restores the previous ones); the view toggle is not
   const setFilters = (next: ExecutionFilters, { replace }: { replace: boolean }) => {

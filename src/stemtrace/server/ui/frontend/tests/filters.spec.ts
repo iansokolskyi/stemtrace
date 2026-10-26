@@ -444,3 +444,240 @@ test.describe('Filter chips at 400px', () => {
     expect(dialog?.x ?? -1).toBeGreaterThanOrEqual(0)
   })
 })
+
+/** Logs every URL the app writes to the browser history (push and replace) in `window.__urls`. */
+async function logHistoryWrites(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const urls: string[] = []
+    ;(window as unknown as { __urls: string[] }).__urls = urls
+    for (const method of ['pushState', 'replaceState'] as const) {
+      const original = window.history[method].bind(window.history)
+      window.history[method] = (data: unknown, unused: string, url?: string | URL | null) => {
+        if (url) urls.push(String(url))
+        original(data, unused, url)
+      }
+    }
+  })
+}
+
+const writtenDates = (page: Page, key: 'from_date' | 'to_date') =>
+  page.evaluate((k) => {
+    const urls = (window as unknown as { __urls: string[] }).__urls
+    return urls.map((u) => new URL(u, window.location.href).searchParams.get(k))
+  }, key)
+
+test.describe('Time chip typing', () => {
+  // Chromium's date input emits a value on every digit of the year: typing 2025 passes through
+  // 0002, 0020, 0202 and 2025. Only a finished date may reach the URL or the input.
+  for (const key of ['from_date', 'to_date'] as const) {
+    const label = key === 'from_date' ? 'From' : 'To'
+    const other = key === 'from_date' ? 'to_date=2026-10-20' : 'from_date=2026-09-01'
+    for (const start of ['a set date', 'an empty field'] as const) {
+      test(`typing a year into ${label} from ${start} writes only the finished date`, async ({
+        page,
+      }) => {
+        const api = await setupMockApi(page, { useDefaults: false })
+        api.addTasks(sampleTasks())
+        await logHistoryWrites(page)
+        const initial = start === 'a set date' ? `&${key}=2026-10-01` : ''
+        await page.goto(`/executions?${other}${initial}`)
+        await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
+        const input = popover(page).getByLabel(label)
+        await input.focus()
+        // month, day, then the four digits of the year, as a person types them
+        await page.keyboard.type('10012025')
+        await page.waitForTimeout(800)
+
+        expect(await input.inputValue()).toBe('2025-10-01')
+        expect(search(page)[key]).toBe('2025-10-01')
+        // Nothing but the finished date, and the date that was there, ever reached the URL
+        const written = await writtenDates(page, key)
+        expect(written.filter((d) => d !== '2025-10-01' && d !== '2026-10-01')).toEqual([])
+        // The chip never lost its dates while typing, and the popover is still open
+        await expect(chip(page, 'time')).toBeVisible()
+        await expect(popover(page)).toBeVisible()
+      })
+    }
+  }
+
+  test('an unfinished date is not written, and leaving the field puts the old value back', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await logHistoryWrites(page)
+    await page.goto('/executions?from_date=2026-10-01&to_date=2026-10-20')
+    await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
+    const from = popover(page).getByLabel('From')
+    await from.focus()
+    await page.keyboard.press('Backspace') // clears the month segment: an incomplete date
+    await page.waitForTimeout(800)
+    expect(await writtenDates(page, 'from_date')).toEqual([])
+    expect(search(page)).toEqual({ from_date: '2026-10-01', to_date: '2026-10-20' })
+
+    // Leave the field with the entry unfinished
+    await popover(page).getByLabel('To').focus()
+    await expect(from).toHaveValue('2026-10-01')
+    expect(search(page)).toEqual({ from_date: '2026-10-01', to_date: '2026-10-20' })
+  })
+
+  test('Escape while editing cancels the edit first, then closes the popover', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto('/executions?from_date=2026-10-01')
+    await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
+    const from = popover(page).getByLabel('From')
+    await from.focus()
+    await page.keyboard.press('Backspace')
+    await page.keyboard.press('Escape')
+    // The edit is cancelled and the popover stays; the date is as it was
+    await expect(popover(page)).toBeVisible()
+    await expect(from).toHaveValue('2026-10-01')
+    expect(search(page)).toEqual({ from_date: '2026-10-01' })
+    await page.keyboard.press('Escape')
+    await expect(popover(page)).toHaveCount(0)
+  })
+
+  test('Enter commits a typed date at once, and one finished edit is one history entry', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto('/workers')
+    await page.goto('/executions')
+    await addFilter(page).click()
+    await popover(page).getByRole('button', { name: 'Time', exact: true }).click()
+    await popover(page).getByLabel('From').focus()
+    await page.keyboard.type('10012025')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => search(page)).toEqual({ from_date: '2025-10-01' })
+    await popover(page).getByLabel('To').focus()
+    await page.keyboard.type('10072025')
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => search(page))
+      .toEqual({ from_date: '2025-10-01', to_date: '2025-10-07' })
+    // Both dates were one edit: one Back reaches the unfiltered list, a second leaves the page
+    await page.goBack()
+    expect(search(page)).toEqual({})
+    await page.goBack()
+    await expect(page).toHaveURL(/\/workers$/)
+  })
+})
+
+test.describe('Back with the popover open', () => {
+  const cases = [
+    {
+      name: 'State',
+      set: async (page: Page) => {
+        await popover(page).getByRole('checkbox', { name: 'Failure' }).check()
+      },
+      next: async (page: Page) => {
+        await popover(page).getByRole('checkbox', { name: 'Retry' }).check()
+      },
+    },
+    {
+      name: 'Time',
+      set: async (page: Page) => {
+        await popover(page).getByLabel('From').fill('2026-10-01')
+      },
+      next: async (page: Page) => {
+        await popover(page).getByLabel('To').fill('2026-10-07')
+      },
+    },
+  ]
+  for (const { name, set, next } of cases) {
+    test(`${name}: Back closes the popover, and the next edit does not replace the restored entry`, async ({
+      page,
+    }) => {
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.addTasks(sampleTasks())
+      await page.goto('/workers')
+      await page.goto('/executions')
+      await open(page, name)
+      await set(page)
+      await expect.poll(() => Object.keys(search(page)).length).toBeGreaterThan(0)
+
+      await page.goBack() // the popover is still open when the browser goes back
+      expect(search(page)).toEqual({})
+      await expect(popover(page)).toHaveCount(0)
+
+      await open(page, name)
+      await next(page)
+      await expect.poll(() => Object.keys(search(page)).length).toBeGreaterThan(0)
+      await page.goBack()
+      // The restored entry is still there: Back reaches the unfiltered list, then the page before
+      await expect(page).toHaveURL(/\/executions$/)
+      await page.goBack()
+      await expect(page).toHaveURL(/\/workers$/)
+    })
+  }
+})
+
+test.describe('Groups polling', () => {
+  const groupRequests = (page: Page): { count: number } => {
+    const seen = { count: 0 }
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/api/groups') seen.count++
+    })
+    return seen
+  }
+
+  test('stops asking once /api/groups answers 404', async ({ page }) => {
+    await page.clock.install()
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups(null)
+    const seen = groupRequests(page)
+    await page.goto('/executions')
+    await expect.poll(() => seen.count).toBeGreaterThanOrEqual(1)
+    const first = seen.count
+    await page.clock.fastForward(5 * 60 * 1000)
+    await page.waitForTimeout(300)
+    expect(seen.count).toBe(first)
+  })
+
+  test('keeps refreshing the groups while the endpoint works', async ({ page }) => {
+    await page.clock.install()
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups([{ name: 'A', source: 'code', tags: [], color: null, task_names: [] }])
+    const seen = groupRequests(page)
+    await page.goto('/executions')
+    await expect.poll(() => seen.count).toBeGreaterThanOrEqual(1)
+    const first = seen.count
+    await page.clock.fastForward(95 * 1000)
+    await expect.poll(() => seen.count).toBeGreaterThan(first)
+  })
+})
+
+test.describe('Popover position', () => {
+  test('follows its chip when the window is resized and the chips wrap', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(sampleTasks())
+    await page.goto(
+      `/executions?${new URLSearchParams({
+        state: 'FAILURE,RETRY,SUCCESS',
+        hostname: 'celery@worker-billing-eu-west-1a',
+        queue: 'payments',
+        task_group: 'Billing',
+      })}`,
+    )
+    await chip(page, 'task_group')
+      .getByRole('button', { name: /^Group/ })
+      .click()
+    await expect(popover(page)).toBeVisible()
+    await page.setViewportSize({ width: 400, height: 800 })
+    // The chips wrapped; the popover is re-anchored inside the viewport
+    await expect
+      .poll(async () => {
+        const box = await popover(page).boundingBox()
+        return box ? Math.round(box.x + box.width) : 9999
+      })
+      .toBeLessThanOrEqual(400)
+    const box = await popover(page).boundingBox()
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+})

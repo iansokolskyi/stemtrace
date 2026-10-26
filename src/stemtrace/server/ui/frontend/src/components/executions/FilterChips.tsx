@@ -72,6 +72,14 @@ function chipsOf(filters: ExecutionFilters): Chip[] {
   return chips
 }
 
+/** The filters as a string that doesn't depend on key order or on unset keys. */
+const canonical = (filters: ExecutionFilters): string =>
+  JSON.stringify(
+    Object.entries(filters)
+      .filter(([, value]) => value !== undefined)
+      .sort(),
+  )
+
 /** What removing a chip clears. */
 function without(filters: ExecutionFilters, key: ChipKey): ExecutionFilters {
   if (key === 'time') return { ...filters, from_date: undefined, to_date: undefined }
@@ -107,16 +115,16 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   // One edit is one history entry: its first change is pushed, the rest replace it
   const pushed = useRef(false)
   const [left, setLeft] = useState(0)
+  // The filters the open popover last produced. If they change any other way (the browser's Back
+  // or Forward), the popover closes: its edit is over, and the next one must push a new entry.
+  const filtersKey = canonical(filters)
+  const expected = useRef(filtersKey)
 
   const openFrom = (opener: HTMLElement, next: Editing) => {
     if (editing?.by === next.by) return close()
     openerRef.current = opener
     pushed.current = false
-    const bar = barRef.current
-    if (bar) {
-      const room = Math.max(0, bar.clientWidth - Math.min(POPOVER_WIDTH, bar.clientWidth))
-      setLeft(Math.min(opener.offsetLeft, room))
-    }
+    expected.current = filtersKey
     setEditing(next)
   }
 
@@ -129,10 +137,36 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
   }
 
   const commit = (next: ExecutionFilters, shouldClose: boolean) => {
+    expected.current = canonical(next)
     onChange(next, { replace: pushed.current })
     pushed.current = true
     if (shouldClose) close()
   }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filtersKey is the trigger
+  useEffect(() => {
+    if (editing && filtersKey !== expected.current) setEditing(null)
+  }, [filtersKey])
+
+  // Keep the popover under its chip when the window resizes or the chips wrap differently
+  useLayoutEffect(() => {
+    if (!editing) return
+    const measure = () => {
+      const bar = barRef.current
+      const opener = openerRef.current
+      if (!bar || !opener?.isConnected) return
+      const room = Math.max(0, bar.clientWidth - Math.min(POPOVER_WIDTH, bar.clientWidth))
+      setLeft(Math.min(opener.offsetLeft, room))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    if (barRef.current) observer.observe(barRef.current)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [editing])
 
   // Focus the first control when the popover opens or switches field
   const shown = editing === null ? null : (editing.field ?? 'list')

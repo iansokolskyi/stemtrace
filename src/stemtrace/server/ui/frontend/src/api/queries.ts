@@ -183,7 +183,8 @@ export function useGroups() {
   return useQuery<TaskGroupListResponse>({
     queryKey: ['groups'],
     queryFn: fetchGroups,
-    refetchInterval: GROUPS_POLL_MS,
+    // Stop asking once it fails: a server without the endpoint will not grow one in 30 seconds
+    refetchInterval: (query) => (query.state.status === 'error' ? false : GROUPS_POLL_MS),
     retry: false,
   })
 }
