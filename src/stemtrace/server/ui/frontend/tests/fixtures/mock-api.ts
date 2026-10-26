@@ -22,6 +22,7 @@ import {
   DEFAULT_REGISTRY,
   DEFAULT_TASKS,
   DEFAULT_WORKERS,
+  type MockGroup,
   type MockRegisteredTask,
   type MockTask,
   type MockWorker,
@@ -60,6 +61,9 @@ export interface MockApiContext {
 
   /** Clear all workers */
   clearWorkers: () => void
+
+  /** Replace the groups GET /groups lists; null makes the endpoint answer 404 (no such route) */
+  setGroups: (groups: MockGroup[] | null) => void
 
   /** Stop intercepting (cleanup) */
   teardown: () => Promise<void>
@@ -118,6 +122,8 @@ export async function setupMockApi(
   let tasks: MockTask[] = useDefaults ? [...DEFAULT_TASKS] : []
   let workers: MockWorker[] = useDefaults ? [...DEFAULT_WORKERS] : []
   let registry: MockRegisteredTask[] = useDefaults ? [...DEFAULT_REGISTRY] : []
+  // No groups by default: the sidebar shows no Groups or Tags section
+  let groups: MockGroup[] | null = []
 
   const context: MockApiContext = {
     get tasks() {
@@ -165,6 +171,10 @@ export async function setupMockApi(
 
     clearWorkers() {
       workers = []
+    },
+
+    setGroups(newGroups: MockGroup[] | null) {
+      groups = newGroups
     },
 
     async teardown() {
@@ -218,6 +228,27 @@ export async function setupMockApi(
         websocket_connections: 0,
         node_count: tasks.length,
       }),
+    })
+  })
+
+  // Groups: GET /groups (the real API lists them with the task names seen in each)
+  await page.route(new RegExp(`${apiPath}/groups(\\?|$)`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    if (groups === null) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Not Found' }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ groups, total: groups.length }),
     })
   })
 
@@ -327,6 +358,11 @@ export async function setupMockApi(
     const state = url.searchParams.get('state')
     const name = url.searchParams.get('name')
     const nameExact = url.searchParams.get('name_exact')
+    const hostname = url.searchParams.get('hostname')
+    const queue = url.searchParams.get('queue')
+    const exceptionType = url.searchParams.get('exception_type')
+    const taskGroup = url.searchParams.get('task_group')
+    const tag = url.searchParams.get('tag')
     const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const offset = Number.parseInt(url.searchParams.get('offset') || '0', 10)
     // compact=1 leaves out each task's events (`events: null`), as the real API does
@@ -338,8 +374,15 @@ export async function setupMockApi(
     let filtered = [...tasks].sort((a, b) => updatedAt(b) - updatedAt(a))
 
     if (state) {
-      filtered = filtered.filter((t) => t.state === state)
+      // A comma-separated list matches any of the states, in any case, as the real API does
+      const wanted = state.toUpperCase().split(',')
+      filtered = filtered.filter((t) => wanted.includes(t.state))
     }
+    if (hostname) filtered = filtered.filter((t) => t.hostname === hostname)
+    if (queue) filtered = filtered.filter((t) => t.queue === queue)
+    if (exceptionType) filtered = filtered.filter((t) => t.exception_type === exceptionType)
+    if (taskGroup) filtered = filtered.filter((t) => t.task_group === taskGroup)
+    if (tag) filtered = filtered.filter((t) => (t.tags ?? []).includes(tag))
     if (name) {
       filtered = filtered.filter((t) => t.name.toLowerCase().includes(name.toLowerCase()))
     }

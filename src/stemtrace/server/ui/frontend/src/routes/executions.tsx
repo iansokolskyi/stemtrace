@@ -1,8 +1,11 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useMemo } from 'react'
+import type { ExecutionFilters } from '@/api/client'
+import { useExecutions, useGroups, useTasks } from '@/api/queries'
 import { DensityToggle } from '@/components/executions/DensityToggle'
 import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
-import { Filters } from '@/components/Filters'
+import { FilterChips } from '@/components/executions/FilterChips'
+import { suggestionsFrom } from '@/components/executions/suggestions'
 import { TaskTimeline } from '@/components/TaskTimeline'
 import { useDensity } from '@/hooks/useDensity'
 import { executionsSearch } from './-search'
@@ -17,53 +20,37 @@ type ViewMode = 'list' | 'timeline'
 
 function TasksPage() {
   const navigate = useNavigate()
-  const { state, name, name_exact, from_date, to_date, view } = Route.useSearch()
+  const { view, ...filters } = Route.useSearch()
+  const viewMode: ViewMode = view ?? 'list'
 
   const [density, setDensity] = useDensity()
-  const [viewMode, setViewMode] = useState<ViewMode>(view ?? 'list')
-  const filters = {
-    state,
-    name: name ?? '',
-    name_exact,
-    from_date,
-    to_date,
-  }
 
-  const setFilters = (newFilters: {
-    state?: string
-    name: string
-    name_exact?: string
-    from_date?: string
-    to_date?: string
-  }) => {
-    navigate({
-      to: '/executions',
-      search: {
-        state: newFilters.state,
-        name: newFilters.name || undefined,
-        name_exact: newFilters.name_exact,
-        from_date: newFilters.from_date,
-        to_date: newFilters.to_date,
-        view: viewMode,
-      },
-      replace: true,
-    })
+  // Suggestions come from rows already loaded for this view (the same query the table or the
+  // timeline runs, so no request of its own) and from the groups.
+  const listRows = useExecutions(filters, { enabled: viewMode === 'list' })
+  const timelineRows = useTasks(filters, { enabled: viewMode === 'timeline' })
+  const { data: groups } = useGroups()
+  const listPages = listRows.data
+  const timelineTasks = timelineRows.data?.tasks
+  const groupList = groups?.groups
+  const suggestions = useMemo(
+    () =>
+      suggestionsFrom(
+        viewMode === 'list'
+          ? (listPages?.pages.flatMap((page) => page.tasks) ?? [])
+          : (timelineTasks ?? []),
+        groupList,
+      ),
+    [viewMode, listPages, timelineTasks, groupList],
+  )
+
+  // Filters are history entries (Back restores the previous ones); the view toggle is not
+  const setFilters = (next: ExecutionFilters, { replace }: { replace: boolean }) => {
+    navigate({ to: '/executions', search: { ...next, view }, replace })
   }
 
   const handleViewModeChange = (mode: ViewMode) => {
-    setViewMode(mode)
-    navigate({
-      to: '/executions',
-      search: {
-        state,
-        name: name || undefined,
-        name_exact,
-        from_date,
-        to_date,
-        view: mode,
-      },
-      replace: true,
-    })
+    navigate({ to: '/executions', search: { ...filters, view: mode }, replace: true })
   }
 
   return (
@@ -97,21 +84,10 @@ function TasksPage() {
         </div>
       </div>
 
-      {/* Filters */}
-      <Filters filters={filters} onFiltersChange={setFilters} />
+      <FilterChips filters={filters} onChange={setFilters} suggestions={suggestions} />
 
-      {/* Content */}
       {viewMode === 'list' ? (
-        <ExecutionsTable
-          params={{
-            state: filters.state,
-            name: filters.name || undefined,
-            name_exact: filters.name_exact,
-            from_date: filters.from_date,
-            to_date: filters.to_date,
-          }}
-          density={density}
-        />
+        <ExecutionsTable params={filters} density={density} />
       ) : (
         <TaskTimeline filters={filters} />
       )}

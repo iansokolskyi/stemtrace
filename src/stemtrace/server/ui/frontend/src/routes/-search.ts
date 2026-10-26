@@ -1,24 +1,56 @@
+import type { ExecutionFilters } from '@/api/client'
 import { dateSearchParam } from '@/utils/format'
 
-/** Search params of the Executions page (the old task list's, unchanged). */
-export interface ExecutionsSearch {
-  state?: string
-  name?: string
-  name_exact?: string
-  from_date?: string
-  to_date?: string
+/** Search params of the Executions page: its filters (see `ExecutionFilters`) and the view. */
+export interface ExecutionsSearch extends ExecutionFilters {
   view?: 'list' | 'timeline'
 }
 
-// The router parses `?name=123` as the number 123: keep it as the text the user typed.
-const str = (v: unknown): string | undefined =>
-  typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined
+// The router parses `?name=123` as the number 123: keep it as the text the user typed. Blank
+// text is no filter.
+const str = (v: unknown): string | undefined => {
+  const text = typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined
+  return text?.trim() ? text : undefined
+}
+
+/** The states a task can be in, in the order the filter lists them. */
+export const TASK_STATES = [
+  'PENDING',
+  'RECEIVED',
+  'STARTED',
+  'SUCCESS',
+  'FAILURE',
+  'RETRY',
+  'REVOKED',
+  'REJECTED',
+  'IGNORED',
+] as const
+
+/** A comma-separated state list in any case: known states only, upper-cased, each once. */
+export function stateSearchParam(value: unknown): string | undefined {
+  const text = str(value)
+  if (!text) return undefined
+  // Keep the order the URL gave: it is the order the user picked them in
+  const kept: string[] = []
+  for (const part of text.split(',')) {
+    const state = part.trim().toUpperCase()
+    if ((TASK_STATES as readonly string[]).includes(state) && !kept.includes(state)) {
+      kept.push(state)
+    }
+  }
+  return kept.length ? kept.join(',') : undefined
+}
 
 export function executionsSearch(search: Record<string, unknown>): ExecutionsSearch {
   return {
-    state: str(search.state),
+    state: stateSearchParam(search.state),
     name: str(search.name),
     name_exact: str(search.name_exact),
+    exception_type: str(search.exception_type),
+    hostname: str(search.hostname),
+    queue: str(search.queue),
+    task_group: str(search.task_group),
+    tag: str(search.tag),
     from_date: dateSearchParam(search.from_date),
     to_date: dateSearchParam(search.to_date),
     view: search.view === 'list' || search.view === 'timeline' ? search.view : undefined,

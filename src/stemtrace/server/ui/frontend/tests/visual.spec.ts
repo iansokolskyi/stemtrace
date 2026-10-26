@@ -129,11 +129,17 @@ for (const theme of ['light', 'dark'] as const) {
       await page.routeWebSocket(/\/ws$/, () => {})
       const api = await setupMockApi(page, { useDefaults: false })
       api.addTasks(executionRuns())
+      api.setGroups([
+        { name: 'Billing', source: 'code', tags: ['money'], color: null, task_names: [] },
+        { name: 'Email', source: 'code', tags: [], color: null, task_names: [] },
+        { name: 'Search', source: 'auto', tags: [], color: null, task_names: [] },
+      ])
       await page.addInitScript((d) => localStorage.setItem('stemtrace-density', d), density)
       await snapshot(page, `executions-${theme}-${density}-1280`, {
         theme,
         width: 1280,
-        path: '/executions',
+        // A time chip that doesn't change which rows the mock lists
+        path: '/executions?from_date=2026-10-17&to_date=2026-10-17',
       })
     })
   }

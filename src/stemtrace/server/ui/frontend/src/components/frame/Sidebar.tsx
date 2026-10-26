@@ -5,6 +5,7 @@ import { SproutMark } from '@/components/SproutMark'
 import { useProblemCounts } from '@/hooks/useProblemCounts'
 import { LiveStatus } from './LiveStatus'
 import { NavItem } from './NavItem'
+import { SidebarGroups } from './SidebarGroups'
 import { ThemeToggle } from './ThemeToggle'
 
 interface SidebarProps {
@@ -62,6 +63,7 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
             }
           />
         </nav>
+        <SidebarGroups onNavigate={onNavigate} />
       </div>
       <div className="flex flex-wrap items-center gap-2.5 px-4 pt-2.5 pb-3.5">
         <LiveStatus />

@@ -15,6 +15,7 @@ import {
   fetchExecutions,
   fetchGraph,
   fetchGraphs,
+  fetchGroups,
   fetchHealth,
   fetchTask,
   fetchTaskRegistry,
@@ -24,6 +25,7 @@ import {
   type GraphResponse,
   type HealthResponse,
   type TaskDetailResponse,
+  type TaskGroupListResponse,
   type TaskListResponse,
   type TaskRegistryResponse,
   type TaskStatus,
@@ -34,10 +36,14 @@ import {
 const POLL_INTERVAL = 5000
 const PAGE_SIZE = 50
 
-export function useTasks(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
+export function useTasks(
+  params?: Omit<FetchTasksParams, 'limit' | 'offset'>,
+  options: { enabled?: boolean } = {},
+) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<TaskListResponse>({
+    enabled: options.enabled,
     queryKey: ['tasks', params],
     queryFn: () => fetchTasks({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
@@ -49,7 +55,7 @@ export function useTasks(params?: Omit<FetchTasksParams, 'limit' | 'offset'>) {
 export const EXECUTIONS_PAGE_SIZE = 200
 
 /** The Executions list, a page of 200 at a time. A refetch (an event, or the poll while the socket is down) reloads every page loaded so far. */
-export function useExecutions(params: FetchExecutionsParams) {
+export function useExecutions(params: FetchExecutionsParams, options: { enabled?: boolean } = {}) {
   const { isConnected } = useWebSocketContext()
 
   return useInfiniteQuery<
@@ -59,6 +65,7 @@ export function useExecutions(params: FetchExecutionsParams) {
     unknown[],
     number
   >({
+    enabled: options.enabled,
     queryKey: ['executions', params],
     queryFn: ({ pageParam }) => fetchExecutions(params, EXECUTIONS_PAGE_SIZE, pageParam),
     initialPageParam: 0,
@@ -163,5 +170,21 @@ export function useWorkers(hostname?: string) {
     queryFn: () => fetchWorkers(hostname),
     // Workers refresh less frequently
     refetchInterval: isConnected ? false : 30000,
+  })
+}
+
+const GROUPS_POLL_MS = 30_000
+
+/**
+ * The task groups, for the sidebar and the filter suggestions. An error (an older server
+ * without `/api/groups` answers 404) is not retried: callers treat "no data" as "no groups".
+ */
+export function useGroups() {
+  return useQuery<TaskGroupListResponse>({
+    queryKey: ['groups'],
+    queryFn: fetchGroups,
+    // Stop asking once it fails: a server without the endpoint will not grow one in 30 seconds
+    refetchInterval: (query) => (query.state.status === 'error' ? false : GROUPS_POLL_MS),
+    retry: false,
   })
 }

@@ -264,27 +264,56 @@ export interface WorkerListResponse {
   total: number
 }
 
-export interface FetchTasksParams {
-  limit?: number
-  offset?: number
+/**
+ * The filters of the Executions page and the timeline, as `GET /api/tasks` takes them. Each is
+ * an exact match except `name` (a substring) and `state` (a comma-separated list matches any).
+ */
+export interface ExecutionFilters {
+  /** One state or a comma-separated list (`FAILURE,RETRY`). */
   state?: string
   /** Substring of the task name (the search box). */
   name?: string
   /** The whole task name (a task's "View runs"). */
   name_exact?: string
+  /** Exception class of a failure. */
+  exception_type?: string
+  /** Worker nodename (`celery@host`). */
+  hostname?: string
+  queue?: string
+  task_group?: string
+  /** A tag of the task's group. */
+  tag?: string
   from_date?: string
   to_date?: string
 }
 
+export interface FetchTasksParams extends ExecutionFilters {
+  limit?: number
+  offset?: number
+}
+
 /** The filters of the Executions list; paging and `compact` are fixed by `fetchExecutions`. */
-export interface FetchExecutionsParams {
-  state?: string
-  /** Substring of the task name (the search box). */
-  name?: string
-  /** The whole task name. */
-  name_exact?: string
-  from_date?: string
-  to_date?: string
+export type FetchExecutionsParams = ExecutionFilters
+
+const FILTER_KEYS = [
+  'state',
+  'name',
+  'name_exact',
+  'exception_type',
+  'hostname',
+  'queue',
+  'task_group',
+  'tag',
+  'from_date',
+  'to_date',
+] as const satisfies readonly (keyof ExecutionFilters)[]
+
+/** Adds each filter that has a value to `searchParams`. */
+function setFilterParams(searchParams: URLSearchParams, filters: ExecutionFilters): void {
+  for (const key of FILTER_KEYS) {
+    const value = filters[key]
+    if (value) searchParams.set(key, value)
+  }
 }
 
 export interface FetchGraphsParams {
@@ -299,11 +328,7 @@ export async function fetchTasks(params?: FetchTasksParams): Promise<TaskListRes
   const searchParams = new URLSearchParams()
   if (params?.limit) searchParams.set('limit', params.limit.toString())
   if (params?.offset) searchParams.set('offset', params.offset.toString())
-  if (params?.state) searchParams.set('state', params.state)
-  if (params?.name) searchParams.set('name', params.name)
-  if (params?.name_exact) searchParams.set('name_exact', params.name_exact)
-  if (params?.from_date) searchParams.set('from_date', params.from_date)
-  if (params?.to_date) searchParams.set('to_date', params.to_date)
+  if (params) setFilterParams(searchParams, params)
 
   const url = `${API_BASE}/tasks${searchParams.toString() ? `?${searchParams}` : ''}`
   return apiFetch(url, 'Failed to fetch tasks')
@@ -323,11 +348,7 @@ export async function fetchExecutions(
     offset: String(offset),
     compact: '1',
   })
-  if (params.state) searchParams.set('state', params.state)
-  if (params.name) searchParams.set('name', params.name)
-  if (params.name_exact) searchParams.set('name_exact', params.name_exact)
-  if (params.from_date) searchParams.set('from_date', params.from_date)
-  if (params.to_date) searchParams.set('to_date', params.to_date)
+  setFilterParams(searchParams, params)
   return apiFetch(`${API_BASE}/tasks?${searchParams}`, 'Failed to fetch tasks')
 }
 
@@ -381,4 +402,22 @@ export async function fetchWorkers(
     ? `${API_BASE}/workers/${encodeURIComponent(hostname)}`
     : `${API_BASE}/workers`
   return apiFetch(refresh ? base : `${base}?refresh=false`, 'Failed to fetch workers')
+}
+
+/** A task group as `GET /api/groups` lists it. */
+export interface TaskGroup {
+  name: string
+  source: 'code' | 'auto'
+  tags: string[]
+  color: string | null
+  task_names: string[]
+}
+
+export interface TaskGroupListResponse {
+  groups: TaskGroup[]
+  total: number
+}
+
+export async function fetchGroups(): Promise<TaskGroupListResponse> {
+  return apiFetch(`${API_BASE}/groups`, 'Failed to fetch groups')
 }
