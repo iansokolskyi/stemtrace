@@ -27,7 +27,6 @@ from stemtrace.core.graph import (
     ChordNotRunReason,
     NodeType,
     chord_not_run_reasons,
-    flow_summary,
 )
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
@@ -890,18 +889,6 @@ def _add_task_routes(
         ]
 
 
-def _flow_summaries(
-    graphs: Mapping[str, Mapping[str, TaskNode]],
-) -> dict[str, FlowSummaryResponse]:
-    """Summarize each listed graph, by root ID."""
-    return {
-        root_id: FlowSummaryResponse.model_validate(
-            flow_summary(nodes, root_id), from_attributes=True
-        )
-        for root_id, nodes in graphs.items()
-    }
-
-
 def _add_graph_routes(
     router: APIRouter,
     *,
@@ -944,17 +931,15 @@ def _add_graph_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
-        # Roots and every node of their graphs from one snapshot
-        roots, graphs, total = store.get_root_graphs(
+        # Roots, their children (for synthetic node timing) and each flow's
+        # summary from one snapshot
+        roots, all_nodes, summaries, total = store.get_root_flows(
             limit=limit,
             offset=offset,
             from_date=start,
             to_date=to_date,
             task_names=task_names,
         )
-        # A pass over every node and event of the listed graphs: off the event loop.
-        summaries = await run_in_threadpool(_flow_summaries, graphs)
-        all_nodes = {tid: n for graph in graphs.values() for tid, n in graph.items()}
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
@@ -962,7 +947,9 @@ def _add_graph_routes(
                     all_nodes,
                     node_alias_key=node_alias_key,
                     group_of=group_of,
-                    flow=summaries[r.task_id],
+                    flow=FlowSummaryResponse.model_validate(
+                        summaries[r.task_id], from_attributes=True
+                    ),
                 )
                 for r in roots
             ],

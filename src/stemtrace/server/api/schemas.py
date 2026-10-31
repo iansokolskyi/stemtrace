@@ -129,7 +129,10 @@ class FlowSummaryResponse(BaseModel):
         description="Tasks per state, by state value; states with no task are left out."
     )
     not_run_count: int = Field(
-        description="Chords whose callback hasn't run (see not_run_reason)."
+        description=(
+            "Chords whose callback can't run because a header failed, was rejected, "
+            "revoked or ignored (see not_run_reason); 0 while headers are still running."
+        )
     )
     state: TaskState = Field(
         description=(

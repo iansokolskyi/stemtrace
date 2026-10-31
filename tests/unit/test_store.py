@@ -119,7 +119,7 @@ class TestGraphStoreConsistency:
     def test_get_node_with_children_missing_returns_none(self) -> None:
         assert GraphStore().get_node_with_children("missing") is None
 
-    def test_get_root_graphs_returns_roots_with_every_node_of_their_graphs(
+    def test_get_root_flows_returns_roots_children_and_whole_graph_summaries(
         self,
     ) -> None:
         store = GraphStore()
@@ -128,20 +128,37 @@ class TestGraphStoreConsistency:
         store.add_event(_task_event("grand", TaskState.FAILURE, 2, parent_id="child"))
         store.add_event(_task_event("other-root", TaskState.SUCCESS, 3))
 
-        roots, graphs, total = store.get_root_graphs(limit=1)
+        roots, related, summaries, total = store.get_root_flows(limit=1)
 
         assert [r.task_id for r in roots] == ["other-root"]
-        assert {k: set(v) for k, v in graphs.items()} == {"other-root": {"other-root"}}
+        assert set(related) == {"other-root"}
+        assert set(summaries) == {"other-root"}
         assert total == 2
-        roots, graphs, _ = store.get_root_graphs(limit=1, offset=1)
+        roots, related, summaries, _ = store.get_root_flows(limit=1, offset=1)
         assert [r.task_id for r in roots] == ["root"]
-        assert {k: set(v) for k, v in graphs.items()} == {
-            "root": {"root", "child", "grand"}
+        # Roots and direct children only; the summary covers the grandchild too
+        assert set(related) == {"root", "child"}
+        assert related["child"].state == TaskState.SUCCESS
+        assert summaries["root"].task_count == 3
+        assert summaries["root"].state_counts == {
+            "STARTED": 1,
+            "SUCCESS": 1,
+            "FAILURE": 1,
         }
-        assert graphs["root"]["grand"].state == TaskState.FAILURE
-        assert roots[0] is graphs["root"]["root"]
+        assert summaries["root"].state == TaskState.FAILURE
 
-    def test_get_root_graphs_takes_the_lock_once_for_all_roots_and_nodes(
+    def test_get_root_flows_returns_copies_of_the_nodes_it_hands_out(self) -> None:
+        store = GraphStore()
+        store.add_event(_task_event("root", TaskState.STARTED, 0))
+        store.add_event(_task_event("child", TaskState.STARTED, 1, parent_id="root"))
+
+        roots, related, _, _ = store.get_root_flows()
+        store.add_event(_task_event("root", TaskState.SUCCESS, 5))
+
+        assert roots[0].state == TaskState.STARTED
+        assert related["child"] is not store.get_node("child")
+
+    def test_get_root_flows_takes_the_lock_once_for_all_roots_and_nodes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = GraphStore()
@@ -161,10 +178,10 @@ class TestGraphStoreConsistency:
         lock = InterleavingLock(store._lock, lambda: None)
         monkeypatch.setattr(store, "_lock", lock)
 
-        roots, graphs, _ = store.get_root_graphs(limit=100)
+        roots, _, summaries, _ = store.get_root_flows(limit=100)
 
         assert len(roots) == 5
-        assert sum(len(g) for g in graphs.values()) == 15
+        assert [s.task_count for s in summaries.values()] == [3] * 5
         assert lock.interleavings == 1
 
 

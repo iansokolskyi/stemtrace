@@ -144,15 +144,27 @@ def test_list_graphs_pagination_pages_flows_and_keeps_the_total() -> None:
     ]
 
 
-@pytest.mark.parametrize("query", ["from_date=2025-01-01", "to_date=2030-01-01"])
-def test_list_graphs_date_filters_still_list_flows_with_a_summary(query: str) -> None:
-    graphs = _client(_store("chain")).get(f"/api/graphs?{query}").json()["graphs"]
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"from_date": "2025-01-01T00:00:00+00:00"},
+        {"to_date": "2030-01-01T00:00:00+00:00"},
+    ],
+)
+def test_list_graphs_date_filters_still_list_flows_with_a_summary(
+    query: dict[str, str],
+) -> None:
+    graphs = _client(_store("chain")).get("/api/graphs", params=query).json()["graphs"]
 
     assert [g["flow"]["task_count"] for g in graphs] == [3]
 
 
 def test_list_graphs_filtered_out_everything_lists_nothing() -> None:
-    body = _client(_store("chain")).get("/api/graphs?to_date=2000-01-01").json()
+    body = (
+        _client(_store("chain"))
+        .get("/api/graphs", params={"to_date": "2000-01-01T00:00:00+00:00"})
+        .json()
+    )
 
     assert body["graphs"] == []
     assert body["total"] == 0

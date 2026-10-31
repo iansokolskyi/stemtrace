@@ -6,6 +6,7 @@ are read off each capture by hand and written down in ``_CAPTURED``.
 
 import itertools
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -284,8 +285,8 @@ def _listed_flows(capture: str) -> dict[str, FlowSummary]:
     store = GraphStore()
     for raw in _CAPTURES[capture]:
         store.add_event(TaskEvent.model_validate(raw))
-    roots, graphs, _ = store.get_root_graphs(limit=100)
-    return {r.task_id: flow_summary(graphs[r.task_id], r.task_id) for r in roots}
+    roots, _, summaries, _ = store.get_root_flows(limit=100)
+    return {r.task_id: summaries[r.task_id] for r in roots}
 
 
 @pytest.mark.parametrize("capture", sorted(_CAPTURED))
@@ -305,19 +306,24 @@ def test_flow_summary_of_real_capture_matches_the_hand_derived_flow(
 def test_flow_summary_of_every_capture_agrees_with_a_second_reading_of_its_events(
     capture: str,
 ) -> None:
-    """Totals and state read from the raw events, not the graph: each task's last
-    state is its latest event, and a flow's tasks are those of the events."""
+    """Counts and state read from the raw events, not the graph: a task's final
+    state is its latest event's. The flows together hold every task once."""
     flows = _listed_flows(capture)
     last: dict[str, tuple[datetime, TaskState]] = {}
     for raw in _CAPTURES[capture]:
         event = TaskEvent.model_validate(raw)
         if event.task_id not in last or event.timestamp >= last[event.task_id][0]:
             last[event.task_id] = (event.timestamp, event.state)
+    final_counts = Counter(state.value for _, state in last.values())
 
-    assert sum(f.task_count for f in flows.values()) == len(last)
+    merged: Counter[str] = Counter()
     for flow in flows.values():
-        assert sum(flow.state_counts.values()) == flow.task_count
-        assert flow.state in FLOW_STATE_ORDER
-        assert flow.not_run_count >= 0
+        merged.update(flow.state_counts)
+    assert merged == final_counts
+    assert sum(f.task_count for f in flows.values()) == len(last)
     worst = min(FLOW_STATE_ORDER.index(_CLASS_OF[state]) for _, state in last.values())
-    assert FLOW_STATE_ORDER[worst] in {f.state for f in flows.values()}
+    # The worst task is in some flow, and no flow is worse than the worst task
+    assert min(FLOW_STATE_ORDER.index(f.state) for f in flows.values()) == worst
+    if len(flows) == 1:
+        (flow,) = flows.values()
+        assert flow.state == FLOW_STATE_ORDER[worst]
