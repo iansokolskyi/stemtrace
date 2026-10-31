@@ -2,6 +2,7 @@ import { useCanGoBack, useRouter } from '@tanstack/react-router'
 import type { ReactElement, Ref } from 'react'
 import { Icon } from '@/components/Icon'
 import { Breadcrumbs } from './Breadcrumbs'
+import { TimeRange } from './TimeRange'
 
 interface TopStripProps {
   isDrawer: boolean
@@ -13,7 +14,7 @@ interface TopStripProps {
 const ICON_BUTTON =
   'inline-flex size-8 flex-none items-center justify-center rounded-[3px] bg-raised hover:enabled:bg-press disabled:cursor-not-allowed disabled:opacity-50'
 
-/** Sticky strip above every page: menu (narrow screens), Back and the breadcrumb. */
+/** Sticky strip above every page: menu (narrow screens), Back, the breadcrumb and the time range. */
 export function TopStrip({
   isDrawer,
   drawerOpen,
@@ -49,6 +50,7 @@ export function TopStrip({
         <Icon name="back" size={16} />
       </button>
       <Breadcrumbs />
+      <TimeRange />
     </header>
   )
 }

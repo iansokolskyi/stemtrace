@@ -1,9 +1,16 @@
 import type { ExecutionFilters } from '@/api/client'
 import { dateSearchParam } from '@/utils/format'
 
-/** Search params of the Executions page: its filters (see `ExecutionFilters`) and the view. */
+/** The time range switch in the top strip. */
+export type Range = '1h' | '6h' | 'all'
+
+/** The range when the URL has none; it is never written to the URL. */
+export const DEFAULT_RANGE: Range = '6h'
+
+/** Search params of the Executions page: its filters (see `ExecutionFilters`), the view and the range. */
 export interface ExecutionsSearch extends ExecutionFilters {
   view?: 'list' | 'timeline'
+  range?: Range
 }
 
 // The router parses `?name=123` as the number 123: keep it as the text the user typed. Blank
@@ -43,6 +50,24 @@ export function stateSearchParam(value: unknown): string | undefined {
   return kept.length ? kept.join(',') : undefined
 }
 
+/**
+ * `range` from a URL: `1h` or `all`. Absent, `6h` (the default) and anything else are no range.
+ * The key is always present: the router keeps an unvalidated URL value for a missing key.
+ */
+export function rangeSearch(search: Record<string, unknown>): { range?: Range } {
+  return { range: search.range === '1h' || search.range === 'all' ? search.range : undefined }
+}
+
+/** The `within` the API gets: the range's window, unless explicit dates set the window. */
+export function withinOf(
+  range: Range | undefined,
+  { from_date, to_date }: ExecutionFilters,
+): string | undefined {
+  if (from_date || to_date) return undefined
+  const effective = range ?? DEFAULT_RANGE
+  return effective === 'all' ? undefined : effective
+}
+
 export function executionsSearch(search: Record<string, unknown>): ExecutionsSearch {
   return {
     state: stateSearchParam(search.state),
@@ -56,6 +81,7 @@ export function executionsSearch(search: Record<string, unknown>): ExecutionsSea
     from_date: dateSearchParam(search.from_date),
     to_date: dateSearchParam(search.to_date),
     view: search.view === 'list' || search.view === 'timeline' ? search.view : undefined,
+    ...rangeSearch(search),
   }
 }
 

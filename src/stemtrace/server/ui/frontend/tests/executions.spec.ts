@@ -67,10 +67,18 @@ test.describe('Executions requests', () => {
 
     await expect.poll(() => lists.some((q) => q.offset === '200')).toBe(true)
     const second = lists.find((q) => q.offset === '200')
-    expect(second).toEqual({ limit: '200', offset: '200', compact: '1', state: 'SUCCESS' })
+    expect(second).toEqual({
+      limit: '200',
+      offset: '200',
+      compact: '1',
+      within: '6h',
+      state: 'SUCCESS',
+    })
   })
 
-  test('without filters the request has only the paging parameters', async ({ page }) => {
+  test('without filters the request has only the paging parameters and the default window', async ({
+    page,
+  }) => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(manyTasks(3))
     const lists = recordTaskLists(page)
@@ -78,7 +86,7 @@ test.describe('Executions requests', () => {
     await page.goto('/executions')
     await expect(page.getByText('app.jobs.task_0000', { exact: true })).toBeVisible()
 
-    expect(lists[0]).toEqual({ limit: '200', offset: '0', compact: '1' })
+    expect(lists[0]).toEqual({ limit: '200', offset: '0', compact: '1', within: '6h' })
   })
 })
 

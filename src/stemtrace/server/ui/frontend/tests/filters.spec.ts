@@ -10,7 +10,15 @@ import { createSuccessTask, type MockTask } from './fixtures/mock-data'
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
-const PAGING = { limit: '200', offset: '0', compact: '1' }
+// The default 6h window goes with every request that has no explicit dates
+const PAGING = { limit: '200', offset: '0', compact: '1', within: '6h' }
+
+/** The list request for `query`: explicit dates replace the window, as the API allows only one. */
+const listFor = (query: Record<string, string>) => ({
+  ...PAGING,
+  ...(query.from_date || query.to_date ? { within: undefined } : {}),
+  ...query,
+})
 
 /** A few tasks with every optional field, so the popovers have values to suggest. */
 function sampleTasks(): MockTask[] {
@@ -169,7 +177,7 @@ for (const { key, label, set, query } of FILTERS) {
 
       await expect(chip(page, key)).toBeVisible()
       await expect.poll(() => search(page)).toEqual(query)
-      await expect.poll(() => lists.at(-1)).toEqual({ ...PAGING, ...query })
+      await expect.poll(() => lists.at(-1)).toEqual(listFor(query))
 
       // Back goes to the unfiltered list: no chip, no parameter in the URL, every task listed
       // (the unfiltered answer is cached, so it may not be asked for again)
@@ -189,7 +197,7 @@ for (const { key, label, set, query } of FILTERS) {
       const lists = recordTaskLists(page)
       await page.goto(`/executions?${new URLSearchParams(query)}`)
       await expect(chip(page, key)).toBeVisible()
-      await expect.poll(() => lists.at(-1)).toEqual({ ...PAGING, ...query })
+      await expect.poll(() => lists.at(-1)).toEqual(listFor(query))
 
       await chip(page, key)
         .getByRole('button', { name: /^Remove .* filter$/ })
@@ -233,7 +241,7 @@ test.describe('Filters together', () => {
     ]) {
       await expect(chip(page, key)).toBeVisible()
     }
-    await expect.poll(() => lists.at(-1)).toEqual({ ...PAGING, ...all })
+    await expect.poll(() => lists.at(-1)).toEqual(listFor(all))
 
     await page.getByRole('button', { name: 'Clear' }).click()
     expect(search(page)).toEqual({})
@@ -309,7 +317,7 @@ test.describe('Filters together', () => {
     await expect(chip(page, 'queue')).toBeVisible()
     await expect
       .poll(() => lists.at(-1))
-      .toEqual({ limit: '50', queue: 'payments', state: 'SUCCESS,FAILURE' })
+      .toEqual({ limit: '50', within: '6h', queue: 'payments', state: 'SUCCESS,FAILURE' })
 
     await open(page, 'Worker')
     await popover(page).getByRole('button', { name: 'celery@w2' }).click()
@@ -325,6 +333,7 @@ test.describe('Filters together', () => {
       .poll(() => lists.at(-1))
       .toEqual({
         limit: '50',
+        within: '6h',
         queue: 'payments',
         state: 'SUCCESS,FAILURE',
         hostname: 'celery@w2',
