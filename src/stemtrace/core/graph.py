@@ -2366,9 +2366,20 @@ def chord_not_run_reasons(
     other headers run; the worst outcome wins and clears only once a callback
     is drawn. ``nodes`` must hold the chord's whole graph.
     """
+    # Only a CHORD with no callback gets a reason, so only the members of its
+    # group are read: a plain group's events cost nothing (work is bounded by
+    # the number of nodes, not events).
+    chords = {
+        node_id: node.group_id
+        for node_id, node in nodes.items()
+        if node.node_type == NodeType.CHORD
+        and node.chord_id is None
+        and node.group_id is not None
+    }
+    candidates = set(chords.values())
     by_group: dict[str, tuple[int, ChordNotRunReason]] = {}
     for node in nodes.values():
-        if node.node_type != NodeType.TASK or node.group_id is None:
+        if node.node_type != NodeType.TASK or node.group_id not in candidates:
             continue
         ranked = _HEADER_REASONS.get(node.state)
         current = by_group.get(node.group_id)
@@ -2380,11 +2391,9 @@ def chord_not_run_reasons(
         ):
             by_group[node.group_id] = ranked
     return {
-        node_id: by_group[node.group_id][1]
-        for node_id, node in nodes.items()
-        if node.node_type == NodeType.CHORD
-        and node.chord_id is None
-        and node.group_id in by_group
+        node_id: by_group[group_id][1]
+        for node_id, group_id in chords.items()
+        if group_id in by_group
     }
 
 

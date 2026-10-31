@@ -154,9 +154,10 @@ class TestGraphStoreConsistency:
 
         roots, related, _, _ = store.get_root_flows()
         store.add_event(_task_event("root", TaskState.SUCCESS, 5))
+        store.add_event(_task_event("child", TaskState.FAILURE, 6, parent_id="root"))
 
         assert roots[0].state == TaskState.STARTED
-        assert related["child"] is not store.get_node("child")
+        assert related["child"].state == TaskState.STARTED
 
     def test_get_root_flows_takes_the_lock_once_for_all_roots_and_nodes(
         self, monkeypatch: pytest.MonkeyPatch
