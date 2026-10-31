@@ -119,6 +119,30 @@ class TaskDetailResponse(BaseModel):
     )
 
 
+class FlowSummaryResponse(BaseModel):
+    """Totals over a flow's whole graph, for the flows list."""
+
+    task_count: int = Field(
+        description="Tasks in the flow (synthetic group and chord nodes excluded)."
+    )
+    state_counts: dict[str, int] = Field(
+        description="Tasks per state, by state value; states with no task are left out."
+    )
+    not_run_count: int = Field(
+        description=(
+            "Chords whose callback can't run because a header failed, was rejected, "
+            "revoked or ignored (see not_run_reason); 0 until one does."
+        )
+    )
+    state: TaskState = Field(
+        description=(
+            "Worst task state, in the order FAILURE (also REJECTED), REVOKED, "
+            "RETRY, STARTED (also PENDING and RECEIVED), IGNORED, SUCCESS. "
+            "The root's own state when the flow has no tasks."
+        )
+    )
+
+
 class GraphNodeResponse(BaseModel):
     """Minimal node for graph visualization."""
 
@@ -155,6 +179,8 @@ class GraphNodeResponse(BaseModel):
     # CHORD nodes in a full graph (GET /graphs/{root_id}) only: why the
     # callback hasn't run (see chord_not_run_reasons).
     not_run_reason: ChordNotRunReason | None = None
+    # Root nodes in GET /graphs only: totals over the root's whole graph.
+    flow: FlowSummaryResponse | None = None
 
 
 class GraphResponse(BaseModel):

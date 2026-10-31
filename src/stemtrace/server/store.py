@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING, NamedTuple
 from pydantic import BaseModel
 
 from stemtrace.core.events import TaskState
-from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
+from stemtrace.core.graph import (
+    FlowSummary,
+    NodeType,
+    TaskGraph,
+    TaskNode,
+    flow_summary,
+)
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.stats import RunRecord
 
@@ -61,6 +67,18 @@ class NodeWithChildren(NamedTuple):
     node: TaskNode
     children: list[TaskNode]
     flow_root_id: str | None
+
+
+class RootFlows(NamedTuple):
+    """A page of root nodes, their direct children and each flow's summary."""
+
+    roots: list[TaskNode]
+    # Snapshots of the roots and their direct children, by ID.
+    related: dict[str, TaskNode]
+    # Root ID -> totals over the root's whole graph.
+    summaries: dict[str, FlowSummary]
+    # Roots matching the filters, before paging.
+    total: int
 
 
 def _snapshot(node: TaskNode) -> TaskNode:
@@ -772,7 +790,7 @@ class GraphStore:
             )
             return [_snapshot(n) for n in live], total
 
-    def get_root_nodes_with_children(
+    def get_root_flows(
         self,
         *,
         limit: int = 50,
@@ -780,15 +798,13 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
-        """Get root nodes and their direct children from one consistent snapshot.
+    ) -> RootFlows:
+        """Get root nodes, their direct children and each flow's summary, from one snapshot.
 
         With ``task_names``, only graphs with a task of one of these names
-        (anywhere in the graph, not only the root) are listed.
-
-        Returns:
-            Tuple of (filtered root nodes, map of task_id to node for the roots
-            and their direct children, total count matching filters).
+        (anywhere in the graph, not only the root) are listed. Takes the lock
+        once. The summaries read the live nodes without copying them, so the
+        cost is one walk over the nodes of the listed graphs.
         """
         with self._lock:
             live, total = self._root_nodes_locked(
@@ -806,7 +822,11 @@ class GraphStore:
                     child = self._graph.nodes.get(child_id)
                     if child is not None and child_id not in related:
                         related[child_id] = _snapshot(child)
-            return roots, related, total
+            summaries = {
+                n.task_id: flow_summary(self._graph_locked(n.task_id), n.task_id)
+                for n in live
+            }
+            return RootFlows(roots, related, summaries, total)
 
     def _root_nodes_locked(
         self,
@@ -908,24 +928,27 @@ class GraphStore:
     def get_graph_from_root(self, root_id: str) -> dict[str, TaskNode]:
         """Get all nodes in subgraph starting from root."""
         with self._lock:
-            root = self._graph.get_node(root_id)
-            if root is None:
-                return {}
+            return {
+                node_id: _snapshot(node)
+                for node_id, node in self._graph_locked(root_id).items()
+            }
 
-            result: dict[str, TaskNode] = {}
-            to_visit = [root_id]
+    def _graph_locked(self, root_id: str) -> dict[str, TaskNode]:
+        """The live nodes reachable from ``root_id`` through ``children``.
 
-            while to_visit:
-                current_id = to_visit.pop()
-                if current_id in result:
-                    continue
-                node = self._graph.get_node(current_id)
-                if node is None:
-                    continue
-                result[current_id] = _snapshot(node)
-                to_visit.extend(node.children)
-
-            return result
+        Read them, never keep or change them. Call with the lock held.
+        """
+        nodes = self._graph.nodes
+        result: dict[str, TaskNode] = {}
+        to_visit = [root_id]
+        while to_visit:
+            current_id = to_visit.pop()
+            node = nodes.get(current_id)
+            if node is None or current_id in result:
+                continue
+            result[current_id] = node
+            to_visit.extend(node.children)
+        return result
 
     def add_listener(self, callback: Callable[[TaskEvent], None]) -> None:
         """Register callback for new events (used by WebSocket manager)."""

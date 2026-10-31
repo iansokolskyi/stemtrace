@@ -2,6 +2,7 @@
 
 import json
 import random
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -261,7 +262,7 @@ def test_get_graph_returns_not_run_reason_on_chord_node() -> None:
 
 
 def test_list_graphs_leaves_not_run_reason_empty() -> None:
-    """The list holds only roots and their direct children, not every header."""
+    """The list gives a count in ``flow.not_run_count`` instead."""
     store = GraphStore()
     for event in _CAPTURES["chord_failed_header"]:
         store.add_event(TaskEvent.model_validate(event))
@@ -350,3 +351,75 @@ def test_get_graph_reason_follows_the_headers_still_stored(
     nodes = client.get("/api/graphs/group:g").json()["nodes"]
     assert sorted(nodes) == ["group:g", "h2", "h3", "h4", "h5"]
     assert nodes["group:g"]["not_run_reason"] == after
+
+
+class _CountingEvents(list[TaskEvent]):
+    """An event list that counts the events handed out when it is iterated."""
+
+    def __init__(self, events: list[TaskEvent]) -> None:
+        super().__init__(events)
+        self.read = 0
+
+    def __iter__(self) -> Iterator[TaskEvent]:
+        for event in super().__iter__():
+            self.read += 1
+            yield event
+
+
+def _count_event_reads(graph: TaskGraph) -> dict[str, _CountingEvents]:
+    """Swap every TASK node's events for a counting list (bypassing validation)."""
+    counters = {}
+    for node_id, node in graph.nodes.items():
+        if node.node_type == NodeType.TASK:
+            counters[node_id] = _CountingEvents(node.events)
+            node.__dict__["events"] = counters[node_id]
+    return counters
+
+
+def test_chord_not_run_reasons_never_reads_events_of_a_plain_group() -> None:
+    """Only a CHORD node can get a reason, so the members of a group with no chord
+    (however many events they have) cost nothing: the work is bounded by nodes."""
+    graph = TaskGraph()
+    for i in range(3):
+        for seconds, state in enumerate(
+            (TaskState.PENDING, TaskState.STARTED, TaskState.FAILURE)
+        ):
+            graph.add_event(_ev(f"m{i}", state, seconds, group_id="g"))
+    assert graph.nodes["group:g"].node_type == NodeType.GROUP
+    counters = _count_event_reads(graph)
+
+    assert chord_not_run_reasons(graph.nodes) == {}
+    assert {k: c.read for k, c in counters.items()} == {"m0": 0, "m1": 0, "m2": 0}
+
+
+def test_chord_not_run_reasons_never_reads_events_when_a_callback_is_drawn() -> None:
+    graph = TaskGraph()
+    for event in (
+        _header("h0", TaskState.FAILURE),
+        _header("h1", TaskState.SUCCESS),
+        _ev("cb", TaskState.SUCCESS, parent_id="h1"),
+    ):
+        graph.add_event(event)
+    assert graph.nodes["group:g"].chord_id == "cb"
+    counters = _count_event_reads(graph)
+
+    assert chord_not_run_reasons(graph.nodes) == {}
+    assert {c.read for c in counters.values()} == {0}
+
+
+def test_chord_not_run_reasons_stops_reading_a_header_at_the_deciding_event() -> None:
+    """The header's second event names the callback: its other 51 are never read."""
+    graph = TaskGraph()
+    graph.add_event(_ev("h0", TaskState.PENDING, 0))
+    for seconds in range(1, 52):
+        state = TaskState.STARTED if seconds == 1 else TaskState.RETRY
+        graph.add_event(_ev("h0", state, seconds, group_id="g", chord_callback_id="cb"))
+    graph.add_event(
+        _ev("h0", TaskState.FAILURE, 52, group_id="g", chord_callback_id="cb")
+    )
+    graph.add_event(_header("h1", TaskState.SUCCESS))
+    counters = _count_event_reads(graph)
+
+    assert chord_not_run_reasons(graph.nodes) == {"group:g": "header_failed"}
+    assert counters["h0"].read == 2
+    assert counters["h1"].read == 0

@@ -2366,9 +2366,20 @@ def chord_not_run_reasons(
     other headers run; the worst outcome wins and clears only once a callback
     is drawn. ``nodes`` must hold the chord's whole graph.
     """
+    # Only a CHORD with no callback gets a reason, so only the members of its
+    # group are read: a plain group's events cost nothing (work is bounded by
+    # the number of nodes, not events).
+    chords = {
+        node_id: node.group_id
+        for node_id, node in nodes.items()
+        if node.node_type == NodeType.CHORD
+        and node.chord_id is None
+        and node.group_id is not None
+    }
+    candidates = set(chords.values())
     by_group: dict[str, tuple[int, ChordNotRunReason]] = {}
     for node in nodes.values():
-        if node.node_type != NodeType.TASK or node.group_id is None:
+        if node.node_type != NodeType.TASK or node.group_id not in candidates:
             continue
         ranked = _HEADER_REASONS.get(node.state)
         current = by_group.get(node.group_id)
@@ -2380,9 +2391,63 @@ def chord_not_run_reasons(
         ):
             by_group[node.group_id] = ranked
     return {
-        node_id: by_group[node.group_id][1]
-        for node_id, node in nodes.items()
-        if node.node_type == NodeType.CHORD
-        and node.chord_id is None
-        and node.group_id in by_group
+        node_id: by_group[group_id][1]
+        for node_id, group_id in chords.items()
+        if group_id in by_group
     }
+
+
+# A flow's state is the first state here that any of its TASK nodes maps to
+# (see _FLOW_STATE_OF); worst first.
+FLOW_STATE_ORDER: tuple[TaskState, ...] = (
+    TaskState.FAILURE,
+    TaskState.REVOKED,
+    TaskState.RETRY,
+    TaskState.STARTED,
+    TaskState.IGNORED,
+    TaskState.SUCCESS,
+)
+
+# A task state -> its place in FLOW_STATE_ORDER: a rejected task counts as
+# failed, a task that hasn't finished as still running.
+_FLOW_STATE_OF: dict[TaskState, TaskState] = {
+    TaskState.FAILURE: TaskState.FAILURE,
+    TaskState.REJECTED: TaskState.FAILURE,
+    TaskState.REVOKED: TaskState.REVOKED,
+    TaskState.RETRY: TaskState.RETRY,
+    TaskState.PENDING: TaskState.STARTED,
+    TaskState.RECEIVED: TaskState.STARTED,
+    TaskState.STARTED: TaskState.STARTED,
+    TaskState.IGNORED: TaskState.IGNORED,
+    TaskState.SUCCESS: TaskState.SUCCESS,
+}
+
+
+class FlowSummary(BaseModel):
+    """Totals over one flow's TASK nodes (see ``flow_summary``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_count: int
+    state_counts: dict[str, int]
+    not_run_count: int
+    state: TaskState
+
+
+def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
+    """Summarize the flow rooted at ``root_id``; ``nodes`` must hold its whole graph.
+
+    The state is the worst TASK state in ``FLOW_STATE_ORDER``, so a succeeded
+    root can head a failed flow. Without TASK nodes it is
+    the root's own state.
+    """
+    counts = Counter(
+        node.state for node in nodes.values() if node.node_type == NodeType.TASK
+    )
+    worst = {_FLOW_STATE_OF[state] for state in counts}
+    return FlowSummary(
+        task_count=sum(counts.values()),
+        state_counts={s.value: counts[s] for s in TaskState if counts[s]},
+        not_run_count=len(chord_not_run_reasons(nodes)),
+        state=next((s for s in FLOW_STATE_ORDER if s in worst), nodes[root_id].state),
+    )
