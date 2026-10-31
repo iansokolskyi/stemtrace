@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { useExecutions } from '@/api/queries'
+import { formatCount } from '@/utils/format'
 import { StatusChip } from '../StatusChip'
 import { TaskName } from '../TaskName'
 import { type Column, columnsFor } from './columns'
@@ -179,7 +180,7 @@ function TableBox({
     <div>
       <div className="flex h-8 items-center justify-between text-xs text-muted">
         <span>
-          Showing {rows.length} of {total} tasks
+          Showing {formatCount(rows.length)} of {formatCount(total)} tasks
         </span>
         {/* The slot is always there, so the button appearing never moves the table */}
         {newCount > 0 && (

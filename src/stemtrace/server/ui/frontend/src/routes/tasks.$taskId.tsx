@@ -10,6 +10,7 @@ import { retryCount } from '@/components/task/retryCount'
 import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
+import { useCarriedRange } from '@/hooks/useCarriedRange'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -17,6 +18,7 @@ export const Route = createFileRoute('/tasks/$taskId')({
 })
 
 function TaskDetailPage() {
+  const carried = useCarriedRange()
   const { taskId } = Route.useParams()
   const { data, isLoading, error } = useTask(taskId)
 
@@ -28,7 +30,11 @@ function TaskDetailPage() {
     return (
       <div className="py-12 text-center">
         <p className="text-failure-t">Failed to load task</p>
-        <Link to="/executions" className="mt-2 inline-block underline hover:text-muted">
+        <Link
+          to="/executions"
+          search={carried}
+          className="mt-2 inline-block underline hover:text-muted"
+        >
           Back to executions
         </Link>
       </div>

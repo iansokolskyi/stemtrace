@@ -1,13 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useMemo } from 'react'
-import type { ExecutionFilters, TaskNode } from '@/api/client'
+import type { TaskNode, TimedFilters } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { formatDuration, stateColors, TERMINAL_STATES, TimelineBar } from './TimelineBar'
 
 interface TaskTimelineProps {
-  filters: ExecutionFilters
+  filters: TimedFilters
 }
 
 export function TaskTimeline({ filters }: TaskTimelineProps) {

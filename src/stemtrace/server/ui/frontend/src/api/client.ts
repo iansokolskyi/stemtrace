@@ -305,15 +305,22 @@ export interface ExecutionFilters {
   to_date?: string
 }
 
-export interface FetchTasksParams extends ExecutionFilters {
+/** The filters plus a relative time window; the API rejects `within` together with `from_date`. */
+export interface TimedFilters extends ExecutionFilters {
+  /** Updated within this long (`1h`, `6h`); sent instead of `from_date`. */
+  within?: string
+}
+
+export interface FetchTasksParams extends TimedFilters {
   limit?: number
   offset?: number
 }
 
 /** The filters of the Executions list; paging and `compact` are fixed by `fetchExecutions`. */
-export type FetchExecutionsParams = ExecutionFilters
+export type FetchExecutionsParams = TimedFilters
 
 const FILTER_KEYS = [
+  'within',
   'state',
   'name',
   'name_exact',
@@ -324,10 +331,10 @@ const FILTER_KEYS = [
   'tag',
   'from_date',
   'to_date',
-] as const satisfies readonly (keyof ExecutionFilters)[]
+] as const satisfies readonly (keyof TimedFilters)[]
 
 /** Adds each filter that has a value to `searchParams`. */
-function setFilterParams(searchParams: URLSearchParams, filters: ExecutionFilters): void {
+function setFilterParams(searchParams: URLSearchParams, filters: TimedFilters): void {
   for (const key of FILTER_KEYS) {
     const value = filters[key]
     if (value) searchParams.set(key, value)

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { useExecutions, useGroups, useTasks } from '@/api/queries'
 import { DensityToggle } from '@/components/executions/DensityToggle'
@@ -7,28 +7,47 @@ import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { FilterChips } from '@/components/executions/FilterChips'
 import { suggestionsFrom } from '@/components/executions/suggestions'
 import { TaskTimeline } from '@/components/TaskTimeline'
+import { carryRange } from '@/hooks/useCarriedRange'
 import { useDensity } from '@/hooks/useDensity'
-import { executionsSearch } from './-search'
+import { formatCount } from '@/utils/format'
+import { executionsSearch, hasDates, withinOf } from './-search'
 
 export const Route = createFileRoute('/executions')({
   component: TasksPage,
   validateSearch: executionsSearch,
-  staticData: { crumb: 'Executions' },
+  staticData: { crumb: 'Executions', timeRange: true },
 })
 
 type ViewMode = 'list' | 'timeline'
 
+const WINDOW_WORDS: Record<string, string> = { '1h': 'the last hour', '6h': 'the last 6h' }
+
+/** "1,204 runs in the last 6h"; no window (All, or explicit dates) is just the count. */
+function runsSummary(total: number, within: string | undefined): string {
+  const runs = `${formatCount(total)} ${total === 1 ? 'run' : 'runs'}`
+  const window = within ? WINDOW_WORDS[within] : undefined
+  return window ? `${runs} in ${window}` : runs
+}
+
 function TasksPage() {
   const navigate = useNavigate()
-  const { view, ...filters } = Route.useSearch()
+  const { view, range, ...filters } = Route.useSearch()
   const viewMode: ViewMode = view ?? 'list'
+  // What the API is asked: the filters plus the window the range sets (explicit dates win)
+  const params = { ...filters, within: withinOf(range, filters) }
+
+  // Dates set the window without touching the range, so the range stays what it was
+  const datesSet = hasDates(filters)
+  useEffect(() => {
+    if (!datesSet) carryRange(range)
+  }, [datesSet, range])
 
   const [density, setDensity] = useDensity()
 
   // Suggestions come from rows already loaded for this view (the same query the table or the
   // timeline runs, so no request of its own) and from the groups.
-  const listRows = useExecutions(filters, { enabled: viewMode === 'list' })
-  const timelineRows = useTasks(filters, { enabled: viewMode === 'timeline' })
+  const listRows = useExecutions(params, { enabled: viewMode === 'list' })
+  const timelineRows = useTasks(params, { enabled: viewMode === 'timeline' })
   const { data: groups } = useGroups()
   const listPages = listRows.data
   const timelineTasks = timelineRows.data?.tasks
@@ -44,13 +63,17 @@ function TasksPage() {
     [viewMode, listPages, timelineTasks, groupList],
   )
 
+  const total = viewMode === 'list' ? listPages?.pages[0]?.total : timelineRows.data?.total
+
   // Filters are history entries (Back restores the previous ones); the view toggle is not
   const setFilters = (next: ExecutionFilters, { replace }: { replace: boolean }) => {
-    navigate({ to: '/executions', search: { ...next, view }, replace })
+    // Dates replace the range, so setting any drops it
+    const nextRange = hasDates(next) ? undefined : range
+    navigate({ to: '/executions', search: { ...next, view, range: nextRange }, replace })
   }
 
   const handleViewModeChange = (mode: ViewMode) => {
-    navigate({ to: '/executions', search: { ...filters, view: mode }, replace: true })
+    navigate({ to: '/executions', search: { ...filters, view: mode, range }, replace: true })
   }
 
   return (
@@ -58,8 +81,10 @@ function TasksPage() {
       {/* Page header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-ink">Tasks</h1>
-          <p className="mt-1 text-sm text-muted">Monitor your Celery task execution in real-time</p>
+          <h1 className="text-2xl font-bold text-ink">Executions</h1>
+          <p className="mt-1 min-h-5 text-sm text-muted">
+            {total !== undefined && runsSummary(total, params.within)}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -87,9 +112,9 @@ function TasksPage() {
       <FilterChips filters={filters} onChange={setFilters} suggestions={suggestions} />
 
       {viewMode === 'list' ? (
-        <ExecutionsTable params={filters} density={density} />
+        <ExecutionsTable params={params} density={density} />
       ) : (
-        <TaskTimeline filters={filters} />
+        <TaskTimeline filters={params} />
       )}
     </div>
   )
