@@ -1,5 +1,6 @@
 import { expect, type Page, test, type WebSocketRoute } from '@playwright/test'
 
+import { flowNode, flowNodes } from './fixtures/flow'
 import { setupMockApi } from './fixtures/mock-api'
 import { createChain, createSuccessTask, type MockTask } from './fixtures/mock-data'
 
@@ -66,7 +67,7 @@ test.describe('Live updates during an event burst', () => {
     const socket = await liveSocket(page)
     await page.goto(`/flows/${first.task_id}`)
     await expect(page.getByText('Live', { exact: true })).toBeVisible()
-    await expect(page.locator('.react-flow__node')).toHaveCount(2)
+    await expect(flowNodes(page)).toHaveCount(2)
     await slowDown(page, /\/api\/graphs\/[^/?]+$/)
 
     const [, , third] = createChain('app.flow', 3)
@@ -77,7 +78,7 @@ test.describe('Live updates during an event burst', () => {
     mockApi.addTask(third)
     const burst = startBurst(page, socket(), third)
 
-    await expect(page.locator(`.react-flow__node[data-id="${third.task_id}"]`)).toBeVisible({
+    await expect(flowNode(page, third.task_id)).toBeVisible({
       timeout: 3000,
     })
     expect(burst.running).toBe(true)
