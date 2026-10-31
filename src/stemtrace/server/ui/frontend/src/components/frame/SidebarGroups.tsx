@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
 import { useGroups } from '@/api/queries'
+import { useCarriedRange } from '@/hooks/useCarriedRange'
 
 const LINK =
   'block truncate rounded-[3px] px-2.5 py-[5px] text-[13px] text-muted hover:bg-hover hover:text-ink aria-[current=page]:bg-raised aria-[current=page]:font-semibold aria-[current=page]:text-ink'
@@ -13,6 +14,7 @@ const LINK =
  */
 export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): ReactElement | null {
   const { data } = useGroups()
+  const carried = useCarriedRange()
   const groups = data?.groups ?? []
   if (groups.length === 0) return null
   const tags = [...new Set(groups.flatMap((group) => group.tags))].sort((a, b) =>
@@ -27,7 +29,7 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
           <Link
             key={group.name}
             to="/executions"
-            search={{ task_group: group.name }}
+            search={{ task_group: group.name, ...carried }}
             onClick={onNavigate}
             className={LINK}
           >
@@ -39,7 +41,13 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
         <nav aria-label="Tags" className="mt-4 flex flex-col gap-0.5">
           <p className="px-2.5 pb-1 text-xs font-semibold text-muted">Tags</p>
           {tags.map((tag) => (
-            <Link key={tag} to="/executions" search={{ tag }} onClick={onNavigate} className={LINK}>
+            <Link
+              key={tag}
+              to="/executions"
+              search={{ tag, ...carried }}
+              onClick={onNavigate}
+              className={LINK}
+            >
               #{tag}
             </Link>
           ))}

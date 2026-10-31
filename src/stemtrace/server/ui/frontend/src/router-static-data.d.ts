@@ -6,8 +6,6 @@ declare module '@tanstack/react-router' {
     crumb?: string
     /** The page's search has `range` (see `rangeSearch`): the top strip shows the time range switch. */
     timeRange?: true
-    /** The page's search has `range` (see `rangeSearch`): the top strip shows the time range switch. */
-    timeRange?: true
     /** On a detail page, the list it belongs to: linked as the first breadcrumb. */
     section?: { label: string; to: '/executions' | '/flows' | '/workers' | '/registry' }
   }

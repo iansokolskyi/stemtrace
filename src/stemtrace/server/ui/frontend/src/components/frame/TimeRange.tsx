@@ -1,6 +1,6 @@
 import { useMatches, useNavigate } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
-import { DEFAULT_RANGE, type Range, rangeSearch } from '@/routes/-search'
+import { DEFAULT_RANGE, effectiveRange, type Range, rangeSearch } from '@/routes/-search'
 
 const OPTIONS: readonly { value: Range; label: string }[] = [
   { value: '1h', label: '1h' },
@@ -18,9 +18,7 @@ export function TimeRange(): ReactElement | null {
   if (!match?.staticData.timeRange) return null
 
   const search = match.search as Record<string, unknown>
-  // Explicit dates set the window, so no range applies
-  const hasDates = Boolean(search.from_date || search.to_date)
-  const current = hasDates ? undefined : (rangeSearch(search).range ?? DEFAULT_RANGE)
+  const current = effectiveRange(rangeSearch(search).range, search)
 
   const choose = (range: Range) => {
     // Each choice is a history entry; the default is the absence of the param, and a range

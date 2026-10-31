@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMemo, useState } from 'react'
 import type { TaskStatus } from '@/api/client'
 import { useTaskRegistry } from '@/api/queries'
+import { useCarriedRange } from '@/hooks/useCarriedRange'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 
 export const Route = createFileRoute('/registry')({
@@ -212,6 +213,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
 }
 
 function TaskCard({ task, shortName }: TaskCardProps) {
+  const carried = useCarriedRange()
   const [expanded, setExpanded] = useState(false)
   const hasExecutions = task.execution_count > 0
 
@@ -410,7 +412,7 @@ function TaskCard({ task, shortName }: TaskCardProps) {
             {hasExecutions && (
               <Link
                 to="/executions"
-                search={{ name_exact: task.name }}
+                search={{ name_exact: task.name, ...carried }}
                 className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
               >
                 View runs →

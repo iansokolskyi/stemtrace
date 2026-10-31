@@ -277,7 +277,12 @@ test.describe('Dates and range', () => {
   })
 
   test('applying dates in the time chip removes the range', async ({ page }) => {
-    const { lists } = await openExecutions(page, '/executions?range=1h')
+    await setupMockApi(page, { useDefaults: false })
+    await answerByWindow(page)
+    const lists = recordTaskLists(page)
+    await page.goto('/executions?range=1h')
+    const subtitle = page.getByRole('heading', { level: 1 }).locator('xpath=following-sibling::p')
+    await expect(subtitle).toHaveText('1 run in the last hour')
     await page.getByRole('button', { name: 'Add filter' }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Time', exact: true }).click()
     await page.getByRole('dialog').getByLabel('From').focus()
@@ -292,13 +297,14 @@ test.describe('Dates and range', () => {
     await expect
       .poll(() => lists.at(-1))
       .toEqual({ ...LIST, from_date: '2025-10-01', to_date: '2025-10-07' })
+    await expect(subtitle).toHaveText('2 runs')
     expect(await pressed(page)).toEqual([false, false, false])
 
-    // Back is the range again
+    // Back is the range again; its answer may come from the cache, so read the page, not the wire
     await page.goBack()
     await expect.poll(() => search(page)).toEqual({ range: '1h' })
+    await expect(subtitle).toHaveText('1 run in the last hour')
     expect(await pressed(page)).toEqual([true, false, false])
-    await expect.poll(() => lists.at(-1)).toEqual({ ...LIST, within: '1h' })
   })
 
   test('removing the time chip leaves the range the URL names, 6h when it has none', async ({
@@ -332,6 +338,75 @@ test.describe('Dates and range', () => {
     await expect.poll(() => search(page)).toEqual({ range: 'all' })
     await expect.poll(() => lists.at(-1)).toEqual(LIST)
     await expect(page.getByRole('dialog')).toHaveCount(0)
+  })
+})
+
+test.describe('The range survives navigation', () => {
+  const GROUPS = [
+    { name: 'Billing', source: 'code' as const, tags: ['money'], color: null, task_names: [] },
+  ]
+  const ALL_REQUEST = { ...LIST }
+
+  test('the Executions nav item, a group link and a tag link keep the range', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups(GROUPS)
+    api.addTasks(manyTasks(3))
+    const lists = recordTaskLists(page)
+    await page.goto('/executions?range=all')
+    await expect.poll(() => lists.length).toBeGreaterThan(0)
+    const nav = page.getByRole('navigation', { name: 'Sections' })
+    // Leave for another page and come back through the nav item
+    await nav.getByRole('link', { name: /Workers/ }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Workers' })).toBeVisible()
+    await nav.getByRole('link', { name: /^Executions/ }).click()
+    await expect.poll(() => search(page)).toEqual({ range: 'all' })
+    await expect(segment(page, 'All')).toHaveAttribute('aria-pressed', 'true')
+
+    await page
+      .getByRole('navigation', { name: 'Groups' })
+      .getByRole('link', { name: 'Billing' })
+      .click()
+    await expect.poll(() => search(page)).toEqual({ task_group: 'Billing', range: 'all' })
+    await expect.poll(() => lists.at(-1)).toEqual({ ...ALL_REQUEST, task_group: 'Billing' })
+
+    await page
+      .getByRole('navigation', { name: 'Tags' })
+      .getByRole('link', { name: '#money' })
+      .click()
+    await expect.poll(() => search(page)).toEqual({ tag: 'money', range: 'all' })
+    await expect.poll(() => lists.at(-1)).toEqual({ ...ALL_REQUEST, tag: 'money' })
+  })
+
+  test('the Task page links back to Executions with the range', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    const task = createSuccessTask('app.jobs.one')
+    task.hostname = 'celery@w1'
+    api.addTasks([task])
+    await page.goto('/executions?range=1h')
+    await expect(page.getByRole('group', { name: 'Time range' })).toBeVisible()
+    await page
+      .getByRole('link', { name: /app\.jobs/ })
+      .first()
+      .click()
+    await expect(page).toHaveURL(/\/tasks\//)
+    await page.getByRole('link', { name: /All runs of this task/ }).click()
+    await expect.poll(() => search(page)).toEqual({ name_exact: 'app.jobs.one', range: '1h' })
+    await expect(segment(page, '1h')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  test('the default range adds nothing to the links', async ({ page }) => {
+    await openExecutions(page, '/executions?range=1h')
+    await segment(page, '6h').click()
+    await expect.poll(() => search(page)).toEqual({})
+    await page
+      .getByRole('navigation', { name: 'Sections' })
+      .getByRole('link', { name: /Workers/ })
+      .click()
+    await page
+      .getByRole('navigation', { name: 'Sections' })
+      .getByRole('link', { name: /^Executions/ })
+      .click()
+    await expect(page).toHaveURL(/\/executions$/)
   })
 })
 

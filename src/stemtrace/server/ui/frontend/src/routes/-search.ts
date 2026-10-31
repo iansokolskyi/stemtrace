@@ -58,13 +58,21 @@ export function rangeSearch(search: Record<string, unknown>): { range?: Range } 
   return { range: search.range === '1h' || search.range === 'all' ? search.range : undefined }
 }
 
-/** The `within` the API gets: the range's window, unless explicit dates set the window. */
-export function withinOf(
+/** Explicit dates set the time window: they win over any range. The one place that says so. */
+export const hasDates = ({ from_date, to_date }: ExecutionFilters): boolean =>
+  Boolean(from_date || to_date)
+
+/** The range that applies: none when dates set the window, else the URL's or the default. */
+export function effectiveRange(
   range: Range | undefined,
-  { from_date, to_date }: ExecutionFilters,
-): string | undefined {
-  if (from_date || to_date) return undefined
-  const effective = range ?? DEFAULT_RANGE
+  filters: ExecutionFilters,
+): Range | undefined {
+  return hasDates(filters) ? undefined : (range ?? DEFAULT_RANGE)
+}
+
+/** The `within` the API gets: the applying range's window; All and dates send none. */
+export function withinOf(range: Range | undefined, filters: ExecutionFilters): string | undefined {
+  const effective = effectiveRange(range, filters)
   return effective === 'all' ? undefined : effective
 }
 

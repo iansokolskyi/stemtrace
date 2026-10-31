@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { useExecutions, useGroups, useTasks } from '@/api/queries'
 import { DensityToggle } from '@/components/executions/DensityToggle'
@@ -7,8 +7,10 @@ import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { FilterChips } from '@/components/executions/FilterChips'
 import { suggestionsFrom } from '@/components/executions/suggestions'
 import { TaskTimeline } from '@/components/TaskTimeline'
+import { carryRange } from '@/hooks/useCarriedRange'
 import { useDensity } from '@/hooks/useDensity'
-import { executionsSearch, withinOf } from './-search'
+import { formatCount } from '@/utils/format'
+import { executionsSearch, hasDates, withinOf } from './-search'
 
 export const Route = createFileRoute('/executions')({
   component: TasksPage,
@@ -22,7 +24,7 @@ const WINDOW_WORDS: Record<string, string> = { '1h': 'the last hour', '6h': 'the
 
 /** "1,204 runs in the last 6h"; no window (All, or explicit dates) is just the count. */
 function runsSummary(total: number, within: string | undefined): string {
-  const runs = `${total.toLocaleString('en-US')} ${total === 1 ? 'run' : 'runs'}`
+  const runs = `${formatCount(total)} ${total === 1 ? 'run' : 'runs'}`
   const window = within ? WINDOW_WORDS[within] : undefined
   return window ? `${runs} in ${window}` : runs
 }
@@ -33,6 +35,12 @@ function TasksPage() {
   const viewMode: ViewMode = view ?? 'list'
   // What the API is asked: the filters plus the window the range sets (explicit dates win)
   const params = { ...filters, within: withinOf(range, filters) }
+
+  // Dates set the window without touching the range, so the range stays what it was
+  const datesSet = hasDates(filters)
+  useEffect(() => {
+    if (!datesSet) carryRange(range)
+  }, [datesSet, range])
 
   const [density, setDensity] = useDensity()
 
@@ -60,7 +68,7 @@ function TasksPage() {
   // Filters are history entries (Back restores the previous ones); the view toggle is not
   const setFilters = (next: ExecutionFilters, { replace }: { replace: boolean }) => {
     // Dates replace the range, so setting any drops it
-    const nextRange = next.from_date || next.to_date ? undefined : range
+    const nextRange = hasDates(next) ? undefined : range
     navigate({ to: '/executions', search: { ...next, view, range: nextRange }, replace })
   }
 

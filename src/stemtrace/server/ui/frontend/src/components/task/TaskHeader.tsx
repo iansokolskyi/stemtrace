@@ -3,6 +3,7 @@ import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskNode } from '@/api/client'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
+import { useCarriedRange } from '@/hooks/useCarriedRange'
 
 const BUTTON =
   'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'
@@ -21,6 +22,7 @@ interface TaskHeaderProps {
  * is unknown is left out, never shown disabled.
  */
 export function TaskHeader({ task, flowRootId }: TaskHeaderProps): ReactElement {
+  const carried = useCarriedRange()
   const cut = task.name.lastIndexOf('.')
   const module = task.name.slice(0, Math.max(0, cut))
   const title = task.name.slice(cut + 1)
@@ -49,13 +51,21 @@ export function TaskHeader({ task, flowRootId }: TaskHeaderProps): ReactElement 
           </Link>
         )}
         {task.hostname && (
-          <Link to="/executions" search={{ hostname: task.hostname }} className={BUTTON_QUIET}>
+          <Link
+            to="/executions"
+            search={{ hostname: task.hostname, ...carried }}
+            className={BUTTON_QUIET}
+          >
             <Icon name="server" size={13} className="flex-none" />
             <span className="min-w-0 truncate">Worker {task.hostname}</span>
           </Link>
         )}
         {task.node_type === 'TASK' && (
-          <Link to="/executions" search={{ name_exact: task.name }} className={BUTTON_QUIET}>
+          <Link
+            to="/executions"
+            search={{ name_exact: task.name, ...carried }}
+            className={BUTTON_QUIET}
+          >
             <Icon name="list" size={13} />
             All runs of this task
           </Link>

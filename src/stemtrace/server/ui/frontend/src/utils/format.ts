@@ -78,3 +78,8 @@ export function formatAgo(timestamp: string | null): string {
 export function dateSearchParam(value: unknown): string | undefined {
   return typeof value === 'string' && parseDateParam(value) ? value : undefined
 }
+
+/** A count with thousands separators (`1,204`), the same wherever the page shows one. */
+export function formatCount(count: number): string {
+  return count.toLocaleString('en-US')
+}

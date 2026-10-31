@@ -74,7 +74,7 @@ test.describe('Sidebar groups and tags', () => {
     await expect(page.locator('[data-chip="task_group"]')).toContainText('Billing')
     await expect
       .poll(() => queries.at(-1))
-      .toEqual({ limit: '200', offset: '0', compact: '1', task_group: 'Billing' })
+      .toEqual({ limit: '200', offset: '0', compact: '1', within: '6h', task_group: 'Billing' })
     await expect(groupsNav(page).getByRole('link', { name: 'Billing' })).toHaveAttribute(
       'aria-current',
       'page',
@@ -100,7 +100,7 @@ test.describe('Sidebar groups and tags', () => {
     await expect(page).toHaveURL(/\/executions\?tag=critical$/)
     await expect
       .poll(() => queries.at(-1))
-      .toEqual({ limit: '200', offset: '0', compact: '1', tag: 'critical' })
+      .toEqual({ limit: '200', offset: '0', compact: '1', within: '6h', tag: 'critical' })
     await expect(tagsNav(page).getByRole('link', { name: '#critical' })).toHaveAttribute(
       'aria-current',
       'page',
