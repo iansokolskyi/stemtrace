@@ -261,7 +261,7 @@ def test_get_graph_returns_not_run_reason_on_chord_node() -> None:
 
 
 def test_list_graphs_leaves_not_run_reason_empty() -> None:
-    """The list holds only roots and their direct children, not every header."""
+    """The list gives a count in ``flow.not_run_count`` instead."""
     store = GraphStore()
     for event in _CAPTURES["chord_failed_header"]:
         store.add_event(TaskEvent.model_validate(event))

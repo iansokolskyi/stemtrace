@@ -63,6 +63,16 @@ class NodeWithChildren(NamedTuple):
     flow_root_id: str | None
 
 
+class RootGraphs(NamedTuple):
+    """A page of root nodes with the snapshot of each root's whole graph."""
+
+    roots: list[TaskNode]
+    # Root ID -> every node of its graph (the root included), by ID.
+    graphs: dict[str, dict[str, TaskNode]]
+    # Roots matching the filters, before paging.
+    total: int
+
+
 def _snapshot(node: TaskNode) -> TaskNode:
     """Copy a node so callers can read it without holding the store lock.
 
@@ -772,7 +782,7 @@ class GraphStore:
             )
             return [_snapshot(n) for n in live], total
 
-    def get_root_nodes_with_children(
+    def get_root_graphs(
         self,
         *,
         limit: int = 50,
@@ -780,15 +790,12 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
-        """Get root nodes and their direct children from one consistent snapshot.
+    ) -> RootGraphs:
+        """Get root nodes and every node of their graphs from one consistent snapshot.
 
         With ``task_names``, only graphs with a task of one of these names
-        (anywhere in the graph, not only the root) are listed.
-
-        Returns:
-            Tuple of (filtered root nodes, map of task_id to node for the roots
-            and their direct children, total count matching filters).
+        (anywhere in the graph, not only the root) are listed. Takes the lock
+        once; costs O(nodes in the listed graphs).
         """
         with self._lock:
             live, total = self._root_nodes_locked(
@@ -798,15 +805,11 @@ class GraphStore:
                 to_date=to_date,
                 task_names=task_names,
             )
-            roots = [_snapshot(n) for n in live]
-            related: dict[str, TaskNode] = {}
-            for root in roots:
-                related[root.task_id] = root
-                for child_id in root.children:
-                    child = self._graph.nodes.get(child_id)
-                    if child is not None and child_id not in related:
-                        related[child_id] = _snapshot(child)
-            return roots, related, total
+            snapshots: dict[str, TaskNode] = {}
+            graphs = {n.task_id: self._graph_locked(n.task_id, snapshots) for n in live}
+            return RootGraphs(
+                [graphs[n.task_id][n.task_id] for n in live], graphs, total
+            )
 
     def _root_nodes_locked(
         self,
@@ -908,24 +911,30 @@ class GraphStore:
     def get_graph_from_root(self, root_id: str) -> dict[str, TaskNode]:
         """Get all nodes in subgraph starting from root."""
         with self._lock:
-            root = self._graph.get_node(root_id)
-            if root is None:
-                return {}
+            return self._graph_locked(root_id, {})
 
-            result: dict[str, TaskNode] = {}
-            to_visit = [root_id]
+    def _graph_locked(
+        self, root_id: str, snapshots: dict[str, TaskNode]
+    ) -> dict[str, TaskNode]:
+        """Snapshot every node reachable from ``root_id`` through ``children``.
 
-            while to_visit:
-                current_id = to_visit.pop()
-                if current_id in result:
-                    continue
-                node = self._graph.get_node(current_id)
-                if node is None:
-                    continue
-                result[current_id] = _snapshot(node)
-                to_visit.extend(node.children)
-
-            return result
+        ``snapshots`` caches snapshots by ID, so a node shared by several
+        graphs is copied once. Call with the lock held.
+        """
+        result: dict[str, TaskNode] = {}
+        to_visit = [root_id]
+        while to_visit:
+            current_id = to_visit.pop()
+            if current_id in result:
+                continue
+            node = self._graph.get_node(current_id)
+            if node is None:
+                continue
+            if current_id not in snapshots:
+                snapshots[current_id] = _snapshot(node)
+            result[current_id] = snapshots[current_id]
+            to_visit.extend(node.children)
+        return result
 
     def add_listener(self, callback: Callable[[TaskEvent], None]) -> None:
         """Register callback for new events (used by WebSocket manager)."""

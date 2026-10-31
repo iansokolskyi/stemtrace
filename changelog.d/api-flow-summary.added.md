@@ -1,0 +1,1 @@
+- Each item of `GET /api/graphs` now has a `flow` object with totals over the flow's whole graph: `task_count`, `state_counts`, `not_run_count` (chords whose callback didn't run) and `state`, the worst task state. A root that succeeded can head a failed flow, so use `flow.state` for a flow's outcome. `GET /api/graphs/{root_id}` leaves `flow` as `null`.

@@ -119,21 +119,53 @@ class TestGraphStoreConsistency:
     def test_get_node_with_children_missing_returns_none(self) -> None:
         assert GraphStore().get_node_with_children("missing") is None
 
-    def test_get_root_nodes_with_children_returns_roots_and_children(self) -> None:
+    def test_get_root_graphs_returns_roots_with_every_node_of_their_graphs(
+        self,
+    ) -> None:
         store = GraphStore()
         store.add_event(_task_event("root", TaskState.STARTED, 0))
         store.add_event(_task_event("child", TaskState.SUCCESS, 1, parent_id="root"))
-        store.add_event(_task_event("other-root", TaskState.SUCCESS, 2))
+        store.add_event(_task_event("grand", TaskState.FAILURE, 2, parent_id="child"))
+        store.add_event(_task_event("other-root", TaskState.SUCCESS, 3))
 
-        roots, related, total = store.get_root_nodes_with_children(limit=1)
+        roots, graphs, total = store.get_root_graphs(limit=1)
 
         assert [r.task_id for r in roots] == ["other-root"]
-        assert set(related) == {"other-root"}
+        assert {k: set(v) for k, v in graphs.items()} == {"other-root": {"other-root"}}
         assert total == 2
-        roots, related, _ = store.get_root_nodes_with_children(limit=1, offset=1)
+        roots, graphs, _ = store.get_root_graphs(limit=1, offset=1)
         assert [r.task_id for r in roots] == ["root"]
-        assert set(related) == {"root", "child"}
-        assert related["child"].state == TaskState.SUCCESS
+        assert {k: set(v) for k, v in graphs.items()} == {
+            "root": {"root", "child", "grand"}
+        }
+        assert graphs["root"]["grand"].state == TaskState.FAILURE
+        assert roots[0] is graphs["root"]["root"]
+
+    def test_get_root_graphs_takes_the_lock_once_for_all_roots_and_nodes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = GraphStore()
+        for i in range(5):
+            store.add_event(_task_event(f"root-{i}", TaskState.SUCCESS, i))
+            store.add_event(
+                _task_event(
+                    f"child-{i}", TaskState.SUCCESS, 10 + i, parent_id=f"root-{i}"
+                )
+            )
+            store.add_event(
+                _task_event(
+                    f"leaf-{i}", TaskState.SUCCESS, 20 + i, parent_id=f"child-{i}"
+                )
+            )
+        # Counts every acquisition (the callback runs before each one)
+        lock = InterleavingLock(store._lock, lambda: None)
+        monkeypatch.setattr(store, "_lock", lock)
+
+        roots, graphs, _ = store.get_root_graphs(limit=100)
+
+        assert len(roots) == 5
+        assert sum(len(g) for g in graphs.values()) == 15
+        assert lock.interleavings == 1
 
 
 @pytest.fixture

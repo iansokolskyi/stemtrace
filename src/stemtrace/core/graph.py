@@ -2386,3 +2386,59 @@ def chord_not_run_reasons(
         and node.chord_id is None
         and node.group_id in by_group
     }
+
+
+# A flow's state is the first state here that any of its TASK nodes maps to
+# (see _FLOW_STATE_OF); worst first.
+FLOW_STATE_ORDER: tuple[TaskState, ...] = (
+    TaskState.FAILURE,
+    TaskState.REVOKED,
+    TaskState.RETRY,
+    TaskState.STARTED,
+    TaskState.IGNORED,
+    TaskState.SUCCESS,
+)
+
+# A task state -> its place in FLOW_STATE_ORDER: a rejected task counts as
+# failed, a task that hasn't finished as still running.
+_FLOW_STATE_OF: dict[TaskState, TaskState] = {
+    TaskState.FAILURE: TaskState.FAILURE,
+    TaskState.REJECTED: TaskState.FAILURE,
+    TaskState.REVOKED: TaskState.REVOKED,
+    TaskState.RETRY: TaskState.RETRY,
+    TaskState.PENDING: TaskState.STARTED,
+    TaskState.RECEIVED: TaskState.STARTED,
+    TaskState.STARTED: TaskState.STARTED,
+    TaskState.IGNORED: TaskState.IGNORED,
+    TaskState.SUCCESS: TaskState.SUCCESS,
+}
+
+
+class FlowSummary(BaseModel):
+    """Totals over one flow's TASK nodes (see ``flow_summary``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_count: int
+    state_counts: dict[str, int]
+    not_run_count: int
+    state: TaskState
+
+
+def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
+    """Summarize the flow rooted at ``root_id``; ``nodes`` must hold its whole graph.
+
+    The state is the worst TASK state in ``FLOW_STATE_ORDER``, so a succeeded
+    root can head a failed flow. Without TASK nodes it is
+    the root's own state.
+    """
+    counts = Counter(
+        node.state for node in nodes.values() if node.node_type == NodeType.TASK
+    )
+    worst = {_FLOW_STATE_OF[state] for state in counts}
+    return FlowSummary(
+        task_count=sum(counts.values()),
+        state_counts={s.value: counts[s] for s in TaskState if counts[s]},
+        not_run_count=len(chord_not_run_reasons(nodes)),
+        state=next((s for s in FLOW_STATE_ORDER if s in worst), nodes[root_id].state),
+    )

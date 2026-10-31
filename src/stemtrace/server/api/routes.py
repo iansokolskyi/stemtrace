@@ -23,11 +23,17 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from stemtrace.core.graph import ChordNotRunReason, NodeType, chord_not_run_reasons
+from stemtrace.core.graph import (
+    ChordNotRunReason,
+    NodeType,
+    chord_not_run_reasons,
+    flow_summary,
+)
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
     ErrorResponse,
+    FlowSummaryResponse,
     GraphListResponse,
     GraphNodeResponse,
     GraphResponse,
@@ -272,6 +278,7 @@ def _node_to_graph_response(
     *,
     group_of: Callable[[str], ResolvedGroup],
     not_run_reason: ChordNotRunReason | None = None,
+    flow: FlowSummaryResponse | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -285,6 +292,7 @@ def _node_to_graph_response(
         not_run_reason: Why a CHORD's callback hasn't run; only known
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
+        flow: The flow summary of a root in the graph list.
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -346,6 +354,7 @@ def _node_to_graph_response(
         queue=node.queue,
         routing_key=node.routing_key,
         not_run_reason=not_run_reason,
+        flow=flow,
     )
 
 
@@ -881,6 +890,18 @@ def _add_task_routes(
         ]
 
 
+def _flow_summaries(
+    graphs: Mapping[str, Mapping[str, TaskNode]],
+) -> dict[str, FlowSummaryResponse]:
+    """Summarize each listed graph, by root ID."""
+    return {
+        root_id: FlowSummaryResponse.model_validate(
+            flow_summary(nodes, root_id), from_attributes=True
+        )
+        for root_id, nodes in graphs.items()
+    }
+
+
 def _add_graph_routes(
     router: APIRouter,
     *,
@@ -923,18 +944,25 @@ def _add_graph_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
-        # Roots plus children (for synthetic node timing) from one snapshot
-        roots, all_nodes, total = store.get_root_nodes_with_children(
+        # Roots and every node of their graphs from one snapshot
+        roots, graphs, total = store.get_root_graphs(
             limit=limit,
             offset=offset,
             from_date=start,
             to_date=to_date,
             task_names=task_names,
         )
+        # A pass over every node and event of the listed graphs: off the event loop.
+        summaries = await run_in_threadpool(_flow_summaries, graphs)
+        all_nodes = {tid: n for graph in graphs.values() for tid, n in graph.items()}
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
-                    r, all_nodes, node_alias_key=node_alias_key, group_of=group_of
+                    r,
+                    all_nodes,
+                    node_alias_key=node_alias_key,
+                    group_of=group_of,
+                    flow=summaries[r.task_id],
                 )
                 for r in roots
             ],
