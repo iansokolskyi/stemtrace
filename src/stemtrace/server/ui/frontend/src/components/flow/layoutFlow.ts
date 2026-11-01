@@ -91,6 +91,8 @@ export interface PlacedMore {
   h: number
   /** Hidden members (`more` only). */
   hiddenCount: number
+  /** Every task of the hidden members, in order (`more` only): the Timeline's aggregate row. */
+  hiddenIds: string[]
   /** "all succeeded", or "3 running, 1 revoked" (`more` only). */
   summary: string
   seq: number
@@ -439,6 +441,7 @@ export function layoutFlow(
           w: MEMBER_W,
           h: MEMBER_H,
           hiddenCount: item.more.length,
+          hiddenIds: item.more.flat(),
           summary: describeStates(states),
           seq: seq++,
         })
@@ -451,6 +454,7 @@ export function layoutFlow(
           w: MEMBER_W,
           h: MEMBER_H,
           hiddenCount: 0,
+          hiddenIds: [],
           summary: '',
           seq: seq++,
         })

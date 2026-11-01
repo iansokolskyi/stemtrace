@@ -259,8 +259,12 @@ export interface GraphNode {
   last_updated: string | null
   /** The last run's time, queue wait excluded; null until the task finishes. */
   runtime_ms?: number | null
-  /** Wait of the first run, from first seen to start. */
+  /** Wait of the first run: from the send (or the ETA, if later) to its first start. */
   queue_wait_ms?: number | null
+  /** All runs together (more than `runtime_ms` once a retry ran); null with `runtime_ms`. */
+  total_runtime_ms?: number | null
+  /** When the first attempt was scheduled to run (a countdown or ETA); null if at once. */
+  eta?: string | null
   exception_type?: string | null
   hostname?: string | null
   queue?: string | null
