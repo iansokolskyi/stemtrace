@@ -1,5 +1,15 @@
-import { expect, type Page, test, type WebSocketRoute } from '@playwright/test'
+import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
+import {
+  flowContainerLabels,
+  flowContainerMembers,
+  flowContainers,
+  flowEdge,
+  flowEdges,
+  flowNode,
+  flowNodes,
+  flowTopLevelNodes,
+} from './fixtures/flow'
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
   createChain,
@@ -26,7 +36,7 @@ const isRealMode = process.env.E2E_MODE === 'real'
  */
 async function openGraphById(page: import('@playwright/test').Page, rootId: string): Promise<void> {
   await page.goto(`/flows/${encodeURIComponent(rootId)}`)
-  await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
+  await flowNodes(page).first().waitFor({ state: 'attached' })
 }
 
 /**
@@ -142,14 +152,8 @@ test.describe('Graphs Page', () => {
     await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
-    // Look for graph entries
-    const graphEntries = page.locator(
-      '[data-testid="graph-entry"], .graph-entry, a[href*="/flows/"], tr',
-    )
-
-    const count = await graphEntries.count()
-    // Verify page renders without error (count check is informational)
-    expect(typeof count).toBe('number')
+    // The list loads after the page does
+    await expect(page.locator('a[href*="/flows/"]').first()).toBeVisible({ timeout: 15_000 })
   })
 
   test('can navigate to graph detail', async ({ page }) => {
@@ -178,12 +182,8 @@ test.describe('Graph Detail Page', () => {
     }
     await page.waitForLoadState('networkidle')
 
-    // Look for react-flow container or SVG graph
-    const graphContainer = page.locator(
-      '.react-flow, [data-testid="graph"], svg, .graph-container, [class*="flow"]',
-    )
-
-    await expect(graphContainer.first()).toBeVisible()
+    // The graph is drawn: its first node is visible
+    await expect(flowNodes(page).first()).toBeVisible()
   })
 
   test('shows graph nodes', async ({ page }) => {
@@ -195,9 +195,7 @@ test.describe('Graph Detail Page', () => {
     await page.waitForLoadState('networkidle')
 
     // Look for graph nodes
-    const nodes = page.locator(
-      '.react-flow__node, [data-testid="graph-node"], .node, [class*="node"]',
-    )
+    const nodes = flowNodes(page)
 
     const count = await nodes.count()
     // Should have at least one node if graph exists
@@ -214,14 +212,13 @@ test.describe('Graph Detail Page', () => {
     }
     await page.waitForLoadState('networkidle')
 
-    // Nodes should have state-based styling
-    const styledNodes = page.locator(
-      '[class*="success"], [class*="pending"], [class*="started"], [data-state]',
+    // Every node says its state
+    await expect(flowNodes(page).first()).toBeVisible()
+    const states = await flowNodes(page).evaluateAll((els) =>
+      els.map((el) => el.getAttribute('data-state')),
     )
-
-    const count = await styledNodes.count()
-    // Verify page renders graph nodes (count check is informational)
-    expect(typeof count).toBe('number')
+    expect(states.length).toBeGreaterThan(0)
+    for (const state of states) expect(state).toMatch(/^[A-Z]+$/)
   })
 
   test('can click node to see task details', async ({ page }) => {
@@ -234,7 +231,7 @@ test.describe('Graph Detail Page', () => {
 
     // Click on a task node link (not container), which navigates to task details
     // Task nodes contain links to /tasks/:taskId
-    const taskLink = page.locator('.react-flow__node a[href*="/tasks/"]').first()
+    const taskLink = flowNodes(page).locator('a[href*="/tasks/"]').first()
     const linkVisible = await taskLink.isVisible().catch(() => false)
 
     if (linkVisible) {
@@ -261,18 +258,11 @@ test.describe('Graph Edges', () => {
       return
     }
 
-    // React Flow renders edges as SVG groups with accessible names "Edge from X to Y"
-    // Try multiple detection methods
-    const edgesByClass = page.locator('.react-flow__edge')
-    const edgesByAccessibleName = page.locator(
-      '[aria-label*="Edge from"], g[aria-label*="Edge from"]',
-    )
-    // Also check for SVG paths in the edges layer
-    const edgePathsInSvg = page.locator('.react-flow__edges path, svg g path').first()
+    const edges = flowEdges(page)
 
-    // Nodes and edges render after the page's data loads and React Flow lays them out,
+    // Nodes and edges render after the page's data loads and the graph is laid out,
     // so wait for the first node instead of counting whatever is in the DOM right now
-    const nodes = page.locator('.react-flow__node')
+    const nodes = flowNodes(page)
     await expect(nodes.first()).toBeVisible()
     const nodeCount = await nodes.count()
 
@@ -280,46 +270,29 @@ test.describe('Graph Edges', () => {
       // With multiple nodes, we expect at least one edge or visible edge paths;
       // poll because edges are drawn a moment after their nodes
       await expect
-        .poll(
-          async () =>
-            (await edgesByClass.count()) > 0 ||
-            (await edgesByAccessibleName.count()) > 0 ||
-            (await edgePathsInSvg.isVisible().catch(() => false)),
-          { message: 'multi-node graph should render at least one edge' },
-        )
-        .toBe(true)
+        .poll(() => edges.count(), { message: 'multi-node graph should render at least one edge' })
+        .toBeGreaterThan(0)
     }
   })
 
   test('edges connect parent to child nodes', async ({ page }) => {
     await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    // Edges are SVG groups with accessible names "Edge from X to Y"
-    const edges = page.getByRole('group', { name: /Edge from/ })
+    const edges = flowEdges(page)
     await expect(edges.first()).toBeVisible()
     expect(await edges.count()).toBeGreaterThan(0)
   })
 
   test('edges have appropriate styling', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
+    await expect(flowEdges(page).first()).toBeAttached()
 
-    // Look for SVG path elements within the edge container
-    const edgePaths = page.locator('.react-flow__edges path, .react-flow__edge path')
+    // Look for SVG path elements within the edges
+    const edgePaths = flowEdges(page).locator('path')
     const pathCount = await edgePaths.count()
 
-    if (pathCount === 0) {
-      // Fallback: check if there are any SVG paths in the application
-      const anyPaths = page.locator('[role="application"] svg path')
-      const anyPathCount = await anyPaths.count()
-
-      // There should be at least some paths (for edges or handles)
-      expect(anyPathCount).toBeGreaterThanOrEqual(0)
-      return
-    }
+    // A graph with several nodes has edges, and each is drawn as a path
+    expect(pathCount).toBeGreaterThan(0)
 
     const firstPath = edgePaths.first()
 
@@ -332,22 +305,6 @@ test.describe('Graph Edges', () => {
     // Stroke should be a color value (not 'none')
     expect(stroke).toBeTruthy()
     expect(stroke).not.toBe('none')
-  })
-
-  test('animated edges show for STARTED tasks', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
-
-    // Animated edges have the 'animated' class
-    const animatedEdges = page.locator('.react-flow__edge.animated')
-    const animatedCount = await animatedEdges.count()
-
-    // This is informational - STARTED tasks may or may not exist
-    // Just verify the selector works and returns a number
-    expect(typeof animatedCount).toBe('number')
   })
 })
 
@@ -365,8 +322,7 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
       return
     }
 
-    // Container nodes (GROUP/CHORD) use type='group' in React Flow
-    const containerNodes = page.locator('.container-node')
+    const containerNodes = flowContainers(page)
     const containerCount = await containerNodes.count()
 
     // Groups may or may not exist in the current graph
@@ -386,42 +342,22 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
   test('container nodes contain child task nodes', async ({ page }) => {
     await openGraph(page, mockApi, CHORD_GRAPH)
 
-    const containerNodes = page.locator('.container-node')
+    const containerNodes = flowContainers(page)
     await expect(containerNodes.first()).toBeVisible()
 
-    // Container nodes should have task nodes rendered inside them: .container-child
+    // Container nodes should have task nodes rendered inside them: data-container-id
     // marks the task nodes inside a container. The chord has 3 members plus a callback.
-    const childNodes = page.locator('.container-child')
+    const childNodes = flowContainerMembers(page)
     await expect(childNodes.first()).toBeVisible()
     expect(await childNodes.count()).toBeGreaterThanOrEqual(1)
   })
 
   test('container header shows GROUP or CHORD label', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, CHORD_GRAPH)
 
-    // Look for GROUP or CHORD text anywhere in the graph
-    const groupLabel = page.getByText('GROUP')
-    const chordLabel = page.getByText('CHORD')
-
-    const hasGroupLabel = await groupLabel
-      .first()
-      .isVisible()
-      .catch(() => false)
-    const hasChordLabel = await chordLabel
-      .first()
-      .isVisible()
-      .catch(() => false)
-
-    // If we're on a graph with containers, at least one label should be present
-    // If there are no container graphs, this test just verifies the selectors work
-    const hasAnyLabel = hasGroupLabel || hasChordLabel
-
-    // This is informational - not all graphs have containers
-    expect(typeof hasAnyLabel).toBe('boolean')
+    const label = flowContainerLabels(page).first()
+    await expect(label).toBeVisible()
+    await expect(label).toContainText('CHORD')
   })
 })
 
@@ -440,23 +376,23 @@ test.describe('Edge Visibility Regression Tests', () => {
   test('parent task has edge to GROUP container', async ({ page }) => {
     await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    // The graph has a parent task, a GROUP container (with its header label) and
-    // members, so there are several nodes and exactly one container
-    const nodes = page.locator('.react-flow__node')
+    // The graph has a parent task, a GROUP container and members, so there are
+    // several nodes and exactly one container
+    const nodes = flowNodes(page)
     await expect(nodes.first()).toBeVisible()
     expect(await nodes.count()).toBeGreaterThan(1)
-    await expect(page.locator('.container-node')).toHaveCount(1)
+    await expect(flowContainers(page)).toHaveCount(1)
 
     // This is the critical assertion: parent-to-container edge must exist, and its
     // SVG path must actually be rendered (not just the element). Poll: edges are
     // drawn a moment after their nodes.
     await expect
-      .poll(() => page.locator('.react-flow__edge').count(), {
+      .poll(() => flowEdges(page).count(), {
         message: 'parent-to-container edge should be rendered',
       })
       .toBeGreaterThan(0)
     await expect
-      .poll(() => page.locator('.react-flow__edge path[d]').count(), {
+      .poll(() => flowEdges(page).locator('path[d]').count(), {
         message: 'edge SVG paths should be rendered',
       })
       .toBeGreaterThan(0)
@@ -467,44 +403,13 @@ test.describe('Edge Visibility Regression Tests', () => {
    * This catches the issue where GROUP containers were missing incoming edges.
    */
   test('parent-to-container edges are rendered', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    const nodes = page.locator('.react-flow__node')
-    const nodeCount = await nodes.count()
-    const edges = page.locator('.react-flow__edge')
-    const edgeCount = await edges.count()
-
-    // Basic sanity check: if we have more than 1 node, we should have edges
-    if (nodeCount > 1) {
-      expect(edgeCount).toBeGreaterThan(0)
-    }
-
-    // For graphs with containers, verify edges connect to them
-    const containerNodes = page.locator('.container-node')
-    const containerCount = await containerNodes.count()
-
-    if (containerCount > 0) {
-      // There should be edges that target the container
-      // (React Flow edge target attribute matches node data-id)
-      const firstContainer = containerNodes.first()
-      const containerId = await firstContainer.getAttribute('data-id')
-
-      if (containerId) {
-        // Look for edges targeting this container
-        // Note: React Flow uses data-testid or aria attributes for edge connections
-        // The edge source/target is in the edge ID pattern: source-target
-        const allEdgeIds = await edges.evaluateAll((els) =>
-          els.map((el) => el.getAttribute('data-testid') || el.id),
-        )
-
-        // At least check that edges exist in the graph
-        expect(allEdgeIds.length).toBeGreaterThanOrEqual(0)
-      }
-    }
+    // The graph's one container is the target of an edge (drawn a moment after its node)
+    const container = flowContainers(page)
+    await expect(container).toHaveCount(1)
+    const containerId = (await container.getAttribute('data-task-id'))!
+    await expect(page.locator(`[data-testid="flow-edge"][data-to="${containerId}"]`)).toHaveCount(1)
   })
 
   /**
@@ -514,12 +419,12 @@ test.describe('Edge Visibility Regression Tests', () => {
   test('chord has edges from all header tasks to callback', async ({ page }) => {
     await openGraph(page, mockApi, CHORD_GRAPH)
 
-    await expect(page.locator('.header-label-node:has-text("CHORD")').first()).toBeVisible()
+    await expect(flowContainerLabels(page).filter({ hasText: 'CHORD' }).first()).toBeVisible()
 
     // A chord with 3 header tasks has at least 3 edges (one from each header task
     // to the callback). Poll: edges are drawn a moment after their nodes.
     await expect
-      .poll(() => page.locator('.react-flow__edge').count(), {
+      .poll(() => flowEdges(page).count(), {
         message: 'chord should have an edge from each of its 3 header tasks',
       })
       .toBeGreaterThanOrEqual(3)
@@ -545,11 +450,10 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Should have 5 nodes: 1 GROUP container + 1 header label + 3 members
-    // (React Flow renders the container header as a separate node)
+    // Should have 4 nodes: 1 GROUP container + 3 members
     // The graph is laid out after its data arrives: wait for the count, not a snapshot of the DOM
-    const nodes = page.locator('.react-flow__node')
-    await expect(nodes).toHaveCount(5)
+    const nodes = flowNodes(page)
+    await expect(nodes).toHaveCount(4)
   })
 
   test('renders workflow with parent spawning group', async ({ page }) => {
@@ -567,19 +471,22 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
-    // Should have nodes: 1 parent + 1 GROUP container + 1 header label + 2 members = 5 nodes
+    // Should have nodes: 1 parent + 1 GROUP container + 2 members = 4 nodes
     // The graph is laid out after its data arrives: wait for the count, not a snapshot of the DOM
-    const nodes = page.locator('.react-flow__node')
-    await expect(nodes).toHaveCount(5)
+    const nodes = flowNodes(page)
+    await expect(nodes).toHaveCount(4)
 
-    // Should have edges connecting parent to group (drawn a moment after their nodes)
-    const edges = page.locator('.react-flow__edge')
-    await expect(edges.first()).toBeAttached()
+    // The edge runs from the parent to the group (drawn a moment after their nodes)
+    const [parent, groupNode] = workflowTasks
+    await expect(flowEdge(page, parent.task_id, groupNode.task_id)).toHaveCount(1)
+    await expect(flowEdges(page)).toHaveCount(1)
   })
 
   test('renders chord with callback', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const chordTasks = createGroup(3, { withCallback: true })
+    // A member that is not SUCCESS, so a constant data-state cannot pass
+    chordTasks[1].state = 'FAILURE'
     mockApi.addTasks(chordTasks)
 
     await page.goto('/flows')
@@ -589,10 +496,29 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await graphLink.click()
     await page.waitForLoadState('networkidle')
 
-    // 1 CHORD container + 1 header label + 3 members + 1 callback
-    await expect(page.locator('.react-flow__node')).toHaveCount(6)
+    // 1 CHORD container + 3 members + 1 callback
+    await expect(flowNodes(page)).toHaveCount(5)
     // One edge from each header task to the callback
-    await expect(page.locator('.react-flow__edge')).toHaveCount(3)
+    await expect(flowEdges(page)).toHaveCount(3)
+
+    // The hooks say what each node and edge is
+    const [chordNode, ...rest] = chordTasks
+    const callback = rest[rest.length - 1]
+    const members = rest.slice(0, -1)
+    await expect(flowNode(page, chordNode.task_id)).toHaveAttribute('data-node-type', 'CHORD')
+    await expect(flowNode(page, callback.task_id)).toHaveAttribute('data-node-type', 'TASK')
+    await expect(flowNode(page, callback.task_id)).toHaveAttribute('data-state', callback.state)
+    await expect(flowNode(page, callback.task_id)).not.toHaveAttribute('data-container-id')
+    await expect(flowNode(page, members[0].task_id)).toHaveAttribute('data-state', 'FAILURE')
+    await expect(flowNode(page, members[1].task_id)).toHaveAttribute('data-state', 'SUCCESS')
+    for (const member of members) {
+      await expect(flowNode(page, member.task_id)).toHaveAttribute(
+        'data-container-id',
+        chordNode.task_id,
+      )
+      await expect(flowEdge(page, member.task_id, callback.task_id)).toHaveCount(1)
+    }
+    await expect(flowContainerLabels(page)).toHaveAttribute('data-container-id', chordNode.task_id)
 
     // CHORD label should be visible
     const chordText = page.getByText('CHORD')
@@ -624,11 +550,19 @@ test.describe('Graph Page - Chains In Groups', () => {
 
     await openGraphById(page, groupNode.task_id)
 
-    // 1 GROUP container + 1 header label + 4 tasks, all inside the container
-    await expect(page.locator('.react-flow__node')).toHaveCount(6)
-    await expect(page.locator('.react-flow__node.container-child')).toHaveCount(4)
+    // 1 GROUP container + 4 tasks, all inside the container
+    await expect(flowNodes(page)).toHaveCount(5)
+    await expect(flowContainerMembers(page)).toHaveCount(4)
     // a1 -> b1 and a2 -> b2
-    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+    await expect(flowEdges(page)).toHaveCount(2)
+    await expect(flowEdge(page, a1.task_id, b1.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, a2.task_id, b2.task_id)).toHaveCount(1)
+    for (const task of [a1, a2, b1, b2]) {
+      await expect(flowNode(page, task.task_id)).toHaveAttribute(
+        'data-container-id',
+        groupNode.task_id,
+      )
+    }
   })
 })
 
@@ -649,11 +583,13 @@ test.describe('Graph Page - Container Cell Children', () => {
 
     await openGraphById(page, chordNode.task_id)
 
-    // CHORD container + header label + 2 headers + callback + subtask
-    await expect(page.locator('.react-flow__node')).toHaveCount(6)
-    await expect(page.locator(`.react-flow__node[data-id="${subtask.task_id}"]`)).toHaveCount(1)
+    // CHORD container + 2 headers + callback + subtask
+    await expect(flowNodes(page)).toHaveCount(5)
+    await expect(flowNode(page, subtask.task_id)).toHaveCount(1)
     // header -> subtask, and each header -> callback
-    await expect(page.locator('.react-flow__edge')).toHaveCount(3)
+    await expect(flowEdges(page)).toHaveCount(3)
+    await expect(flowEdge(page, header.task_id, subtask.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, rest[1].task_id, rest[2].task_id)).toHaveCount(1)
   })
 
   test('draws a group a header starts once, as its own container', async ({ page }) => {
@@ -668,10 +604,10 @@ test.describe('Graph Page - Container Cell Children', () => {
 
     await openGraphById(page, chordNode.task_id)
 
-    // Each container + its header label, 2 chord headers, the callback and
+    // Each container, 2 chord headers, the callback and
     // 2 inner members: every node exactly once
-    await expect(page.locator('.react-flow__node')).toHaveCount(9)
-    await expect(page.locator(`.react-flow__node[data-id="${innerGroup.task_id}"]`)).toHaveCount(1)
+    await expect(flowNodes(page)).toHaveCount(7)
+    await expect(flowNode(page, innerGroup.task_id)).toHaveCount(1)
   })
 })
 
@@ -696,17 +632,15 @@ test.describe('Graph Page - Layout', () => {
     mockApi.addTasks(all)
 
     await openGraphById(page, parent.task_id)
-    // parent + 3 x (container + header label + 2 headers + callback + subtask)
-    await expect(page.locator('.react-flow__node')).toHaveCount(19)
+    // parent + 3 x (container + 2 headers + callback + subtask)
+    await expect(flowNodes(page)).toHaveCount(16)
     await page.screenshot({ path: testInfo.outputPath('sibling-chords.png'), fullPage: true })
 
     // Top-level nodes (containers, tasks, callbacks, subtasks) never overlap
     const boxes = []
-    for (const node of await page
-      .locator('.react-flow__node:not(.container-child):not(.header-label-node)')
-      .all()) {
+    for (const node of await flowTopLevelNodes(page).all()) {
       const box = await node.boundingBox()
-      if (box) boxes.push({ id: await node.getAttribute('data-id'), ...box })
+      if (box) boxes.push({ id: await node.getAttribute('data-task-id'), ...box })
     }
     // parent, 3 containers, 3 callbacks, 3 subtasks
     expect(boxes).toHaveLength(10)
@@ -751,16 +685,14 @@ test.describe('Graph Page - Chord Bodies', () => {
 
     await openGraphById(page, chordNode.task_id)
 
-    // Each container + its header label, 2 headers, 2 body tasks
-    await expect(page.locator('.react-flow__node')).toHaveCount(8)
-    await expect(page.locator(`.react-flow__node[data-id="${body.task_id}"]`)).toHaveCount(1)
+    // Each container, 2 headers, 2 body tasks
+    await expect(flowNodes(page)).toHaveCount(6)
+    await expect(flowNode(page, body.task_id)).toHaveCount(1)
     // Each header -> the body container
-    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
+    await expect(flowEdges(page)).toHaveCount(2)
     // The body container sits after the chord, to its right
-    const chordBox = await page
-      .locator(`.react-flow__node[data-id="${chordNode.task_id}"]`)
-      .boundingBox()
-    const bodyBox = await page.locator(`.react-flow__node[data-id="${body.task_id}"]`).boundingBox()
+    const chordBox = await flowNode(page, chordNode.task_id).boundingBox()
+    const bodyBox = await flowNode(page, body.task_id).boundingBox()
     expect(chordBox).not.toBeNull()
     expect(bodyBox).not.toBeNull()
     if (chordBox && bodyBox) {
@@ -768,9 +700,7 @@ test.describe('Graph Page - Chord Bodies', () => {
     }
     // The body tasks are drawn inside the body container
     for (const task of bodyTasks) {
-      const taskBox = await page
-        .locator(`.react-flow__node[data-id="${task.task_id}"]`)
-        .boundingBox()
+      const taskBox = await flowNode(page, task.task_id).boundingBox()
       expect(taskBox).not.toBeNull()
       if (taskBox && bodyBox) {
         expect(taskBox.x).toBeGreaterThanOrEqual(bodyBox.x)
@@ -795,13 +725,11 @@ test.describe('Graph Page - Chord Bodies', () => {
 
     await openGraphById(page, outer.task_id)
 
-    // Each CHORD: container + header label + 2 headers; plus the inner callback
-    await expect(page.locator('.react-flow__node')).toHaveCount(9)
-    await expect(page.locator(`.react-flow__node[data-id="${innerCallback.task_id}"]`)).toHaveCount(
-      1,
-    )
+    // Each CHORD: container + 2 headers; plus the inner callback
+    await expect(flowNodes(page)).toHaveCount(7)
+    await expect(flowNode(page, innerCallback.task_id)).toHaveCount(1)
     // 2 outer headers -> inner CHORD, 2 inner headers -> inner callback
-    await expect(page.locator('.react-flow__edge')).toHaveCount(4)
+    await expect(flowEdges(page)).toHaveCount(4)
   })
 })
 
@@ -818,8 +746,8 @@ test.describe('Graph Page - Malformed Links', () => {
 
     await openGraphById(page, groupNode.task_id)
 
-    // 1 GROUP container + 1 header label + 2 members
-    await expect(page.locator('.react-flow__node')).toHaveCount(4)
+    // 1 GROUP container + 2 members
+    await expect(flowNodes(page)).toHaveCount(3)
   })
 
   test('renders tasks whose children form a cycle', async ({ page }) => {
@@ -835,7 +763,7 @@ test.describe('Graph Page - Malformed Links', () => {
 
     await openGraphById(page, first.task_id)
 
-    await expect(page.locator('.react-flow__node')).toHaveCount(2)
+    await expect(flowNodes(page)).toHaveCount(2)
   })
 
   test('draws a chord callback once when its parent lists it first', async ({ page }) => {
@@ -857,11 +785,11 @@ test.describe('Graph Page - Malformed Links', () => {
 
     await openGraphById(page, parent.task_id)
 
-    // parent + CHORD container + header label + 2 headers + callback
-    await expect(page.locator('.react-flow__node')).toHaveCount(6)
-    await expect(page.locator(`.react-flow__node[data-id="${callback.task_id}"]`)).toHaveCount(1)
+    // parent + CHORD container + 2 headers + callback
+    await expect(flowNodes(page)).toHaveCount(5)
+    await expect(flowNode(page, callback.task_id)).toHaveCount(1)
     // parent -> callback, parent -> chord, and one edge per header -> callback
-    await expect(page.locator('.react-flow__edge')).toHaveCount(4)
+    await expect(flowEdges(page)).toHaveCount(4)
     expect(messages.filter((text) => /key|duplicate|React Flow/i.test(text))).toEqual([])
   })
 })
@@ -917,11 +845,34 @@ interface LiveGraph {
   push: (task: MockTask) => Promise<void>
 }
 
+/** The canvas the graph is drawn on. */
+function graphCanvas(page: Page) {
+  return page.getByTestId('flow-canvas')
+}
+
+/** A locator's bounding box once it has stopped changing (fits and zooms take a few frames). */
+async function settledBox(locator: Locator) {
+  let last = ''
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await locator.boundingBox())
+        const settled = now === last
+        last = now
+        return settled
+      },
+      { intervals: [150], timeout: 10_000 },
+    )
+    .toBe(true)
+  return JSON.parse(last) as { x: number; y: number; width: number; height: number }
+}
+
 /**
  * The viewport's transform once it has stopped changing: wheel zooms and fits
  * take a few frames, so one read can catch them half way.
  */
 async function settledViewport(page: Page): Promise<string> {
+  // xyflow-only: removed with the renderer in PR 4c
   const viewport = page.locator('.react-flow__viewport')
   let last: string | null = null
   await expect
@@ -938,14 +889,9 @@ async function settledViewport(page: Page): Promise<string> {
   return last ?? ''
 }
 
-/** The task node a graph draws for `taskId`. */
 // Chromium's intersectionRatio is a float: a fully visible node at a fractional
 // position (the fitted zoom is rarely a whole number) reports 0.9999997, not 1.
 const FULLY_VISIBLE = 0.99
-
-function graphNode(page: Page, taskId: string) {
-  return page.locator(`.react-flow__node[data-id="${taskId}"]`)
-}
 
 test.describe('Graph Page - Live Updates', () => {
   test.skip(isRealMode, 'Mock-only test')
@@ -975,19 +921,25 @@ test.describe('Graph Page - Live Updates', () => {
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
     const { push } = await openLiveGraph(page, first.task_id)
-    await expect(page.locator('.react-flow__node')).toHaveCount(2)
-    await expect(graphNode(page, second.task_id)).toContainText('STARTED')
+    await expect(flowNodes(page)).toHaveCount(2)
+    await expect(flowNode(page, second.task_id)).toContainText('STARTED')
+    await expect(flowNode(page, second.task_id)).toHaveAttribute('data-state', 'STARTED')
+    await expect(flowNode(page, first.task_id)).toHaveAttribute('data-state', 'SUCCESS')
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
 
-    await expect(graphNode(page, third.task_id)).toContainText('step_3')
+    await expect(flowNode(page, third.task_id)).toContainText('step_3')
     // Nobody panned or zoomed, so the view re-fits to show the new task
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
-    await expect(page.locator('.react-flow__node')).toHaveCount(3)
-    await expect(page.locator('.react-flow__edge')).toHaveCount(2)
-    await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
-    await expect(graphNode(page, second.task_id)).not.toContainText('STARTED')
+    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
+    await expect(flowNodes(page)).toHaveCount(3)
+    await expect(flowEdges(page)).toHaveCount(2)
+    await expect(flowEdge(page, first.task_id, second.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, second.task_id, third.task_id)).toHaveCount(1)
+    await expect(flowNode(page, second.task_id)).toContainText('SUCCESS')
+    await expect(flowNode(page, second.task_id)).toHaveAttribute('data-state', 'SUCCESS')
+    await expect(flowNode(page, second.task_id)).not.toContainText('STARTED')
+    await expect(flowNode(page, third.task_id)).toHaveAttribute('data-state', 'STARTED')
   })
 
   test('shows a new task and a state change by polling while the socket is down', async ({
@@ -1000,21 +952,22 @@ test.describe('Graph Page - Live Updates', () => {
     await page.routeWebSocket(/\/ws$/, (ws) => ws.close())
     await openGraphById(page, first.task_id)
     await expect(page.getByText('Polling', { exact: true })).toBeVisible()
-    await expect(graphNode(page, second.task_id)).toContainText('STARTED')
+    await expect(flowNode(page, second.task_id)).toContainText('STARTED')
 
     const third = finishStepTwo(mockApi, first, second)
 
     // The page polls every 5 s
-    await expect(graphNode(page, third.task_id)).toContainText('step_3', { timeout: 15_000 })
-    await expect(graphNode(page, second.task_id)).toContainText('SUCCESS')
+    await expect(flowNode(page, third.task_id)).toContainText('step_3', { timeout: 15_000 })
+    await expect(flowNode(page, second.task_id)).toContainText('SUCCESS')
   })
 
+  // xyflow-only: removed with the renderer in PR 4c
   test('keeps a node the user dragged where it was left', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
     const { push } = await openLiveGraph(page, first.task_id)
-    const dragged = graphNode(page, first.task_id)
+    const dragged = flowNode(page, first.task_id)
     const before = (await dragged.boundingBox())!
     // Drag by the card's id line, not the link text (a click would navigate)
     await page.mouse.move(before.x + 4, before.y + 4)
@@ -1029,7 +982,7 @@ test.describe('Graph Page - Live Updates', () => {
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
-    await expect(graphNode(page, third.task_id)).toBeVisible()
+    await expect(flowNode(page, third.task_id)).toBeVisible()
 
     expect(await position()).toBe(moved)
   })
@@ -1039,18 +992,28 @@ test.describe('Graph Page - Live Updates', () => {
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
     const { push } = await openLiveGraph(page, first.task_id)
-    const fitted = await settledViewport(page)
-    // A click is a mouse down and up on the pane: no pan, no zoom
-    const box = (await page.locator('.react-flow').boundingBox())!
-    await page.mouse.click(box.x + box.width - 40, box.y + 40)
-    expect(await settledViewport(page)).toBe(fitted)
+    const node = flowNode(page, first.task_id)
+    const fitted = await settledBox(node)
+    // A click is a mouse down and up on the canvas: no pan, no zoom
+    const box = (await graphCanvas(page).boundingBox())!
+    const [x, y] = [box.x + box.width - 40, box.y + 40]
+    // The point is empty canvas, not a node
+    expect(
+      await page.evaluate(
+        ([px, py]) => !!document.elementFromPoint(px, py)?.closest('[data-testid="flow-node"]'),
+        [x, y],
+      ),
+    ).toBe(false)
+    await page.mouse.click(x, y)
+    expect(await settledBox(node)).toEqual(fitted)
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
 
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
+    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
+  // xyflow-only: removed with the renderer in PR 4c
   test('shows a new task in view once its size is known, however late that is', async ({
     page,
   }) => {
@@ -1083,18 +1046,19 @@ test.describe('Graph Page - Live Updates', () => {
 
     // A node is hidden until it is measured, and only then does a re-fit count: before
     // that the view is the unfitted one, which shows a node this near the origin
-    await expect(graphNode(page, fourth.task_id)).toBeVisible({ timeout: 10_000 })
+    await expect(flowNode(page, fourth.task_id)).toBeVisible({ timeout: 10_000 })
     await settledViewport(page)
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: 0.95 })
-    await expect(graphNode(page, fourth.task_id)).toBeInViewport({ ratio: 0.95 })
+    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: 0.95 })
+    await expect(flowNode(page, fourth.task_id)).toBeInViewport({ ratio: 0.95 })
   })
 
+  // xyflow-only: removed with the renderer in PR 4c
   test('leaves a node under the cursor while an update arrives mid-drag', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
     const { push } = await openLiveGraph(page, first.task_id)
-    const held = graphNode(page, first.task_id)
+    const held = flowNode(page, first.task_id)
     const position = async () => held.evaluate((el) => (el as HTMLElement).style.transform)
     const fitted = await settledViewport(page)
     const before = (await held.boundingBox())!
@@ -1107,17 +1071,49 @@ test.describe('Graph Page - Live Updates', () => {
     // The mouse button is still down
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
-    await expect(graphNode(page, third.task_id)).toBeVisible()
+    await expect(flowNode(page, third.task_id)).toBeVisible()
 
     expect(await position()).toBe(dragged)
     expect(await settledViewport(page)).toBe(fitted)
     await page.mouse.up()
     // Released: the node stays where it was dropped, and the view may now re-fit
     expect(await position()).toBe(dragged)
-    await expect(graphNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
+    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
-  test('keeps the zoom the user chose', async ({ page }) => {
+  test('keeps the zoom the user chose with the zoom button', async ({ page }) => {
+    // A chain too long to fit at full zoom, so the fitted view can still zoom in
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const chain = createChain('app.flow', 7)
+    const first = chain[0]
+    const last = chain[chain.length - 1]
+    last.state = 'STARTED'
+    mockApi.addTasks(chain)
+    const { push } = await openLiveGraph(page, first.task_id)
+    const node = flowNode(page, first.task_id)
+    const fitted = await settledBox(node)
+    await page.getByRole('button', { name: /zoom in/i }).click()
+    const zoomed = await settledBox(node)
+    expect(zoomed).not.toEqual(fitted)
+
+    // The last step finishes and spawns another
+    const [, , , , , , next] = createChain('app.flow', 7)
+    next.task_id = `${first.task_id.slice(0, -4)}ffff`
+    next.root_id = first.task_id
+    next.parent_id = last.task_id
+    next.state = 'STARTED'
+    last.state = 'SUCCESS'
+    last.children.push(next.task_id)
+    mockApi.addTask(next)
+    await push(next)
+    // A re-fit (the behaviour under test) would move the view once the new node is drawn
+    await expect(flowNode(page, next.task_id)).toBeVisible()
+
+    expect(await settledBox(node)).toEqual(zoomed)
+  })
+
+  // xyflow-only: removed with the renderer in PR 4c
+  test('keeps the zoom the user chose with the wheel', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
@@ -1134,7 +1130,7 @@ test.describe('Graph Page - Live Updates', () => {
     await push(third)
     // A node is visible once React Flow has measured it, which is when a
     // re-fit (the behaviour under test) would have moved the view
-    await expect(graphNode(page, third.task_id)).toBeVisible()
+    await expect(flowNode(page, third.task_id)).toBeVisible()
 
     expect(await settledViewport(page)).toBe(zoomed)
   })
