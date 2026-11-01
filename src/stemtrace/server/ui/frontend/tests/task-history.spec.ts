@@ -8,7 +8,7 @@ import { at, openTask, successTask, tokenColour } from './fixtures/task-page'
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
-const history = (page: Page): Locator => page.getByRole('region', { name: 'Event History' })
+const history = (page: Page): Locator => page.getByRole('region', { name: 'Event history' })
 const timeline = (page: Page): Locator => page.getByRole('region', { name: 'Execution Timeline' })
 
 /** PENDING, a retry, a second attempt that fails: two failure-like rows. */

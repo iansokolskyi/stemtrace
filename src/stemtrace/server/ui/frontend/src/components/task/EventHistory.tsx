@@ -33,7 +33,7 @@ export function EventHistory({ events }: { events: TaskEvent[] }): ReactElement 
   const keys = rowKeys(ordered)
 
   return (
-    <Panel title="Event History">
+    <Panel title="Event history">
       <ol className="m-0 list-none px-4 pt-1 pb-3.5">
         {ordered.map((event, index) => (
           <EventRow key={keys[index]} event={event} loud={index === loudIndex} />

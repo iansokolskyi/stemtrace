@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskNode } from '@/api/client'
+import { shortHost } from '@/components/executions/columns'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
@@ -14,6 +15,8 @@ interface TaskHeaderProps {
   task: TaskNode
   /** The root of the graph that holds the task, as the API reports it; null when it has none. */
   flowRootId?: string | null
+  /** How many tasks this one started. */
+  childCount?: number
 }
 
 /**
@@ -21,11 +24,13 @@ interface TaskHeaderProps {
  * it, the state chip and the copyable ID on one line, and the links onward. A link whose target
  * is unknown is left out, never shown disabled.
  */
-export function TaskHeader({ task, flowRootId }: TaskHeaderProps): ReactElement {
+export function TaskHeader({ task, flowRootId, childCount = 0 }: TaskHeaderProps): ReactElement {
   const carried = useCarriedRange()
   const cut = task.name.lastIndexOf('.')
   const module = task.name.slice(0, Math.max(0, cut))
   const title = task.name.slice(cut + 1)
+  // A flow of one task (its own root, no parent, no children) has nothing more to show
+  const hasFlow = flowRootId && (flowRootId !== task.task_id || childCount > 0 || task.parent_id)
 
   return (
     <header data-testid="task-header" className="mb-4 flex min-w-0 flex-col items-start gap-2">
@@ -44,7 +49,7 @@ export function TaskHeader({ task, flowRootId }: TaskHeaderProps): ReactElement 
         <TaskIdentifier taskId={task.task_id} />
       </div>
       <div className="flex max-w-full flex-wrap gap-1.5">
-        {flowRootId && (
+        {flowRootId && hasFlow && (
           <Link to="/flows/$rootId" params={{ rootId: flowRootId }} className={BUTTON_PRIMARY}>
             <Icon name="flow" size={13} />
             Open flow
@@ -57,7 +62,9 @@ export function TaskHeader({ task, flowRootId }: TaskHeaderProps): ReactElement 
             className={BUTTON_QUIET}
           >
             <Icon name="server" size={13} className="flex-none" />
-            <span className="min-w-0 truncate">Worker {task.hostname}</span>
+            <span className="min-w-0 truncate" title={task.hostname}>
+              Worker {shortHost(task.hostname)}
+            </span>
           </Link>
         )}
         {task.node_type === 'TASK' && (

@@ -67,7 +67,7 @@ test.describe('Task page layout', () => {
     await page.setViewportSize({ width: 400, height: 900 })
     const { task, child } = fullTask()
     await openTask(page, task, child)
-    for (const name of ['Timing', 'Exception', 'Output', 'Details', 'Arguments', 'Event History']) {
+    for (const name of ['Timing', 'Exception', 'Output', 'Details', 'Arguments', 'Event history']) {
       await expect(page.getByRole('region', { name })).toBeVisible()
     }
     // Open every traceback (a toggle changes its name once clicked, so always take the first)
@@ -113,7 +113,7 @@ test.describe('Task page layout', () => {
     task.last_updated = null
     task.duration_ms = null
     await openTask(page, task)
-    await expect(page.getByRole('region', { name: 'Event History' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Event history' })).toBeVisible()
     for (const name of ['Timing', 'Details', 'Arguments', 'Result', 'Exception', 'Output']) {
       await expect(page.getByRole('region', { name })).toHaveCount(0)
     }
@@ -148,7 +148,7 @@ test.describe('Task page layout', () => {
       ...(await page.getByRole('region', { name: 'Details' }).locator('dd').all()),
       exception.getByText('GatewayTimeout', { exact: true }),
       exception.getByText(/^GatewayTimeout: /),
-      page.getByRole('region', { name: 'Event History' }).getByText(/^ConnectionError: /),
+      page.getByRole('region', { name: 'Event history' }).getByText(/^ConnectionError: /),
     ]
     expect(sans.length).toBeGreaterThan(8)
     for (const element of sans) await expect(element).not.toHaveCSS('font-family', MONO)
