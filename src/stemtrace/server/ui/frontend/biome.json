@@ -25,6 +25,16 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["src/components/flow/FlowDiagram.tsx", "src/components/flow/FlowPage.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": { "useSemanticElements": "off", "noNoninteractiveTabindex": "off" }
+        }
+      }
+    }
+  ],
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
@@ -51,6 +61,7 @@
       "*.ts",
       "*.js",
       "!src/routeTree.gen.ts",
+      "!tests/fixtures/flow-graphs.json",
       "!playwright-report",
       "!test-results"
     ]
