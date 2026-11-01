@@ -117,50 +117,150 @@ body {
   @apply bg-zinc-500/20 text-zinc-400;
 }
 
-/* React Flow customization */
-.react-flow__node {
-  @apply rounded-lg border border-slate-700 bg-slate-800 shadow-lg;
+/* Flow track diagram (components/flow/FlowDiagram.tsx): a box that scrolls both ways, tracks
+   2.5px (3px lit in the failure colour), blocks lit by state through --c / --on. */
+.flow-box {
+  overflow: auto;
+  max-height: 520px;
+  min-width: 0;
+  border-radius: 8px;
+  background: var(--surface);
 }
-
-.react-flow__edge-path {
-  @apply stroke-slate-500;
+.flow-box svg {
+  display: block;
 }
-
-.react-flow__controls {
-  @apply bg-slate-800 border-slate-700;
+.flow-track {
+  fill: none;
+  stroke: var(--track);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
-
-.react-flow__controls-button {
-  @apply bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700;
+.flow-track-bad {
+  stroke: var(--failure);
+  stroke-width: 3;
 }
-
-/* Hide handles on header label nodes inside containers */
-.header-label-node .react-flow__handle {
-  display: none !important;
+.flow-track-nr {
+  stroke-dasharray: 0.1 8;
+  stroke-width: 3;
 }
-
-/* Hide handles on container nodes (GROUP/CHORD) - edges connect but handles hidden */
-.container-node .react-flow__handle {
-  opacity: 0 !important;
-  width: 8px;
-  height: 8px;
+.flow-cbox {
+  fill: var(--raised);
 }
-
-/* Hide left handles on container child nodes (only show right for edges) */
-.container-child .react-flow__handle-left,
-.container-child .react-flow__handle-top,
-.container-child .react-flow__handle-bottom {
-  display: none !important;
+.s-success {
+  --c: var(--success);
+  --on: var(--on-success);
 }
-
-/* Make right handle on container children subtle */
-.container-child .react-flow__handle-right {
-  width: 6px;
-  height: 6px;
-  opacity: 0.5;
+.s-failure {
+  --c: var(--failure);
+  --on: var(--on-failure);
 }
-
-/* Allow task nodes to expand based on content, but not container nodes */
-.react-flow__node-default:not(.container-node) {
-  width: auto !important;
+.s-retry {
+  --c: var(--retry);
+  --on: var(--on-retry);
+}
+.s-running {
+  --c: var(--running);
+  --on: var(--on-running);
+}
+.s-pending {
+  --c: var(--pending);
+  --on: var(--on-pending);
+}
+.flow-btn {
+  color: var(--ink);
+}
+.flow-btn .fb {
+  fill: var(--surface);
+}
+.flow-btn:hover .fb {
+  fill: var(--bg);
+}
+.flow-btn text {
+  font: 12px var(--sans);
+  fill: var(--muted);
+}
+.flow-btn text .t1 {
+  font-weight: 700;
+  fill: var(--ink);
+}
+.flow-btn text.t1 {
+  font-weight: 700;
+  fill: var(--ink);
+}
+.fn,
+.flow-btn {
+  cursor: pointer;
+  outline: none;
+}
+.fn {
+  color: var(--on);
+}
+.fn .blk {
+  fill: var(--c);
+}
+.fn:hover .blk {
+  filter: brightness(1.12);
+}
+.fn .ring,
+.flow-btn .ring {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 3;
+  opacity: 0;
+}
+.fn.sel .ring,
+.fn:focus-visible .ring,
+.flow-btn:focus-visible .ring {
+  opacity: 1;
+}
+.fn.sel .ring {
+  stroke-width: 3.5;
+}
+.fn text {
+  font: 12px var(--sans);
+  fill: var(--on);
+}
+.fn text.t1 {
+  font-weight: 700;
+}
+.fn text.rt {
+  text-anchor: end;
+  font-weight: 600;
+}
+.fn text.mono {
+  font-family: var(--mono);
+}
+.fn.nr {
+  color: var(--muted);
+}
+.fn.nr .blk {
+  fill: var(--surface);
+  stroke: var(--track);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+.fn.nr text {
+  fill: var(--muted);
+}
+.fcont {
+  color: var(--on);
+}
+.fcont .hit {
+  fill: transparent;
+}
+.fcont .cmk {
+  fill: var(--c);
+}
+.fcont .ctitle {
+  font: 700 12px var(--sans);
+  fill: var(--ink);
+}
+.fcont .ctitle.c2 {
+  font-weight: 600;
+  fill: var(--muted);
+}
+.fcont .ctitle .bad {
+  fill: var(--failure-t);
+  font-weight: 700;
 }

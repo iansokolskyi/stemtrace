@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useGraph } from '@/api/queries'
-import { TaskGraph } from '@/components/TaskGraph'
+import { FlowPage } from '@/components/flow/FlowPage'
 
 export const Route = createFileRoute('/flows_/$rootId')({
   component: GraphDetailPage,
@@ -30,14 +30,5 @@ function GraphDetailPage() {
     )
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Graph visualization */}
-      <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-        <div className="h-[600px]">
-          <TaskGraph key={data.root_id} nodes={data.nodes} rootId={data.root_id} />
-        </div>
-      </div>
-    </div>
-  )
+  return <FlowPage key={data.root_id} nodes={data.nodes} rootId={data.root_id} />
 }

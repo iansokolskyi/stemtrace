@@ -171,3 +171,35 @@ export function Icon({ name, size = 14, className }: IconProps): ReactElement {
     </svg>
   )
 }
+
+interface IconGlyphProps {
+  name: IconName
+  /** Where the glyph sits inside the SVG drawing it, and its width and height. */
+  x: number
+  y: number
+  size: number
+  className?: string
+}
+
+/** An icon inside an SVG drawing (a nested `svg` placed with x and y), stroked in the current colour. */
+export function IconGlyph({ name, x, y, size, className }: IconGlyphProps): ReactElement {
+  return (
+    <svg
+      className={className}
+      x={x}
+      y={y}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {PATHS[name]}
+    </svg>
+  )
+}

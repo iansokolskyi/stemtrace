@@ -257,6 +257,15 @@ export interface GraphNode {
   duration_ms: number | null
   first_seen: string | null
   last_updated: string | null
+  /** The last run's time, queue wait excluded; null until the task finishes. */
+  runtime_ms?: number | null
+  /** Wait of the first run, from first seen to start. */
+  queue_wait_ms?: number | null
+  exception_type?: string | null
+  hostname?: string | null
+  queue?: string | null
+  /** CHORD nodes of a full graph: why the callback has not run (it has no node of its own). */
+  not_run_reason?: 'header_failed' | 'header_revoked' | 'header_ignored' | null
   /** Root nodes in the graphs list only; null when the server has no summary for the flow. */
   flow?: FlowSummary | null
 }

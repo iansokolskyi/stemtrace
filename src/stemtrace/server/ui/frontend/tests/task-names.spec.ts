@@ -84,8 +84,8 @@ test.describe('Task names - colliding short names', () => {
 
     await page.goto(`/flows/${root.task_id}`)
     await flowNodes(page).first().waitFor({ state: 'attached' })
-    await expect(page.getByRole('link', { name: /app\.billing\.send/ })).toHaveCount(1)
-    await expect(page.getByRole('link', { name: /app\.email\.send/ })).toHaveCount(1)
+    await expect(page.getByRole('button', { name: /app\.billing\.send/ })).toHaveCount(1)
+    await expect(page.getByRole('button', { name: /app\.email\.send/ })).toHaveCount(1)
 
     await page.goto('/?view=timeline')
     await expect(page.getByRole('link', { name: 'app.billing.send' })).toHaveCount(1)

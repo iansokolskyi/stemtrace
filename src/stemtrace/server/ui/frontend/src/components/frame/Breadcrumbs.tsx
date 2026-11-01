@@ -3,6 +3,7 @@ import { Fragment, type ReactElement, type ReactNode } from 'react'
 import { useTask } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { useCrumbTitle } from '@/hooks/useCrumbTitle'
 
 /** The characters of a task ID the breadcrumb shows (the full ID is its title). */
 const SHORT_ID_LENGTH = 8
@@ -21,6 +22,7 @@ interface Crumb {
  */
 export function Breadcrumbs(): ReactElement {
   const carried = useCarriedRange()
+  const pageTitle = useCrumbTitle()
   const match = useMatches({ select: (matches) => matches[matches.length - 1] })
   const { crumb, section } = match?.staticData ?? {}
   const detail = Object.values((match?.params ?? {}) as Record<string, string>)[0]
@@ -65,7 +67,11 @@ export function Breadcrumbs(): ReactElement {
     }
     crumbs.push({
       key: 'last',
-      node: <Last title={detail}>{isTask ? detail.slice(0, SHORT_ID_LENGTH) : detail}</Last>,
+      node: (
+        <Last title={detail}>
+          {isTask ? detail.slice(0, SHORT_ID_LENGTH) : (pageTitle ?? detail)}
+        </Last>
+      ),
     })
   } else if (crumb && exactName) {
     crumbs.push(
