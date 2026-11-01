@@ -300,7 +300,7 @@ test.describe('Registry page', () => {
     test('filters by name, group and status word, in the browser', async ({ page }) => {
       mockApi?.setRegistry([
         active('app.jobs.add'),
-        entry('app.mail.send', { last_run: minutesAgo(5), task_group: 'mail' }),
+        entry('app.mail.send', { last_run: minutesAgo(5), task_group: 'comms' }),
         unregistered('app.jobs.old_sync'),
         neverRun('app.jobs.report'),
       ])
@@ -319,7 +319,7 @@ test.describe('Registry page', () => {
 
       await search.fill('add')
       await expect.poll(names).toEqual(['app.jobs.add'])
-      await search.fill('mail')
+      await search.fill('comms')
       await expect.poll(names).toEqual(['app.mail.send'])
       await search.fill('not registered')
       await expect.poll(names).toEqual(['app.jobs.old_sync'])
