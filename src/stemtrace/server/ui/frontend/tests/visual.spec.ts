@@ -7,6 +7,7 @@ import {
   createFailedTask,
   createMockEvent,
   createSuccessTask,
+  type MockRegisteredTask,
   type MockTask,
   type MockWorker,
 } from './fixtures/mock-data'
@@ -267,6 +268,51 @@ for (const theme of ['light', 'dark'] as const) {
         width: 1280,
         path: `/workers/${encodeURIComponent(hostname)}`,
       })
+    })
+  }
+}
+
+/** A registry against the fixed clock: active, never run, and one no worker registers. */
+function visualRegistry(): MockRegisteredTask[] {
+  const at = (minutes: number) =>
+    new Date(Date.parse('2026-10-17T12:00:00Z') - minutes * 60_000).toISOString()
+  const task = (
+    name: string,
+    task_group: string,
+    status: MockRegisteredTask['status'],
+    runs: number,
+    lastRun: number | null,
+    registeredBy: string[],
+  ): MockRegisteredTask => ({
+    name,
+    task_group,
+    status,
+    signature: null,
+    docstring: null,
+    module: name.split('.').slice(0, -1).join('.'),
+    bound: false,
+    execution_count: runs,
+    registered_by: registeredBy,
+    last_run: lastRun === null ? null : at(lastRun),
+  })
+  const billing = ['celery@worker-billing-1', 'celery@worker-billing-2']
+  return [
+    task('billing.invoices.send_receipt', 'billing', 'active', 1204, 0.5, billing),
+    task('billing.payments.capture_payment', 'billing', 'active', 86, 12, billing),
+    task('billing.tasks.sync_invoices_v2', 'billing', 'not_registered', 6, 10, []),
+    task('emails.send_digest', 'emails', 'active', 31, 125, ['celery@worker-email-1']),
+    task('emails.send_weekly_report', 'emails', 'never_run', 0, null, ['celery@worker-email-1']),
+    task('app.cleanup', 'ungrouped', 'active', 4, 60 * 30, ['celery@worker-billing-1']),
+  ]
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    test(`registry, ${theme}, ${width}px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.setRegistry(visualRegistry())
+      await snapshot(page, `registry-${theme}-${width}`, { theme, width, path: '/registry' })
     })
   }
 }

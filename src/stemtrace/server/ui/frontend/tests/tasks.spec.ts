@@ -154,7 +154,7 @@ test.describe('Tasks Page - Mock Scenarios', () => {
 })
 
 test.describe('Tasks Page - exact task filter', () => {
-  // Opened by the registry's "View runs", here straight from the URL
+  // Opened by a Registry row, here straight from the URL
   test.skip(isRealMode, 'Mock-only test')
 
   async function openWithExactName(page: Page) {

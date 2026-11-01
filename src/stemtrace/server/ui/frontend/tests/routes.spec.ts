@@ -116,5 +116,19 @@ for (const base of ['', '/stemtrace']) {
       await crumbs.getByRole('link', { name: 'Workers' }).click()
       await expect(page).toHaveURL(`${base}/workers`)
     })
+
+    test('/registry lists the tasks and a row opens Executions for that name', async ({ page }) => {
+      await setupMockApi(page)
+      await open(page, '/registry')
+      await expect(page).toHaveURL(`${base}/registry`)
+      const sections = page.getByRole('navigation', { name: 'Sections' })
+      await expect(sections.getByRole('link', { name: /Registry/ })).toHaveAttribute(
+        'aria-current',
+        'page',
+      )
+      await page.getByRole('link', { name: 'tasks.add', exact: true }).click()
+      await expect(page).toHaveURL(`${base}/executions?name_exact=tasks.add`)
+      await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
+    })
   })
 }
