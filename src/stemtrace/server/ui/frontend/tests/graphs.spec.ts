@@ -430,41 +430,13 @@ test.describe('Edge Visibility Regression Tests', () => {
    * This catches the issue where GROUP containers were missing incoming edges.
    */
   test('parent-to-container edges are rendered', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
 
-    const nodes = flowNodes(page)
-    const nodeCount = await nodes.count()
-    const edges = flowEdges(page)
-    const edgeCount = await edges.count()
-
-    // Basic sanity check: if we have more than 1 node, we should have edges
-    if (nodeCount > 1) {
-      expect(edgeCount).toBeGreaterThan(0)
-    }
-
-    // For graphs with containers, verify edges connect to them
-    const containerNodes = flowContainers(page)
-    const containerCount = await containerNodes.count()
-
-    if (containerCount > 0) {
-      // There should be edges that target the container
-      // (an edge's data-to is the task id a node carries in data-task-id)
-      const firstContainer = containerNodes.first()
-      const containerId = await firstContainer.getAttribute('data-task-id')
-
-      if (containerId) {
-        // Look for edges targeting this container
-        const allEdgeTargets = await edges.evaluateAll((els) =>
-          els.map((el) => el.getAttribute('data-to')),
-        )
-
-        expect(allEdgeTargets).toContain(containerId)
-      }
-    }
+    // The graph's one container is the target of an edge (drawn a moment after its node)
+    const container = flowContainers(page)
+    await expect(container).toHaveCount(1)
+    const containerId = (await container.getAttribute('data-task-id'))!
+    await expect(page.locator(`[data-testid="flow-edge"][data-to="${containerId}"]`)).toHaveCount(1)
   })
 
   /**
