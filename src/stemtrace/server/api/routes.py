@@ -92,14 +92,14 @@ def _tasks_for_worker_key(
 ) -> list[str] | None:
     """Return registered task names for a worker key.
 
-    Returns None when the registered mapping is unavailable, so callers can
-    preserve any existing task list.
+    Returns None when this node gave no list (no reply at all, or it missed
+    the registered() broadcast), so callers can preserve its existing task list.
     """
     if not registered or not isinstance(registered, dict):
         return None
     tasks_obj = registered.get(worker_key)
     if not isinstance(tasks_obj, list):
-        return []
+        return None
     tasks: list[str] = []
     for t in tasks_obj:
         if isinstance(t, str) and not t.startswith(_CELERY_BUILTIN_PREFIX):

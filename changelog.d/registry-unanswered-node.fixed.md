@@ -1,0 +1,1 @@
+- A worker that answers the stats query but misses the registered-tasks query now keeps its known task list. Before, the server cleared the list, so the registry showed that worker's tasks as not registered until the next refresh.
