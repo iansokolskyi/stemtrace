@@ -23,6 +23,8 @@ const NARROW_W = 760
 const LABEL_W_NARROW = 170
 const LABEL_W = 250
 const PAD_RIGHT = 18
+/** Room right of the plot for "running 41m" when a bar is cut. */
+const CUT_LABEL_W = 96
 /** Characters of a label that fit per pixel of the label column (12 px sans). */
 const CHAR_W = 6.6
 const MIN_BAR_W = 3
@@ -38,13 +40,19 @@ interface GanttProps {
   onToggleExpanded: (containerId: string) => void
 }
 
+/** "running 41m" or "queued 3h 12m" for a bar cut at the axis end; "running" or "queued" before. */
+export function elapsedWords(bar: Bar): string {
+  const word = bar.hasRun ? 'running' : 'queued'
+  return bar.elapsedMs === null ? word : `${word} ${formatSpan(bar.elapsedMs)}`
+}
+
 /** How long a bar waited and ran, in words, for a row's accessible name and tooltip. */
 function timingWords(bar: Bar | null): string {
   if (!bar) return 'no timing'
   const waited = bar.leadTo - bar.from
   const wait = waited > 0 ? `waited ${formatSpan(waited)}` : ''
-  if (!bar.hasRun) return bar.open ? 'queued' : wait || 'never started'
-  const ran = bar.open ? 'running' : `ran ${formatSpan(bar.end - bar.runFrom)}`
+  if (!bar.hasRun) return bar.open ? elapsedWords(bar) : wait || 'never started'
+  const ran = bar.open ? elapsedWords(bar) : `ran ${formatSpan(bar.end - bar.runFrom)}`
   const tries =
     bar.runFrom > bar.leadTo
       ? `after ${formatSpan(bar.runFrom - bar.leadTo)} of earlier attempts`
@@ -92,7 +100,7 @@ export function Gantt({
 
   const width = Math.max(MIN_W, boxWidth)
   const labelW = width < NARROW_W ? LABEL_W_NARROW : LABEL_W
-  const plotW = width - labelW - PAD_RIGHT
+  const plotW = width - labelW - (axis?.cut ? CUT_LABEL_W : PAD_RIGHT)
   const height = rows.length * ROW_H + 8
   const x = (t: number): number =>
     axis ? labelW + 8 + ((t - axis.t0) / (axis.t1 - axis.t0)) * plotW : labelW + 8
@@ -116,6 +124,8 @@ export function Gantt({
         <span className="text-xs text-muted">
           Bars start when each task started running. The grey lead-in is queue wait; a dotted one is
           a countdown or ETA. Outlined bars are the critical path.
+          {axis?.cut &&
+            ' A bar that has run past the end of the axis is cut with a slash, and says how long it has run.'}
         </span>
       </div>
       {axis === null ? (
@@ -401,6 +411,17 @@ function GanttRow({
               style={run.open ? { fill: `url(#${hatchRun})` } : undefined}
             />
           )}
+        </>
+      )}
+      {bar?.cut && (
+        <>
+          <path
+            className="gantt-cutmark"
+            d={`M${x(bar.end) - 2},${y + 4} L${x(bar.end) + 4},${y + ROW_H - 4}`}
+          />
+          <text className="gantt-m" x={x(bar.end) + 10} y={y + 16}>
+            {elapsedWords(bar)}
+          </text>
         </>
       )}
       {row.kind === 'notRun' && (

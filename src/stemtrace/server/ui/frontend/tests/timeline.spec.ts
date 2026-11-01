@@ -509,6 +509,8 @@ test.describe('buildTimeline: the cap on an open bar', () => {
       t1: T0 + 100 + OPEN_CAP_FLOOR_MS,
       cut: true,
     })
+    // counted from the run's start (100 ms after first_seen), not from first_seen
+    expect(barIn(timeline, 'a').elapsedMs).toBe(1e9 - 100)
   })
 
   test('a queued task counts its wait from first_seen', () => {
@@ -934,12 +936,14 @@ test.describe('criticalPath', () => {
   })
 
   test('falls back to the breadth-first parents when every in-edge was visited', () => {
+    // a is entered from r and from b, which ended last; b's only in-edge is a, already on the path
     const nodes = graphOf(
-      timed('a', { f: 0, w: 0, r: 100, u: 100 }, { children: ['b'] }),
+      timed('r', { f: 0, w: 0, r: 100, u: 100 }, { children: ['a'] }),
+      timed('a', { f: 100, w: 0, r: 200, u: 300 }, { children: ['b'], parent_id: 'r' }),
       timed('b', { f: 100, w: 0, r: 100, u: 200 }, { children: ['a'], parent_id: 'a' }),
     )
 
-    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b'])
+    expect(timelineOf(nodes, 'r').timeline.path).toEqual(['r', 'a'])
   })
 
   test('stops at a task whose children all ended before it did (they ran alongside it)', () => {

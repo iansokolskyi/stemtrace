@@ -202,6 +202,12 @@ body {
   stroke-width: 2.5;
   paint-order: stroke;
 }
+.gantt-cutmark {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
 .gantt-cpl {
   fill: none;
   stroke: var(--ink);

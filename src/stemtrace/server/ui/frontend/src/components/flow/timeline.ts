@@ -41,6 +41,10 @@ export interface Bar {
   hasRun: boolean
   /** Still going: runs (or waits) to the axis end. */
   open: boolean
+  /** Open and now is past the axis end: the bar stops at a cut mark. */
+  cut: boolean
+  /** How long a cut bar has run (or queued) up to now; null unless cut. */
+  elapsedMs: number | null
 }
 
 export interface Tick {
@@ -51,6 +55,10 @@ export interface Tick {
 export interface Axis {
   t0: number
   t1: number
+  /** The latest event of any bar: where the axis ends when nothing is open. */
+  settledEnd: number
+  /** An open bar has run past the axis end. */
+  cut: boolean
   ticks: Tick[]
 }
 
@@ -227,15 +235,15 @@ function dependencies(layout: FlowLayout): {
 }
 
 /**
- * The critical path: the dependency chain from the root to the timed task that ended last, found
- * by tracing back from that task. Dependencies are the layout's edges; no step needs to end after
- * the one before it, because a successor can be stamped a few milliseconds earlier than the task
- * it followed (Celery sends the next link before stemtrace stamps the SUCCESS; hosts' clocks
- * differ), and a rule on end order would cut the path there. Containers and tasks without times
- * are passed. Where a node has several predecessors (headers into a callback) the one that ended
- * last is taken. Ties on the last end go to the node still open, then the one the layout reached
- * first. `ends` holds each timed node's end (`<container>:more` included); `open` those still going.
- * Only nodes the root reaches count. Empty when nothing reachable is timed.
+ * The critical path: the dependency chain from the root to the timed task that ended last,
+ * traced back from that task. A node's predecessors are every layout in-edge: no step needs to end
+ * after the one before it (the next link is sent before the SUCCESS is stamped, and hosts' clocks
+ * differ), and no depth filter drops a header chain's last cell. It steps back to the predecessor
+ * that ended last (a container ranks below any timed task); ties go to the one still open, then
+ * the first in layout order. A visited set ends the walk; if every predecessor was visited
+ * (malformed input) the breadth-first parents give the path. Containers and tasks without times
+ * are passed. `ends` holds each timed node's end (`<container>:more` included); `open` those
+ * still going. Only nodes the root reaches count. Empty when nothing reachable is timed.
  */
 export function criticalPath(
   layout: FlowLayout,
@@ -247,6 +255,7 @@ export function criticalPath(
   const order = (id: string): number => seq.get(id) ?? Number.MAX_SAFE_INTEGER
   const depth = new Map<string, number>([[rootId, 0]])
   const preds = new Map<string, string[]>()
+  const parent = new Map<string, string>()
   const queue = [rootId]
   for (let at = 0; at < queue.length; at++) {
     const id = queue[at]
@@ -254,6 +263,7 @@ export function criticalPath(
       preds.set(successor, [...(preds.get(successor) ?? []), id])
       if (!depth.has(successor)) {
         depth.set(successor, (depth.get(id) as number) + 1)
+        parent.set(successor, id)
         queue.push(successor)
       }
     }
@@ -276,22 +286,39 @@ export function criticalPath(
   }
   if (last === null) return []
 
-  // Back to the root, only through nodes closer to it, so the walk ends
+  // Back to the root: from each node to the in-edge that ended last
+  const rank = (id: string): number => ends.get(id) ?? Number.NEGATIVE_INFINITY
   const path = [last]
+  const seen = new Set(path)
   for (let current = last; current !== rootId; ) {
-    const closer = (preds.get(current) ?? []).filter(
-      (id) => (depth.get(id) as number) < (depth.get(current) as number),
-    )
-    let pick = closer[0]
-    for (const id of closer) {
-      const end = ends.get(id) ?? Number.NEGATIVE_INFINITY
-      const had = ends.get(pick) ?? Number.NEGATIVE_INFINITY
-      if (end > had || (end === had && order(id) < order(pick))) pick = id
+    let pick: string | undefined
+    for (const id of preds.get(current) ?? []) {
+      if (seen.has(id)) continue
+      if (
+        pick === undefined ||
+        rank(id) > rank(pick) ||
+        (rank(id) === rank(pick) &&
+          (open.has(id) !== open.has(pick) ? open.has(id) : order(id) < order(pick)))
+      ) {
+        pick = id
+      }
     }
+    if (pick === undefined) return viaParents(last)
     path.unshift(pick)
+    seen.add(pick)
     current = pick
   }
   return path
+
+  /** The breadth-first parent chain: only for a malformed graph whose in-edges all loop back. */
+  function viaParents(from: string): string[] {
+    const chain = [from]
+    for (let at = from; at !== rootId; ) {
+      at = parent.get(at) as string
+      chain.unshift(at)
+    }
+    return chain
+  }
 }
 
 /** The first multiple-of-1/2/5 step that fits `raw`. */
@@ -301,7 +328,7 @@ function niceStep(raw: number): number {
   return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power
 }
 
-function axisOf(t0: number, t1: number): Axis {
+function axisOf(t0: number, t1: number, settledEnd: number, cut: boolean): Axis {
   const step = niceStep((t1 - t0) / TICK_STEPS)
   const ticks: Tick[] = []
   for (let offset = 0; offset <= t1 - t0; offset += step) {
@@ -311,7 +338,7 @@ function axisOf(t0: number, t1: number): Axis {
         offset === 0 ? `start ${formatTime(new Date(t0).toISOString())}` : `+${formatSpan(offset)}`,
     })
   }
-  return { t0, t1, ticks }
+  return { t0, t1, settledEnd, cut, ticks }
 }
 
 /**
@@ -361,10 +388,15 @@ export function buildTimeline(
     }
   }
   const t0 = Math.min(...bars.map((bar) => bar.from))
-  const settled = Math.max(...bars.map((bar) => (bar.end === null ? bar.runFrom : bar.end)))
-  const anyOpen = bars.some((bar) => bar.end === null)
-  const t1 = Math.max(settled, anyOpen && Number.isFinite(now) ? now : settled, t0 + MIN_SPAN_MS)
-  const axis = axisOf(t0, t1)
+  const settledEnd = Math.max(...bars.map((bar) => (bar.end === null ? bar.runFrom : bar.end)))
+  // An open bar runs to now, but not past settledEnd plus a cap: one orphaned task, or a browser
+  // clock far ahead, must not squash the finished work
+  const anyOpen = bars.some((bar) => bar.end === null) && Number.isFinite(now)
+  const cap = Math.max(OPEN_CAP_FACTOR * (settledEnd - t0), OPEN_CAP_FLOOR_MS)
+  const reach = anyOpen ? Math.max(settledEnd, Math.min(now, settledEnd + cap)) : settledEnd
+  const t1 = Math.max(reach, t0 + MIN_SPAN_MS)
+  const cut = anyOpen && now > settledEnd + cap
+  const axis = axisOf(t0, t1, settledEnd, cut)
 
   const resolved = new Map<string, Bar>()
   for (const [id, bar] of raw) {
@@ -380,6 +412,8 @@ export function buildTimeline(
       end,
       hasRun: bar.hasRun,
       open,
+      cut: open && cut,
+      elapsedMs: open && cut ? Math.max(0, now - (bar.hasRun ? bar.runFrom : bar.from)) : null,
     })
   }
   const ends = new Map<string, number>()

@@ -327,6 +327,80 @@ test.describe('a running task', () => {
     await expect.poll(ticks).toBeGreaterThan(0)
   })
 
+  const HOUR = 3_600_000
+  const cutMarks = (page: Page) => timelinePanel(page).locator('.gantt-cutmark')
+  const tickLabels = async (page: Page) =>
+    (await timelinePanel(page).locator('text.gantt-m').allTextContents()).filter((text) =>
+      /^(\+|start)/.test(text),
+    )
+
+  test('inside the cap there is no cut mark and no label', async ({ page }) => {
+    await page.clock.install({ time: BASE + 20_000 })
+    await openFlow(page, runningFlow())
+
+    await expect(cutMarks(page)).toHaveCount(0)
+    await expect(timelinePanel(page).getByText(/^running /)).toHaveCount(0)
+    await expect(timelinePanel(page)).not.toContainText('is cut')
+  })
+
+  test('past the cap the bar is cut and labelled, the axis stays put and the label grows', async ({
+    page,
+  }) => {
+    await page.clock.install({ time: BASE + 2 * HOUR })
+    await openFlow(page, runningFlow())
+
+    await expect(cutMarks(page)).toHaveCount(1)
+    const label = timelinePanel(page).getByText(/^running 2h/)
+    await expect(label).toHaveCount(1)
+    await expect(row(page, 'c0')).toHaveAttribute('aria-label', /running 2h 0m/)
+    await expect(timelinePanel(page)).toContainText('cut with a slash')
+    const axis = await tickLabels(page)
+    expect(axis.some((text) => text.includes('h'))).toBe(false)
+
+    const style = await label.evaluate((el) => {
+      const css = getComputedStyle(el)
+      return {
+        size: Number.parseFloat(css.fontSize),
+        variant: css.fontVariantNumeric,
+        family: css.fontFamily,
+      }
+    })
+    expect(style.size).toBeGreaterThanOrEqual(12)
+    expect(style.variant).toContain('tabular-nums')
+    expect(style.family).not.toMatch(/mono/i)
+
+    await page.clock.fastForward(HOUR)
+
+    await expect(timelinePanel(page).getByText(/^running 3h/)).toHaveCount(1)
+    expect(await tickLabels(page)).toEqual(axis)
+  })
+
+  test('a browser clock behind the server shrinks nothing', async ({ page }) => {
+    await page.clock.install({ time: BASE - HOUR })
+    await openFlow(page, runningFlow())
+
+    await expect(cutMarks(page)).toHaveCount(0)
+    expect(await runWidth(page)).toBeGreaterThan(100)
+  })
+
+  test('a browser clock far ahead cannot squash the axis: the labels stay within the cap', async ({
+    page,
+  }) => {
+    await page.clock.install({ time: BASE + 400 * HOUR })
+    await openFlow(page, runningFlow())
+
+    await expect(cutMarks(page)).toHaveCount(1)
+    expect(await tickLabels(page)).toContain('+30s')
+  })
+
+  test('a finished flow shows no cut and no label however late the clock is', async ({ page }) => {
+    await page.clock.install({ time: BASE + 400 * HOUR })
+    await openFlow(page, timedChain(3))
+
+    await expect(cutMarks(page)).toHaveCount(0)
+    await expect(timelinePanel(page).getByText(/^(running|queued) /)).toHaveCount(0)
+  })
+
   test('leaves the axis alone once nothing runs', async ({ page }) => {
     await page.clock.install({ time: BASE + 4000 })
     await openFlow(page, timedChain(3))
