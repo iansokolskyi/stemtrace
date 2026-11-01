@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 
+import { flowNodes } from './fixtures/flow'
 import { setupMockApi } from './fixtures/mock-api'
 import { createChain, createFailedTask } from './fixtures/mock-data'
 
@@ -37,7 +38,7 @@ for (const base of ['', '/stemtrace']) {
       const root = chain[0].task_id
       await open(page, `/graph/${root}`)
       await expect(page).toHaveURL(`${base}/flows/${root}`)
-      await expect(page.locator('.react-flow__node').first()).toBeVisible()
+      await expect(flowNodes(page).first()).toBeVisible()
       // The breadcrumb links back to the list.
       await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText(root)
       await page

@@ -32,6 +32,16 @@ export interface MockTask {
   eta?: string | null
   /** What the detail's `flow_root_id` says; left out, the mock walks the parents as the server does */
   flow_root_id?: string | null
+  /** What the graphs list says about this root's flow; null models a server with no summary */
+  flow?: MockFlowSummary | null
+}
+
+/** The `flow` of a graphs list item (FlowSummaryResponse). */
+export interface MockFlowSummary {
+  task_count: number
+  state_counts: Record<string, number>
+  not_run_count: number
+  state: string
 }
 
 export interface MockEvent {

@@ -121,6 +121,25 @@ function cellChildren(
   return pairs
 }
 
+/**
+ * Renderer-neutral test hooks (tests/fixtures/flow.ts reads them): they say what a
+ * node or edge is, not how it is drawn, so another renderer can carry the same ones.
+ */
+function nodeHooks(taskId: string, node: GraphNode, containerId?: string): Node['domAttributes'] {
+  // data-* keys are valid on the DOM element but not in React's attribute types
+  return {
+    'data-testid': 'flow-node',
+    'data-task-id': taskId,
+    'data-node-type': node.node_type ?? 'TASK',
+    'data-state': node.state,
+    ...(containerId ? { 'data-container-id': containerId } : {}),
+  } as Node['domAttributes']
+}
+
+function edgeHooks(from: string, to: string): Edge['domAttributes'] {
+  return { 'data-testid': 'flow-edge', 'data-from': from, 'data-to': to } as Edge['domAttributes']
+}
+
 function buildGraphElements(
   nodes: Record<string, GraphNode>,
   rootId: string,
@@ -281,6 +300,7 @@ function buildGraphElements(
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         className: 'container-node',
+        domAttributes: nodeHooks(id, node),
       })
 
       // Header label inside container (no handles/connectors)
@@ -307,6 +327,10 @@ function buildGraphElements(
           ),
         },
         className: 'header-label-node',
+        domAttributes: {
+          'data-testid': 'flow-container-label',
+          'data-container-id': id,
+        } as Node['domAttributes'],
         style: {
           background: 'transparent',
           border: 'none',
@@ -330,6 +354,7 @@ function buildGraphElements(
             target: childId,
             animated: childNode.state === 'STARTED',
             style: { stroke: '#475569' },
+            domAttributes: edgeHooks(previous, childId),
           })
         }
 
@@ -385,6 +410,7 @@ function buildGraphElements(
           sourcePosition: Position.Right,
           targetPosition: Position.Left,
           className: 'container-child',
+          domAttributes: nodeHooks(childId, childNode, id),
         })
 
         visited.add(childId)
@@ -406,6 +432,7 @@ function buildGraphElements(
                 target: childId,
                 animated: callbackNode.state === 'STARTED',
                 style: { stroke: '#475569' },
+                domAttributes: edgeHooks(headerId, childId),
               })
             }
 
@@ -469,6 +496,7 @@ function buildGraphElements(
               },
               sourcePosition: Position.Right,
               targetPosition: Position.Left,
+              domAttributes: nodeHooks(childId, callbackNode),
             })
 
             visited.add(childId)
@@ -527,6 +555,7 @@ function buildGraphElements(
         },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
+        domAttributes: nodeHooks(id, node),
       })
 
       // Edges to children (not inside a container)
@@ -541,6 +570,7 @@ function buildGraphElements(
           target: childId,
           animated: childNode?.state === 'STARTED',
           style: { stroke: '#475569' },
+          domAttributes: edgeHooks(id, childId),
         })
       }
     }
@@ -565,6 +595,7 @@ function buildGraphElements(
           target: childId,
           animated: childNode.state === 'STARTED',
           style: { stroke: '#475569' },
+          domAttributes: edgeHooks(cellId, childId),
         })
         if (!visited.has(childId)) queue2.push(childId)
       }
@@ -662,6 +693,7 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
 
   return (
     <ReactFlow
+      data-testid="flow-canvas"
       nodes={nodes}
       edges={edges}
       onNodesChange={onNodesChange}

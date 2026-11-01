@@ -1,0 +1,1 @@
+- The Flows page lists each flow as one row: its worst state, the root task's name, a summary such as "50 tasks, 3 failed, chord callback not run", the root task and how long ago it started. A row opens the flow. The page shows every flow in the retention window; a link with explicit `from_date` or `to_date` still narrows it. The date picker is gone.

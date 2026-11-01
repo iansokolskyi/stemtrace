@@ -14,7 +14,7 @@ const BAD_DATES = ['abc', '2026', '2026-13-45', '2026-02-30', '2026-1-5x', '2026
 for (const value of BAD_DATES) {
   for (const [path, heading] of [
     ['/', 'Executions'],
-    ['/graphs', 'Task Graphs'],
+    ['/graphs', 'Flows'],
   ] as const) {
     test(`${path} with from_date=${value} renders and ignores the date`, async ({ page }) => {
       test.skip(isRealMode, 'Mock-only test')
@@ -38,7 +38,7 @@ for (const value of BAD_DATES) {
 
 for (const [path, endpoint, heading] of [
   ['/', '/api/tasks', 'Executions'],
-  ['/graphs', '/api/graphs', 'Task Graphs'],
+  ['/graphs', '/api/graphs', 'Flows'],
 ] as const) {
   test(`${path} still applies real from_date and to_date`, async ({ page }) => {
     test.skip(isRealMode, 'Mock-only test')

@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { shortestUniqueSuffixes } from '../src/utils/taskNames'
+import { flowNode, flowNodes } from './fixtures/flow'
 import { setupMockApi } from './fixtures/mock-api'
 import { createRegistryEntry, createSuccessTask, type MockTask } from './fixtures/mock-data'
 
@@ -41,18 +42,14 @@ test.describe('Task names - colliding short names', () => {
     mockApi.addTasks([root, billing, email])
 
     await page.goto(`/flows/${root.task_id}`)
-    await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
+    await flowNodes(page).first().waitFor({ state: 'attached' })
 
-    const billingNode = page.locator(`.react-flow__node[data-id="${billing.task_id}"]`)
+    const billingNode = flowNode(page, billing.task_id)
     await expect(billingNode).toContainText('billing.send')
     await expect(billingNode.getByTitle('app.billing.send')).toHaveCount(1)
-    await expect(page.locator(`.react-flow__node[data-id="${email.task_id}"]`)).toContainText(
-      'email.send',
-    )
+    await expect(flowNode(page, email.task_id)).toContainText('email.send')
     // Nothing else ends in `start`: one segment is enough
-    await expect(page.locator(`.react-flow__node[data-id="${root.task_id}"]`)).toContainText(
-      'start',
-    )
+    await expect(flowNode(page, root.task_id)).toContainText('start')
     await expectSendLabelsTold(page)
   })
 
@@ -86,7 +83,7 @@ test.describe('Task names - colliding short names', () => {
     mockApi.addTasks([root, billing, email])
 
     await page.goto(`/flows/${root.task_id}`)
-    await page.locator('.react-flow__node').first().waitFor({ state: 'attached' })
+    await flowNodes(page).first().waitFor({ state: 'attached' })
     await expect(page.getByRole('link', { name: /app\.billing\.send/ })).toHaveCount(1)
     await expect(page.getByRole('link', { name: /app\.email\.send/ })).toHaveCount(1)
 
