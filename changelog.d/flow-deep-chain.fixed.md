@@ -1,0 +1,1 @@
+- The Flow page no longer fails with `RangeError: Maximum call stack size exceeded` on a flow with a long chain of tasks. The page crashed on a chain of 5,000 or more tasks. It now lays out and times chains of 20,000 tasks.
