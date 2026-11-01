@@ -19,7 +19,9 @@ export function leadingWorker(processes: Worker[]): Worker {
 
 /** Every task any of the host's processes registered, once each, sorted. */
 export function registeredTasks(processes: Worker[]): string[] {
-  return [...new Set(processes.flatMap((worker) => worker.registered_tasks))].sort()
+  return [...new Set(processes.flatMap((worker) => worker.registered_tasks))].sort((a, b) =>
+    a.localeCompare(b),
+  )
 }
 
 /** Table classes shared by the Workers list and the Worker page's panels. */
