@@ -86,7 +86,8 @@ class RunRecord:
             if node.state == TaskState.FAILURE
             else None,
             # Same reason: run_times() scans and sorts every event, so only a
-            # terminal task (one more call per run, not per event) reads it.
+            # terminal task reads it: no calls while it runs, then one per event
+            # that arrives after the terminal one (usually none).
             runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
         )
 
