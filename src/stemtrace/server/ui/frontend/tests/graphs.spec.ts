@@ -152,14 +152,8 @@ test.describe('Graphs Page', () => {
     await page.goto('/flows')
     await page.waitForLoadState('networkidle')
 
-    // Look for graph entries
-    const graphEntries = page.locator(
-      '[data-testid="graph-entry"], .graph-entry, a[href*="/flows/"], tr',
-    )
-
-    const count = await graphEntries.count()
-    // Verify page renders without error (count check is informational)
-    expect(typeof count).toBe('number')
+    // The list loads after the page does
+    await expect(page.locator('a[href*="/flows/"]').first()).toBeVisible({ timeout: 15_000 })
   })
 
   test('can navigate to graph detail', async ({ page }) => {
@@ -218,14 +212,13 @@ test.describe('Graph Detail Page', () => {
     }
     await page.waitForLoadState('networkidle')
 
-    // Nodes should have state-based styling
-    const styledNodes = page.locator(
-      '[class*="success"], [class*="pending"], [class*="started"], [data-state]',
+    // Every node says its state
+    await expect(flowNodes(page).first()).toBeVisible()
+    const states = await flowNodes(page).evaluateAll((els) =>
+      els.map((el) => el.getAttribute('data-state')),
     )
-
-    const count = await styledNodes.count()
-    // Verify page renders graph nodes (count check is informational)
-    expect(typeof count).toBe('number')
+    expect(states.length).toBeGreaterThan(0)
+    for (const state of states) expect(state).toMatch(/^[A-Z]+$/)
   })
 
   test('can click node to see task details', async ({ page }) => {
@@ -360,31 +353,11 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
   })
 
   test('container header shows GROUP or CHORD label', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, CHORD_GRAPH)
 
-    // Look for GROUP or CHORD text anywhere in the graph
-    const groupLabel = page.getByText('GROUP')
-    const chordLabel = page.getByText('CHORD')
-
-    const hasGroupLabel = await groupLabel
-      .first()
-      .isVisible()
-      .catch(() => false)
-    const hasChordLabel = await chordLabel
-      .first()
-      .isVisible()
-      .catch(() => false)
-
-    // If we're on a graph with containers, at least one label should be present
-    // If there are no container graphs, this test just verifies the selectors work
-    const hasAnyLabel = hasGroupLabel || hasChordLabel
-
-    // This is informational - not all graphs have containers
-    expect(typeof hasAnyLabel).toBe('boolean')
+    const label = flowContainerLabels(page).first()
+    await expect(label).toBeVisible()
+    await expect(label).toContainText('CHORD')
   })
 })
 
@@ -1023,7 +996,15 @@ test.describe('Graph Page - Live Updates', () => {
     const fitted = await settledBox(node)
     // A click is a mouse down and up on the canvas: no pan, no zoom
     const box = (await graphCanvas(page).boundingBox())!
-    await page.mouse.click(box.x + box.width - 40, box.y + 40)
+    const [x, y] = [box.x + box.width - 40, box.y + 40]
+    // The point is empty canvas, not a node
+    expect(
+      await page.evaluate(
+        ([px, py]) => !!document.elementFromPoint(px, py)?.closest('[data-testid="flow-node"]'),
+        [x, y],
+      ),
+    ).toBe(false)
+    await page.mouse.click(x, y)
     expect(await settledBox(node)).toEqual(fitted)
 
     const third = finishStepTwo(mockApi, first, second)
@@ -1101,21 +1082,32 @@ test.describe('Graph Page - Live Updates', () => {
   })
 
   test('keeps the zoom the user chose with the zoom button', async ({ page }) => {
+    // A chain too long to fit at full zoom, so the fitted view can still zoom in
     const mockApi = await setupMockApi(page, { useDefaults: false })
-    const { first, second } = runningChain()
-    mockApi.addTasks([first, second])
+    const chain = createChain('app.flow', 7)
+    const first = chain[0]
+    const last = chain[chain.length - 1]
+    last.state = 'STARTED'
+    mockApi.addTasks(chain)
     const { push } = await openLiveGraph(page, first.task_id)
     const node = flowNode(page, first.task_id)
     const fitted = await settledBox(node)
-    // Zoom out: the fitted view of two nodes is already at the maximum zoom
-    await page.getByRole('button', { name: /zoom out/i }).click()
+    await page.getByRole('button', { name: /zoom in/i }).click()
     const zoomed = await settledBox(node)
     expect(zoomed).not.toEqual(fitted)
 
-    const third = finishStepTwo(mockApi, first, second)
-    await push(third)
+    // The last step finishes and spawns another
+    const [, , , , , , next] = createChain('app.flow', 7)
+    next.task_id = `${first.task_id.slice(0, -4)}ffff`
+    next.root_id = first.task_id
+    next.parent_id = last.task_id
+    next.state = 'STARTED'
+    last.state = 'SUCCESS'
+    last.children.push(next.task_id)
+    mockApi.addTask(next)
+    await push(next)
     // A re-fit (the behaviour under test) would move the view once the new node is drawn
-    await expect(flowNode(page, third.task_id)).toBeVisible()
+    await expect(flowNode(page, next.task_id)).toBeVisible()
 
     expect(await settledBox(node)).toEqual(zoomed)
   })
