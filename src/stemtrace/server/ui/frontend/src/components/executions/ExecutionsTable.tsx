@@ -121,25 +121,31 @@ function EmptyTable({
   const { data: registered } = useRegisteredTask(params.name_exact)
   const neverRun = registered?.status === 'never_run'
 
+  // Filters set: say so and offer to clear them. None: the page is simply empty.
+  const filtered = onClear !== undefined
+
   return (
-    <div className="overflow-x-auto rounded-lg bg-surface">
+    <div data-testid="executions-box" className="overflow-x-auto rounded-lg bg-surface">
       <div style={{ minWidth }}>
         <HeaderRow columns={columns} template={template} />
-        <div data-testid="executions-empty" className="px-4 py-8 text-center text-xs text-muted">
-          <p className="m-0">
-            No executions match these filters{during && ` in ${during}`}.
-            {neverRun && ' This task is registered but has never run.'}
-          </p>
-          {onClear && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
+      </div>
+      {/* Outside the min-width strip, so the text wraps inside the box instead of being
+          centred in a strip wider than it */}
+      <div data-testid="executions-empty" className="px-4 py-8 text-center text-xs text-muted">
+        <p data-testid="executions-empty-text" className="m-0">
+          {filtered ? 'No executions match these filters' : 'No executions'}
+          {during && ` in ${during}`}.{neverRun && ' This task is registered but has never run.'}
+        </p>
+        {!filtered && <p className="m-0 mt-1">Run a Celery task to see it here.</p>}
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
     </div>
   )

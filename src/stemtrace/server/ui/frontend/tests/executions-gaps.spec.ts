@@ -25,6 +25,13 @@ const crumbs = (page: Page): Locator => page.getByRole('navigation', { name: 'Br
 /** The query of the current URL as [key, value] pairs, in URL order. */
 const search = (page: Page): [string, string][] => [...new URL(page.url()).searchParams]
 
+/** Opens Filter, Time range and picks a preset day, which replaces the range with dates. */
+async function pickDay(page: Page, preset: string): Promise<void> {
+  await filterButton(page).click()
+  await popover(page).getByRole('button', { name: 'Time range', exact: true }).click()
+  await popover(page).getByRole('button', { name: preset }).click()
+}
+
 const neverRun = (name: string): MockRegisteredTask => ({
   ...createRegistryEntry(name, 0),
   last_run: null,
@@ -45,7 +52,7 @@ test.describe('Empty result', () => {
     ]
     for (const [url, text] of cases) {
       await page.goto(url)
-      await expect(empty(page).locator('p')).toHaveText(text)
+      await expect(page.getByTestId('executions-empty-text')).toHaveText(text)
       await expect(page.locator('[data-column-header]')).toHaveText(['State', 'Task', 'Updated'])
     }
   })
@@ -71,23 +78,59 @@ test.describe('Empty result', () => {
     await expect.poll(() => search(page)).toEqual([])
   })
 
-  test('has no button when no filter is set', async ({ page }) => {
+  test('with no filter says the page is empty, with a hint and no button', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
-    await page.goto('/executions')
-    await expect(empty(page).locator('p')).toHaveText(
-      'No executions match these filters in the last 6h.',
-    )
-    await expect(empty(page).getByRole('button')).toHaveCount(0)
+    const cases: [string, string][] = [
+      ['/executions', 'No executions in the last 6h.'],
+      ['/executions?range=1h', 'No executions in the last hour.'],
+      ['/executions?range=all', 'No executions.'],
+    ]
+    for (const [url, text] of cases) {
+      await page.goto(url)
+      await expect(page.getByTestId('executions-empty-text')).toHaveText(text)
+      await expect(empty(page).getByText('Run a Celery task to see it here.')).toBeVisible()
+      await expect(empty(page).getByRole('button')).toHaveCount(0)
+    }
   })
 
-  test('at 400px the page does not scroll sideways', async ({ page }) => {
-    await page.setViewportSize({ width: 400, height: 800 })
+  test('with filters there is no hint', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
-    await page.goto('/executions?queue=nowhere&state=FAILURE')
-    await expect(empty(page)).toBeVisible()
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    ).toBe(true)
+    await page.goto('/executions?queue=nowhere')
+    await expect(empty(page).getByText('Run a Celery task')).toHaveCount(0)
+  })
+
+  test('at 400px the text and button sit inside the box, the page does not scroll', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 400, height: 800 })
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setRegistry([neverRun('app.jobs.quiet')])
+    for (const url of [
+      '/executions?queue=nowhere&state=FAILURE',
+      '/executions?name_exact=app.jobs.quiet',
+      '/executions',
+    ]) {
+      await page.goto(url)
+      await expect(empty(page)).toBeVisible()
+      if (url.includes('quiet')) {
+        await expect(page.getByTestId('executions-empty-text')).toContainText('has never run.')
+      }
+      const box = await page.getByTestId('executions-box').boundingBox()
+      for (const part of [
+        page.getByTestId('executions-empty-text'),
+        empty(page).getByRole('button'),
+      ]) {
+        if ((await part.count()) === 0) continue
+        const rect = await part.boundingBox()
+        expect(rect?.x ?? -1).toBeGreaterThanOrEqual(box?.x ?? 0)
+        expect((rect?.x ?? 0) + (rect?.width ?? 0)).toBeLessThanOrEqual(
+          (box?.x ?? 0) + (box?.width ?? 0) + 0.5,
+        )
+      }
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      ).toBe(true)
+    }
   })
 })
 
@@ -103,7 +146,7 @@ test.describe('A task that is registered but has never run', () => {
       if (url.pathname === '/api/tasks/registry') requests.push(url)
     })
     await page.goto('/executions?name_exact=app.jobs.quiet')
-    await expect(empty(page).locator('p')).toHaveText(
+    await expect(page.getByTestId('executions-empty-text')).toHaveText(
       `No executions match these filters in the last 6h. ${sentence}`,
     )
     // Without asking the workers (issue #122): the sidebar's request is the only one
@@ -114,7 +157,7 @@ test.describe('A task that is registered but has never run', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setRegistry([createRegistryEntry('app.jobs.quiet', 3)])
     await page.goto('/executions?name_exact=app.jobs.quiet')
-    await expect(empty(page).locator('p')).toHaveText(
+    await expect(page.getByTestId('executions-empty-text')).toHaveText(
       'No executions match these filters in the last 6h.',
     )
   })
@@ -123,7 +166,7 @@ test.describe('A task that is registered but has never run', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setRegistry([neverRun('app.jobs.other')])
     await page.goto('/executions?name_exact=app.jobs.quiet')
-    await expect(empty(page).locator('p')).toHaveText(
+    await expect(page.getByTestId('executions-empty-text')).toHaveText(
       'No executions match these filters in the last 6h.',
     )
   })
@@ -134,7 +177,7 @@ test.describe('A task that is registered but has never run', () => {
       route.fulfill({ status: 500, contentType: 'application/json', body: '{}' }),
     )
     await page.goto('/executions?name_exact=app.jobs.quiet')
-    await expect(empty(page).locator('p')).toHaveText(
+    await expect(page.getByTestId('executions-empty-text')).toHaveText(
       'No executions match these filters in the last 6h.',
     )
   })
@@ -317,9 +360,7 @@ test.describe('Leaving a date view', () => {
   test('removing the date chip returns to the range the page showed before', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/executions?range=1h')
-    await page.getByRole('button', { name: 'Filter', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Time range', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Today' }).click()
+    await pickDay(page, 'Today')
     await expect(page.locator('[data-chip="time"]')).toBeVisible()
     expect(search(page).map(([key]) => key)).toEqual(['from_date', 'to_date'])
 
@@ -334,9 +375,7 @@ test.describe('Leaving a date view', () => {
   test('Clear all returns to the same range', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/executions?range=all')
-    await page.getByRole('button', { name: 'Filter', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Time range', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Yesterday' }).click()
+    await pickDay(page, 'Yesterday')
     await page.getByRole('button', { name: 'Clear all', exact: true }).click()
     await expect.poll(() => search(page)).toEqual([['range', 'all']])
   })
@@ -355,9 +394,7 @@ test.describe('Leaving a date view', () => {
   test('picking a range in the strip lands on the same window', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/executions?range=1h')
-    await page.getByRole('button', { name: 'Filter', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Time range', exact: true }).click()
-    await popover(page).getByRole('button', { name: 'Today' }).click()
+    await pickDay(page, 'Today')
     await page.getByRole('button', { name: '1h', exact: true }).click()
     await expect.poll(() => search(page)).toEqual([['range', '1h']])
   })
