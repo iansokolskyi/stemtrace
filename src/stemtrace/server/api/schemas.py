@@ -322,6 +322,46 @@ class FailureGroupListResponse(BaseModel):
     groups: list[FailureGroupResponse]
 
 
+class TaskStatsResponse(BaseModel):
+    """Runs, failures and runtime percentiles of one task name in the window."""
+
+    name: str
+    task_group: str | None = None
+    runs: int
+    failures: int
+    # None with no runs in the window.
+    failure_rate: float | None = None
+    # How many runs the percentiles come from.
+    runtime_samples: int
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    # Newest event of any run of the name, whatever the window or state.
+    last_run: datetime | None = None
+    last_state: TaskState | None = None
+
+
+class GroupStatsResponse(BaseModel):
+    """The same numbers for a task group, over all runs of its task names."""
+
+    name: str
+    task_count: int
+    runs: int
+    failures: int
+    failure_rate: float | None = None
+    runtime_samples: int
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    last_run: datetime | None = None
+
+
+class TaskStatsListResponse(BaseModel):
+    """Per-name stats and per-group rollups for one window."""
+
+    window: TimeWindowResponse
+    tasks: list[TaskStatsResponse]
+    groups: list[GroupStatsResponse]
+
+
 # Worker Registry schemas
 
 
