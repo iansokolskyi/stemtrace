@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
+import { failWebSocket } from './fixtures/web-socket'
 
 /**
  * The Signal box frame: theme, sidebar, top strip, drawer, badges and live status.
@@ -77,33 +78,6 @@ async function horizontalOverflow(page: Page): Promise<number> {
   return page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )
-}
-
-// The WebSocket fails at once, so the status reads "Polling" (the longest tooltip).
-async function failWebSocket(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    class FailingWebSocket extends EventTarget {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static readonly CLOSING = 2
-      static readonly CLOSED = 3
-      readyState = 3
-      onopen: (() => void) | null = null
-      onmessage: (() => void) | null = null
-      onerror: (() => void) | null = null
-      onclose: (() => void) | null = null
-      constructor() {
-        super()
-        setTimeout(() => {
-          this.onerror?.()
-          this.onclose?.()
-        }, 0)
-      }
-      close(): void {}
-      send(): void {}
-    }
-    Object.defineProperty(window, 'WebSocket', { value: FailingWebSocket })
-  })
 }
 
 // A WebSocket that never connects: the status stays on "Connecting".
@@ -247,7 +221,7 @@ test.describe('Sidebar', () => {
     await setupMockApi(page)
     await page.goto('/executions')
     const status = page.getByTestId('live-status')
-    await expect(status).toHaveText('Live')
+    await expect(status).toHaveText('Live streaming events')
     expect(await status.evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0)
   })
 
@@ -453,7 +427,7 @@ test.describe('Live connection', () => {
     await page.clock.install()
 
     await page.goto('/')
-    await expect(page.getByTestId('live-status')).toHaveText('Live')
+    await expect(page.getByTestId('live-status')).toHaveText('Live streaming events')
     // StrictMode (dev) mounts twice: the first mount's socket is dropped. Wait
     // until its close event has reached the page, where a stale handler would
     // report "disconnected" and schedule a reconnect.
@@ -465,6 +439,6 @@ test.describe('Live connection', () => {
 
     expect(logs.filter((line) => line.includes('[WebSocket] Disconnected'))).toEqual([])
     expect(sockets).toHaveLength(2)
-    await expect(page.getByTestId('live-status')).toHaveText('Live')
+    await expect(page.getByTestId('live-status')).toHaveText('Live streaming events')
   })
 })

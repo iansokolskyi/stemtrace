@@ -16,21 +16,27 @@ export type FilterField =
   | 'tag'
   | 'time'
 
+/** In the order "Filter by" lists them: the prototype's six, then the fields it has no menu for. */
 export const FIELD_LABEL: Record<FilterField, string> = {
   state: 'State',
-  name: 'Name',
-  exception_type: 'Exception',
+  task_group: 'Group',
+  name: 'Task name',
   hostname: 'Worker',
   queue: 'Queue',
-  task_group: 'Group',
+  time: 'Time range',
+  exception_type: 'Exception',
   tag: 'Tag',
-  time: 'Time',
 }
 
 export const FIELDS = Object.keys(FIELD_LABEL) as FilterField[]
 
-/** A state as the word shown for it: `FAILURE` is "Failure". */
-export const stateWord = (state: string): string => state.charAt(0) + state.slice(1).toLowerCase()
+/** A state as the word shown for it: `FAILURE` is "Failure", `STARTED` "Running" (as its chip). */
+export const stateWord = (state: string): string =>
+  state === 'STARTED' ? 'Running' : state.charAt(0) + state.slice(1).toLowerCase()
+
+/** The states the editor offers: the ones to look at first, then the rest in lifecycle order. */
+const LOOK_FIRST = ['FAILURE', 'RETRY', 'STARTED', 'PENDING', 'SUCCESS']
+const STATE_ORDER = [...LOOK_FIRST, ...TASK_STATES.filter((state) => !LOOK_FIRST.includes(state))]
 
 const MAX_SUGGESTIONS = 40
 
@@ -69,6 +75,7 @@ export function FilterPopover(props: FilterPopoverProps): ReactElement {
 function FieldList({ onPickField }: FilterPopoverProps): ReactElement {
   return (
     <div className="flex flex-col gap-0.5">
+      <p className="m-0 px-2 pt-1.5 pb-1 text-xs font-bold text-muted">Filter by</p>
       {FIELDS.map((field) => (
         <button key={field} type="button" className={itemButton} onClick={() => onPickField(field)}>
           {FIELD_LABEL[field]}
@@ -87,7 +94,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
   }
   return (
     <div className="flex flex-col gap-0.5">
-      {TASK_STATES.map((state) => (
+      {STATE_ORDER.map((state) => (
         <label
           key={state}
           className="flex cursor-pointer items-center gap-2 rounded-[2px] px-2 py-1 text-xs text-ink hover:bg-hover"

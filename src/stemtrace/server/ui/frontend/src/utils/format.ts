@@ -83,3 +83,12 @@ export function dateSearchParam(value: unknown): string | undefined {
 export function formatCount(count: number): string {
   return count.toLocaleString('en-US')
 }
+
+/** A rate as `0%`, `3.4%` (under 10%, one decimal) or `12%`. */
+export function formatPercent(rate: number): string {
+  if (rate === 0) return '0%'
+  return `${(rate * 100).toFixed(rate < 0.1 ? 1 : 0)}%`
+}
+
+/** Strips the `celery@` every default worker name starts with. */
+export const shortHost = (hostname: string): string => hostname.replace(/^celery@/, '')

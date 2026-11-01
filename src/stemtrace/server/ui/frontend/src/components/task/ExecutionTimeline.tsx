@@ -19,7 +19,7 @@ export function ExecutionTimeline({ events }: { events: TaskEvent[] }): ReactEle
   const iso = (time: number): string => new Date(time).toISOString()
 
   return (
-    <Panel title="Execution Timeline">
+    <Panel title="Execution timeline">
       <div className="px-4 pt-2 pb-3.5">
         <div
           aria-hidden="true"

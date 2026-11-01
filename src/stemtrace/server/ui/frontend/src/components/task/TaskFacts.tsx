@@ -1,5 +1,7 @@
+import { Link } from '@tanstack/react-router'
 import type { ReactElement, ReactNode } from 'react'
 import type { TaskNode } from '@/api/client'
+import { useCarriedRange } from '@/hooks/useCarriedRange'
 import { formatDateTime, formatSpan } from '@/utils/format'
 import { Panel } from './Panel'
 import { retryCount } from './retryCount'
@@ -10,12 +12,12 @@ interface Fact {
 }
 
 /** The facts the API knows for this task, in reading order. A fact without a value is left out. */
-function factsOf(task: TaskNode): Fact[] {
+function factsOf(task: TaskNode, workerLink: ReactNode): Fact[] {
   const retries = retryCount(task)
   const candidates: (Fact | false | null | undefined | '')[] = [
     task.task_group && { label: 'Group', value: task.task_group },
     task.tags && task.tags.length > 0 && { label: 'Tags', value: task.tags.join(', ') },
-    task.hostname && { label: 'Worker', value: task.hostname },
+    task.hostname && { label: 'Worker', value: workerLink },
     task.queue && { label: 'Queue', value: task.queue },
     task.routing_key && { label: 'Routing key', value: task.routing_key },
     // Zero is the normal case and says nothing
@@ -34,7 +36,17 @@ interface TaskFactsProps {
 
 /** Where and how the task ran, as a label/value list with a row only for what is known. */
 export function TaskFacts({ task }: TaskFactsProps): ReactElement | null {
-  const facts = factsOf(task)
+  const carried = useCarriedRange()
+  const workerLink = task.hostname && (
+    <Link
+      to="/executions"
+      search={{ hostname: task.hostname, ...carried }}
+      className="underline hover:text-muted"
+    >
+      {task.hostname}
+    </Link>
+  )
+  const facts = factsOf(task, workerLink)
   if (facts.length === 0) return null
 
   return (

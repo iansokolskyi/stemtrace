@@ -86,7 +86,7 @@ for (const base of ['', '/stemtrace']) {
       const task = api.tasks[0]
       await open(page, `/tasks/${task.task_id}`)
       const crumbs = page.getByRole('navigation', { name: 'Breadcrumb' })
-      await expect(crumbs).toContainText(task.task_id)
+      await expect(crumbs).toContainText(task.task_id.slice(0, 8))
       await crumbs.getByRole('link', { name: 'Executions' }).click()
       await expect(page).toHaveURL(`${base}/executions`)
     })

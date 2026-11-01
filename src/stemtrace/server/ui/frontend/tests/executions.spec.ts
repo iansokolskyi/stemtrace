@@ -39,7 +39,8 @@ test.describe('Executions requests', () => {
     await page.goto(
       '/executions?state=SUCCESS&name=jobs&name_exact=app.jobs.task_0001&from_date=2026-10-01&to_date=2026-10-02',
     )
-    await expect(page.getByText('app.jobs.task_0001', { exact: true })).toBeVisible()
+    // The row (the name is also the chip's value and the last breadcrumb)
+    await expect(page.locator('a[href^="/tasks/"]').getByText('app.jobs.task_0001')).toBeVisible()
 
     const filters = {
       state: 'SUCCESS',
