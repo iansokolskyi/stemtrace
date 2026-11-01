@@ -203,47 +203,63 @@ test.describe('Workers page', () => {
 
   // Status is decided per host: a restart leaves the old pid offline for a while, and that
   // must not make a host with a live process look down (list row, count, badge, host page).
+  // The backend keeps the old pid's own last_seen, so an offline process can also be the NEWEST
+  // sighting (event replay, clock skew): online must win whichever order they were seen in.
   for (const processes of [1, 2, 3]) {
     for (let live = 0; live <= processes; live++) {
-      test(`host with ${processes} process(es), ${live} online: row, count, badge and page agree`, async ({
-        page,
-      }) => {
-        test.skip(isRealMode, 'Mock-only test')
-        const host = 'celery@h'
-        mockApi?.setWorkers([
-          ...Array.from({ length: processes }, (_, i) =>
-            worker({
-              hostname: host,
-              pid: 10 + i,
-              // The online ones are the latest pids; offline ones were seen longer ago
-              status: i >= processes - live ? 'online' : 'offline',
-              last_seen: minutesAgo(i >= processes - live ? 1 : 60 + i),
-            }),
-          ),
-          worker({ hostname: 'celery@other', pid: 99 }),
-        ])
-        await loadWorkersPage(page, () => page.goto('/workers'))
-        const up = live > 0
-        await expect(table(page).getByRole('row')).toHaveCount(3) // header, host, other
-        await expect(rowOf(page, host)).toHaveCount(1)
-        await expect(rowOf(page, host).getByTestId('worker-status')).toHaveAttribute(
-          'data-status',
-          up ? 'online' : 'offline',
-        )
-        await expect(page.getByText(`${up ? 2 : 1} of 2 online`)).toBeVisible()
-        const badge = page
-          .getByRole('navigation', { name: 'Sections' })
-          .getByRole('link', { name: /Workers/ })
-        if (up) await expect(badge).not.toContainText('offline')
-        else await expect(badge).toContainText('1 offline')
-        await expect(badge).not.toContainText(/[2-9] offline/)
+      for (const offlineSeen of ['older', 'newer'] as const) {
+        test(`host with ${processes} process(es), ${live} online, offline seen ${offlineSeen}: row, count, badge and page agree`, async ({
+          page,
+        }) => {
+          test.skip(isRealMode, 'Mock-only test')
+          const host = 'celery@h'
+          const isOnline = (i: number) => i >= processes - live
+          mockApi?.setWorkers([
+            ...Array.from({ length: processes }, (_, i) =>
+              worker({
+                hostname: host,
+                pid: 10 + i,
+                status: isOnline(i) ? 'online' : 'offline',
+                // Online: 2m, 3m... ago (the highest pid is the latest). Offline: an hour ago, or
+                // seconds ago, newer than every online one.
+                last_seen: minutesAgo(
+                  isOnline(i)
+                    ? 1 + (processes - i)
+                    : offlineSeen === 'older'
+                      ? 60 + i
+                      : 0.1 + i / 100,
+                ),
+              }),
+            ),
+            worker({ hostname: 'celery@other', pid: 99 }),
+          ])
+          await loadWorkersPage(page, () => page.goto('/workers'))
+          const up = live > 0
+          // The leading process: the newest online one, else the newest offline one (pid 10)
+          const leadingPid = up ? 10 + processes - 1 : 10
+          const status = up ? 'online' : 'offline'
+          await expect(table(page).getByRole('row')).toHaveCount(3) // header, host, other
+          await expect(rowOf(page, host)).toHaveCount(1)
+          await expect(rowOf(page, host).getByTestId('worker-status')).toHaveAttribute(
+            'data-status',
+            status,
+          )
+          await expect(page.getByText(`${up ? 2 : 1} of 2 online`)).toBeVisible()
+          const badge = page
+            .getByRole('navigation', { name: 'Sections' })
+            .getByRole('link', { name: /Workers/ })
+          if (up) await expect(badge).not.toContainText('offline')
+          else await expect(badge).toContainText('1 offline')
+          await expect(badge).not.toContainText(/[2-9] offline/)
 
-        await rowOf(page, host).getByRole('link').click()
-        await expect(page.getByTestId('worker-status')).toHaveAttribute(
-          'data-status',
-          up ? 'online' : 'offline',
-        )
-      })
+          await rowOf(page, host).getByRole('link').click()
+          await expect(page.getByTestId('worker-status')).toHaveAttribute('data-status', status)
+          await expect(page.getByRole('note')).toHaveCount(up ? 0 : 1)
+          await expect(
+            page.getByRole('region', { name: 'Details' }).locator('dd').first(),
+          ).toHaveText(String(leadingPid))
+        })
+      }
     }
   }
 

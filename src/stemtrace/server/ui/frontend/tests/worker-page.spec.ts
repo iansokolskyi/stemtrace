@@ -216,28 +216,34 @@ test.describe('Worker page', () => {
     }
   })
 
-  test('with several processes on the host, the online one with the latest sighting leads', async ({
-    page,
-  }) => {
-    api.setWorkers([
-      worker({
-        pid: 1,
-        status: 'offline',
-        last_seen: minutesAgo(300),
-        registered_tasks: ['app.old'],
-      }),
-      worker({ pid: 2, status: 'online', last_seen: minutesAgo(1), registered_tasks: ['app.new'] }),
-      worker({ hostname: 'celery@beta', pid: 3 }),
-    ])
-    await openWorker(page)
-    await expect(page.getByTestId('worker-status')).toHaveText('Online')
-    await expect(page.getByRole('note')).toHaveCount(0)
-    await expect(panel(page, 'Details').locator('dd').first()).toHaveText('2')
-    // The registered tasks are the union of the host's processes, once each
-    const tasks = panel(page, 'Registered tasks')
-    await expect(tasks.getByRole('link', { name: 'app.new' })).toBeVisible()
-    await expect(tasks.getByRole('link', { name: 'app.old' })).toBeVisible()
-  })
+  for (const offlineSeen of ['older', 'newer'] as const) {
+    test(`an online process leads over an offline one seen ${offlineSeen}, and the tasks are their union`, async ({
+      page,
+    }) => {
+      api.setWorkers([
+        worker({
+          pid: 1,
+          status: 'offline',
+          last_seen: minutesAgo(offlineSeen === 'older' ? 300 : 0.1),
+          registered_tasks: ['app.old'],
+        }),
+        worker({
+          pid: 2,
+          status: 'online',
+          last_seen: minutesAgo(1),
+          registered_tasks: ['app.new'],
+        }),
+        worker({ hostname: 'celery@beta', pid: 3 }),
+      ])
+      await openWorker(page)
+      await expect(page.getByTestId('worker-status')).toHaveText('Online')
+      await expect(page.getByRole('note')).toHaveCount(0)
+      await expect(panel(page, 'Details').locator('dd').first()).toHaveText('2')
+      const tasks = panel(page, 'Registered tasks')
+      await expect(tasks.getByRole('link', { name: 'app.new' })).toBeVisible()
+      await expect(tasks.getByRole('link', { name: 'app.old' })).toBeVisible()
+    })
+  }
 
   test('asks for the refreshed list, never the per-host route, and the badge for the stored one', async ({
     page,
