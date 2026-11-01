@@ -167,7 +167,8 @@ test.describe('Worker page', () => {
   })
 
   test('a recent run opens the Task page', async ({ page }) => {
-    const task = run('app.billing.send')
+    // A child of another task, so its ID is not its root's
+    const task = run('app.billing.send', { root_id: 'root-of-another-flow' })
     api.addTask(task)
     await openWorker(page)
     const row = panel(page, 'Recent executions')
