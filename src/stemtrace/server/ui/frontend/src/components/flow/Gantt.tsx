@@ -192,7 +192,7 @@ export function Gantt({
                 labelW={labelW}
                 x={x}
                 node={nodes[row.id]}
-                label={rowLabel(row, nodes, containers, placed, shortNames)}
+                label={rowLabel(row, detailOf(row, layout), nodes, containers, placed, shortNames)}
                 mono={rowMono(row, containers, placed)}
                 detail={detailOf(row, layout)}
                 selected={row.kind !== 'more' && selectedId === row.id}
@@ -239,12 +239,13 @@ function rowMono(
 
 function rowLabel(
   row: TimelineRow,
+  detail: string,
   nodes: Record<string, GraphNode>,
   containers: Map<string, { sharedName: string | null }>,
   placed: Map<string, { containerId: string | null }>,
   shortNames: Map<string, string>,
 ): string {
-  if (row.kind === 'more') return `+${row.hidden} more`
+  if (row.kind === 'more') return `+${row.hidden} more: ${detail}`
   if (row.kind === 'notRun') return 'Callback'
   const node = nodes[row.id]
   if (!node) return row.id

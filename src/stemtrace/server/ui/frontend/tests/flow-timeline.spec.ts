@@ -122,7 +122,10 @@ test.describe('Timeline rows', () => {
     await expect(row(page, 'g')).toHaveCount(1) // the "+N more" row, keyed by its container
     await expect(row(page, 'cb')).toHaveAttribute('aria-label', /, on the critical path$/)
     await expect(row(page, 'm0')).not.toHaveAttribute('aria-label', /critical/)
-    await expect(row(page, 'g')).toHaveAttribute('aria-label', /^\+17 more: .*, on the critical path$/)
+    await expect(row(page, 'g')).toHaveAttribute(
+      'aria-label',
+      /^\+17 more: .*, on the critical path$/,
+    )
     await expect(row(page, 'g')).toHaveAttribute('data-critical', 'true')
     await expect(row(page, 'cb').getByText('critical', { exact: true })).toBeVisible()
   })
