@@ -97,7 +97,10 @@ def _actual_rows(store: GraphStore) -> list[dict[str, Any]]:
         {
             "name": t["name"],
             "execution_count": t["execution_count"],
-            "last_run": datetime.fromisoformat(t["last_run"]).isoformat()
+            # Python 3.10 fromisoformat() does not accept the "Z" suffix
+            "last_run": datetime.fromisoformat(
+                t["last_run"].replace("Z", "+00:00")
+            ).isoformat()
             if t["last_run"]
             else None,
         }
