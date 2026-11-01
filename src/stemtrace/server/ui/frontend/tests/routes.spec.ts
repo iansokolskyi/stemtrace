@@ -94,5 +94,27 @@ for (const base of ['', '/stemtrace']) {
       await crumbs.getByRole('link', { name: 'Executions' }).click()
       await expect(page).toHaveURL(`${base}/executions`)
     })
+
+    test('/workers lists the workers and a row opens the worker page', async ({ page }) => {
+      await setupMockApi(page)
+      await open(page, '/workers')
+      await expect(page).toHaveURL(`${base}/workers`)
+      const sections = page.getByRole('navigation', { name: 'Sections' })
+      await expect(sections.getByRole('link', { name: /Workers/ })).toHaveAttribute(
+        'aria-current',
+        'page',
+      )
+      await page.getByRole('link', { name: 'worker-1' }).click()
+      await expect(page).toHaveURL(`${base}/workers/worker-1`)
+      await expect(page.getByRole('heading', { name: 'worker-1', level: 1 })).toBeVisible()
+      // The sidebar still marks Workers as the section
+      await expect(sections.getByRole('link', { name: /Workers/ })).toHaveAttribute(
+        'aria-current',
+        'page',
+      )
+      const crumbs = page.getByRole('navigation', { name: 'Breadcrumb' })
+      await crumbs.getByRole('link', { name: 'Workers' }).click()
+      await expect(page).toHaveURL(`${base}/workers`)
+    })
   })
 }

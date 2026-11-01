@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchWorkers } from '@/api/client'
 import { registrySnapshot } from '@/api/queries'
+import { offlineHostCount } from '@/components/workers/workers'
 
 // Badges never trigger Celery inspect (refresh=false): an inspect blocks the request for a
 // second or more, and much longer while the broker is down. They show what the server already
@@ -14,7 +15,7 @@ export function useProblemCounts(): {
 } {
   const workers = useQuery({
     queryKey: ['badges', 'workers'],
-    queryFn: () => fetchWorkers(undefined, { refresh: false }),
+    queryFn: () => fetchWorkers({ refresh: false }),
     refetchInterval: BADGE_POLL_MS,
     retry: false,
   })
@@ -24,9 +25,7 @@ export function useProblemCounts(): {
     retry: false,
   })
   return {
-    offlineWorkers: workers.data
-      ? workers.data.workers.filter((w) => w.status === 'offline').length
-      : null,
+    offlineWorkers: workers.data ? offlineHostCount(workers.data.workers) : null,
     notRegistered: registry.data
       ? registry.data.tasks.filter((t) => t.status === 'not_registered').length
       : null,

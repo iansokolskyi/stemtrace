@@ -448,13 +448,14 @@ export async function fetchTaskRegistry(
   return apiFetch(url, 'Failed to fetch task registry')
 }
 
-export async function fetchWorkers(
-  hostname?: string,
-  { refresh = true }: InspectOptions = {},
-): Promise<WorkerListResponse> {
-  const base = hostname
-    ? `${API_BASE}/workers/${encodeURIComponent(hostname)}`
-    : `${API_BASE}/workers`
+/**
+ * Every worker. By default the server asks Celery first (inspect), so the list is current; the
+ * per-host route never does, so no page reads it.
+ */
+export async function fetchWorkers({
+  refresh = true,
+}: InspectOptions = {}): Promise<WorkerListResponse> {
+  const base = `${API_BASE}/workers`
   return apiFetch(refresh ? base : `${base}?refresh=false`, 'Failed to fetch workers')
 }
 

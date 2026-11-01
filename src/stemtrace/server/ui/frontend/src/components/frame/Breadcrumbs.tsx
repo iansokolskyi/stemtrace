@@ -45,7 +45,8 @@ export function Breadcrumbs(): ReactElement {
             {section.label}
           </Link>
         ) : (
-          <Link to={section.to} className={LINK}>
+          // Exact: on the detail page the list is the parent, not the current page
+          <Link to={section.to} activeOptions={{ exact: true }} className={LINK}>
             {section.label}
           </Link>
         ),
