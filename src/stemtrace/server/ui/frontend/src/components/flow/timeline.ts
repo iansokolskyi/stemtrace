@@ -10,6 +10,9 @@ import type { FlowLayout } from './layoutFlow'
 const MIN_SPAN_MS = 1000
 /** Ticks are placed so that at most this many steps fit on the axis. */
 const TICK_STEPS = 5
+/** An open bar may run to `settledEnd + max(OPEN_CAP_FACTOR * settledSpan, OPEN_CAP_FLOOR_MS)`. */
+export const OPEN_CAP_FACTOR = 3
+export const OPEN_CAP_FLOOR_MS = 30_000
 /** The Timeline indents a row by its depth up to this many levels. */
 export const MAX_DEPTH = 4
 

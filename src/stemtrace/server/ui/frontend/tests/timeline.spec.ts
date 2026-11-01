@@ -7,6 +7,8 @@ import {
   barOf,
   buildTimeline,
   criticalPath,
+  OPEN_CAP_FACTOR,
+  OPEN_CAP_FLOOR_MS,
   type Timeline,
 } from '../src/components/flow/timeline'
 import { allCaptures, graphOf, node } from './fixtures/flow-graphs'
@@ -429,6 +431,116 @@ test.describe('buildTimeline: now', () => {
   })
 })
 
+test.describe('buildTimeline: the cap on an open bar', () => {
+  /** a ends at 2 s (the settled work); b started at 0.5 s and is still running. */
+  const withRunning = () =>
+    graphOf(
+      timed('a', { f: 0, w: 0, r: 2000, u: 2000 }, { children: ['b'] }),
+      timed('b', { f: 500, w: 0, u: 500 }, { parent_id: 'a', state: 'STARTED' }),
+    )
+  const capAfter = (span: number) => Math.max(OPEN_CAP_FACTOR * span, OPEN_CAP_FLOOR_MS)
+
+  test('uses now while it is inside the cap: the bar and the axis grow, nothing is cut', () => {
+    const { timeline } = timelineOf(withRunning(), 'a', false, T0 + 10_000)
+
+    expect(timeline.axis).toMatchObject({ t1: T0 + 10_000, cut: false })
+    expect(barIn(timeline, 'b')).toMatchObject({ end: T0 + 10_000, open: true, cut: false })
+    expect(barIn(timeline, 'b').elapsedMs).toBeNull()
+  })
+
+  test('holds the axis at settledEnd + the cap once now passes it, and cuts the bar', () => {
+    const now = T0 + 2000 + capAfter(2000) + 5000
+    const { timeline } = timelineOf(withRunning(), 'a', false, now)
+
+    expect(timeline.axis).toMatchObject({
+      t1: T0 + 2000 + OPEN_CAP_FLOOR_MS,
+      settledEnd: T0 + 2000,
+      cut: true,
+    })
+    expect(barIn(timeline, 'b')).toMatchObject({
+      end: T0 + 2000 + OPEN_CAP_FLOOR_MS,
+      cut: true,
+      elapsedMs: now - (T0 + 500),
+    })
+  })
+
+  test('the label grows with now while the axis stays where it is', () => {
+    const at = (offset: number) =>
+      timelineOf(withRunning(), 'a', false, T0 + 2000 + OPEN_CAP_FLOOR_MS + offset).timeline
+    const [early, late] = [at(1000), at(3_600_000)]
+
+    expect(early.axis?.t1).toBe(late.axis?.t1)
+    expect(barIn(late, 'b').elapsedMs).toBe((barIn(early, 'b').elapsedMs as number) + 3_599_000)
+  })
+
+  test('is not cut at exactly the cap', () => {
+    const { timeline } = timelineOf(withRunning(), 'a', false, T0 + 2000 + OPEN_CAP_FLOOR_MS)
+
+    expect(timeline.axis).toMatchObject({ t1: T0 + 2000 + OPEN_CAP_FLOOR_MS, cut: false })
+  })
+
+  test('the cap grows with the settled span by OPEN_CAP_FACTOR', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 100_000, u: 100_000 }, { children: ['b'] }),
+      timed('b', { f: 500, w: 0, u: 500 }, { parent_id: 'a', state: 'STARTED' }),
+    )
+    const { timeline } = timelineOf(nodes, 'a', false, T0 + 1e10)
+
+    expect(timeline.axis?.t1).toBe(T0 + 100_000 + OPEN_CAP_FACTOR * 100_000)
+    // the finished work keeps a quarter of the plot or more
+    expect(100_000 / ((timeline.axis?.t1 ?? 0) - T0)).toBeGreaterThanOrEqual(0.25)
+  })
+
+  test('a browser clock behind the server shrinks nothing and a clock far ahead is capped', () => {
+    const behind = timelineOf(withRunning(), 'a', false, T0 - 3_600_000).timeline
+    const ahead = timelineOf(withRunning(), 'a', false, T0 + 1e12).timeline
+
+    expect(behind.axis).toMatchObject({ t1: T0 + 2000, cut: false })
+    expect(barIn(behind, 'b')).toMatchObject({ end: T0 + 2000, cut: false })
+    expect(ahead.axis).toMatchObject({ t1: T0 + 2000 + OPEN_CAP_FLOOR_MS, cut: true })
+  })
+
+  test('a flow with only an open task settles at its start', () => {
+    const nodes = graphOf(timed('a', { f: 0, w: 100, u: 100 }, { state: 'STARTED' }))
+    const { timeline } = timelineOf(nodes, 'a', false, T0 + 1e9)
+
+    expect(timeline.axis).toMatchObject({
+      settledEnd: T0 + 100,
+      t1: T0 + 100 + OPEN_CAP_FLOOR_MS,
+      cut: true,
+    })
+  })
+
+  test('a queued task counts its wait from first_seen', () => {
+    const nodes = graphOf(timed('a', { f: 0, u: 0 }, { state: 'PENDING' }))
+    const { timeline } = timelineOf(nodes, 'a', false, T0 + 4_000_000)
+
+    expect(barIn(timeline, 'a')).toMatchObject({ cut: true, hasRun: false, elapsedMs: 4_000_000 })
+  })
+
+  test('a "+N more" bar with a hidden running task is cut and counts from its start', () => {
+    const nodes = timedChord(
+      13,
+      (i) => 2000 + i,
+      (i) => (i === 5 ? { state: 'STARTED', runtime_ms: null, total_runtime_ms: null } : {}),
+    )
+    const { timeline } = timelineOf(nodes, 'root', false, T0 + 1e10)
+    const bar = timeline.rows.find((row) => row.kind === 'more')?.bar
+
+    expect(bar).toMatchObject({ cut: true, open: true })
+    expect(bar?.elapsedMs).toBe(T0 + 1e10 - (bar?.runFrom ?? 0))
+  })
+
+  test('a finished flow has no cut and no label, however late now is', () => {
+    const { timeline } = timelineOf(timedChain(), 'a', false, T0 + 1e12)
+
+    expect(timeline.axis).toMatchObject({ t1: T0 + 2000, cut: false })
+    for (const row of timeline.rows) {
+      expect(row.bar).toMatchObject({ cut: false, elapsedMs: null })
+    }
+  })
+})
+
 test.describe('buildTimeline: the rows', () => {
   test('are the diagram in layout order, one per task, none for a container', () => {
     const { timeline, layout } = timelineOf(
@@ -711,6 +823,125 @@ test.describe('criticalPath', () => {
     expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b'])
   })
 
+  /** A chord `ch` over header rows (each a chain of tasks), then callback `cb`. */
+  function chordOfRows(rows: Record<string, Timing>[], cb: Timing): Record<string, GraphNode> {
+    const list: GraphNode[] = []
+    const heads: string[] = []
+    for (const row of rows) {
+      const ids = Object.keys(row)
+      heads.push(ids[0])
+      ids.forEach((id, i) => {
+        const last = i === ids.length - 1
+        list.push(
+          timed(id, row[id], {
+            parent_id: i === 0 ? 'ch' : ids[i - 1],
+            children: last ? [] : [ids[i + 1]],
+            group_id: last ? 'ch' : null,
+          }),
+        )
+      })
+    }
+    return graphOf(
+      node({
+        task_id: 'ch',
+        name: 'chord',
+        node_type: 'CHORD',
+        group_id: 'ch',
+        chord_id: 'cb',
+        children: [...heads, 'cb'],
+      }),
+      ...list,
+      timed('cb', cb, { parent_id: 'ch' }),
+    )
+  }
+
+  test('a callback after a chain header follows the header chain that ended last', () => {
+    // h1 ends at 1 s, the chain a -> b ends at 4 s (a at 0.5 s), cb runs 4 s to 4.5 s
+    const nodes = chordOfRows(
+      [
+        { h1: { f: 0, w: 0, r: 1000, u: 1000 } },
+        { a: { f: 0, w: 0, r: 500, u: 500 }, b: { f: 500, w: 0, r: 3500, u: 4000 } },
+      ],
+      { f: 4000, w: 0, r: 500, u: 4500 },
+    )
+
+    expect(timelineOf(nodes, 'ch').timeline.path).toEqual(['ch', 'a', 'b', 'cb'])
+  })
+
+  test('a callback after rows of unequal length follows the longest row when it ends last', () => {
+    const nodes = chordOfRows(
+      [
+        { h1: { f: 0, w: 0, r: 1000, u: 1000 } },
+        {
+          a: { f: 0, w: 0, r: 200, u: 200 },
+          b: { f: 200, w: 0, r: 200, u: 400 },
+          c: { f: 400, w: 0, r: 4600, u: 5000 },
+        },
+      ],
+      { f: 5000, w: 0, r: 100, u: 5100 },
+    )
+
+    expect(timelineOf(nodes, 'ch').timeline.path).toEqual(['ch', 'a', 'b', 'c', 'cb'])
+  })
+
+  test('a callback after rows of unequal length follows the shorter row when it ends last', () => {
+    const nodes = chordOfRows(
+      [
+        { h1: { f: 0, w: 0, r: 4000, u: 4000 } },
+        { a: { f: 0, w: 0, r: 200, u: 200 }, b: { f: 200, w: 0, r: 200, u: 400 } },
+      ],
+      { f: 4000, w: 0, r: 100, u: 4100 },
+    )
+
+    expect(timelineOf(nodes, 'ch').timeline.path).toEqual(['ch', 'h1', 'cb'])
+  })
+
+  test('of two rows that end together the one the layout reached first is critical', () => {
+    const nodes = chordOfRows(
+      [
+        { h1: { f: 0, w: 0, r: 2000, u: 2000 } },
+        { a: { f: 0, w: 0, r: 500, u: 500 }, b: { f: 500, w: 0, r: 1500, u: 2000 } },
+      ],
+      { f: 2000, w: 0, r: 100, u: 2100 },
+    )
+
+    expect(timelineOf(nodes, 'ch').timeline.path).toEqual(['ch', 'h1', 'cb'])
+  })
+
+  test('a container that is a head of a container leads to its members like any other node', () => {
+    const nodes = graphOf(
+      node({
+        task_id: 'ch',
+        name: 'group',
+        node_type: 'GROUP',
+        group_id: 'ch',
+        children: ['h1', 'inner'],
+      }),
+      timed('h1', { f: 0, w: 0, r: 1000, u: 1000 }, { group_id: 'ch', parent_id: 'ch' }),
+      node({
+        task_id: 'inner',
+        name: 'group',
+        node_type: 'GROUP',
+        group_id: 'inner',
+        parent_id: 'ch',
+        children: ['i0', 'i1'],
+      }),
+      timed('i0', { f: 0, w: 0, r: 3000, u: 3000 }, { group_id: 'inner' }),
+      timed('i1', { f: 0, w: 0, r: 4000, u: 4000 }, { group_id: 'inner' }),
+    )
+
+    expect(timelineOf(nodes, 'ch').timeline.path).toEqual(['ch', 'inner', 'i1'])
+  })
+
+  test('falls back to the breadth-first parents when every in-edge was visited', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 100, u: 100 }, { children: ['b'] }),
+      timed('b', { f: 100, w: 0, r: 100, u: 200 }, { children: ['a'], parent_id: 'a' }),
+    )
+
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b'])
+  })
+
   test('stops at a task whose children all ended before it did (they ran alongside it)', () => {
     // a starts b at once and runs on for 5 s; b is done at 600
     const nodes = graphOf(
@@ -818,9 +1049,11 @@ function reachable(layout: FlowLayout, rootId: string): Set<string> {
 /** What is wrong with the timeline of `nodes`, as one line each; empty when every rule holds. */
 function problemsWith(label: string, nodes: Record<string, GraphNode>, rootId: string): string[] {
   const problems: string[] = []
-  for (const expandAll of [false, true]) {
-    const { timeline, layout } = timelineOf(nodes, rootId, expandAll)
-    const where = `${label}${expandAll ? ' (expanded)' : ''}`
+  const anyOpen = timelineOf(nodes, rootId, false, 0).timeline.rows.some((row) => row.bar?.open)
+  const clocks = anyOpen ? [0, T0 + 5000, T0 + 1e10] : [0]
+  for (const [expandAll, now] of [false, true].flatMap((e) => clocks.map((c) => [e, c] as const))) {
+    const { timeline, layout } = timelineOf(nodes, rootId, expandAll, now)
+    const where = `${label}${expandAll ? ' (expanded)' : ''}${now ? ` now=${now - T0}` : ''}`
     const check = (ok: boolean, what: string): void => {
       if (!ok) problems.push(`${where}: ${what}`)
     }
@@ -833,6 +1066,28 @@ function problemsWith(label: string, nodes: Record<string, GraphNode>, rootId: s
       continue
     }
     check(Number.isFinite(axis.t0) && Number.isFinite(axis.t1), 'axis is not finite')
+    const open = bars.some((bar) => bar.open)
+    const cap = Math.max(OPEN_CAP_FACTOR * (axis.settledEnd - axis.t0), OPEN_CAP_FLOOR_MS)
+    const wanted = open
+      ? Math.max(axis.settledEnd, Math.min(now, axis.settledEnd + cap))
+      : axis.settledEnd
+    check(
+      axis.t1 === Math.max(wanted, axis.t0 + 1000),
+      `axis end ${axis.t1 - T0} is not ${wanted - T0}`,
+    )
+    check(axis.cut === (open && now > axis.settledEnd + cap), 'cut flag')
+    check(
+      bars.every((bar) => bar.cut === axis.cut || !bar.open),
+      'an open bar disagrees with the axis about the cut',
+    )
+    check(
+      bars.every((bar) => (bar.elapsedMs === null) === !(bar.open && axis.cut)),
+      'a label without a cut, or a cut without a label',
+    )
+    check(
+      bars.every((bar) => bar.open || bar.end <= axis.settledEnd),
+      'a closed bar ends after settledEnd',
+    )
     check(axis.t1 - axis.t0 >= 1000, 'axis is shorter than one second')
     for (const tick of axis.ticks) {
       check(Number.isFinite(tick.t) && !tick.label.includes('NaN'), `tick ${tick.label}`)
@@ -865,6 +1120,20 @@ function problemsWith(label: string, nodes: Record<string, GraphNode>, rootId: s
       check(linked(layout, path[i - 1], path[i]), `${path[i - 1]} -> ${path[i]} is not a link`)
     }
     check(ends.has(path[path.length - 1]), 'the path ends on an untimed node')
+    // Oracle: each step back is to the in-edge that ended last (an untimed one ranks last)
+    const ids = [
+      ...layout.tasks.map((task) => task.id),
+      ...layout.containers.map((box) => box.id),
+      ...layout.more.filter((block) => block.kind === 'more').map((b) => `${b.containerId}:more`),
+    ]
+    const rank = (id: string): number => ends.get(id) ?? Number.NEGATIVE_INFINITY
+    for (let i = 1; i < path.length; i++) {
+      const latestIn = Math.max(...ids.filter((id) => linked(layout, id, path[i])).map(rank))
+      check(
+        rank(path[i - 1]) === latestIn,
+        `${path[i]} is entered from ${path[i - 1]} (${rank(path[i - 1])}), the latest in-edge ends at ${latestIn}`,
+      )
+    }
     // Oracle: the path ends at the latest end among the timed nodes the root can reach
     const reach = reachable(layout, rootId)
     const latest = Math.max(...[...ends].filter(([id]) => reach.has(id)).map(([, end]) => end))
@@ -1028,7 +1297,10 @@ test.describe('timeline sweeps', () => {
 
       const count = pick([2, 5, 12, 13, 20])
       const members = Array.from({ length: count }, (_, i) =>
-        randomNode(`m${i}`, { group_id: 'ch' }),
+        randomNode(`m${i}`, { group_id: 'ch', ...(i % 3 === 1 ? { parent_id: `h${i}` } : {}) }),
+      )
+      const heads = members.flatMap((m, i) =>
+        i % 3 === 1 ? [randomNode(`h${i}`, { parent_id: 'ch', children: [m.task_id] })] : [],
       )
       const withCallback = random() < 0.7
       const chordNodes = graphOf(
@@ -1040,10 +1312,15 @@ test.describe('timeline sweeps', () => {
           group_id: 'ch',
           chord_id: withCallback ? 'cb' : null,
           not_run_reason: withCallback ? null : 'header_failed',
-          children: [...members.map((m) => m.task_id), ...(withCallback ? ['cb'] : [])],
+          children: [
+            ...members.filter((_, i) => i % 3 !== 1).map((m) => m.task_id),
+            ...heads.map((h) => h.task_id),
+            ...(withCallback ? ['cb'] : []),
+          ],
           parent_id: 'root',
         }),
         ...members,
+        ...heads,
         ...(withCallback ? [randomNode('cb', { parent_id: 'ch' })] : []),
       )
       problems.push(...problemsWith(`random chord ${round}`, chordNodes, 'root'))
