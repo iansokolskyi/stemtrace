@@ -6,6 +6,7 @@ import {
   createSuccessTask,
   type MockRegisteredTask,
 } from './fixtures/mock-data'
+import { columnHeaders, expectFilledWithToken } from './fixtures/table'
 
 /**
  * Tests for the Registry page: a table with task, group, status, runs and last run. Mocked API
@@ -100,11 +101,13 @@ test.describe('Registry page', () => {
       return
     }
 
-    await expect(
-      table(page)
-        .getByRole('columnheader')
-        .evaluateAll((cells) => cells.map((cell) => cell.textContent)),
-    ).resolves.toEqual(['Task', 'Group', 'Status', 'Runs', 'Last run'])
+    expect(await columnHeaders(table(page))).toEqual([
+      'Task',
+      'Group',
+      'Status',
+      'Runs',
+      'Last run',
+    ])
 
     const add = rowOf(page, 'app.jobs.add').getByRole('cell')
     await expect(add.nth(0)).toHaveText('app.jobs.add')
@@ -368,15 +371,7 @@ test.describe('Registry page', () => {
       const block = rowOf(page, 'app.jobs.old_sync')
         .getByTestId('registry-status')
         .locator('[data-status-icon]')
-      const got = await block.evaluate((el) => {
-        const probe = document.createElement('div')
-        probe.style.backgroundColor = 'var(--anomaly)'
-        document.body.append(probe)
-        const want = getComputedStyle(probe).backgroundColor
-        probe.remove()
-        return { actual: getComputedStyle(el).backgroundColor, want }
-      })
-      expect(got.actual).toBe(got.want)
+      await expectFilledWithToken(block, '--anomaly')
     })
   }
 
