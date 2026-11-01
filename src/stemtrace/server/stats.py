@@ -417,6 +417,7 @@ class _NameTally:
     __slots__ = ("failures", "last", "runs", "samples")
 
     def __init__(self) -> None:
+        """Start with no records."""
         self.runs = self.failures = 0
         self.samples: list[int] = []
         # (last_updated, task_id) of the newest record, and its state; the
