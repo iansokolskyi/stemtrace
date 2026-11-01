@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import { setupMockApi } from './fixtures/mock-api'
+import { failWebSocket } from './fixtures/web-socket'
 
 /**
  * The Signal box frame: theme, sidebar, top strip, drawer, badges and live status.
@@ -77,33 +78,6 @@ async function horizontalOverflow(page: Page): Promise<number> {
   return page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )
-}
-
-// The WebSocket fails at once, so the status reads "Polling" (the longest tooltip).
-async function failWebSocket(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    class FailingWebSocket extends EventTarget {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static readonly CLOSING = 2
-      static readonly CLOSED = 3
-      readyState = 3
-      onopen: (() => void) | null = null
-      onmessage: (() => void) | null = null
-      onerror: (() => void) | null = null
-      onclose: (() => void) | null = null
-      constructor() {
-        super()
-        setTimeout(() => {
-          this.onerror?.()
-          this.onclose?.()
-        }, 0)
-      }
-      close(): void {}
-      send(): void {}
-    }
-    Object.defineProperty(window, 'WebSocket', { value: FailingWebSocket })
-  })
 }
 
 // A WebSocket that never connects: the status stays on "Connecting".
