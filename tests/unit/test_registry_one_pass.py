@@ -79,7 +79,8 @@ def _expected_rows(store: GraphStore) -> list[dict[str, Any]]:
             n.name for n in store._graph.nodes.values() if n.node_type == NodeType.TASK
         }
     rows = []
-    for name in sorted(names):
+    # The registry hides Celery built-ins (see test_routes_registry_builtins.py).
+    for name in sorted(n for n in names if not n.startswith("celery.")):
         last = _reference_last_run(store, name)
         rows.append(
             {
