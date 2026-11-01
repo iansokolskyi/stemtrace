@@ -1,4 +1,4 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 import { shortestUniqueSuffixes } from '../src/utils/taskNames'
 import { flowNode, flowNodes } from './fixtures/flow'
 import { setupMockApi } from './fixtures/mock-api'
@@ -30,10 +30,10 @@ test.describe('Task names - colliding short names', () => {
   }
 
   /** Both colliding names are told apart, and no label is the bare `send`. */
-  async function expectSendLabelsTold(page: Page) {
-    await expect(page.getByText('billing.send', { exact: true })).toBeVisible()
-    await expect(page.getByText('email.send', { exact: true })).toBeVisible()
-    await expect(page.getByText('send', { exact: true })).toHaveCount(0)
+  async function expectSendLabelsTold(page: Page, within: Page | Locator = page) {
+    await expect(within.getByText('billing.send', { exact: true })).toBeVisible()
+    await expect(within.getByText('email.send', { exact: true })).toBeVisible()
+    await expect(within.getByText('send', { exact: true })).toHaveCount(0)
   }
 
   test('graph nodes show the shortest name that is unique in the graph', async ({ page }) => {
@@ -50,7 +50,9 @@ test.describe('Task names - colliding short names', () => {
     await expect(flowNode(page, email.task_id)).toContainText('email.send')
     // Nothing else ends in `start`: one segment is enough
     await expect(flowNode(page, root.task_id)).toContainText('start')
-    await expectSendLabelsTold(page)
+    await expectSendLabelsTold(page, page.getByTestId('flow-canvas'))
+    // The Timeline under the diagram tells them apart the same way
+    await expectSendLabelsTold(page, page.getByRole('region', { name: 'Timeline' }))
   })
 
   test('timeline rows show the shortest unique name', async ({ page }) => {
@@ -84,8 +86,12 @@ test.describe('Task names - colliding short names', () => {
 
     await page.goto(`/flows/${root.task_id}`)
     await flowNodes(page).first().waitFor({ state: 'attached' })
-    await expect(page.getByRole('button', { name: /app\.billing\.send/ })).toHaveCount(1)
-    await expect(page.getByRole('button', { name: /app\.email\.send/ })).toHaveCount(1)
+    const diagram = page.getByTestId('flow-canvas')
+    const timeline = page.getByRole('region', { name: 'Timeline' })
+    await expect(diagram.getByRole('button', { name: /app\.billing\.send/ })).toHaveCount(1)
+    await expect(diagram.getByRole('button', { name: /app\.email\.send/ })).toHaveCount(1)
+    await expect(timeline.getByRole('button', { name: /^app\.billing\.send,/ })).toHaveCount(1)
+    await expect(timeline.getByRole('button', { name: /^app\.email\.send,/ })).toHaveCount(1)
 
     await page.goto('/?view=timeline')
     await expect(page.getByRole('link', { name: 'app.billing.send' })).toHaveCount(1)
