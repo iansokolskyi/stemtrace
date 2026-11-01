@@ -23,8 +23,8 @@ export function NavItem({ to, label, icon, badge, onNavigate }: NavItemProps): R
   return (
     <Link
       to={to}
-      // Only Executions has a range; the other pages' search types have no such key
-      search={(to === '/executions' ? carried : {}) as never}
+      // Only Executions and Flows have a range; the other pages' search types have no such key
+      search={(to === '/executions' || to === '/flows' ? carried : {}) as never}
       onClick={onNavigate}
       activeOptions={{ includeSearch: false }}
       className="nav-item flex items-center gap-2.5 rounded-[3px] px-2.5 py-[7px] font-semibold text-muted hover:bg-hover hover:text-ink"

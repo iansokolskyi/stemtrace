@@ -232,6 +232,18 @@ export interface TaskDetailResponse {
   flow_root_id?: string | null
 }
 
+/** Totals over a flow's whole graph, on the root nodes of the graphs list. */
+export interface FlowSummary {
+  /** Tasks in the flow (synthetic group and chord nodes excluded). */
+  task_count: number
+  /** Tasks per state, by state value; states with no task are left out. */
+  state_counts: Record<string, number>
+  /** Chords whose callback can't run because a header failed, was rejected, revoked or ignored. */
+  not_run_count: number
+  /** The worst task state in the flow (the root's own when it has no tasks). */
+  state: string
+}
+
 export interface GraphNode {
   task_id: string
   name: string
@@ -245,6 +257,8 @@ export interface GraphNode {
   duration_ms: number | null
   first_seen: string | null
   last_updated: string | null
+  /** Root nodes in the graphs list only; null when the server has no summary for the flow. */
+  flow?: FlowSummary | null
 }
 
 export interface GraphResponse {
@@ -344,6 +358,8 @@ function setFilterParams(searchParams: URLSearchParams, filters: TimedFilters): 
 export interface FetchGraphsParams {
   limit?: number
   offset?: number
+  /** Updated within this long (`1h`, `6h`); the API rejects it together with `from_date`. */
+  within?: string
   from_date?: string
   to_date?: string
 }
@@ -385,6 +401,7 @@ export async function fetchGraphs(params?: FetchGraphsParams): Promise<GraphList
   const searchParams = new URLSearchParams()
   if (params?.limit) searchParams.set('limit', params.limit.toString())
   if (params?.offset) searchParams.set('offset', params.offset.toString())
+  if (params?.within) searchParams.set('within', params.within)
   if (params?.from_date) searchParams.set('from_date', params.from_date)
   if (params?.to_date) searchParams.set('to_date', params.to_date)
 
