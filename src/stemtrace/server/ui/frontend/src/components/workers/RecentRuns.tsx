@@ -60,7 +60,7 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
                           to="/tasks/$taskId"
                           params={{ taskId: run.task_id }}
                           aria-label={run.name}
-                          className="block max-w-[320px] after:absolute after:inset-0"
+                          className="block max-w-[210px] after:absolute after:inset-0"
                         >
                           <TaskName name={run.name} />
                         </Link>

@@ -53,7 +53,7 @@ function WorkerPage() {
   return (
     <div>
       <WorkerHeader worker={worker} />
-      <div className="grid grid-cols-1 items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 items-start gap-x-4 xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="min-w-0">
           <RegisteredTasks tasks={registeredTasks(processes)} />
           <RecentRuns hostname={hostname} />
