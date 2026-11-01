@@ -195,18 +195,10 @@ test.describe('Graph Detail Page', () => {
     }
     await page.waitForLoadState('networkidle')
 
-    // Click on a task node link (not container), which navigates to task details
-    // Task nodes contain links to /tasks/:taskId
-    const taskLink = flowNodes(page).locator('a[href*="/tasks/"]').first()
-    const linkVisible = await taskLink.isVisible().catch(() => false)
-
-    if (linkVisible) {
-      await taskLink.click()
-      await page.waitForLoadState('networkidle')
-
-      // Should navigate to task details page
-      await expect(page).toHaveURL(/\/tasks\//)
-    }
+    // Choosing a task node shows it in the inspector, whose button opens the task page
+    await flowNodes(page).and(page.locator('[data-node-type="TASK"]')).first().click()
+    await page.getByRole('link', { name: 'Open full detail' }).click()
+    await expect(page).toHaveURL(/\/tasks\//)
   })
 })
 
@@ -281,7 +273,7 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
     mockApi = isRealMode ? null : await setupMockApi(page)
   })
 
-  test('container nodes are rendered with dashed borders', async ({ page }) => {
+  test('container nodes are rendered as a raised box', async ({ page }) => {
     const hasGraph = await navigateToFirstGraph(page)
     if (!hasGraph) {
       test.skip()
@@ -296,12 +288,8 @@ test.describe('Container Nodes (GROUP/CHORD)', () => {
       const firstContainer = containerNodes.first()
       await expect(firstContainer).toBeVisible()
 
-      // Container should have dashed border style
-      const borderStyle = await firstContainer.evaluate((el) => {
-        const style = window.getComputedStyle(el)
-        return style.borderStyle
-      })
-      expect(borderStyle).toBe('dashed')
+      // The container is a raised box with an 8px radius, behind its members
+      await expect(page.locator('.flow-cbox').first()).toHaveAttribute('rx', '8')
     }
   })
 
@@ -486,9 +474,8 @@ test.describe('Graph Page - Mock Scenarios', () => {
     }
     await expect(flowContainerLabels(page)).toHaveAttribute('data-container-id', chordNode.task_id)
 
-    // CHORD label should be visible
-    const chordText = page.getByText('CHORD')
-    await expect(chordText.first()).toBeVisible()
+    // The chord's label says what it holds, in words
+    await expect(flowContainerLabels(page)).toContainText('Chord of 3 process_item')
   })
 })
 
@@ -756,7 +743,7 @@ test.describe('Graph Page - Malformed Links', () => {
     await expect(flowNode(page, callback.task_id)).toHaveCount(1)
     // parent -> callback, parent -> chord, and one edge per header -> callback
     await expect(flowEdges(page)).toHaveCount(4)
-    expect(messages.filter((text) => /key|duplicate|React Flow/i.test(text))).toEqual([])
+    expect(messages.filter((text) => /key|duplicate/i.test(text))).toEqual([])
   })
 })
 
@@ -833,28 +820,6 @@ async function settledBox(locator: Locator) {
   return JSON.parse(last) as { x: number; y: number; width: number; height: number }
 }
 
-/**
- * The viewport's transform once it has stopped changing: wheel zooms and fits
- * take a few frames, so one read can catch them half way.
- */
-async function settledViewport(page: Page): Promise<string> {
-  // xyflow-only: removed with the renderer in PR 4c
-  const viewport = page.locator('.react-flow__viewport')
-  let last: string | null = null
-  await expect
-    .poll(
-      async () => {
-        const now = await viewport.getAttribute('style')
-        const settled = now === last
-        last = now
-        return settled
-      },
-      { intervals: [150], timeout: 10_000 },
-    )
-    .toBe(true)
-  return last ?? ''
-}
-
 // Chromium's intersectionRatio is a float: a fully visible node at a fractional
 // position (the fitted zoom is rarely a whole number) reports 0.9999997, not 1.
 const FULLY_VISIBLE = 0.99
@@ -927,32 +892,6 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(flowNode(page, second.task_id)).toContainText('SUCCESS')
   })
 
-  // xyflow-only: removed with the renderer in PR 4c
-  test('keeps a node the user dragged where it was left', async ({ page }) => {
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    const { first, second } = runningChain()
-    mockApi.addTasks([first, second])
-    const { push } = await openLiveGraph(page, first.task_id)
-    const dragged = flowNode(page, first.task_id)
-    const before = (await dragged.boundingBox())!
-    // Drag by the card's id line, not the link text (a click would navigate)
-    await page.mouse.move(before.x + 4, before.y + 4)
-    await page.mouse.down()
-    await page.mouse.move(before.x + 4, before.y + 124, { steps: 8 })
-    await page.mouse.up()
-    await expect.poll(async () => (await dragged.boundingBox())!.y).toBeGreaterThan(before.y + 50)
-    // The node's own position (flow coordinates), unlike its box on screen,
-    // does not change when the page re-fits the view for the new task
-    const position = async () => dragged.evaluate((el) => (el as HTMLElement).style.transform)
-    const moved = await position()
-
-    const third = finishStepTwo(mockApi, first, second)
-    await push(third)
-    await expect(flowNode(page, third.task_id)).toBeVisible()
-
-    expect(await position()).toBe(moved)
-  })
-
   test('keeps re-fitting after a click on the empty canvas', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
@@ -976,74 +915,6 @@ test.describe('Graph Page - Live Updates', () => {
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
 
-    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
-  })
-
-  // xyflow-only: removed with the renderer in PR 4c
-  test('shows a new task in view once its size is known, however late that is', async ({
-    page,
-  }) => {
-    // React Flow learns a node's size from a ResizeObserver: report it late
-    await page.addInitScript(() => {
-      const Native = window.ResizeObserver
-      window.ResizeObserver = class extends Native {
-        constructor(callback: ResizeObserverCallback) {
-          super((entries, observer) => {
-            setTimeout(() => callback(entries, observer), 600)
-          })
-        }
-      }
-    })
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    const { first, second } = runningChain()
-    mockApi.addTasks([first, second])
-    const { push } = await openLiveGraph(page, first.task_id)
-
-    const third = finishStepTwo(mockApi, first, second)
-    await push(third)
-    // A second update lands before the first new node's size is known
-    const [, , , fourth] = createChain('app.flow', 4)
-    fourth.task_id = `${first.task_id.slice(0, -4)}eeee`
-    fourth.root_id = first.task_id
-    fourth.parent_id = third.task_id
-    third.children.push(fourth.task_id)
-    mockApi.addTask(fourth)
-    await push(fourth)
-
-    // A node is hidden until it is measured, and only then does a re-fit count: before
-    // that the view is the unfitted one, which shows a node this near the origin
-    await expect(flowNode(page, fourth.task_id)).toBeVisible({ timeout: 10_000 })
-    await settledViewport(page)
-    await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: 0.95 })
-    await expect(flowNode(page, fourth.task_id)).toBeInViewport({ ratio: 0.95 })
-  })
-
-  // xyflow-only: removed with the renderer in PR 4c
-  test('leaves a node under the cursor while an update arrives mid-drag', async ({ page }) => {
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    const { first, second } = runningChain()
-    mockApi.addTasks([first, second])
-    const { push } = await openLiveGraph(page, first.task_id)
-    const held = flowNode(page, first.task_id)
-    const position = async () => held.evaluate((el) => (el as HTMLElement).style.transform)
-    const fitted = await settledViewport(page)
-    const before = (await held.boundingBox())!
-    await page.mouse.move(before.x + 4, before.y + 4)
-    await page.mouse.down()
-    await page.mouse.move(before.x + 4, before.y + 124, { steps: 8 })
-    await expect.poll(async () => (await held.boundingBox())!.y).toBeGreaterThan(before.y + 50)
-    const dragged = await position()
-
-    // The mouse button is still down
-    const third = finishStepTwo(mockApi, first, second)
-    await push(third)
-    await expect(flowNode(page, third.task_id)).toBeVisible()
-
-    expect(await position()).toBe(dragged)
-    expect(await settledViewport(page)).toBe(fitted)
-    await page.mouse.up()
-    // Released: the node stays where it was dropped, and the view may now re-fit
-    expect(await position()).toBe(dragged)
     await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
@@ -1076,28 +947,5 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(flowNode(page, next.task_id)).toBeVisible()
 
     expect(await settledBox(node)).toEqual(zoomed)
-  })
-
-  // xyflow-only: removed with the renderer in PR 4c
-  test('keeps the zoom the user chose with the wheel', async ({ page }) => {
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    const { first, second } = runningChain()
-    mockApi.addTasks([first, second])
-    const { push } = await openLiveGraph(page, first.task_id)
-    const box = (await page.locator('.react-flow').boundingBox())!
-    const fitted = await settledViewport(page)
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-    // Zoom out: the fitted view of two nodes is already at the maximum zoom
-    await page.mouse.wheel(0, 400)
-    const zoomed = await settledViewport(page)
-    expect(zoomed).not.toBe(fitted)
-
-    const third = finishStepTwo(mockApi, first, second)
-    await push(third)
-    // A node is visible once React Flow has measured it, which is when a
-    // re-fit (the behaviour under test) would have moved the view
-    await expect(flowNode(page, third.task_id)).toBeVisible()
-
-    expect(await settledViewport(page)).toBe(zoomed)
   })
 })

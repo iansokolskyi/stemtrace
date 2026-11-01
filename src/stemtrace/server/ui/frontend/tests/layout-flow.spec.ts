@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
 
-import type { GraphNode } from '../src/api/client'
 import {
   COLLAPSE_AT,
   type FlowLayout,
@@ -9,6 +7,15 @@ import {
   type PlacedTask,
 } from '../src/components/flow/layoutFlow'
 import { trackPath } from '../src/components/flow/trackPath'
+import {
+  allCaptures,
+  capture,
+  chain,
+  type FlowGraph,
+  graphOf,
+  group,
+  node,
+} from './fixtures/flow-graphs'
 
 /**
  * `layoutFlow` over the graphs the API returns for the captures in tests/data/celery_flows.json
@@ -16,20 +23,7 @@ import { trackPath } from '../src/components/flow/trackPath'
  * synthetic graphs for the shapes the server never sends. No browser: the layout is pure.
  */
 
-interface Captured {
-  root_id: string
-  nodes: Record<string, GraphNode>
-}
-
-const CAPTURES = JSON.parse(
-  readFileSync(new URL('./fixtures/flow-graphs.json', import.meta.url), 'utf8'),
-) as Record<string, Captured>
-
-function capture(name: string): Captured {
-  const found = CAPTURES[name]
-  if (!found) throw new Error(`no capture ${name}`)
-  return found
-}
+interface Captured extends FlowGraph {}
 
 function layoutOf(name: string, expanded: string[] = []): { layout: FlowLayout } & Captured {
   const { root_id, nodes } = capture(name)
@@ -43,63 +37,6 @@ function byId(layout: FlowLayout): Map<string, PlacedTask> {
 
 function edgePairs(layout: FlowLayout): string[] {
   return layout.edges.map((edge) => `${edge.from}>${edge.to}`).sort()
-}
-
-let counter = 0
-function node(overrides: Partial<GraphNode> & { task_id?: string }): GraphNode {
-  counter += 1
-  const id = overrides.task_id ?? `t${counter}`
-  return {
-    task_id: id,
-    name: 'app.step',
-    state: 'SUCCESS',
-    node_type: 'TASK',
-    group_id: null,
-    chord_id: null,
-    parent_id: null,
-    reported_parent_id: null,
-    children: [],
-    duration_ms: null,
-    first_seen: null,
-    last_updated: null,
-    ...overrides,
-  }
-}
-
-function graphOf(...list: GraphNode[]): Record<string, GraphNode> {
-  return Object.fromEntries(list.map((entry) => [entry.task_id, entry]))
-}
-
-/** A chain of `length` tasks: t0 -> t1 -> ... */
-function chain(length: number): Record<string, GraphNode> {
-  const list = Array.from({ length }, (_, i) =>
-    node({ task_id: `c${i}`, children: i + 1 < length ? [`c${i + 1}`] : [] }),
-  )
-  return graphOf(...list)
-}
-
-/** A group of `count` members; `states[i]` overrides member i. Returns the group's graph. */
-function group(
-  count: number,
-  states: Record<number, string> = {},
-  type: 'GROUP' | 'CHORD' = 'GROUP',
-): Record<string, GraphNode> {
-  const members = Array.from({ length: count }, (_, i) =>
-    node({
-      task_id: `m${i}`,
-      group_id: 'g',
-      state: states[i] ?? 'SUCCESS',
-      first_seen: new Date(2026, 0, 1, 0, 0, i).toISOString(),
-    }),
-  )
-  const container = node({
-    task_id: 'g',
-    name: 'group',
-    node_type: type,
-    group_id: 'g',
-    children: members.map((member) => member.task_id),
-  })
-  return graphOf(container, ...members)
 }
 
 test.describe('layoutFlow: chains', () => {
@@ -609,7 +546,7 @@ test.describe('layoutFlow: many members', () => {
 })
 
 test.describe('layoutFlow: every capture', () => {
-  for (const [name, { root_id, nodes }] of Object.entries(CAPTURES)) {
+  for (const [name, { root_id, nodes }] of Object.entries(allCaptures())) {
     test(`lays ${name} out without overlaps or dangling edges`, () => {
       const layout = layoutFlow(nodes, root_id, new Set())
       const ids = [
