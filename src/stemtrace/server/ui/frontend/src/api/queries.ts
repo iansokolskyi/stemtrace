@@ -54,6 +54,20 @@ export function useTasks(
   })
 }
 
+/** Runs the Worker page lists. */
+export const RECENT_RUNS = 25
+
+/** The latest runs of one worker (no time window), for its page. Keyed under `executions`, so events refresh it. */
+export function useRecentExecutions(hostname: string) {
+  const { isConnected } = useWebSocketContext()
+
+  return useQuery<ExecutionListResponse>({
+    queryKey: ['executions', 'recent', hostname],
+    queryFn: () => fetchExecutions({ hostname }, RECENT_RUNS, 0),
+    refetchInterval: isConnected ? false : POLL_INTERVAL,
+  })
+}
+
 /** Rows per Executions page (the API allows 500). */
 export const EXECUTIONS_PAGE_SIZE = 200
 
@@ -165,12 +179,13 @@ export function useTaskRegistry(query?: string, status?: TaskStatus) {
   })
 }
 
-export function useWorkers(hostname?: string) {
+/** Every worker, refreshed from Celery; the Workers list and each Worker page share it. */
+export function useWorkers() {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<WorkerListResponse>({
-    queryKey: ['workers', hostname],
-    queryFn: () => fetchWorkers(hostname),
+    queryKey: ['workers'],
+    queryFn: () => fetchWorkers(),
     // Workers refresh less frequently
     refetchInterval: isConnected ? false : 30000,
   })

@@ -8,6 +8,7 @@ import {
   createMockEvent,
   createSuccessTask,
   type MockTask,
+  type MockWorker,
 } from './fixtures/mock-data'
 
 /**
@@ -168,6 +169,103 @@ for (const theme of ['light', 'dark'] as const) {
         width: 1280,
         // A time chip that doesn't change which rows the mock lists
         path: '/executions?from_date=2026-10-17&to_date=2026-10-17',
+      })
+    })
+  }
+}
+
+/** Workers against the fixed clock (2026-10-17T12:00:00Z): three online, one offline for an hour. */
+function visualWorkers(): MockWorker[] {
+  const at = (minutes: number) =>
+    new Date(Date.parse('2026-10-17T12:00:00Z') - minutes * 60_000).toISOString()
+  const worker = (hostname: string, pid: number, tasks: string[], seen: number, up: number) => ({
+    hostname,
+    pid,
+    registered_tasks: tasks,
+    status: 'online' as const,
+    registered_at: at(up),
+    last_seen: at(seen),
+  })
+  return [
+    worker(
+      'celery@worker-billing-1',
+      4101,
+      [
+        'billing.invoices.send_receipt',
+        'billing.payments.capture_payment',
+        'billing.payments.refund_payment',
+        'billing.reports.monthly_statement',
+        'app.cleanup',
+      ],
+      0.2,
+      3 * 24 * 60,
+    ),
+    worker('celery@worker-billing-2', 4102, ['billing.payments.capture_payment'], 0.5, 3 * 24 * 60),
+    worker('celery@worker-email-1', 4103, ['emails.send_digest', 'emails.send_welcome'], 1, 600),
+    {
+      ...worker(
+        'celery@worker-search-1',
+        4104,
+        ['search.index.rebuild_product_index_for_catalog_import', 'search.index.reindex_one'],
+        62,
+        1500,
+      ),
+      status: 'offline' as const,
+    },
+  ]
+}
+
+const WORKER_GROUPS = [
+  {
+    name: 'Billing',
+    source: 'code' as const,
+    tags: ['money'],
+    color: null,
+    task_names: [
+      'billing.invoices.send_receipt',
+      'billing.payments.capture_payment',
+      'billing.payments.refund_payment',
+      'billing.reports.monthly_statement',
+    ],
+  },
+  {
+    name: 'Email',
+    source: 'code' as const,
+    tags: [],
+    color: null,
+    task_names: ['emails.send_digest'],
+  },
+  {
+    name: 'Search',
+    source: 'auto' as const,
+    tags: [],
+    color: null,
+    task_names: ['search.index.rebuild_product_index_for_catalog_import'],
+  },
+]
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`workers list, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setWorkers(visualWorkers())
+    await snapshot(page, `workers-${theme}-1280`, { theme, width: 1280, path: '/workers' })
+  })
+
+  for (const [kind, hostname] of [
+    ['online', 'celery@worker-billing-1'],
+    ['offline', 'celery@worker-search-1'],
+  ] as const) {
+    test(`worker page, ${kind}, ${theme}, 1280px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.setWorkers(visualWorkers())
+      api.setGroups(WORKER_GROUPS)
+      api.addTasks(executionRuns())
+      await snapshot(page, `worker-${kind}-${theme}-1280`, {
+        theme,
+        width: 1280,
+        path: `/workers/${encodeURIComponent(hostname)}`,
       })
     })
   }

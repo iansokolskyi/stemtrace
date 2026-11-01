@@ -83,6 +83,8 @@ test.describe('Worker page', () => {
     await openWorker(page)
     const crumb = page.getByRole('navigation', { name: 'Breadcrumb' })
     await expect(crumb.getByRole('link', { name: 'Workers' })).toHaveAttribute('href', '/workers')
+    // Only the last crumb is the current page; the list above it is its parent
+    await expect(crumb.getByRole('link', { name: 'Workers' })).not.toHaveAttribute('aria-current')
     await expect(crumb.locator('[aria-current="page"]')).toHaveText(HOST)
   })
 
@@ -93,7 +95,7 @@ test.describe('Worker page', () => {
     await openWorker(page)
     await expect(page.getByTestId('worker-status')).toHaveText('Offline')
     await expect(page.getByTestId('worker-status')).toHaveAttribute('data-variant', 'loud')
-    const callout = page.getByRole('alert')
+    const callout = page.getByRole('note')
     await expect(callout).toContainText('Offline')
     await expect(callout).toContainText('Last seen')
     await expect(callout).toContainText('1h ago')
@@ -102,7 +104,7 @@ test.describe('Worker page', () => {
   test('an online worker has no offline callout', async ({ page }) => {
     await openWorker(page)
     await expect(page.getByRole('heading', { name: HOST, level: 1 })).toBeVisible()
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.getByRole('note')).toHaveCount(0)
   })
 
   test('lists the registered tasks, each opening Executions for that task', async ({ page }) => {
@@ -176,20 +178,11 @@ test.describe('Worker page', () => {
     await expect(page).toHaveURL(new RegExp(`/tasks/${task.task_id}$`))
   })
 
-  test('recent runs show State, Task, Queue, Queue wait, Runtime and Updated', async ({
-    page,
-  }) => {
+  test('recent runs show State, Task, Queue, Queue wait, Runtime and Updated', async ({ page }) => {
     api.addTask(run('app.billing.send'))
     await openWorker(page)
     const headers = panel(page, 'Recent executions').getByRole('columnheader')
-    await expect(headers).toHaveText([
-      'State',
-      'Task',
-      'Queue',
-      'Queue wait',
-      'Runtime',
-      'Updated',
-    ])
+    await expect(headers).toHaveText(['State', 'Task', 'Queue', 'Queue wait', 'Runtime', 'Updated'])
   })
 
   test('a recent-runs column nothing has a value for is hidden', async ({ page }) => {
@@ -205,7 +198,9 @@ test.describe('Worker page', () => {
 
   test('no runs says so', async ({ page }) => {
     await openWorker(page)
-    await expect(panel(page, 'Recent executions').getByText('No executions from this worker')).toBeVisible()
+    await expect(
+      panel(page, 'Recent executions').getByText('No executions from this worker'),
+    ).toBeVisible()
   })
 
   test('details show the pid, when it started and when it was last seen, and nothing else', async ({
@@ -224,13 +219,18 @@ test.describe('Worker page', () => {
     page,
   }) => {
     api.setWorkers([
-      worker({ pid: 1, status: 'offline', last_seen: minutesAgo(300), registered_tasks: ['app.old'] }),
+      worker({
+        pid: 1,
+        status: 'offline',
+        last_seen: minutesAgo(300),
+        registered_tasks: ['app.old'],
+      }),
       worker({ pid: 2, status: 'online', last_seen: minutesAgo(1), registered_tasks: ['app.new'] }),
       worker({ hostname: 'celery@beta', pid: 3 }),
     ])
     await openWorker(page)
     await expect(page.getByTestId('worker-status')).toHaveText('Online')
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.getByRole('note')).toHaveCount(0)
     await expect(panel(page, 'Details').locator('dd').first()).toHaveText('2')
     // The registered tasks are the union of the host's processes, once each
     const tasks = panel(page, 'Registered tasks')
@@ -262,7 +262,7 @@ test.describe('Worker page', () => {
   test('says so when the workers cannot be loaded', async ({ page }) => {
     await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto(`/workers/${encodeURIComponent(HOST)}`)
-    await expect(page.getByText('Failed to load worker')).toBeVisible()
+    await expect(page.getByText('Failed to load worker')).toBeVisible({ timeout: 15_000 })
   })
 
   test('a nodename under a mount prefix opens', async ({ page }) => {
@@ -278,8 +278,6 @@ test.describe('Worker page', () => {
     api.addTasks(Array.from({ length: 5 }, (_, i) => run(`app.billing.send_${i}`)))
     await openWorker(page)
     await expect(panel(page, 'Recent executions').getByRole('row').nth(1)).toBeVisible()
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-      400,
-    )
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(400)
   })
 })

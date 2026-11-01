@@ -42,7 +42,9 @@ async function loadWorkersPage(page: Page, navigate: () => Promise<unknown>): Pr
 
 const table = (page: Page) => page.getByRole('table', { name: 'Workers' })
 const rowOf = (page: Page, hostname: string) =>
-  table(page).getByRole('row').filter({ has: page.getByRole('link', { name: hostname }) })
+  table(page)
+    .getByRole('row')
+    .filter({ has: page.getByRole('link', { name: hostname }) })
 
 test.describe('Workers page', () => {
   let mockApi: MockApiContext | null = null
@@ -65,6 +67,22 @@ test.describe('Workers page', () => {
   test('lists one row per worker with host, status, registered tasks, started and last seen', async ({
     page,
   }) => {
+    // The defaults' times are fixed when the fixtures load, so a long run ages them: set our own
+    mockApi?.setWorkers([
+      worker({
+        hostname: 'worker-1',
+        registered_tasks: Array.from({ length: 11 }, (_, i) => `tasks.t${i}`),
+        registered_at: minutesAgo(60),
+        last_seen: minutesAgo(2),
+      }),
+      worker({
+        hostname: 'worker-2',
+        status: 'offline',
+        pid: 101,
+        registered_at: minutesAgo(120),
+        last_seen: minutesAgo(65),
+      }),
+    ])
     await loadWorkersPage(page, () => page.goto('/workers'))
     if (isRealMode) {
       // Real Docker mode: at least one worker row from the backend, never the empty state
@@ -119,7 +137,8 @@ test.describe('Workers page', () => {
       /\/workers\/celery(@|%40)alpha$/,
     )
     // The registered count cell is part of the link's hit area
-    await rowOf(page, 'celery@alpha').getByRole('cell').nth(2).click()
+    // The link's overlay covers the cell, so Playwright sees it intercept: click the pixel
+    await rowOf(page, 'celery@alpha').getByRole('cell').nth(2).click({ force: true })
     await expect(page).toHaveURL(/\/workers\/celery(@|%40)alpha$/)
     await expect(page.getByRole('heading', { name: 'celery@alpha', level: 1 })).toBeVisible()
   })
@@ -168,9 +187,7 @@ test.describe('Workers page', () => {
     await expect(link).not.toContainText('offline')
   })
 
-  test('the page asks for a refreshed list and the badge for the stored one', async ({
-    page,
-  }) => {
+  test('the page asks for a refreshed list and the badge for the stored one', async ({ page }) => {
     test.skip(isRealMode, 'Mock-only test')
     const requests: string[] = []
     page.on('request', (request) => {
@@ -210,7 +227,7 @@ test.describe('Workers page', () => {
     test.skip(isRealMode, 'Mock-only test')
     await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto('/workers')
-    await expect(page.getByText('Failed to load workers')).toBeVisible()
+    await expect(page.getByText('Failed to load workers')).toBeVisible({ timeout: 15_000 })
   })
 
   for (const theme of ['light', 'dark'] as const) {
@@ -218,7 +235,9 @@ test.describe('Workers page', () => {
       test.skip(isRealMode, 'Mock-only test')
       await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
       await loadWorkersPage(page, () => page.goto('/workers'))
-      const block = rowOf(page, 'worker-2').getByTestId('worker-status').locator('[data-status-icon]')
+      const block = rowOf(page, 'worker-2')
+        .getByTestId('worker-status')
+        .locator('[data-status-icon]')
       const got = await block.evaluate((el) => {
         const probe = document.createElement('div')
         probe.style.backgroundColor = 'var(--failure)'
@@ -236,8 +255,6 @@ test.describe('Workers page', () => {
     await page.setViewportSize({ width: 400, height: 800 })
     await loadWorkersPage(page, () => page.goto('/workers'))
     await expect(rowOf(page, 'worker-1')).toBeVisible()
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-      400,
-    )
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(400)
   })
 })

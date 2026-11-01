@@ -14,7 +14,7 @@ export function useProblemCounts(): {
 } {
   const workers = useQuery({
     queryKey: ['badges', 'workers'],
-    queryFn: () => fetchWorkers(undefined, { refresh: false }),
+    queryFn: () => fetchWorkers({ refresh: false }),
     refetchInterval: BADGE_POLL_MS,
     retry: false,
   })
