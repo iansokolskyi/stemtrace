@@ -278,12 +278,13 @@ function timelineOf(
   nodes: Record<string, GraphNode>,
   rootId: string,
   expandAll = false,
+  now = 0,
 ): { timeline: Timeline; layout: FlowLayout } {
   const containers = Object.values(nodes)
     .filter((entry) => entry.node_type !== 'TASK')
     .map((entry) => entry.task_id)
   const layout = layoutFlow(nodes, rootId, new Set(expandAll ? containers : []))
-  return { timeline: buildTimeline(nodes, layout, rootId), layout }
+  return { timeline: buildTimeline(nodes, layout, rootId, now), layout }
 }
 
 const rowOf = (timeline: Timeline, id: string) => {
@@ -376,6 +377,56 @@ test.describe('buildTimeline: the axis', () => {
     const { timeline } = timelineOf(nodes, 'a')
 
     expect(barIn(timeline, 'a')).toMatchObject({ scheduledTo: T0 + 1000, leadTo: T0 + 1000 })
+  })
+})
+
+test.describe('buildTimeline: now', () => {
+  const running = () =>
+    graphOf(timed('a', { f: 0, w: 100, u: 100 }, { state: 'STARTED' }))
+
+  test('a running task runs from its start to now', () => {
+    const { timeline } = timelineOf(running(), 'a', false, T0 + 5000)
+
+    expect(barIn(timeline, 'a')).toMatchObject({
+      runFrom: T0 + 100,
+      end: T0 + 5000,
+      open: true,
+    })
+    expect(timeline.axis?.t1).toBe(T0 + 5000)
+  })
+
+  test('the axis grows as now moves on', () => {
+    const early = timelineOf(running(), 'a', false, T0 + 2000).timeline
+    const late = timelineOf(running(), 'a', false, T0 + 9000).timeline
+
+    expect([early.axis?.t1, late.axis?.t1]).toEqual([T0 + 2000, T0 + 9000])
+  })
+
+  test('a queued task waits until now', () => {
+    const nodes = graphOf(timed('a', { f: 0, u: 0 }, { state: 'PENDING' }))
+
+    expect(barIn(timelineOf(nodes, 'a', false, T0 + 4000).timeline, 'a')).toMatchObject({
+      from: T0,
+      end: T0 + 4000,
+      hasRun: false,
+    })
+  })
+
+  test('now is held at the latest event: a clock behind the server cannot shrink a bar', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, u: 0 }, { state: 'STARTED', children: ['b'] }),
+      timed('b', { f: 500, w: 0, r: 1500, u: 2000 }, { parent_id: 'a' }),
+    )
+    const { timeline } = timelineOf(nodes, 'a', false, T0 - 60_000)
+
+    expect(barIn(timeline, 'a')).toMatchObject({ end: T0 + 2000 })
+    expect(timeline.axis).toMatchObject({ t0: T0, t1: T0 + 2000 })
+  })
+
+  test('a flow with nothing open ignores now', () => {
+    const { timeline } = timelineOf(timedChain(), 'a', false, T0 + 3_600_000)
+
+    expect(timeline.axis?.t1).toBe(T0 + 2000)
   })
 })
 
@@ -613,14 +664,42 @@ test.describe('criticalPath', () => {
     expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'd'])
   })
 
-  test('does not pass through a task with no times to reach the ones after it', () => {
+  test('passes a task with no times to reach the ones after it', () => {
     const nodes = graphOf(
       timed('a', { f: 0, w: 0, r: 100, u: 100 }, { children: ['b'] }),
       timed('b', { f: null }, { parent_id: 'a', children: ['c'] }),
       timed('c', { f: 100, w: 0, r: 100, u: 200 }, { parent_id: 'b' }),
     )
 
-    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a'])
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b', 'c'])
+  })
+
+  test('is not cut short when a task ends a millisecond before the one it followed', () => {
+    // b ends at 999, a's last event is at 1000: a stamping race or a worker clock 1 ms behind
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 1000, u: 1000 }, { children: ['b'] }),
+      timed('b', { f: 900, w: 0, r: 99, u: 999 }, { parent_id: 'a', children: ['c'] }),
+      timed('c', { f: 1000, w: 0, r: 5000, u: 6000 }, { parent_id: 'b' }),
+    )
+
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b', 'c'])
+  })
+
+  test('takes the member that ended last into a callback, whatever the skew', () => {
+    const nodes = timedChord(3, (i) => (i === 1 ? 2999 : 3000))
+    nodes.cb = { ...nodes.cb, ...timed('cb', { f: 2990, w: 0, r: 100, u: 3090 }) }
+
+    expect(timelineOf(nodes, 'root').timeline.path).toEqual(['root', 'ch', 'm0', 'cb'])
+  })
+
+  test('ends at the latest end among the tasks it can reach, not a task that merely follows the root', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 1000, u: 1000 }, { children: ['b', 'c'] }),
+      timed('b', { f: 900, w: 0, r: 50, u: 950 }, { parent_id: 'a' }),
+      timed('c', { f: 1000, w: 0, r: 300, u: 1300 }, { parent_id: 'a' }),
+    )
+
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'c'])
   })
 
   test('stops at a task whose children all ended before it did (they ran alongside it)', () => {
@@ -706,6 +785,27 @@ function linked(layout: FlowLayout, a: string, b: string): boolean {
   return false
 }
 
+/** Every id the root reaches by `linked` steps (written here, not read from the model). */
+function reachable(layout: FlowLayout, rootId: string): Set<string> {
+  const ids = [
+    ...layout.tasks.map((task) => task.id),
+    ...layout.containers.map((box) => box.id),
+    ...layout.more.filter((block) => block.kind === 'more').map((b) => `${b.containerId}:more`),
+  ]
+  const seen = new Set([rootId])
+  const queue = [rootId]
+  while (queue.length > 0) {
+    const from = queue.shift() as string
+    for (const id of ids) {
+      if (!seen.has(id) && linked(layout, from, id)) {
+        seen.add(id)
+        queue.push(id)
+      }
+    }
+  }
+  return seen
+}
+
 /** What is wrong with the timeline of `nodes`, as one line each; empty when every rule holds. */
 function problemsWith(label: string, nodes: Record<string, GraphNode>, rootId: string): string[] {
   const problems: string[] = []
@@ -755,12 +855,14 @@ function problemsWith(label: string, nodes: Record<string, GraphNode>, rootId: s
     for (let i = 1; i < path.length; i++) {
       check(linked(layout, path[i - 1], path[i]), `${path[i - 1]} -> ${path[i]} is not a link`)
     }
-    const timedEnds = path.flatMap((id) => (ends.has(id) ? [ends.get(id) as number] : []))
-    check(timedEnds.length > 0, 'a path without a timed node')
     check(ends.has(path[path.length - 1]), 'the path ends on an untimed node')
-    for (let i = 1; i < timedEnds.length; i++) {
-      check(timedEnds[i] >= timedEnds[i - 1], 'a node ends before its predecessor')
-    }
+    // Oracle: the path ends at the latest end among the timed nodes the root can reach
+    const reach = reachable(layout, rootId)
+    const latest = Math.max(...[...ends].filter(([id]) => reach.has(id)).map(([, end]) => end))
+    check(
+      ends.get(path[path.length - 1]) === latest,
+      `path ends at ${ends.get(path[path.length - 1])}, the latest reachable end is ${latest}`,
+    )
     const marked = timeline.rows.filter((row) => row.critical).length
     check(
       marked === path.filter((id) => !layout.containers.some((c) => c.id === id)).length,
@@ -837,6 +939,31 @@ test.describe('timeline sweeps', () => {
       }
     }
     expect(problems).toEqual([])
+  })
+
+  test('hold when one task of a captured graph is shifted by clock skew', () => {
+    test.setTimeout(180_000)
+    const problems: string[] = []
+    for (const [name, { root_id, nodes }] of Object.entries(allCaptures())) {
+      for (const id of Object.keys(nodes)) {
+        if (nodes[id].node_type !== 'TASK' || !nodes[id].first_seen) continue
+        for (const skew of [-50, -5, -2, -1, 1, 2, 5, 50]) {
+          const shift = (iso: string | null) =>
+            iso === null ? null : new Date(Date.parse(iso) + skew).toISOString()
+          const shifted = {
+            ...nodes,
+            [id]: {
+              ...nodes[id],
+              first_seen: shift(nodes[id].first_seen),
+              last_updated: shift(nodes[id].last_updated),
+            },
+          }
+          problems.push(...problemsWith(`${name}, ${id.slice(0, 6)} ${skew} ms`, shifted, root_id))
+        }
+      }
+      if (problems.length > 20) break
+    }
+    expect(problems.slice(0, 20)).toEqual([])
   })
 
   test('hold for 400 seeded random timings of a chain, a chord and a group of chains', () => {
