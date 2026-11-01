@@ -19,7 +19,7 @@ export function LiveStatus(): ReactElement {
         className={`flex cursor-help items-center gap-1.5 text-xs font-bold ${TONE[tone].text}`}
       >
         <Icon name={TONE[tone].icon} size={12} />
-        {label}{' '}
+        <b>{label}</b>{' '}
         {label === 'Live' && <span className="font-normal text-muted">streaming events</span>}
       </span>
     </Tooltip>
