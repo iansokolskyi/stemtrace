@@ -1,4 +1,4 @@
-import { expect, type Page, test, type WebSocketRoute } from '@playwright/test'
+import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
 
 import {
   flowContainerLabels,
@@ -291,17 +291,15 @@ test.describe('Graph Edges', () => {
   })
 
   test('edges have appropriate styling', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
+    await openGraph(page, mockApi, PARENT_WITH_GROUP_GRAPH)
+    await expect(flowEdges(page).first()).toBeAttached()
 
     // Look for SVG path elements within the edges
     const edgePaths = flowEdges(page).locator('path')
     const pathCount = await edgePaths.count()
 
-    if (pathCount === 0) return
+    // A graph with several nodes has edges, and each is drawn as a path
+    expect(pathCount).toBeGreaterThan(0)
 
     const firstPath = edgePaths.first()
 
@@ -314,22 +312,6 @@ test.describe('Graph Edges', () => {
     // Stroke should be a color value (not 'none')
     expect(stroke).toBeTruthy()
     expect(stroke).not.toBe('none')
-  })
-
-  test('animated edges show for STARTED tasks', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
-
-    // xyflow-only: removed with the renderer in PR 4c (the 'animated' class is xyflow's)
-    const animatedEdges = page.locator('.react-flow__edge.animated')
-    const animatedCount = await animatedEdges.count()
-
-    // This is informational - STARTED tasks may or may not exist
-    // Just verify the selector works and returns a number
-    expect(typeof animatedCount).toBe('number')
   })
 })
 
@@ -480,8 +462,7 @@ test.describe('Edge Visibility Regression Tests', () => {
           els.map((el) => el.getAttribute('data-to')),
         )
 
-        // At least check that edges exist in the graph
-        expect(allEdgeTargets.length).toBeGreaterThanOrEqual(0)
+        expect(allEdgeTargets).toContain(containerId)
       }
     }
   })
@@ -550,14 +531,17 @@ test.describe('Graph Page - Mock Scenarios', () => {
     const nodes = flowNodes(page)
     await expect(nodes).toHaveCount(4)
 
-    // Should have edges connecting parent to group (drawn a moment after their nodes)
-    const edges = flowEdges(page)
-    await expect(edges.first()).toBeAttached()
+    // The edge runs from the parent to the group (drawn a moment after their nodes)
+    const [parent, groupNode] = workflowTasks
+    await expect(flowEdge(page, parent.task_id, groupNode.task_id)).toHaveCount(1)
+    await expect(flowEdges(page)).toHaveCount(1)
   })
 
   test('renders chord with callback', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const chordTasks = createGroup(3, { withCallback: true })
+    // A member that is not SUCCESS, so a constant data-state cannot pass
+    chordTasks[1].state = 'FAILURE'
     mockApi.addTasks(chordTasks)
 
     await page.goto('/flows')
@@ -580,6 +564,8 @@ test.describe('Graph Page - Mock Scenarios', () => {
     await expect(flowNode(page, callback.task_id)).toHaveAttribute('data-node-type', 'TASK')
     await expect(flowNode(page, callback.task_id)).toHaveAttribute('data-state', callback.state)
     await expect(flowNode(page, callback.task_id)).not.toHaveAttribute('data-container-id')
+    await expect(flowNode(page, members[0].task_id)).toHaveAttribute('data-state', 'FAILURE')
+    await expect(flowNode(page, members[1].task_id)).toHaveAttribute('data-state', 'SUCCESS')
     for (const member of members) {
       await expect(flowNode(page, member.task_id)).toHaveAttribute(
         'data-container-id',
@@ -624,6 +610,14 @@ test.describe('Graph Page - Chains In Groups', () => {
     await expect(flowContainerMembers(page)).toHaveCount(4)
     // a1 -> b1 and a2 -> b2
     await expect(flowEdges(page)).toHaveCount(2)
+    await expect(flowEdge(page, a1.task_id, b1.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, a2.task_id, b2.task_id)).toHaveCount(1)
+    for (const task of [a1, a2, b1, b2]) {
+      await expect(flowNode(page, task.task_id)).toHaveAttribute(
+        'data-container-id',
+        groupNode.task_id,
+      )
+    }
   })
 })
 
@@ -649,6 +643,8 @@ test.describe('Graph Page - Container Cell Children', () => {
     await expect(flowNode(page, subtask.task_id)).toHaveCount(1)
     // header -> subtask, and each header -> callback
     await expect(flowEdges(page)).toHaveCount(3)
+    await expect(flowEdge(page, header.task_id, subtask.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, rest[1].task_id, rest[2].task_id)).toHaveCount(1)
   })
 
   test('draws a group a header starts once, as its own container', async ({ page }) => {
@@ -904,6 +900,28 @@ interface LiveGraph {
   push: (task: MockTask) => Promise<void>
 }
 
+/** The canvas the graph is drawn on. */
+function graphCanvas(page: Page) {
+  return page.getByTestId('flow-canvas')
+}
+
+/** A locator's bounding box once it has stopped changing (fits and zooms take a few frames). */
+async function settledBox(locator: Locator) {
+  let last = ''
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await locator.boundingBox())
+        const settled = now === last
+        last = now
+        return settled
+      },
+      { intervals: [150], timeout: 10_000 },
+    )
+    .toBe(true)
+  return JSON.parse(last) as { x: number; y: number; width: number; height: number }
+}
+
 /**
  * The viewport's transform once it has stopped changing: wheel zooms and fits
  * take a few frames, so one read can catch them half way.
@@ -960,6 +978,8 @@ test.describe('Graph Page - Live Updates', () => {
     const { push } = await openLiveGraph(page, first.task_id)
     await expect(flowNodes(page)).toHaveCount(2)
     await expect(flowNode(page, second.task_id)).toContainText('STARTED')
+    await expect(flowNode(page, second.task_id)).toHaveAttribute('data-state', 'STARTED')
+    await expect(flowNode(page, first.task_id)).toHaveAttribute('data-state', 'SUCCESS')
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
@@ -969,8 +989,12 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
     await expect(flowNodes(page)).toHaveCount(3)
     await expect(flowEdges(page)).toHaveCount(2)
+    await expect(flowEdge(page, first.task_id, second.task_id)).toHaveCount(1)
+    await expect(flowEdge(page, second.task_id, third.task_id)).toHaveCount(1)
     await expect(flowNode(page, second.task_id)).toContainText('SUCCESS')
+    await expect(flowNode(page, second.task_id)).toHaveAttribute('data-state', 'SUCCESS')
     await expect(flowNode(page, second.task_id)).not.toContainText('STARTED')
+    await expect(flowNode(page, third.task_id)).toHaveAttribute('data-state', 'STARTED')
   })
 
   test('shows a new task and a state change by polling while the socket is down', async ({
@@ -1018,17 +1042,17 @@ test.describe('Graph Page - Live Updates', () => {
     expect(await position()).toBe(moved)
   })
 
-  // xyflow-only: removed with the renderer in PR 4c
   test('keeps re-fitting after a click on the empty canvas', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])
     const { push } = await openLiveGraph(page, first.task_id)
-    const fitted = await settledViewport(page)
-    // A click is a mouse down and up on the pane: no pan, no zoom
-    const box = (await page.locator('.react-flow').boundingBox())!
+    const node = flowNode(page, first.task_id)
+    const fitted = await settledBox(node)
+    // A click is a mouse down and up on the canvas: no pan, no zoom
+    const box = (await graphCanvas(page).boundingBox())!
     await page.mouse.click(box.x + box.width - 40, box.y + 40)
-    expect(await settledViewport(page)).toBe(fitted)
+    expect(await settledBox(node)).toEqual(fitted)
 
     const third = finishStepTwo(mockApi, first, second)
     await push(third)
@@ -1104,8 +1128,28 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
   })
 
+  test('keeps the zoom the user chose with the zoom button', async ({ page }) => {
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    const { first, second } = runningChain()
+    mockApi.addTasks([first, second])
+    const { push } = await openLiveGraph(page, first.task_id)
+    const node = flowNode(page, first.task_id)
+    const fitted = await settledBox(node)
+    // Zoom out: the fitted view of two nodes is already at the maximum zoom
+    await page.getByRole('button', { name: /zoom out/i }).click()
+    const zoomed = await settledBox(node)
+    expect(zoomed).not.toEqual(fitted)
+
+    const third = finishStepTwo(mockApi, first, second)
+    await push(third)
+    // A re-fit (the behaviour under test) would move the view once the new node is drawn
+    await expect(flowNode(page, third.task_id)).toBeVisible()
+
+    expect(await settledBox(node)).toEqual(zoomed)
+  })
+
   // xyflow-only: removed with the renderer in PR 4c
-  test('keeps the zoom the user chose', async ({ page }) => {
+  test('keeps the zoom the user chose with the wheel', async ({ page }) => {
     const mockApi = await setupMockApi(page, { useDefaults: false })
     const { first, second } = runningChain()
     mockApi.addTasks([first, second])

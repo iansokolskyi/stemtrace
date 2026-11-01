@@ -693,6 +693,7 @@ export function TaskGraph({ nodes: graphNodes, rootId }: TaskGraphProps) {
 
   return (
     <ReactFlow
+      data-testid="flow-canvas"
       nodes={nodes}
       edges={edges}
       onNodesChange={onNodesChange}
