@@ -1,74 +1,243 @@
 import { expect, type Page, test } from '@playwright/test'
 
-import { setupMockApi } from './fixtures/mock-api'
+import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
+import type { MockWorker } from './fixtures/mock-data'
 
 /**
- * Tests for the Workers page.
- *
- * These tests use mocked API responses, no Docker required.
- * Run with E2E_MODE=real for integration testing against Docker.
+ * Tests for the Workers list: a table with host, status, registered tasks, started and last
+ * seen. Mocked API responses, no Docker required; run with E2E_MODE=real for the Docker stack.
  */
 
 const isRealMode = process.env.E2E_MODE === 'real'
 
+const minutesAgo = (minutes: number): string =>
+  new Date(Date.now() - minutes * 60_000).toISOString()
+
+function worker(overrides: Partial<MockWorker> & Pick<MockWorker, 'hostname'>): MockWorker {
+  return {
+    pid: 100,
+    registered_tasks: ['tasks.add'],
+    status: 'online',
+    registered_at: minutesAgo(120),
+    last_seen: minutesAgo(1),
+    ...overrides,
+  }
+}
+
 /**
  * Navigate (or reload) and wait until the page has fetched its workers list.
  *
- * The app keeps retrying its WebSocket (no backend in mock mode), so
- * `networkidle` isn't a reliable "page is ready" signal; the API response is.
+ * The app keeps retrying its WebSocket (no backend in mock mode), so `networkidle` isn't a
+ * reliable "page is ready" signal; the page's own response is. The sidebar badge asks for the
+ * same URL with `refresh=false`, so wait for the one without.
  */
 async function loadWorkersPage(page: Page, navigate: () => Promise<unknown>): Promise<void> {
-  const workersResponse = page.waitForResponse((response) =>
-    /\/api\/workers(\?|$)/.test(new URL(response.url()).pathname),
-  )
+  const workersResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return /\/api\/workers$/.test(url.pathname) && !url.searchParams.has('refresh')
+  })
   await navigate()
   await workersResponse
 }
 
-test.describe('Workers Page', () => {
-  let mockApi: Awaited<ReturnType<typeof setupMockApi>> | null = null
+const table = (page: Page) => page.getByRole('table', { name: 'Workers' })
+const rowOf = (page: Page, hostname: string) =>
+  table(page).getByRole('row').filter({ has: page.getByRole('link', { name: hostname }) })
+
+test.describe('Workers page', () => {
+  let mockApi: MockApiContext | null = null
 
   test.beforeEach(async ({ page }) => {
-    if (!isRealMode) {
-      mockApi = await setupMockApi(page)
-    } else {
-      mockApi = null
-    }
+    mockApi = isRealMode ? null : await setupMockApi(page)
+  })
+
+  test('shows the heading and how many workers are online', async ({ page }) => {
     await loadWorkersPage(page, () => page.goto('/workers'))
-  })
-
-  test('displays workers page', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Workers', level: 1 })).toBeVisible()
+    if (isRealMode) {
+      await expect(page.getByText(/^\d+ of \d+ online$/)).toBeVisible()
+      return
+    }
+    // Defaults: worker-1 online, worker-2 offline
+    await expect(page.getByText('1 of 2 online')).toBeVisible()
   })
 
-  test('shows worker entries from API', async ({ page }) => {
+  test('lists one row per worker with host, status, registered tasks, started and last seen', async ({
+    page,
+  }) => {
+    await loadWorkersPage(page, () => page.goto('/workers'))
     if (isRealMode) {
-      // Real Docker mode: assert we render at least one worker card from the backend.
-      const workerHeadings = page.getByRole('heading', { level: 3 })
-      await expect(workerHeadings.first()).toBeVisible()
-      await expect(page.getByText(/Online|Offline/).first()).toBeVisible()
+      // Real Docker mode: at least one worker row from the backend, never the empty state
+      await expect(table(page).getByRole('row')).not.toHaveCount(1)
+      await expect(page.getByTestId('worker-status').first()).toBeVisible()
       await expect(page.getByText('No workers registered')).toHaveCount(0)
       return
     }
 
-    // Mock mode: default mock data includes worker-1 and worker-2
-    await expect(page.getByRole('heading', { name: 'worker-1', level: 3 })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'worker-2', level: 3 })).toBeVisible()
+    await expect(
+      table(page)
+        .getByRole('columnheader')
+        .evaluateAll((cells) => cells.map((cell) => cell.textContent)),
+    ).resolves.toEqual(['Hostname', 'Status', 'Registered tasks', 'Started', 'Last seen'])
 
-    // Status badges should render
-    await expect(page.getByText('Online').first()).toBeVisible()
-    await expect(page.getByText('Offline').first()).toBeVisible()
+    const first = rowOf(page, 'worker-1').getByRole('cell')
+    await expect(first.nth(0)).toHaveText('worker-1')
+    await expect(first.nth(1)).toHaveText('Online')
+    await expect(first.nth(2)).toHaveText('11')
+    await expect(first.nth(3)).toHaveText('1h ago')
+    await expect(first.nth(4)).toHaveText('2m ago')
+
+    const second = rowOf(page, 'worker-2').getByRole('cell')
+    await expect(second.nth(1)).toHaveText('Offline')
+    await expect(second.nth(2)).toHaveText('1')
+    await expect(second.nth(4)).toHaveText('1h ago')
   })
 
-  test('shows empty state when no workers', async ({ page }) => {
-    if (isRealMode) {
-      test.skip()
-      return
+  test('an offline worker is loud and an online one quiet', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    const online = rowOf(page, 'worker-1').getByTestId('worker-status')
+    const offline = rowOf(page, 'worker-2').getByTestId('worker-status')
+    await expect(online).toHaveAttribute('data-variant', 'quiet')
+    await expect(offline).toHaveAttribute('data-variant', 'loud')
+    // Status is never colour alone: an icon and the word
+    await expect(online.locator('svg')).toHaveCount(1)
+    await expect(offline.locator('svg')).toHaveCount(1)
+    // Only the offline row is tinted as a problem
+    await expect(rowOf(page, 'worker-2')).toHaveAttribute('data-problem', 'true')
+    await expect(rowOf(page, 'worker-1')).not.toHaveAttribute('data-problem', 'true')
+  })
+
+  test('a row opens the worker page, from any cell, and a nodename round-trips', async ({
+    page,
+  }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setWorkers([worker({ hostname: 'celery@alpha', registered_tasks: [] })])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(page.getByRole('link', { name: 'celery@alpha' })).toHaveAttribute(
+      'href',
+      /\/workers\/celery(@|%40)alpha$/,
+    )
+    // The registered count cell is part of the link's hit area
+    await rowOf(page, 'celery@alpha').getByRole('cell').nth(2).click()
+    await expect(page).toHaveURL(/\/workers\/celery(@|%40)alpha$/)
+    await expect(page.getByRole('heading', { name: 'celery@alpha', level: 1 })).toBeVisible()
+  })
+
+  test('shows no column for what the API does not send', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(table(page).getByRole('columnheader', { name: 'Status' })).toBeVisible()
+    for (const absent of ['Active', 'Pool', 'Queues', 'Concurrency']) {
+      await expect(table(page).getByRole('columnheader', { name: absent })).toHaveCount(0)
     }
+    // No placeholder dash stands in for them either
+    await expect(table(page).getByText('—')).toHaveCount(0)
+  })
 
+  test('a worker with no registered tasks shows zero', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setWorkers([worker({ hostname: 'bare', registered_tasks: [] })])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(rowOf(page, 'bare').getByRole('cell').nth(2)).toHaveText('0')
+  })
+
+  test('the sidebar badge counts the offline workers and matches the rows', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setWorkers([
+      worker({ hostname: 'a', status: 'offline' }),
+      worker({ hostname: 'b', status: 'offline', pid: 101 }),
+      worker({ hostname: 'c' }),
+    ])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    const nav = page.getByRole('navigation', { name: 'Sections' })
+    await expect(nav.getByRole('link', { name: /Workers/ })).toContainText('2 offline')
+    await expect(page.locator('[data-testid="worker-status"][data-status="offline"]')).toHaveCount(
+      2,
+    )
+  })
+
+  test('the sidebar shows no badge when every worker is online', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setWorkers([worker({ hostname: 'a' })])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    const link = page
+      .getByRole('navigation', { name: 'Sections' })
+      .getByRole('link', { name: /Workers/ })
+    await expect(link).toBeVisible()
+    await expect(link).not.toContainText('offline')
+  })
+
+  test('the page asks for a refreshed list and the badge for the stored one', async ({
+    page,
+  }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    const requests: string[] = []
+    page.on('request', (request) => {
+      const url = new URL(request.url())
+      if (/\/api\/workers/.test(url.pathname)) requests.push(url.pathname + url.search)
+    })
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    // The badge's request lands after the page's, wait for it so the log is complete
+    await expect.poll(() => requests.includes('/api/workers?refresh=false')).toBe(true)
+    expect(requests.filter((r) => r === '/api/workers')).toHaveLength(1)
+    expect(requests.filter((r) => r === '/api/workers?refresh=false')).toHaveLength(1)
+  })
+
+  test('two processes of one host are told apart by pid', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setWorkers([
+      worker({ hostname: 'celery@h', pid: 11, status: 'offline' }),
+      worker({ hostname: 'celery@h', pid: 22 }),
+      worker({ hostname: 'celery@solo', pid: 33 }),
+    ])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(table(page).getByRole('row').filter({ hasText: 'pid 11' })).toHaveCount(1)
+    await expect(table(page).getByRole('row').filter({ hasText: 'pid 22' })).toHaveCount(1)
+    await expect(table(page).getByRole('row').filter({ hasText: 'pid 33' })).toHaveCount(0)
+  })
+
+  test('shows an empty state when no workers', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
     mockApi?.clearWorkers()
-    await loadWorkersPage(page, () => page.reload())
-
+    await loadWorkersPage(page, () => page.goto('/workers'))
     await expect(page.getByText('No workers registered')).toBeVisible()
+    await expect(page.getByText('0 of 0 online')).toHaveCount(0)
+    await expect(table(page)).toHaveCount(0)
+  })
+
+  test('says so when the workers cannot be loaded', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
+    await page.goto('/workers')
+    await expect(page.getByText('Failed to load workers')).toBeVisible()
+  })
+
+  for (const theme of ['light', 'dark'] as const) {
+    test(`the offline row and chip use the failure tokens in ${theme}`, async ({ page }) => {
+      test.skip(isRealMode, 'Mock-only test')
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await loadWorkersPage(page, () => page.goto('/workers'))
+      const block = rowOf(page, 'worker-2').getByTestId('worker-status').locator('[data-status-icon]')
+      const got = await block.evaluate((el) => {
+        const probe = document.createElement('div')
+        probe.style.backgroundColor = 'var(--failure)'
+        document.body.append(probe)
+        const want = getComputedStyle(probe).backgroundColor
+        probe.remove()
+        return { actual: getComputedStyle(el).backgroundColor, want }
+      })
+      expect(got.actual).toBe(got.want)
+    })
+  }
+
+  test('at 400px the page does not scroll sideways', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await page.setViewportSize({ width: 400, height: 800 })
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(rowOf(page, 'worker-1')).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      400,
+    )
   })
 })

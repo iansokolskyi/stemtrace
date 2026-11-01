@@ -135,34 +135,6 @@ test.describe('Task names - colliding short names', () => {
     }
     await expect(page.getByRole('heading', { level: 3 })).toHaveCount(3)
   })
-
-  test('worker task chips show the shortest unique name', async ({ page }) => {
-    const mockApi = await setupMockApi(page, { useDefaults: false })
-    mockApi.setWorkers([
-      {
-        hostname: 'worker-1',
-        pid: 1,
-        registered_tasks: ['app.billing.send', 'app.add'],
-        status: 'online',
-        registered_at: new Date().toISOString(),
-        last_seen: new Date().toISOString(),
-      },
-      {
-        hostname: 'worker-2',
-        pid: 2,
-        registered_tasks: ['app.email.send'],
-        status: 'online',
-        registered_at: new Date().toISOString(),
-        last_seen: new Date().toISOString(),
-      },
-    ])
-
-    await page.goto('/workers')
-
-    // One chip per worker's task, across all workers on the page
-    await expectSendLabelsTold(page)
-    await expect(page.getByText('add', { exact: true })).toBeVisible()
-  })
 })
 
 test.describe('shortestUniqueSuffixes', () => {
