@@ -993,7 +993,8 @@ def _add_group_routes(
         """List task groups with their source, tags, color and task names.
 
         Task names are the ones the server has seen in events or in workers'
-        registered tasks (the task registry's names). Code-defined groups are
+        registered tasks, including ``celery.*`` built-ins that the task registry
+        hides. Code-defined groups are
         listed even before any of their tasks is seen. Sorted by name, with
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
