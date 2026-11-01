@@ -613,6 +613,16 @@ test.describe('criticalPath', () => {
     expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'd'])
   })
 
+  test('does not pass through a task with no times to reach the ones after it', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 100, u: 100 }, { children: ['b'] }),
+      timed('b', { f: null }, { parent_id: 'a', children: ['c'] }),
+      timed('c', { f: 100, w: 0, r: 100, u: 200 }, { parent_id: 'b' }),
+    )
+
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a'])
+  })
+
   test('stops at a task whose children all ended before it did (they ran alongside it)', () => {
     // a starts b at once and runs on for 5 s; b is done at 600
     const nodes = graphOf(
