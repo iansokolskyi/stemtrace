@@ -33,6 +33,12 @@ function lookOf(state: string): Look {
   return { ...PENDING, word: lower.charAt(0).toUpperCase() + lower.slice(1) }
 }
 
+/** The word and icon a state is shown with (the chip's, and the flow diagram's blocks'). */
+export function stateLook(state: string): { word: string; icon: IconName } {
+  const { word, icon } = lookOf(state)
+  return { word, icon }
+}
+
 interface StatusChipProps {
   /** The Celery state, for example `FAILURE`. */
   state: string
