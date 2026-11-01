@@ -23,9 +23,13 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
   const { data } = useGroups()
   const carried = useCarriedRange()
   const range = carried.range ?? DEFAULT_RANGE
-  // One request for every group; the whole retention for All. A failed request shows no rates.
-  const { data: rates } = useGroupFailureRates(range === 'all' ? undefined : range)
   const groups = data?.groups ?? []
+  // One request for every group, and none while there are no groups; the whole retention for
+  // All. A failed request shows no rates.
+  const { data: rates } = useGroupFailureRates(
+    range === 'all' ? undefined : range,
+    groups.length > 0,
+  )
   if (groups.length === 0) return null
   const tags = [...new Set(groups.flatMap((group) => group.tags))].sort((a, b) =>
     a.localeCompare(b),
@@ -44,7 +48,7 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
             className={LINK}
           >
             <span className="min-w-0 truncate">{group.name}</span>
-            <FailureRate rate={rates?.get(group.name) ?? (rates ? 0 : undefined)} range={range} />
+            <FailureRate rate={rates?.get(group.name)} range={range} />
           </Link>
         ))}
       </nav>

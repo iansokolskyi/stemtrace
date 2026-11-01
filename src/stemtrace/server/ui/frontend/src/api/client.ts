@@ -460,5 +460,7 @@ export async function fetchGroupTimeseries(within?: string): Promise<GroupTimese
   const searchParams = new URLSearchParams()
   if (within) searchParams.set('within', within)
   searchParams.set('group_by', 'task_group')
+  // Whole retention: one coarse bucket (the longest the endpoint takes) instead of up to 1440
+  if (!within) searchParams.set('bucket', '3650d')
   return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch group stats')
 }

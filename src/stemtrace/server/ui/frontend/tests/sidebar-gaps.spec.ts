@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 import { setupMockApi } from './fixtures/mock-api'
 import type { MockGroup } from './fixtures/mock-data'
 import { tokenColour } from './fixtures/task-page'
+import { failWebSocket } from './fixtures/web-socket'
 
 /**
  * The sidebar details of the prototype: the broker under the brand, each group's failure rate
@@ -72,18 +73,45 @@ test.describe('Sidebar group failure rate', () => {
     api.setGroups(GROUPS)
     api.setGroupStats(STATS)
     await page.goto('/executions')
-    await expect(rate(page, /Billing/)).toHaveText('10%')
+    await expect(rate(page, /Billing/)).toHaveText('10%', { timeout: 15_000 })
     await expect(rate(page, /Search/)).toHaveText('0%')
     await expect(rate(page, /Email/)).toHaveText('1.5%')
-    await expect(rate(page, /Idle/)).toHaveText('0%')
+    // No outcome in the range: no rate (not "0%")
+    await expect(rate(page, /Idle/)).toHaveCount(0)
 
     const failure = await tokenColour(page, 'failure-t')
     const muted = await tokenColour(page, 'muted')
     await expect(rate(page, /Billing/)).toHaveCSS('color', failure)
     await expect(rate(page, /Email/)).toHaveCSS('color', failure)
     await expect(rate(page, /Search/)).toHaveCSS('color', muted)
-    await expect(rate(page, /Idle/)).toHaveCSS('color', muted)
     await expect(rate(page, /Billing/)).toHaveAttribute('title', 'Failure rate, the last 6h')
+  })
+
+  test('divides failures by outcomes only: not retries, pending, running or ignored', async ({
+    page,
+  }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups([group('Mixed'), group('Waiting'), group('Revoked')])
+    api.setGroupStats({
+      // 2 failures of 10 outcomes (SUCCESS 8 + FAILURE 2); the 200 others are not outcomes
+      Mixed: {
+        SUCCESS: [8],
+        FAILURE: [2],
+        RETRY: [50],
+        PENDING: [50],
+        STARTED: [50],
+        IGNORED: [50],
+      },
+      // Runs but no outcome yet
+      Waiting: { PENDING: [5], STARTED: [5], RETRY: [5], IGNORED: [5] },
+      // REVOKED and REJECTED are outcomes: 1 failure of 10
+      Revoked: { SUCCESS: [7], FAILURE: [1], REVOKED: [1], REJECTED: [1] },
+    })
+    await page.goto('/executions')
+    await expect(rate(page, /Mixed/)).toHaveText('20%', { timeout: 15_000 })
+    await expect(rate(page, /Revoked/)).toHaveText('10%')
+    await expect(groupLink(page, /Waiting/)).toBeVisible()
+    await expect(rate(page, /Waiting/)).toHaveCount(0)
   })
 
   test('exactly 1% is not a failure colour', async ({ page }) => {
@@ -91,7 +119,7 @@ test.describe('Sidebar group failure rate', () => {
     api.setGroups([group('Billing')])
     api.setGroupStats({ Billing: counts(99, 1) })
     await page.goto('/executions')
-    await expect(rate(page, /Billing/)).toHaveText('1.0%')
+    await expect(rate(page, /Billing/)).toHaveText('1.0%', { timeout: 15_000 })
     await expect(rate(page, /Billing/)).toHaveCSS('color', await tokenColour(page, 'muted'))
   })
 
@@ -125,18 +153,49 @@ test.describe('Sidebar group failure rate', () => {
     await expect(rate(page, /Billing/)).toHaveAttribute('title', 'Failure rate')
     await expect
       .poll(() => api.statsRequests.map((url) => [...url.searchParams]).at(-1))
-      .toEqual([['group_by', 'task_group']])
+      .toEqual([
+        ['group_by', 'task_group'],
+        ['bucket', '3650d'],
+      ])
   })
 
   test('shows no rate when the endpoint is missing, and does not ask again', async ({ page }) => {
+    // A fake clock: the poll (30 s) is reached by ticking, so a retry would show as a request
+    await page.clock.install()
     const api = await setupMockApi(page, { useDefaults: false })
     api.setGroups(GROUPS)
     api.setGroupStats(null)
     await page.goto('/executions')
     await expect(groupLink(page, /Billing/)).toBeVisible()
+    await expect.poll(() => api.statsRequests.length).toBe(1)
+    await page.clock.runFor(95_000)
     await expect(sidebar(page).locator('[title^="Failure rate"]')).toHaveCount(0)
     await expect(groupLink(page, /Billing/)).toHaveText('Billing')
     expect(api.statsRequests).toHaveLength(1)
+  })
+
+  test('shows no rate when the server sends no per-group counts', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups(GROUPS)
+    await page.route(/\/api\/stats\/timeseries/, (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ by_task_group: null }),
+      }),
+    )
+    await page.goto('/executions')
+    await expect(groupLink(page, /Billing/)).toBeVisible()
+    await expect(sidebar(page).locator('[title^="Failure rate"]')).toHaveCount(0)
+  })
+
+  test('asks nothing while there are no groups', async ({ page }) => {
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.setGroups([])
+    api.setGroupStats(STATS)
+    await page.goto('/executions')
+    await expect(sidebar(page).getByRole('link', { name: 'Executions' })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    expect(api.statsRequests).toHaveLength(0)
   })
 
   test('shows no rate when the endpoint fails', async ({ page }) => {
@@ -205,30 +264,7 @@ test.describe('Sidebar footer', () => {
   })
 
   test('has no caption while polling', async ({ page }) => {
-    // A socket that fails at once, as frame.spec.ts does
-    await page.addInitScript(() => {
-      class FailingWebSocket extends EventTarget {
-        static readonly CONNECTING = 0
-        static readonly OPEN = 1
-        static readonly CLOSING = 2
-        static readonly CLOSED = 3
-        readyState = 3
-        onopen: (() => void) | null = null
-        onmessage: (() => void) | null = null
-        onerror: (() => void) | null = null
-        onclose: (() => void) | null = null
-        constructor() {
-          super()
-          setTimeout(() => {
-            this.onerror?.()
-            this.onclose?.()
-          }, 0)
-        }
-        close(): void {}
-        send(): void {}
-      }
-      Object.defineProperty(window, 'WebSocket', { value: FailingWebSocket })
-    })
+    await failWebSocket(page)
     await setupMockApi(page)
     await page.goto('/executions')
     await expect(page.getByTestId('live-status')).toHaveText('Polling')

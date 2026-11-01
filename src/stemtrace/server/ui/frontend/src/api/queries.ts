@@ -201,11 +201,12 @@ export function useGroups() {
  * undefined `within` is the whole retention. No data while loading, and none when the request
  * fails (an older server answers 404): callers then show no rate.
  */
-export function useGroupFailureRates(within: string | undefined) {
+export function useGroupFailureRates(within: string | undefined, enabled = true) {
   return useQuery({
     queryKey: ['stats', 'group-failure-rates', within],
     queryFn: () => fetchGroupTimeseries(within),
     select: groupFailureRates,
+    enabled,
     // A 404 means this server has no such endpoint: stop asking. Other failures may pass.
     refetchInterval: (query) => {
       const error = query.state.error
