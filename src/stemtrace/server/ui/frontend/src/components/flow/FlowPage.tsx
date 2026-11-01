@@ -55,18 +55,48 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const rectOf = (id: string) =>
     layout.tasks.find((task) => task.id === id) ?? layout.containers.find((box) => box.id === id)
 
+  // The box's own scrolls (centring, zoom, scroll-into-view) are marked, so that any other
+  // scroll, by whatever input (wheel, scrollbar, keys, focus moving to a node), is the reader's.
+  const own = useRef<{ left: number; top: number; until: number } | null>(null)
+  const scrollBoxTo = (left: number, top: number, behavior: ScrollBehavior): void => {
+    const box = boxRef.current
+    if (!box) return
+    const target = {
+      left: Math.round(Math.max(0, Math.min(left, box.scrollWidth - box.clientWidth))),
+      top: Math.round(Math.max(0, Math.min(top, box.scrollHeight - box.clientHeight))),
+    }
+    if (Math.abs(box.scrollLeft - target.left) < 1 && Math.abs(box.scrollTop - target.top) < 1)
+      return
+    // A smooth scroll sends events on the way; the mark ends at the target or after a second
+    own.current = { ...target, until: Date.now() + 1000 }
+    box.scrollTo({ ...target, behavior })
+  }
+  const handleScroll = (): void => {
+    const box = boxRef.current
+    const mark = own.current
+    if (box && mark && Date.now() < mark.until) {
+      if (Math.abs(box.scrollLeft - mark.left) < 1 && Math.abs(box.scrollTop - mark.top) < 1) {
+        own.current = null
+      }
+      return
+    }
+    own.current = null
+    setMoved(true)
+  }
+
   const centreOn = (id: string): void => {
     const box = boxRef.current
     const rect = rectOf(id)
     if (!box || !rect) return
-    box.scrollTo({
-      left: Math.max(0, (rect.x + rect.w / 2) * scale - box.clientWidth / 2),
-      top: Math.max(0, (rect.y + rect.h / 2) * scale - box.clientHeight / 2),
-      behavior: reducedMotion() ? 'auto' : 'smooth',
-    })
+    scrollBoxTo(
+      (rect.x + rect.w / 2) * scale - box.clientWidth / 2,
+      (rect.y + rect.h / 2) * scale - box.clientHeight / 2,
+      reducedMotion() ? 'auto' : 'smooth',
+    )
   }
 
-  // Zooming keeps what is in the middle of the box in the middle
+  // Zooming keeps what is in the middle of the box in the middle (a render at the same scale
+  // does nothing)
   const shownScale = useRef(scale)
   useLayoutEffect(() => {
     const box = boxRef.current
@@ -74,15 +104,12 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     shownScale.current = scale
     if (!box || before === scale) return
     // Whole pixels: a fractional offset is snapped again when the content changes size
-    box.scrollLeft = Math.max(
-      0,
-      Math.round(((box.scrollLeft + box.clientWidth / 2) / before) * scale - box.clientWidth / 2),
+    scrollBoxTo(
+      ((box.scrollLeft + box.clientWidth / 2) / before) * scale - box.clientWidth / 2,
+      ((box.scrollTop + box.clientHeight / 2) / before) * scale - box.clientHeight / 2,
+      'auto',
     )
-    box.scrollTop = Math.max(
-      0,
-      Math.round(((box.scrollTop + box.clientHeight / 2) / before) * scale - box.clientHeight / 2),
-    )
-  }, [scale])
+  })
 
   // A node that arrives while the reader has not moved the view is scrolled into the box
   // No dependency array on purpose: it compares the nodes drawn now with those of the last render,
@@ -104,11 +131,13 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     const right = Math.max(...added.map((rect) => rect.x + rect.w)) * scale
     const bottom = Math.max(...added.map((rect) => rect.y + rect.h)) * scale
     const margin = 16
-    if (right > box.scrollLeft + box.clientWidth) box.scrollLeft = right - box.clientWidth + margin
-    if (left < box.scrollLeft) box.scrollLeft = Math.max(0, left - margin)
-    if (bottom > box.scrollTop + box.clientHeight)
-      box.scrollTop = bottom - box.clientHeight + margin
-    if (top < box.scrollTop) box.scrollTop = Math.max(0, top - margin)
+    let nextLeft = box.scrollLeft
+    let nextTop = box.scrollTop
+    if (right > nextLeft + box.clientWidth) nextLeft = right - box.clientWidth + margin
+    if (left < nextLeft) nextLeft = left - margin
+    if (bottom > nextTop + box.clientHeight) nextTop = bottom - box.clientHeight + margin
+    if (top < nextTop) nextTop = top - margin
+    scrollBoxTo(nextLeft, nextTop, 'auto')
   })
 
   const toggleExpanded = (containerId: string): void => {
@@ -198,7 +227,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
           boxRef={boxRef}
           onSelect={setChosen}
           onToggleExpanded={toggleExpanded}
-          onUserMove={() => setMoved(true)}
+          onScroll={handleScroll}
         />
         <Inspector
           nodes={nodes}

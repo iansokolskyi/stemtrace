@@ -477,6 +477,55 @@ test.describe('live updates keep the view', () => {
     expect(await scrollLeft(page)).toBe(0)
   })
 
+  // Whatever the reader scrolls with, the view stays: the scrollbar thumb (a plain scrollLeft
+  // change), the wheel, the arrow keys, and Tab to a node that is out of the box
+  const scrolls: Record<string, (page: Page) => Promise<void>> = {
+    'the scrollbar': (page) => canvas(page).evaluate((el) => void (el.scrollLeft = el.scrollWidth)),
+    'the wheel': async (page) => {
+      const box = (await canvas(page).boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.wheel(900, 0)
+    },
+    'the arrow keys': async (page) => {
+      await canvas(page).focus()
+      for (let i = 0; i < 30; i++) await page.keyboard.press('ArrowRight')
+    },
+    'Tab to a node out of the box': (page) => flowNode(page, 'c11').focus(),
+  }
+  for (const [input, scroll] of Object.entries(scrolls)) {
+    test(`does not move the view after a scroll with ${input}`, async ({ page }) => {
+      const graph = longChain(12)
+      await setupMockApi(page, { useDefaults: false })
+      await serveFlow(page, graph)
+      await page.routeWebSocket(/\/ws$/, (ws) => ws.close())
+      await page.goto('/flows/c0')
+      await flowNodes(page).first().waitFor({ state: 'attached' })
+
+      await scroll(page)
+      await expect.poll(() => scrollLeft(page)).toBeGreaterThan(300)
+      // Keys and the wheel scroll in steps: wait until the box has come to rest
+      let scrolled = -1
+      await expect
+        .poll(
+          async () => {
+            const now = await scrollLeft(page)
+            const rested = now === scrolled
+            scrolled = now
+            return rested
+          },
+          { intervals: [250] },
+        )
+        .toBe(true)
+
+      // A new child of the first task, far left of where the reader is looking
+      graph.nodes.c0.children.push('extra')
+      graph.nodes.extra = node({ task_id: 'extra', name: 'app.extra' })
+      await expect(flowNode(page, 'extra')).toHaveCount(1, { timeout: 15_000 })
+
+      expect(await scrollLeft(page)).toBe(scrolled)
+    })
+  }
+
   test('scrolls a new node into the box while nobody has moved the view', async ({ page }) => {
     const graph = longChain(3)
     await setupMockApi(page, { useDefaults: false })

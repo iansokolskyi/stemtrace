@@ -17,8 +17,8 @@ interface FlowDiagramProps {
   boxRef: Ref<HTMLDivElement>
   onSelect: (id: string) => void
   onToggleExpanded: (containerId: string) => void
-  /** The reader scrolled or moved through the box themselves. */
-  onUserMove: () => void
+  /** The box scrolled, whatever the cause: the page tells its own scrolls from the reader's. */
+  onScroll: () => void
 }
 
 type Item =
@@ -51,7 +51,7 @@ export function FlowDiagram({
   boxRef,
   onSelect,
   onToggleExpanded,
-  onUserMove,
+  onScroll,
 }: FlowDiagramProps): ReactElement {
   const hatch = useId()
   // Names that share their last segment are told apart by the shortest suffix no other task has
@@ -82,11 +82,7 @@ export function FlowDiagram({
       aria-label="Flow graph, scrollable"
       tabIndex={0}
       className="flow-box"
-      onWheel={onUserMove}
-      onTouchMove={onUserMove}
-      onKeyDown={(event) => {
-        if (event.target === event.currentTarget && event.key.startsWith('Arrow')) onUserMove()
-      }}
+      onScroll={onScroll}
     >
       <svg
         width={layout.width * scale}
