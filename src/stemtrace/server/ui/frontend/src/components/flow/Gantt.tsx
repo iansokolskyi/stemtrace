@@ -24,7 +24,7 @@ const LABEL_W_NARROW = 170
 const LABEL_W = 250
 const PAD_RIGHT = 18
 /** Room right of the plot for "running 41m" when a bar is cut. */
-const CUT_LABEL_W = 96
+const CUT_LABEL_W = 140
 /** Characters of a label that fit per pixel of the label column (12 px sans). */
 const CHAR_W = 6.6
 const MIN_BAR_W = 3
