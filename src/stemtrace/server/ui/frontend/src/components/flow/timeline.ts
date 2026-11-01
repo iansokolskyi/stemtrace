@@ -180,7 +180,10 @@ function aggregate(bars: RawBar[]): RawBar | null {
 const moreId = (containerId: string): string => `${containerId}:more`
 
 /** Successors of each node by dependency: layout edges plus a container's members. */
-function dependencies(layout: FlowLayout): Map<string, string[]> {
+function dependencies(layout: FlowLayout): {
+  next: Map<string, string[]>
+  seq: Map<string, number>
+} {
   const seq = new Map<string, number>()
   for (const task of layout.tasks) seq.set(task.id, task.seq)
   for (const box of layout.containers) seq.set(box.id, box.seq)
@@ -217,33 +220,19 @@ function dependencies(layout: FlowLayout): Map<string, string[]> {
       list.sort((a, b) => (seq.get(a) ?? 0) - (seq.get(b) ?? 0)),
     )
   }
-  return out
-}
-
-interface Walked {
-  finish: number
-  /** The path ends on a task that is still open. */
-  openTail: boolean
-  /** When the path's first node ends (negative infinity for a container). */
-  head: number
-  path: string[]
-}
-
-/** Whether `a` is the better path: the later finish, then still open, then the later head end. */
-function better(a: Walked, b: Walked | null): boolean {
-  if (b === null) return true
-  if (a.finish !== b.finish) return a.finish > b.finish
-  if (a.openTail !== b.openTail) return a.openTail
-  return a.head > b.head
+  return { next: out, seq }
 }
 
 /**
- * The critical path: from the root, the chain of dependencies that finishes last. A task can
- * follow another only if it ended no earlier (it waited for it); containers are passed, a task
- * with no end (queued, no times) is not. Of equal finishes (a callback waits for all its headers
- * and ends once) the path through the node that is still open, then the one that ended last,
- * then the one the layout reached first wins. `ends` holds each timed node's end,
- * `<container>:more` included; `open` the nodes that have not ended.
+ * The critical path: the dependency chain from the root to the timed task that ended last, found
+ * by tracing back from that task. Dependencies are the layout's edges; no step needs to end after
+ * the one before it, because a successor can be stamped a few milliseconds earlier than the task
+ * it followed (Celery sends the next link before stemtrace stamps the SUCCESS; hosts' clocks
+ * differ), and a rule on end order would cut the path there. Containers and tasks without times
+ * are passed. Where a node has several predecessors (headers into a callback) the one that ended
+ * last is taken. Ties on the last end go to the node still open, then the one the layout reached
+ * first. `ends` holds each timed node's end (`<container>:more` included); `open` those still going.
+ * Only nodes the root reaches count. Empty when nothing reachable is timed.
  */
 export function criticalPath(
   layout: FlowLayout,
@@ -251,38 +240,54 @@ export function criticalPath(
   rootId: string,
   open: ReadonlySet<string> = new Set(),
 ): string[] {
-  const next = dependencies(layout)
-  const containers = new Set(layout.containers.map((box) => box.id))
-  const memo = new Map<string, Walked | null>()
-  const visiting = new Set<string>()
-
-  const walk = (id: string, floor: number): Walked | null => {
-    const own = ends.get(id)
-    if (own === undefined && !containers.has(id)) return null
-    if (own !== undefined && own < floor) return null
-    const key = own === undefined ? `${id}|${floor}` : id
-    if (memo.has(key)) return memo.get(key) ?? null
-    if (visiting.has(id)) return null
-    visiting.add(id)
-    let best: Walked | null = null
+  const { next, seq } = dependencies(layout)
+  const order = (id: string): number => seq.get(id) ?? Number.MAX_SAFE_INTEGER
+  const depth = new Map<string, number>([[rootId, 0]])
+  const preds = new Map<string, string[]>()
+  const queue = [rootId]
+  for (let at = 0; at < queue.length; at++) {
+    const id = queue[at]
     for (const successor of next.get(id) ?? []) {
-      const found = walk(successor, own ?? floor)
-      if (found && better(found, best)) best = found
+      preds.set(successor, [...(preds.get(successor) ?? []), id])
+      if (!depth.has(successor)) {
+        depth.set(successor, (depth.get(id) as number) + 1)
+        queue.push(successor)
+      }
     }
-    visiting.delete(id)
-    const result: Walked = {
-      finish: Math.max(own ?? Number.NEGATIVE_INFINITY, best?.finish ?? Number.NEGATIVE_INFINITY),
-      openTail: best ? best.openTail : open.has(id),
-      head: own ?? Number.NEGATIVE_INFINITY,
-      path: [id, ...(best?.path ?? [])],
-    }
-    memo.set(key, result)
-    return result
   }
 
-  const path = walk(rootId, Number.NEGATIVE_INFINITY)?.path ?? []
-  // A container with nothing timed after it is not part of the path
-  while (path.length > 0 && !ends.has(path[path.length - 1])) path.pop()
+  // The task that ended last; of equal ends the one still open, then the first reached
+  let last: string | null = null
+  for (const id of queue) {
+    const end = ends.get(id)
+    if (end === undefined) continue
+    const best = last === null ? undefined : ends.get(last)
+    if (
+      last === null ||
+      best === undefined ||
+      end > best ||
+      (end === best && (open.has(id) !== open.has(last) ? open.has(id) : order(id) < order(last)))
+    ) {
+      last = id
+    }
+  }
+  if (last === null) return []
+
+  // Back to the root, only through nodes closer to it, so the walk ends
+  const path = [last]
+  for (let current = last; current !== rootId; ) {
+    const closer = (preds.get(current) ?? []).filter(
+      (id) => (depth.get(id) as number) < (depth.get(current) as number),
+    )
+    let pick = closer[0]
+    for (const id of closer) {
+      const end = ends.get(id) ?? Number.NEGATIVE_INFINITY
+      const had = ends.get(pick) ?? Number.NEGATIVE_INFINITY
+      if (end > had || (end === had && order(id) < order(pick))) pick = id
+    }
+    path.unshift(pick)
+    current = pick
+  }
   return path
 }
 
@@ -308,12 +313,15 @@ function axisOf(t0: number, t1: number): Axis {
 
 /**
  * The Timeline for a layout: a row per drawn task, "+N more" block and not-run box, in the
- * diagram's order; the axis over every bar (hidden tasks too); the critical path.
+ * diagram's order; the axis over every bar (hidden tasks too); the critical path. Open bars run to
+ * `now`, held at the latest event so a clock behind the server cannot shrink them; a flow with
+ * nothing open ignores `now`.
  */
 export function buildTimeline(
   nodes: Record<string, GraphNode>,
   layout: FlowLayout,
   rootId: string,
+  now: number,
 ): Timeline {
   type Item =
     | { kind: 'task'; seq: number; id: string }
@@ -351,7 +359,8 @@ export function buildTimeline(
   }
   const t0 = Math.min(...bars.map((bar) => bar.from))
   const settled = Math.max(...bars.map((bar) => (bar.end === null ? bar.runFrom : bar.end)))
-  const t1 = Math.max(settled, t0 + MIN_SPAN_MS)
+  const anyOpen = bars.some((bar) => bar.end === null)
+  const t1 = Math.max(settled, anyOpen && Number.isFinite(now) ? now : settled, t0 + MIN_SPAN_MS)
   const axis = axisOf(t0, t1)
 
   const resolved = new Map<string, Bar>()
@@ -443,7 +452,7 @@ function rowOf(
  * its "+N more" row and its callback sit at the container's own level.
  */
 function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
-  const next = dependencies(layout)
+  const { next } = dependencies(layout)
   const incoming = new Map<string, string[]>()
   for (const [from, list] of next)
     for (const to of list) incoming.set(to, [...(incoming.get(to) ?? []), from])

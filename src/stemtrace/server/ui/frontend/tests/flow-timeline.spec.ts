@@ -272,6 +272,50 @@ test.describe('choosing from the Timeline', () => {
   })
 })
 
+test.describe('a running task', () => {
+  /** a (running since 100 ms) -> b not yet started: only `a` is open. */
+  function runningFlow(): FlowGraph {
+    const nodes = chain(1)
+    nodes.c0 = {
+      ...nodes.c0,
+      name: 'app.long_job',
+      state: 'STARTED',
+      first_seen: at(0),
+      last_updated: at(100),
+      queue_wait_ms: 100,
+      runtime_ms: null,
+    }
+    return { root_id: 'c0', nodes }
+  }
+  const runWidth = (page: Page) =>
+    row(page, 'c0')
+      .locator('.gantt-run')
+      .evaluate((el) => Number(el.getAttribute('width')))
+
+  test('grows to the clock while it runs, on the injected clock', async ({ page }) => {
+    await page.clock.install({ time: BASE + 4000 })
+    await openFlow(page, runningFlow())
+    const first = await runWidth(page)
+    expect(first).toBeGreaterThan(100) // not a 3 px sliver
+
+    await page.clock.runFor(8000)
+
+    await expect.poll(() => runWidth(page)).toBeGreaterThan(first)
+    await expect(timelinePanel(page)).toContainText('+10s')
+  })
+
+  test('leaves the axis alone once nothing runs', async ({ page }) => {
+    await page.clock.install({ time: BASE + 4000 })
+    await openFlow(page, timedChain(3))
+    const labels = () => timelinePanel(page).locator('text.gantt-m').allTextContents()
+    const before = await labels()
+
+    await page.clock.runFor(30_000)
+
+    expect(await labels()).toEqual(before)
+  })
+})
+
 test.describe('narrow screens', () => {
   test('does not scroll the page sideways at 400px; the panel scrolls inside itself', async ({
     page,

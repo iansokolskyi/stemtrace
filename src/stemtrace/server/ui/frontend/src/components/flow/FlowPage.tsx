@@ -16,6 +16,9 @@ const ZOOM_STEP = 0.2
 const ZOOM_MIN = 1
 const ZOOM_MAX = 1.4
 
+/** How often a running task's bar grows. */
+const NOW_TICK_MS = 1000
+
 const BUTTON =
   'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
 
@@ -57,7 +60,19 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const scale = zoom ?? 1
   const locked = acted
 
-  const timeline = useMemo(() => buildTimeline(nodes, layout, rootId), [nodes, layout, rootId])
+  // Open bars run to now: the clock ticks once a second while a bar is open and stops otherwise
+  const [now, setNow] = useState(() => Date.now())
+  const timeline = useMemo(
+    () => buildTimeline(nodes, layout, rootId, now),
+    [nodes, layout, rootId, now],
+  )
+  const anyOpen = timeline.rows.some((row) => row.bar?.open)
+  useEffect(() => {
+    if (!anyOpen) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), NOW_TICK_MS)
+    return () => clearInterval(timer)
+  }, [anyOpen])
 
   const rectOf = (id: string) =>
     layout.tasks.find((task) => task.id === id) ??
