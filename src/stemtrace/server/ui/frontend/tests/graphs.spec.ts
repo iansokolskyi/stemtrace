@@ -20,7 +20,7 @@ import {
 } from './fixtures/mock-data'
 
 /**
- * Tests for the Graphs page.
+ * Tests for the Flow page (the Flows list is in flows.spec.ts).
  *
  * These tests use mocked API responses, no Docker required.
  * Run with E2E_MODE=real for integration testing against Docker.
@@ -51,7 +51,7 @@ async function navigateToFirstGraph(page: import('@playwright/test').Page): Prom
   await page.goto('/flows')
 
   const graphLink = page.locator('a[href*="/flows/"]').first()
-  const emptyState = page.getByText('No task graphs yet')
+  const emptyState = page.getByText(/^No flows/)
   await expect(graphLink.or(emptyState)).toBeVisible({ timeout: 15_000 })
 
   if (!(await graphLink.isVisible())) return false
@@ -131,40 +131,6 @@ async function openGraph(
   // from the list is covered by "can navigate to graph detail".
   await openGraphById(page, match.task_id)
 }
-
-test.describe('Graphs Page', () => {
-  test.beforeEach(async ({ page }) => {
-    if (!isRealMode) {
-      await setupMockApi(page)
-    }
-  })
-
-  test('displays graphs list', async ({ page }) => {
-    await page.goto('/flows')
-    await page.waitForLoadState('networkidle')
-
-    // Page should load without errors
-    const heading = page.locator('h1, h2, [class*="heading"]')
-    await expect(heading.first()).toBeVisible()
-  })
-
-  test('shows graph entries when workflows exist', async ({ page }) => {
-    await page.goto('/flows')
-    await page.waitForLoadState('networkidle')
-
-    // The list loads after the page does
-    await expect(page.locator('a[href*="/flows/"]').first()).toBeVisible({ timeout: 15_000 })
-  })
-
-  test('can navigate to graph detail', async ({ page }) => {
-    const hasGraph = await navigateToFirstGraph(page)
-    if (!hasGraph) {
-      test.skip()
-      return
-    }
-    await expect(page).toHaveURL(/\/flows\/.+/)
-  })
-})
 
 test.describe('Graph Detail Page', () => {
   test.beforeEach(async ({ page }) => {

@@ -506,6 +506,8 @@ export async function setupMockApi(
           first_seen: t.first_seen,
           last_updated: t.last_updated,
           duration_ms: t.duration_ms,
+          // Left out unless the test sets it: an older server has no summary
+          ...(t.flow !== undefined && { flow: t.flow }),
         })),
         total: rootTasks.length,
         limit: 50,
