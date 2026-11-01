@@ -16,6 +16,7 @@ import {
   fetchGraph,
   fetchGraphs,
   fetchGroups,
+  fetchGroupTimeseries,
   fetchHealth,
   fetchTask,
   fetchTaskRegistry,
@@ -32,6 +33,7 @@ import {
   type TaskStatus,
   type WorkerListResponse,
 } from './client'
+import { groupFailureRates } from './groupStats'
 
 // Polling interval when WebSocket is disconnected
 const POLL_INTERVAL = 5000
@@ -186,6 +188,25 @@ export function useGroups() {
     queryFn: fetchGroups,
     // A 404 means this server has no such endpoint and will not grow one: stop asking. Any other
     // failure may pass, so the next refresh is still due.
+    refetchInterval: (query) => {
+      const error = query.state.error
+      return error instanceof HttpError && error.status === 404 ? false : GROUPS_POLL_MS
+    },
+    retry: false,
+  })
+}
+
+/**
+ * Each task group's failure rate over `within` (failures / runs, by the run's current state);
+ * undefined `within` is the whole retention. No data while loading, and none when the request
+ * fails (an older server answers 404): callers then show no rate.
+ */
+export function useGroupFailureRates(within: string | undefined) {
+  return useQuery({
+    queryKey: ['stats', 'group-failure-rates', within],
+    queryFn: () => fetchGroupTimeseries(within),
+    select: groupFailureRates,
+    // A 404 means this server has no such endpoint: stop asking. Other failures may pass.
     refetchInterval: (query) => {
       const error = query.state.error
       return error instanceof HttpError && error.status === 404 ? false : GROUPS_POLL_MS

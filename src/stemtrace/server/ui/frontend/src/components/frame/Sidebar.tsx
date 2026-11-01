@@ -36,7 +36,14 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
     >
       <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
         <SproutMark size={30} className="flex-none" />
-        <span className="text-base font-extrabold tracking-[-0.01em]">stemtrace</span>
+        <div>
+          <b className="block text-base font-extrabold tracking-[-0.01em]">stemtrace</b>
+          {health?.broker && (
+            <small className="block text-[11px] leading-snug text-muted">
+              Broker: {health.broker}
+            </small>
+          )}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pt-2 pb-3">
         <nav aria-label="Sections" className="flex flex-col gap-0.5">
@@ -65,15 +72,14 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
         </nav>
         <SidebarGroups onNavigate={onNavigate} />
       </div>
-      <div className="flex flex-wrap items-center gap-2.5 px-4 pt-2.5 pb-3.5">
+      <div className="flex flex-col items-start gap-2.5 px-4 pt-2.5 pb-3.5">
         <LiveStatus />
-        <span className="flex-1" />
-        <ThemeToggle />
-        <LogoutButton />
+        <div className="flex flex-wrap items-center gap-2.5">
+          <ThemeToggle />
+          <LogoutButton />
+        </div>
         {health?.version && (
-          <span className="w-full text-[11px] leading-snug text-muted">
-            Version {health.version}
-          </span>
+          <span className="text-[11px] leading-snug text-muted">Version {health.version}</span>
         )}
       </div>
     </aside>

@@ -7,6 +7,9 @@ export type Range = '1h' | '6h' | 'all'
 /** The range when the URL has none; it is never written to the URL. */
 export const DEFAULT_RANGE: Range = '6h'
 
+/** How a window reads after "in": `the last 6h`. All has none. */
+export const WINDOW_WORDS: Record<string, string> = { '1h': 'the last hour', '6h': 'the last 6h' }
+
 /** Search params of the Executions page: its filters (see `ExecutionFilters`), the view and the range. */
 export interface ExecutionsSearch extends ExecutionFilters {
   view?: 'list' | 'timeline'

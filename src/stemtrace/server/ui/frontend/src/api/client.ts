@@ -266,6 +266,8 @@ export interface HealthResponse {
   consumer_connected?: boolean | null
   websocket_connections: number
   node_count: number
+  /** Kind of the Celery broker (`redis`, `rabbitmq`, `memory`), never its URL; null when unknown. */
+  broker?: string | null
 }
 
 export interface Worker {
@@ -445,4 +447,18 @@ export interface TaskGroupListResponse {
 
 export async function fetchGroups(): Promise<TaskGroupListResponse> {
   return apiFetch(`${API_BASE}/groups`, 'Failed to fetch groups')
+}
+
+/** `GET /api/stats/timeseries?group_by=task_group`: only the per-group counts are read. */
+export interface GroupTimeseriesResponse {
+  /** Group name -> state -> runs per bucket; null when the server ignored `group_by`. */
+  by_task_group: Record<string, Record<string, number[]>> | null
+}
+
+/** Runs per task group and state over `within` (`1h`, `6h`); no `within` is the whole retention. */
+export async function fetchGroupTimeseries(within?: string): Promise<GroupTimeseriesResponse> {
+  const searchParams = new URLSearchParams()
+  if (within) searchParams.set('within', within)
+  searchParams.set('group_by', 'task_group')
+  return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch group stats')
 }

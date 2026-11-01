@@ -247,7 +247,7 @@ test.describe('Sidebar', () => {
     await setupMockApi(page)
     await page.goto('/executions')
     const status = page.getByTestId('live-status')
-    await expect(status).toHaveText('Live')
+    await expect(status).toHaveText('Live streaming events')
     expect(await status.evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0)
   })
 
@@ -453,7 +453,7 @@ test.describe('Live connection', () => {
     await page.clock.install()
 
     await page.goto('/')
-    await expect(page.getByTestId('live-status')).toHaveText('Live')
+    await expect(page.getByTestId('live-status')).toHaveText('Live streaming events')
     // StrictMode (dev) mounts twice: the first mount's socket is dropped. Wait
     // until its close event has reached the page, where a stale handler would
     // report "disconnected" and schedule a reconnect.
@@ -465,6 +465,6 @@ test.describe('Live connection', () => {
 
     expect(logs.filter((line) => line.includes('[WebSocket] Disconnected'))).toEqual([])
     expect(sockets).toHaveLength(2)
-    await expect(page.getByTestId('live-status')).toHaveText('Live')
+    await expect(page.getByTestId('live-status')).toHaveText('Live streaming events')
   })
 })
