@@ -5,6 +5,7 @@ import { useTaskRegistry } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { RegistryStatus } from '@/components/registry/RegistryStatus'
 import { matchesQuery, noteOf } from '@/components/registry/registry'
+import { TableSkeleton } from '@/components/TableSkeleton'
 import { TaskName } from '@/components/TaskName'
 import { NUM, TD, TH } from '@/components/workers/workers'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
@@ -61,14 +62,7 @@ function RegistryPage() {
       )}
 
       {isLoading ? (
-        <div
-          aria-hidden="true"
-          className="animate-pulse space-y-px overflow-hidden rounded-lg bg-surface"
-        >
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-9 border-t border-rule first:border-t-0" />
-          ))}
-        </div>
+        <TableSkeleton />
       ) : error ? (
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
           Failed to load task registry

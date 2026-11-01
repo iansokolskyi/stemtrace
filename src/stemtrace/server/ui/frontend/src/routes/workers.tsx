@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useWorkers } from '@/api/queries'
+import { TableSkeleton } from '@/components/TableSkeleton'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { hostsOf, NUM, registeredTasks, TD, TH } from '@/components/workers/workers'
 import { formatAgo } from '@/utils/format'
@@ -29,14 +30,7 @@ function WorkersPage() {
       </div>
 
       {isLoading ? (
-        <div
-          aria-hidden="true"
-          className="animate-pulse space-y-px overflow-hidden rounded-lg bg-surface"
-        >
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-9 border-t border-rule first:border-t-0" />
-          ))}
-        </div>
+        <TableSkeleton />
       ) : error ? (
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
           Failed to load workers
