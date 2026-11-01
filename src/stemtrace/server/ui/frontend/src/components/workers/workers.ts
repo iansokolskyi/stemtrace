@@ -1,13 +1,8 @@
 import type { Worker } from '@/api/client'
 
-/** The workers in list order: by hostname, then pid. */
-export function sortedWorkers(workers: Worker[]): Worker[] {
-  return [...workers].sort((a, b) => a.hostname.localeCompare(b.hostname) || a.pid - b.pid)
-}
-
 /**
- * The process a host's page describes. A host can have several (a restart leaves the old pid
- * behind): the online one wins, then the latest sighting.
+ * The process a host's page and row describe. A host can have several (a restart leaves the
+ * old pid behind for a while): the online one wins, then the latest sighting.
  */
 export function leadingWorker(processes: Worker[]): Worker {
   return [...processes].sort(
@@ -15,6 +10,29 @@ export function leadingWorker(processes: Worker[]): Worker {
       Number(b.status === 'online') - Number(a.status === 'online') ||
       Date.parse(b.last_seen) - Date.parse(a.last_seen),
   )[0]
+}
+
+/** One host: its processes and the leading one, whose status is the host's. */
+export interface Host {
+  hostname: string
+  processes: Worker[]
+  leading: Worker
+}
+
+/** The workers grouped by hostname, in list order. Status is decided per host, never per pid. */
+export function hostsOf(workers: Worker[]): Host[] {
+  const byName = new Map<string, Worker[]>()
+  for (const worker of workers) {
+    byName.set(worker.hostname, [...(byName.get(worker.hostname) ?? []), worker])
+  }
+  return [...byName]
+    .map(([hostname, processes]) => ({ hostname, processes, leading: leadingWorker(processes) }))
+    .sort((a, b) => a.hostname.localeCompare(b.hostname))
+}
+
+/** Hosts with no online process: what the sidebar badge counts. */
+export function offlineHostCount(workers: Worker[]): number {
+  return hostsOf(workers).filter((host) => host.leading.status === 'offline').length
 }
 
 /** Every task any of the host's processes registered, once each, sorted. */

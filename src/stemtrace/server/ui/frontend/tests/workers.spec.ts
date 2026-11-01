@@ -201,18 +201,51 @@ test.describe('Workers page', () => {
     expect(requests.filter((r) => r === '/api/workers?refresh=false')).toHaveLength(1)
   })
 
-  test('two processes of one host are told apart by pid', async ({ page }) => {
-    test.skip(isRealMode, 'Mock-only test')
-    mockApi?.setWorkers([
-      worker({ hostname: 'celery@h', pid: 11, status: 'offline' }),
-      worker({ hostname: 'celery@h', pid: 22 }),
-      worker({ hostname: 'celery@solo', pid: 33 }),
-    ])
-    await loadWorkersPage(page, () => page.goto('/workers'))
-    await expect(table(page).getByRole('row').filter({ hasText: 'pid 11' })).toHaveCount(1)
-    await expect(table(page).getByRole('row').filter({ hasText: 'pid 22' })).toHaveCount(1)
-    await expect(table(page).getByRole('row').filter({ hasText: 'pid 33' })).toHaveCount(0)
-  })
+  // Status is decided per host: a restart leaves the old pid offline for a while, and that
+  // must not make a host with a live process look down (list row, count, badge, host page).
+  for (const processes of [1, 2, 3]) {
+    for (let live = 0; live <= processes; live++) {
+      test(`host with ${processes} process(es), ${live} online: row, count, badge and page agree`, async ({
+        page,
+      }) => {
+        test.skip(isRealMode, 'Mock-only test')
+        const host = 'celery@h'
+        mockApi?.setWorkers([
+          ...Array.from({ length: processes }, (_, i) =>
+            worker({
+              hostname: host,
+              pid: 10 + i,
+              // The online ones are the latest pids; offline ones were seen longer ago
+              status: i >= processes - live ? 'online' : 'offline',
+              last_seen: minutesAgo(i >= processes - live ? 1 : 60 + i),
+            }),
+          ),
+          worker({ hostname: 'celery@other', pid: 99 }),
+        ])
+        await loadWorkersPage(page, () => page.goto('/workers'))
+        const up = live > 0
+        await expect(table(page).getByRole('row')).toHaveCount(3) // header, host, other
+        await expect(rowOf(page, host)).toHaveCount(1)
+        await expect(rowOf(page, host).getByTestId('worker-status')).toHaveAttribute(
+          'data-status',
+          up ? 'online' : 'offline',
+        )
+        await expect(page.getByText(`${up ? 2 : 1} of 2 online`)).toBeVisible()
+        const badge = page
+          .getByRole('navigation', { name: 'Sections' })
+          .getByRole('link', { name: /Workers/ })
+        if (up) await expect(badge).not.toContainText('offline')
+        else await expect(badge).toContainText('1 offline')
+        await expect(badge).not.toContainText(/[2-9] offline/)
+
+        await rowOf(page, host).getByRole('link').click()
+        await expect(page.getByTestId('worker-status')).toHaveAttribute(
+          'data-status',
+          up ? 'online' : 'offline',
+        )
+      })
+    }
+  }
 
   test('shows an empty state when no workers', async ({ page }) => {
     test.skip(isRealMode, 'Mock-only test')

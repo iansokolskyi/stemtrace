@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useWorkers } from '@/api/queries'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
-import { NUM, sortedWorkers, TD, TH } from '@/components/workers/workers'
+import { hostsOf, NUM, registeredTasks, TD, TH } from '@/components/workers/workers'
 import { formatAgo } from '@/utils/format'
 
 export const Route = createFileRoute('/workers')({
@@ -16,15 +16,15 @@ const PROBLEM_ROW =
 
 function WorkersPage() {
   const { data, isLoading, error } = useWorkers()
-  const workers = sortedWorkers(data?.workers ?? [])
-  const online = workers.filter((worker) => worker.status === 'online').length
+  const hosts = hostsOf(data?.workers ?? [])
+  const online = hosts.filter((host) => host.leading.status === 'online').length
 
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-ink">Workers</h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
-          {workers.length > 0 && `${online} of ${workers.length} online`}
+          {hosts.length > 0 && `${online} of ${hosts.length} online`}
         </p>
       </div>
 
@@ -41,7 +41,7 @@ function WorkersPage() {
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
           Failed to load workers
         </p>
-      ) : workers.length === 0 ? (
+      ) : hosts.length === 0 ? (
         <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
           <p className="m-0">No workers registered</p>
           <p className="m-0 mt-1">
@@ -71,13 +71,11 @@ function WorkersPage() {
               </tr>
             </thead>
             <tbody>
-              {workers.map((worker) => {
+              {hosts.map(({ hostname, processes, leading: worker }) => {
                 const offline = worker.status === 'offline'
-                // One host can have several processes: tell them apart by pid
-                const shared = workers.filter((w) => w.hostname === worker.hostname).length > 1
                 return (
                   <tr
-                    key={`${worker.hostname}:${worker.pid}`}
+                    key={hostname}
                     data-problem={offline || undefined}
                     className={clsx(
                       'relative border-b border-rule last:border-b-0',
@@ -87,17 +85,16 @@ function WorkersPage() {
                     <td className={TD}>
                       <Link
                         to="/workers/$hostname"
-                        params={{ hostname: worker.hostname }}
+                        params={{ hostname }}
                         className="font-mono font-bold after:absolute after:inset-0"
                       >
-                        {worker.hostname}
+                        {hostname}
                       </Link>
-                      {shared && <span className="ml-2 text-muted">pid {worker.pid}</span>}
                     </td>
                     <td className={TD}>
                       <WorkerStatus status={worker.status} />
                     </td>
-                    <td className={clsx(TD, NUM)}>{worker.registered_tasks.length}</td>
+                    <td className={clsx(TD, NUM)}>{registeredTasks(processes).length}</td>
                     <td className={clsx(TD, NUM, 'text-muted')}>
                       {formatAgo(worker.registered_at)}
                     </td>
