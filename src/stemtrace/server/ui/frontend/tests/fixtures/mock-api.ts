@@ -22,11 +22,35 @@ import {
   DEFAULT_REGISTRY,
   DEFAULT_TASKS,
   DEFAULT_WORKERS,
+  type MockFlowSummary,
   type MockGroup,
   type MockRegisteredTask,
   type MockTask,
   type MockWorker,
 } from './mock-data'
+
+/** The `flow` the API computes for a root: totals over the tasks of its graph. */
+function summarizeFlow(root: MockTask, all: MockTask[]): MockFlowSummary {
+  const members = all.filter((t) => t.root_id === root.task_id && t.node_type === 'TASK')
+  const state_counts: Record<string, number> = {}
+  for (const t of members) state_counts[t.state] = (state_counts[t.state] ?? 0) + 1
+  const worst = [
+    'FAILURE',
+    'REJECTED',
+    'REVOKED',
+    'RETRY',
+    'STARTED',
+    'PENDING',
+    'RECEIVED',
+    'IGNORED',
+  ]
+  return {
+    task_count: members.length,
+    state_counts,
+    not_run_count: 0,
+    state: worst.find((state) => state_counts[state]) ?? root.state,
+  }
+}
 
 export interface MockApiContext {
   /** All tasks in the mock store */
@@ -506,6 +530,8 @@ export async function setupMockApi(
           first_seen: t.first_seen,
           last_updated: t.last_updated,
           duration_ms: t.duration_ms,
+          // The real API always sends one; a test sets `flow` (null included) to override it
+          flow: t.flow !== undefined ? t.flow : summarizeFlow(t, tasks),
         })),
         total: rootTasks.length,
         limit: 50,

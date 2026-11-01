@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 
+import { flowListRoots } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
 import {
   createFailedTask,
@@ -275,4 +276,15 @@ for (const theme of ['light', 'dark'] as const) {
       })
     })
   }
+}
+
+// The Flows list: every kind of row (failed chord with a callback that did not run, success,
+// and running), against the fixed clock.
+for (const theme of ['light', 'dark'] as const) {
+  test(`flows, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    api.addTasks(flowListRoots().slice(0, 3))
+    await snapshot(page, `flows-${theme}-1280`, { theme, width: 1280, path: '/flows' })
+  })
 }
