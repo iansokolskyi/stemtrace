@@ -33,14 +33,17 @@ interface FlowPageProps {
 /**
  * The Flow page: title, state and summary with Jump to failure and zoom, the track diagram and
  * the inspector. The first failure is chosen on open (the view stays at the root). Once the reader
- * has zoomed, chosen a node, expanded a container or scrolled, a live update never moves the view;
+ * has acted (zoomed, pressed Fit, chosen a node, expanded or collapsed, scrolled), a live update never moves the view;
  * until then a new node that is out of the box is scrolled into it.
  */
 export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const [chosen, setChosen] = useState<string | null>(null)
   const [zoom, setZoom] = useState<number | null>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const [moved, setMoved] = useState(false)
+  // Set by every reader action (choosing, zoom buttons including Fit, expand and collapse,
+  // scrolling) and never cleared: undoing an action does not give the view back to live updates.
+  // The page is keyed by the flow, so a new flow starts unlocked.
+  const [acted, setActed] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
 
   const layout = useMemo(() => layoutFlow(nodes, rootId, expanded), [nodes, rootId, expanded])
@@ -50,7 +53,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   useSetCrumbTitle(root ? flowTitle(root.name) : undefined)
   const selected = chosen && nodes[chosen] ? chosen : (failure?.task_id ?? rootId)
   const scale = zoom ?? 1
-  const locked = chosen !== null || zoom !== null || moved
+  const locked = acted
 
   const rectOf = (id: string) =>
     layout.tasks.find((task) => task.id === id) ?? layout.containers.find((box) => box.id === id)
@@ -81,7 +84,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
       return
     }
     own.current = null
-    setMoved(true)
+    setActed(true)
   }
 
   const centreOn = (id: string): void => {
@@ -141,7 +144,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   })
 
   const toggleExpanded = (containerId: string): void => {
-    setMoved(true)
+    setActed(true)
     setExpanded((current) => {
       const next = new Set(current)
       if (!next.delete(containerId)) next.add(containerId)
@@ -150,6 +153,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   }
 
   const zoomBy = (delta: number): void => {
+    setActed(true)
     setZoom((current) => {
       const next = Math.round(((current ?? 1) + delta) * 10) / 10
       return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next))
@@ -176,6 +180,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
           title={failure ? undefined : 'No failed task in this flow'}
           onClick={() => {
             if (!failure) return
+            setActed(true)
             setChosen(failure.task_id)
             centreOn(failure.task_id)
           }}
@@ -202,7 +207,10 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
             className={`${BUTTON} min-w-[52px] justify-center rounded-none`}
             aria-pressed={zoom === null}
             title="Show the graph at its natural size"
-            onClick={() => setZoom(null)}
+            onClick={() => {
+              setActed(true)
+              setZoom(null)
+            }}
           >
             {zoom === null ? 'Fit' : `${Math.round(zoom * 100)}%`}
           </button>
@@ -225,7 +233,10 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
           selectedId={selected}
           scale={scale}
           boxRef={boxRef}
-          onSelect={setChosen}
+          onSelect={(id) => {
+            setActed(true)
+            setChosen(id)
+          }}
           onToggleExpanded={toggleExpanded}
           onScroll={handleScroll}
         />

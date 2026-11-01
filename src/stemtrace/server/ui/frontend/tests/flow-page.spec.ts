@@ -529,6 +529,70 @@ test.describe('live updates keep the view', () => {
     })
   }
 
+  // The lock is sticky: undoing what the reader did does not unlock the view. Each pair is an
+  // action and its undo; a new node far to the right must leave the view where it was.
+  /** A chord of 20 whose callback starts a chain 8 long: wide, with a container that expands. */
+  function wideChord(): { graph: FlowGraph; last: string } {
+    const nodes = group(20, {}, 'CHORD')
+    nodes.g.chord_id = 'k0'
+    nodes.g.children.push('k0')
+    for (let i = 0; i < 8; i++) {
+      nodes[`k${i}`] = node({
+        task_id: `k${i}`,
+        name: `app.k${i}`,
+        children: i < 7 ? [`k${i + 1}`] : [],
+      })
+    }
+    return { graph: { root_id: 'g', nodes }, last: 'k7' }
+  }
+  const actions: Record<string, { wide?: boolean; act: (page: Page) => Promise<void> }> = {
+    'Zoom in, then Fit': {
+      act: async (page) => {
+        await page.getByRole('button', { name: 'Zoom in' }).click()
+        await page.getByRole('button', { name: /^(Fit|\d+%)$/ }).click()
+      },
+    },
+    'Zoom in, Zoom out, then Fit': {
+      act: async (page) => {
+        await page.getByRole('button', { name: 'Zoom in' }).click()
+        await page.getByRole('button', { name: 'Zoom out' }).click()
+        await page.getByRole('button', { name: /^(Fit|\d+%)$/ }).click()
+      },
+    },
+    'choose a node': {
+      act: async (page) => {
+        await flowNode(page, 'c0').click()
+      },
+    },
+    'expand a container, then collapse it': {
+      wide: true,
+      act: async (page) => {
+        await page.getByTestId('flow-more').click()
+        await page.locator('[data-testid="flow-more"][data-kind="less"]').click()
+      },
+    },
+  }
+  for (const [name, { wide, act }] of Object.entries(actions)) {
+    test(`does not move the view after: ${name}`, async ({ page }) => {
+      const shape = wide ? wideChord() : { graph: longChain(12), last: 'c11' }
+      await setupMockApi(page, { useDefaults: false })
+      await serveFlow(page, shape.graph)
+      await page.routeWebSocket(/\/ws$/, (ws) => ws.close())
+      await page.goto(`/flows/${shape.graph.root_id}`)
+      await flowNodes(page).first().waitFor({ state: 'attached' })
+
+      await act(page)
+      await expect.poll(() => scrollLeft(page)).toBe(0)
+
+      // A new task at the far end, out of the box
+      shape.graph.nodes[shape.last].children.push('tail')
+      shape.graph.nodes.tail = node({ task_id: 'tail', name: 'app.tail' })
+      await expect(flowNode(page, 'tail')).toHaveCount(1, { timeout: 15_000 })
+
+      expect(await scrollLeft(page)).toBe(0)
+    })
+  }
+
   test('scrolls a new node into the box while nobody has moved the view', async ({ page }) => {
     const graph = longChain(3)
     await setupMockApi(page, { useDefaults: false })
