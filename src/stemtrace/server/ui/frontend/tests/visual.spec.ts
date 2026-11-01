@@ -302,7 +302,7 @@ function visualRegistry(): MockRegisteredTask[] {
     task('billing.tasks.sync_invoices_v2', 'billing', 'not_registered', 6, 10, []),
     task('emails.send_digest', 'emails', 'active', 31, 125, ['celery@worker-email-1']),
     task('emails.send_weekly_report', 'emails', 'never_run', 0, null, ['celery@worker-email-1']),
-    task('app.cleanup', 'ungrouped', 'active', 4, 60 * 30, ['celery@worker-billing-1']),
+    task('app.cleanup', 'ungrouped', 'active', 4, 60 * 5, ['celery@worker-billing-1']),
   ]
 }
 
