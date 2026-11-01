@@ -2,7 +2,7 @@ import { expect, type Page, test } from '@playwright/test'
 
 import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
 import { flowListRoots } from './fixtures/flows-list'
-import { setupMockApi } from './fixtures/mock-api'
+import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
   createFailedTask,
   createMockEvent,
@@ -39,11 +39,26 @@ async function snapshot(
   await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true })
 }
 
+/** The sidebar's broker label, groups with a failure rate (one above 1%) and tags. */
+function withBrokerAndGroups(api: MockApiContext): void {
+  api.setBroker('redis')
+  api.setGroups([
+    { name: 'Billing', source: 'code', tags: ['critical', 'money'], color: null, task_names: [] },
+    { name: 'Search', source: 'code', tags: ['nightly'], color: null, task_names: [] },
+    { name: 'Email', source: 'auto', tags: [], color: null, task_names: [] },
+  ])
+  api.setGroupStats({
+    Billing: { SUCCESS: [90], FAILURE: [10] },
+    Search: { SUCCESS: [200] },
+  })
+}
+
 for (const theme of ['light', 'dark'] as const) {
   for (const width of [1280, 400]) {
     test(`frame on workers, ${theme}, ${width}px`, async ({ page }) => {
       await page.routeWebSocket(/\/ws$/, () => {})
-      await setupMockApi(page)
+      const api = await setupMockApi(page)
+      withBrokerAndGroups(api)
       await snapshot(page, `frame-${theme}-${width}`, { theme, width, path: '/workers' })
     })
   }
@@ -51,7 +66,8 @@ for (const theme of ['light', 'dark'] as const) {
 
 test('drawer open at 400px, dark', async ({ page }) => {
   await page.routeWebSocket(/\/ws$/, () => {})
-  await setupMockApi(page)
+  const api = await setupMockApi(page)
+  withBrokerAndGroups(api)
   await page.addInitScript(() => localStorage.setItem('stemtrace-theme', 'dark'))
   await page.setViewportSize({ width: 400, height: 900 })
   await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
@@ -277,6 +293,19 @@ for (const theme of ['light', 'dark'] as const) {
       })
     })
   }
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`executions, empty result, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    withBrokerAndGroups(api)
+    await snapshot(page, `executions-empty-${theme}-1280`, {
+      theme,
+      width: 1280,
+      path: '/executions?state=FAILURE&queue=payments',
+    })
+  })
 }
 
 // The Flows list: every kind of row (failed chord with a callback that did not run, success,

@@ -1,5 +1,5 @@
 import type { ExecutionRow } from '@/api/client'
-import { formatAgo, formatSpan } from '@/utils/format'
+import { formatAgo, formatSpan, shortHost } from '@/utils/format'
 
 export type ColumnId =
   | 'state'
@@ -27,9 +27,6 @@ export interface Column {
 
 const present = (value: string | null | undefined): boolean => !!value
 const finite = (value: number | null | undefined): boolean => value !== null && value !== undefined
-
-/** Strips the `celery@` every default worker name starts with. */
-export const shortHost = (hostname: string): string => hostname.replace(/^celery@/, '')
 
 /** Every column in display order. State, name and updated always show; the rest are optional. */
 export const COLUMNS: Column[] = [

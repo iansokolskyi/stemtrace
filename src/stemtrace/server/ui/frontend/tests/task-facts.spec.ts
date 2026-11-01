@@ -70,7 +70,7 @@ test.describe('Facts', () => {
       await expect(dd(label)).toHaveText(DATE_TIME)
     }
     // First seen is the PENDING event's time and Last update the SUCCESS event's: same clock text
-    const rows = page.getByRole('region', { name: 'Event History' }).getByTestId('event-row')
+    const rows = page.getByRole('region', { name: 'Event history' }).getByTestId('event-row')
     const timeOf = async (row: number): Promise<string> =>
       (((await rows.nth(row).textContent()) ?? '').match(/\d{2}:\d{2}:\d{2}/) ?? [''])[0]
     await expect(dd('First seen')).toContainText(await timeOf(0))

@@ -75,10 +75,40 @@ function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps): ReactEle
           className="mt-2 mb-0 max-h-96 max-w-full overflow-auto rounded-[3px] bg-ground px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre"
           data-testid="output-text"
         >
-          {output}
+          {output.split('\n').map((line, index) => (
+            // Lines never reorder: the output is fixed text
+            <Line key={index} line={line} first={index === 0} />
+          ))}
         </pre>
       )}
     </div>
+  )
+}
+
+const LEVEL = /^(INFO|WARN|WARNING|ERROR|CRITICAL)(?=\s)/
+const LEVEL_TONE: Record<string, string> = {
+  INFO: 'text-muted',
+  WARN: 'font-bold text-retry-t',
+  WARNING: 'font-bold text-retry-t',
+  ERROR: 'font-bold text-failure-t',
+  CRITICAL: 'font-bold text-failure-t',
+}
+
+/** One output line; a leading log level (`INFO`, `WARNING`, `ERROR`...) gets its tone, the rest is plain. */
+function Line({ line, first }: { line: string; first: boolean }): ReactElement {
+  const level = LEVEL.exec(line)?.[1]
+  return (
+    <>
+      {!first && '\n'}
+      {level ? (
+        <>
+          <span className={LEVEL_TONE[level]}>{level}</span>
+          {line.slice(level.length)}
+        </>
+      ) : (
+        line
+      )}
+    </>
   )
 }
 

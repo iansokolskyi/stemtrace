@@ -14,7 +14,7 @@ export function ChildTasks({ tasks }: { tasks: TaskNode[] }): ReactElement | nul
   const labels = shortestUniqueSuffixes(tasks.map((child) => child.name))
 
   return (
-    <Panel title="Child Tasks" aside={<span className="text-xs text-muted">{tasks.length}</span>}>
+    <Panel title="Child tasks" aside={<span className="text-xs text-muted">{tasks.length}</span>}>
       <ul className="m-0 list-none px-2 pt-0 pb-2.5">
         {tasks.map((child) => (
           <li key={child.task_id}>

@@ -604,7 +604,7 @@ test.describe('Task Detail - Output', () => {
     await page.goto(`/tasks/${task.task_id}`)
     await page.waitForLoadState('networkidle')
 
-    await expect(page.getByRole('heading', { name: 'Event History' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Event history' })).toBeVisible()
     await expect(page.getByTestId('task-output')).toHaveCount(0)
   })
 })

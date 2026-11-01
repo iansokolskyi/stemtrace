@@ -53,7 +53,7 @@ function recordTaskLists(page: Page): Record<string, string>[] {
 const search = (page: Page): Record<string, string> =>
   Object.fromEntries(new URL(page.url()).searchParams)
 
-const addFilter = (page: Page) => page.getByRole('button', { name: 'Add filter' })
+const addFilter = (page: Page) => page.getByRole('button', { name: 'Filter', exact: true })
 const chip = (page: Page, key: string) => page.locator(`[data-chip="${key}"]`)
 const popover = (page: Page) => page.getByRole('dialog')
 
@@ -83,7 +83,7 @@ const FILTERS: {
     key: 'name',
     label: 'Name',
     set: async (page) => {
-      await open(page, 'Name')
+      await open(page, 'Task name')
       await popover(page).getByRole('textbox').fill('send')
       await popover(page).getByRole('textbox').press('Enter')
     },
@@ -93,7 +93,7 @@ const FILTERS: {
     key: 'name_exact',
     label: 'Task',
     set: async (page) => {
-      await open(page, 'Name')
+      await open(page, 'Task name')
       await popover(page).getByRole('checkbox', { name: 'Exact name' }).check()
       await popover(page).getByRole('textbox').fill('app.jobs.index')
       await popover(page).getByRole('textbox').press('Enter')
@@ -152,7 +152,7 @@ const FILTERS: {
     key: 'time',
     label: 'Time',
     set: async (page) => {
-      await open(page, 'Time')
+      await open(page, 'Time range')
       await popover(page).getByLabel('From').fill('2026-10-01')
       await popover(page).getByLabel('To').fill('2026-10-07')
       await popover(page).getByRole('button', { name: 'Apply' }).click()
@@ -243,7 +243,7 @@ test.describe('Filters together', () => {
     }
     await expect.poll(() => lists.at(-1)).toEqual(listFor(all))
 
-    await page.getByRole('button', { name: 'Clear' }).click()
+    await page.getByRole('button', { name: 'Clear all', exact: true }).click()
     expect(search(page)).toEqual({})
     await expect.poll(() => lists.at(-1)).toEqual(PAGING)
   })
@@ -627,7 +627,7 @@ test.describe('Groups after a failed refresh', () => {
 })
 
 test.describe('Popover and a growing chip row', () => {
-  test('a popover opened from Add filter follows the button when a chip pushes it right', async ({
+  test('a popover opened from Filter follows the button when a chip pushes it right', async ({
     page,
   }) => {
     const api = await setupMockApi(page, { useDefaults: false })
@@ -643,7 +643,7 @@ test.describe('Popover and a growing chip row', () => {
     expect(Math.abs(await gap())).toBeLessThanOrEqual(1)
     const before = (await addFilter(page).boundingBox())?.x ?? 0
 
-    // A chip appears (the popover stays open for more states) and Add filter moves right
+    // A chip appears (the popover stays open for more states) and Filter moves right
     await popover(page).getByRole('checkbox', { name: 'Failure' }).check()
     await expect(chip(page, 'state')).toBeVisible()
     await expect
@@ -669,7 +669,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     await logHistoryWrites(page)
     await page.goto('/workers')
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '10012025')
     await typeInto(page, 'To', '10072025')
     // Nothing has been applied while typing
@@ -692,7 +692,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(sampleTasks())
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'To', '10072025')
     await page.keyboard.press('Enter')
     await expect.poll(() => search(page)).toEqual({ to_date: '2025-10-07' })
@@ -706,7 +706,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     api.addTasks(sampleTasks())
     await logHistoryWrites(page)
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '10012025')
     await page.clock.fastForward(60_000)
     expect(search(page)).toEqual({})
@@ -719,7 +719,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     api.addTasks(sampleTasks())
     await logHistoryWrites(page)
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '10012025')
     // Focus leaves From for To, and then for the Apply button
     await popover(page).getByLabel('To').focus()
@@ -735,7 +735,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(sampleTasks())
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await expect(applyButton(page)).toBeEnabled() // nothing typed: nothing to reject
     const from = popover(page).getByLabel('From')
     await from.focus()
@@ -778,7 +778,7 @@ test.describe('Time chip: dates apply only when asked', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(sampleTasks())
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await popover(page).getByRole('button', { name: 'Today' }).click()
     await expect
       .poll(() => search(page))
@@ -830,9 +830,9 @@ test.describe('Typed dates are dropped by every other way of leaving', () => {
           after: (page) => expect(popover(page)).toHaveCount(0),
         },
         {
-          name: 'Clear',
+          name: 'Clear all',
           start: '/executions?queue=payments',
-          leave: (page) => page.getByRole('button', { name: 'Clear' }).click(),
+          leave: (page) => page.getByRole('button', { name: 'Clear all', exact: true }).click(),
           after: async (page) => {
             await expect(popover(page)).toHaveCount(0)
             await expect.poll(() => search(page)).toEqual({})
@@ -876,7 +876,7 @@ test.describe('Typed dates are dropped by every other way of leaving', () => {
         test(`${name}`, async ({ page }) => {
           await page.goto('/workers')
           await page.goto(start)
-          await open(page, 'Time')
+          await open(page, 'Time range')
           await typeInto(page, 'From', typed)
           await leave(page)
           await after(page)
@@ -884,14 +884,12 @@ test.describe('Typed dates are dropped by every other way of leaving', () => {
         })
       }
 
-      test('Add filter, from a chip popover, opens its list and drops the date', async ({
-        page,
-      }) => {
+      test('Filter, from a chip popover, opens its list and drops the date', async ({ page }) => {
         await page.goto('/executions?from_date=2026-10-01')
         await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
         await typeInto(page, 'To', typed)
         await addFilter(page).click()
-        await expect(popover(page)).toHaveAccessibleName('Add filter')
+        await expect(popover(page)).toHaveAccessibleName('Filter by')
         expect(search(page)).toEqual({ from_date: '2026-10-01' })
         expect(await writtenDates(page, 'to_date')).toEqual([])
       })
@@ -915,7 +913,7 @@ test.describe('Typed dates and touch', () => {
 
   test('a tap outside drops the typed date', async ({ page }) => {
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '10012025')
     const point = await outside(page)
     await page.touchscreen.tap(point.x, point.y)
@@ -928,7 +926,7 @@ test.describe('Typed dates and touch', () => {
     page,
   }) => {
     await page.goto('/executions')
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '10012025')
     const point = await outside(page)
     const cdp = await page.context().newCDPSession(page)
@@ -979,16 +977,16 @@ test.describe('Presses on targets, with a date typed', () => {
 
         test('Clear clears everything and applies nothing', async ({ page }) => {
           await page.goto('/executions?state=FAILURE')
-          await open(page, 'Time')
+          await open(page, 'Time range')
           await typeInto(page, 'From', typed)
-          await press(page, page.getByRole('button', { name: 'Clear' }), mode)
+          await press(page, page.getByRole('button', { name: 'Clear all', exact: true }), mode)
           await expect.poll(() => search(page)).toEqual({})
           await noTypedDate(page)
         })
 
         test('a preset applies, and the typed date does not', async ({ page }) => {
           await page.goto('/executions')
-          await open(page, 'Time')
+          await open(page, 'Time range')
           await typeInto(page, 'From', typed)
           await press(page, popover(page).getByRole('button', { name: 'Today' }), mode)
           await expect
@@ -999,7 +997,7 @@ test.describe('Presses on targets, with a date typed', () => {
 
         test("another chip's × removes it, and the date is not applied", async ({ page }) => {
           await page.goto('/executions?queue=payments')
-          await open(page, 'Time')
+          await open(page, 'Time range')
           await typeInto(page, 'From', typed)
           await press(
             page,
@@ -1010,12 +1008,12 @@ test.describe('Presses on targets, with a date typed', () => {
           await noTypedDate(page)
         })
 
-        test('Add filter, from a chip popover, opens its list', async ({ page }) => {
+        test('Filter, from a chip popover, opens its list', async ({ page }) => {
           await page.goto('/executions?queue=payments&from_date=2026-10-01')
           await chip(page, 'time').getByRole('button', { name: /^Time/ }).click()
           await typeInto(page, 'To', typed)
           await press(page, addFilter(page), mode)
-          await expect(popover(page)).toHaveAccessibleName('Add filter')
+          await expect(popover(page)).toHaveAccessibleName('Filter by')
           expect(search(page)).toEqual({ queue: 'payments', from_date: '2026-10-01' })
           expect((await writtenDates(page, 'to_date')).filter((d) => d !== null)).toEqual([])
         })
@@ -1044,9 +1042,9 @@ test.describe('The popover closes when the filters change under it', () => {
     url: Record<string, string>
   }[] = [
     {
-      name: 'Clear',
+      name: 'Clear all',
       keys: ['Enter', 'Space'],
-      target: (page) => page.getByRole('button', { name: 'Clear' }),
+      target: (page) => page.getByRole('button', { name: 'Clear all', exact: true }),
       url: {},
     },
     {
@@ -1074,7 +1072,7 @@ test.describe('The popover closes when the filters change under it', () => {
     for (const key of keys) {
       test(`${key} on ${name} closes the popover and drops the typed date`, async ({ page }) => {
         await setup(page, '/executions?queue=payments')
-        await open(page, 'Time')
+        await open(page, 'Time range')
         await typeInto(page, 'From', '01011950')
         await target(page).focus()
         await page.keyboard.press(key)
@@ -1120,7 +1118,7 @@ test.describe('The popover closes when the filters change under it', () => {
     // Two history entries with the same filters: going back changes no filter, so only the
     // browser's own Back tells the popover its edit is over
     await page.evaluate(() => window.history.pushState({}, '', window.location.href))
-    await open(page, 'Time')
+    await open(page, 'Time range')
     await typeInto(page, 'From', '01011950')
     await page.goBack()
     await expect(popover(page)).toHaveCount(0)

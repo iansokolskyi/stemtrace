@@ -7,10 +7,10 @@ import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { FilterChips } from '@/components/executions/FilterChips'
 import { suggestionsFrom } from '@/components/executions/suggestions'
 import { TaskTimeline } from '@/components/TaskTimeline'
-import { carryRange } from '@/hooks/useCarriedRange'
+import { carryRange, useCarriedRange } from '@/hooks/useCarriedRange'
 import { useDensity } from '@/hooks/useDensity'
 import { formatCount } from '@/utils/format'
-import { executionsSearch, hasDates, withinOf } from './-search'
+import { executionsSearch, hasDates, WINDOW_WORDS, withinOf } from './-search'
 
 export const Route = createFileRoute('/executions')({
   component: TasksPage,
@@ -19,8 +19,6 @@ export const Route = createFileRoute('/executions')({
 })
 
 type ViewMode = 'list' | 'timeline'
-
-const WINDOW_WORDS: Record<string, string> = { '1h': 'the last hour', '6h': 'the last 6h' }
 
 /** "1,204 runs in the last 6h"; no window (All, or explicit dates) is just the count. */
 function runsSummary(total: number, within: string | undefined): string {
@@ -38,6 +36,7 @@ function TasksPage() {
 
   // Dates set the window without touching the range, so the range stays what it was
   const datesSet = hasDates(filters)
+  const carried = useCarriedRange()
   useEffect(() => {
     if (!datesSet) carryRange(range)
   }, [datesSet, range])
@@ -67,8 +66,11 @@ function TasksPage() {
 
   // Filters are history entries (Back restores the previous ones); the view toggle is not
   const setFilters = (next: ExecutionFilters, { replace }: { replace: boolean }) => {
-    // Dates replace the range, so setting any drops it
-    const nextRange = hasDates(next) ? undefined : range
+    // Dates replace the range, so setting any drops it. Leaving a date view (the chip's ×, Clear
+    // all) returns to the range the page showed before it, the one the sidebar links carry.
+    let nextRange = range
+    if (hasDates(next)) nextRange = undefined
+    else if (datesSet) nextRange = range ?? carried.range
     navigate({ to: '/executions', search: { ...next, view, range: nextRange }, replace })
   }
 
@@ -76,43 +78,54 @@ function TasksPage() {
     navigate({ to: '/executions', search: { ...filters, view: mode, range }, replace: true })
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-ink">Executions</h1>
-          <p className="mt-1 min-h-5 text-sm text-muted">
-            {total !== undefined && runsSummary(total, params.within)}
-          </p>
-        </div>
+  const hasFilters = Object.values(filters).some(Boolean)
 
-        <div className="flex flex-wrap items-center gap-3">
-          {viewMode === 'list' && <DensityToggle value={density} onChange={setDensity} />}
-          {/* View toggle */}
-          <fieldset
-            aria-label="View"
-            className="m-0 min-w-0 border-0 inline-flex flex-none gap-0.5 rounded-[3px] bg-raised p-0.5"
-          >
-            {(['list', 'timeline'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={viewMode === mode}
-                onClick={() => handleViewModeChange(mode)}
-                className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
-              >
-                {mode === 'list' ? 'List' : 'Timeline'}
-              </button>
-            ))}
-          </fieldset>
-        </div>
+  const viewToggle = (
+    <fieldset
+      aria-label="View"
+      className="m-0 inline-flex min-w-0 flex-none gap-0.5 rounded-[3px] border-0 bg-raised p-0.5"
+    >
+      {(['list', 'timeline'] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          aria-pressed={viewMode === mode}
+          onClick={() => handleViewModeChange(mode)}
+          className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+        >
+          {mode === 'list' ? 'List' : 'Timeline'}
+        </button>
+      ))}
+    </fieldset>
+  )
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold text-ink">Executions</h1>
+        <p className="mt-1 min-h-5 text-sm text-muted">
+          {total !== undefined && runsSummary(total, params.within)}
+        </p>
       </div>
 
-      <FilterChips filters={filters} onChange={setFilters} suggestions={suggestions} />
+      <FilterChips
+        filters={filters}
+        onChange={setFilters}
+        suggestions={suggestions}
+        trailing={
+          <>
+            {viewMode === 'list' && <DensityToggle value={density} onChange={setDensity} />}
+            {viewToggle}
+          </>
+        }
+      />
 
       {viewMode === 'list' ? (
-        <ExecutionsTable params={params} density={density} />
+        <ExecutionsTable
+          params={params}
+          density={density}
+          onClear={hasFilters ? () => setFilters({}, { replace: false }) : undefined}
+        />
       ) : (
         <TaskTimeline filters={params} />
       )}

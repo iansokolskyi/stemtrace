@@ -92,6 +92,19 @@ export interface MockApiContext {
    */
   setGroups: (groups: MockGroup[] | null | 'error') => void
 
+  /** Set the `broker` kind GET /health reports (null, or never set: the field is null). */
+  setBroker: (broker: string | null) => void
+
+  /**
+   * Replace what GET /stats/timeseries answers with `by_task_group` (group -> state -> runs per
+   * bucket); null makes the endpoint answer 404, 'error' a 500. Starts as 404, so a test that
+   * wants group rates says so. Every request's URL is kept in `statsRequests`.
+   */
+  setGroupStats: (byTaskGroup: Record<string, Record<string, number[]>> | null | 'error') => void
+
+  /** The URLs requested from GET /stats/timeseries, oldest first */
+  statsRequests: URL[]
+
   /** Stop intercepting (cleanup) */
   teardown: () => Promise<void>
 }
@@ -171,6 +184,9 @@ export async function setupMockApi(
   let registry: MockRegisteredTask[] = useDefaults ? [...DEFAULT_REGISTRY] : []
   // No groups by default: the sidebar shows no Groups or Tags section
   let groups: MockGroup[] | null | 'error' = []
+  let broker: string | null = null
+  let groupStats: Record<string, Record<string, number[]>> | null | 'error' = null
+  const statsRequests: URL[] = []
 
   const context: MockApiContext = {
     get tasks() {
@@ -223,6 +239,16 @@ export async function setupMockApi(
     setGroups(newGroups: MockGroup[] | null | 'error') {
       groups = newGroups
     },
+
+    setBroker(kind: string | null) {
+      broker = kind
+    },
+
+    setGroupStats(byTaskGroup) {
+      groupStats = byTaskGroup
+    },
+
+    statsRequests,
 
     async teardown() {
       await page.unrouteAll()
@@ -277,6 +303,36 @@ export async function setupMockApi(
         consumer_running: true,
         websocket_connections: 0,
         node_count: tasks.length,
+        broker,
+      }),
+    })
+  })
+
+  // Stats: GET /stats/timeseries?group_by=task_group (only the per-group counts are modelled)
+  await page.route(new RegExp(`${apiPath}/stats/timeseries`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    statsRequests.push(new URL(route.request().url()))
+    if (groupStats === null || groupStats === 'error') {
+      const missing = groupStats === null
+      await route.fulfill({
+        status: missing ? 404 : 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: missing ? 'Not Found' : 'Internal Server Error' }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        window: { start: '2026-01-01T00:00:00Z', end: '2026-01-01T06:00:00Z' },
+        bucket_seconds: 60,
+        starts: ['2026-01-01T00:00:00Z'],
+        counts: {},
+        by_task_group: groupStats,
       }),
     })
   })

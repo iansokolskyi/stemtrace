@@ -86,7 +86,7 @@ test.describe('TaskHeader', () => {
 
   test('the worker link is omitted when no worker is known', async ({ page }) => {
     await openTask(page, successTask({ hostname: null }))
-    await expect(header(page).getByRole('link', { name: 'Open flow' })).toBeVisible()
+    await expect(header(page).getByRole('link', { name: 'All runs of this task' })).toBeVisible()
     await expect(header(page).getByRole('link', { name: /^Worker/ })).toHaveCount(0)
     await expect(header(page).getByText('–')).toHaveCount(0)
   })
