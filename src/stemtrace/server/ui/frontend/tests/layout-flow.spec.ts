@@ -325,6 +325,8 @@ test.describe('layoutFlow: malformed links', () => {
     const layout = layoutFlow(chord, 'p', new Set())
 
     expect(layout.tasks.filter((task) => task.id === 'cb')).toHaveLength(1)
+    // right of the chord, where its callback goes, not in the parent's column
+    expect(byId(layout).get('cb')).toMatchObject({ x: 236 + 230 + 24, containerId: null })
     expect(layout.tasks).toHaveLength(4)
     // parent to callback, parent to chord, and one edge per header to the callback
     expect(edgePairs(layout)).toEqual(['h1>cb', 'h2>cb', 'p>cb', 'p>ch'])
