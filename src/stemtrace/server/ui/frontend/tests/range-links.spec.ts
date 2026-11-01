@@ -90,15 +90,14 @@ const CASES: LinkCase[] = [
     filters: [['hostname', HOST]],
   },
   {
-    name: 'View runs in the Registry',
+    name: 'a task row in the Registry',
     reach: async (page) => {
       await openFromExecutions(page)
       await page
         .getByRole('navigation', { name: 'Sections' })
         .getByRole('link', { name: /^Registry/ })
         .click()
-      await page.getByRole('heading', { name: 'one', level: 3, exact: true }).click()
-      return page.getByRole('link', { name: /View runs/ })
+      return page.getByRole('link', { name: NAME, exact: true })
     },
     filters: [['name_exact', NAME]],
   },

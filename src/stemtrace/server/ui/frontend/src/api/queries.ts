@@ -30,7 +30,6 @@ import {
   type TaskGroupListResponse,
   type TaskListResponse,
   type TaskRegistryResponse,
-  type TaskStatus,
   type WorkerListResponse,
 } from './client'
 import { groupFailureRates } from './groupStats'
@@ -168,12 +167,13 @@ export function useHealth() {
   })
 }
 
-export function useTaskRegistry(query?: string, status?: TaskStatus) {
+/** Every task name, refreshed from Celery; the Registry page filters it in the browser. */
+export function useTaskRegistry() {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<TaskRegistryResponse>({
-    queryKey: ['taskRegistry', query, status],
-    queryFn: () => fetchTaskRegistry(query, status),
+    queryKey: ['taskRegistry'],
+    queryFn: () => fetchTaskRegistry(),
     // Registry refreshes less frequently
     refetchInterval: isConnected ? false : 30000,
   })

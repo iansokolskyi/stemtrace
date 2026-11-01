@@ -169,6 +169,8 @@ export interface RegisteredTask {
   registered_by: string[]
   last_run: string | null
   status: TaskStatus
+  /** Sent by every current server; absent from older ones. */
+  task_group?: string | null
 }
 
 export interface TaskRegistryResponse {

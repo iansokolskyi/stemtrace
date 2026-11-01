@@ -2,6 +2,7 @@ import { expect, type Page, test } from '@playwright/test'
 
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import type { MockWorker } from './fixtures/mock-data'
+import { columnHeaders, expectFilledWithToken } from './fixtures/table'
 
 /**
  * Tests for the Workers list: a table with host, status, registered tasks, started and last
@@ -92,11 +93,13 @@ test.describe('Workers page', () => {
       return
     }
 
-    await expect(
-      table(page)
-        .getByRole('columnheader')
-        .evaluateAll((cells) => cells.map((cell) => cell.textContent)),
-    ).resolves.toEqual(['Hostname', 'Status', 'Registered tasks', 'Started', 'Last seen'])
+    expect(await columnHeaders(table(page))).toEqual([
+      'Hostname',
+      'Status',
+      'Registered tasks',
+      'Started',
+      'Last seen',
+    ])
 
     const first = rowOf(page, 'worker-1').getByRole('cell')
     await expect(first.nth(0)).toHaveText('worker-1')
@@ -287,15 +290,7 @@ test.describe('Workers page', () => {
       const block = rowOf(page, 'worker-2')
         .getByTestId('worker-status')
         .locator('[data-status-icon]')
-      const got = await block.evaluate((el) => {
-        const probe = document.createElement('div')
-        probe.style.backgroundColor = 'var(--failure)'
-        document.body.append(probe)
-        const want = getComputedStyle(probe).backgroundColor
-        probe.remove()
-        return { actual: getComputedStyle(el).backgroundColor, want }
-      })
-      expect(got.actual).toBe(got.want)
+      await expectFilledWithToken(block, '--failure')
     })
   }
 

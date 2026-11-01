@@ -74,6 +74,8 @@ export interface MockRegisteredTask {
   registered_by: string[]
   last_run: string | null
   status: 'active' | 'never_run' | 'not_registered'
+  /** Sent by every current server; leave it out to model an older one. */
+  task_group?: string
 }
 
 /** An entry of GET /api/groups (source: where the group came from). */
