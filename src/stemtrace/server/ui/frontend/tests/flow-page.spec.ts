@@ -546,5 +546,16 @@ test.describe('live updates keep the view', () => {
 
     await expect(flowNode(page, 'c5')).toBeInViewport({ ratio: 0.99 })
     expect(await scrollLeft(page)).toBeGreaterThan(0)
+
+    // The scroll the page made itself is not the reader's: the next new node is revealed too
+    for (const [prev, id] of [
+      ['c5', 'c6'],
+      ['c6', 'c7'],
+    ]) {
+      graph.nodes[prev].children = [id]
+      graph.nodes[id] = node({ task_id: id, name: `app.step_${id.slice(1)}` })
+    }
+    await expect(flowNode(page, 'c7')).toHaveCount(1, { timeout: 15_000 })
+    await expect(flowNode(page, 'c7')).toBeInViewport({ ratio: 0.99 })
   })
 })
