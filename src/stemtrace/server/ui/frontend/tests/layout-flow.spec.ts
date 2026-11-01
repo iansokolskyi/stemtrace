@@ -449,6 +449,23 @@ test.describe('layoutFlow: many members', () => {
     })
   })
 
+  test('lists the tasks a more block hides, every cell of a hidden row', () => {
+    const layout = layoutFlow(group(13, { 7: 'FAILURE' }), 'g', new Set())
+
+    expect(layout.more[0].hiddenIds).toEqual([
+      'm3',
+      'm4',
+      'm5',
+      'm6',
+      'm8',
+      'm9',
+      'm10',
+      'm11',
+      'm12',
+    ])
+    expect(layoutFlow(group(13), 'g', new Set(['g'])).more[0].hiddenIds).toEqual([])
+  })
+
   test('keeps a failed member beyond the first three, in order', () => {
     const layout = layoutFlow(group(13, { 7: 'FAILURE', 11: 'FAILURE' }), 'g', new Set())
 

@@ -117,6 +117,104 @@ body {
   @apply bg-zinc-500/20 text-zinc-400;
 }
 
+/* Flow timeline (components/flow/Gantt.tsx): rows lit by state through --c / --on like the
+   diagram's blocks; text 12 px sans with tabular figures. */
+.gantt-box {
+  overflow: auto;
+  max-height: 440px;
+  min-width: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--surface);
+}
+.gantt-axis {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  background: var(--surface);
+}
+.gantt {
+  display: block;
+}
+.gantt text,
+.gantt-axis text {
+  font: 12px var(--sans);
+  font-variant-numeric: tabular-nums;
+  fill: var(--ink);
+}
+.gantt text.gantt-m,
+.gantt-axis text.gantt-m {
+  fill: var(--muted);
+}
+.gantt text.gantt-cp {
+  font-weight: 700;
+}
+.gantt text.gantt-id {
+  font-family: var(--mono);
+}
+.gantt-grid {
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+.gantt-row {
+  cursor: pointer;
+  outline: none;
+}
+.gantt-bg {
+  fill: transparent;
+}
+.gantt-row:hover .gantt-bg {
+  fill: var(--hover);
+}
+.gantt-row.sel .gantt-bg {
+  fill: color-mix(in srgb, var(--ink) 11%, transparent);
+}
+.gantt-row:focus-visible .gantt-bg {
+  fill: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.gantt-mark {
+  fill: var(--c);
+}
+.gantt-ico {
+  color: var(--on);
+}
+.gantt-rl {
+  stroke: var(--rule);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.gantt-wait {
+  fill: var(--track);
+}
+.gantt-sched,
+.gantt-notrun {
+  fill: none;
+  stroke: var(--track);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 1 6;
+}
+.gantt-run {
+  fill: var(--c);
+}
+.gantt-crit {
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  paint-order: stroke;
+}
+.gantt-cutmark {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.gantt-cpl {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
 /* Flow track diagram (components/flow/FlowDiagram.tsx): a box that scrolls both ways, tracks
    2.5px (3px lit in the failure colour), blocks lit by state through --c / --on. */
 .flow-box {

@@ -151,24 +151,32 @@ export function reallocationFlow(): FlowGraph {
     name: 'reallocation.tasks.run_daily_reallocation',
     children: ['chord'],
     runtime_ms: 1200,
+    total_runtime_ms: 1200,
     hostname: 'celery@worker-realloc-1',
     queue: 'reallocation',
     queue_wait_ms: 40,
     first_seen: new Date(2026, 9, 16, 22, 0, 0).toISOString(),
+    last_updated: new Date(2026, 9, 16, 22, 0, 1, 240).toISOString(),
   })
-  const members = Array.from({ length: 48 }, (_, i) =>
-    node({
+  const members = Array.from({ length: 48 }, (_, i) => {
+    const runtime = 800 + ((i * 37) % 900)
+    const wait = 20 + ((i * 13) % 60)
+    const sent = new Date(2026, 9, 16, 22, 0, 1, i * 20)
+    return node({
       task_id: `p${i}`,
       name: 'reallocation.tasks.allocate_partner',
       group_id: 'chord',
       state: i === 2 ? 'FAILURE' : 'SUCCESS',
       exception_type: i === 2 ? 'PartnerAPIError' : null,
-      runtime_ms: 800 + ((i * 37) % 900),
+      runtime_ms: runtime,
+      total_runtime_ms: runtime,
+      queue_wait_ms: wait,
       hostname: 'celery@worker-realloc-2',
       queue: 'reallocation',
-      first_seen: new Date(2026, 9, 16, 22, 0, 1, i * 20).toISOString(),
-    }),
-  )
+      first_seen: sent.toISOString(),
+      last_updated: new Date(sent.getTime() + wait + runtime).toISOString(),
+    })
+  })
   const chord = node({
     task_id: 'chord',
     name: 'chord',
@@ -191,9 +199,12 @@ export function checkoutFlow(): FlowGraph {
       name: `checkout.tasks.${name}`,
       children: i < 3 ? [`s${i + 1}`] : [],
       runtime_ms: 300 + i * 120,
+      total_runtime_ms: 300 + i * 120,
+      queue_wait_ms: 40,
       hostname: 'celery@worker-checkout-1',
       queue: 'checkout',
       first_seen: new Date(2026, 9, 17, 11, 56, i).toISOString(),
+      last_updated: new Date(2026, 9, 17, 11, 56, i, 340 + i * 120).toISOString(),
     }),
   )
   return { root_id: 's0', nodes: graphOf(...list) }

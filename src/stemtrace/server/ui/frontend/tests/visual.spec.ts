@@ -320,7 +320,8 @@ for (const theme of ['light', 'dark'] as const) {
 }
 
 // The Flow page: a chord of 48 whose third header failed (so its callback did not run), the
-// failed header chosen on open, the rest collapsed behind "+45 more".
+// failed header chosen on open, the rest collapsed behind "+45 more", and the Timeline below
+// with the critical path through "+45 more" and the dotted not-run row.
 for (const theme of ['light', 'dark'] as const) {
   test(`flow with a failed chord header, ${theme}, 1280px`, async ({ page }) => {
     await page.routeWebSocket(/\/ws$/, () => {})

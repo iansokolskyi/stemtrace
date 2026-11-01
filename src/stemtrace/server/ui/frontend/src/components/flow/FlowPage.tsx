@@ -6,13 +6,18 @@ import { StatusChip } from '@/components/StatusChip'
 import { useSetCrumbTitle } from '@/hooks/useCrumbTitle'
 import { FlowDiagram } from './FlowDiagram'
 import { firstFailure, summarizeFlow } from './flowFacts'
+import { Gantt } from './Gantt'
 import { Inspector } from './Inspector'
 import { layoutFlow } from './layoutFlow'
+import { buildTimeline } from './timeline'
 
 /** Zoom steps above Fit (natural size): 1.0 to 1.4 by 0.2, as the prototype. */
 const ZOOM_STEP = 0.2
 const ZOOM_MIN = 1
 const ZOOM_MAX = 1.4
+
+/** How often a running task's bar grows. */
+const NOW_TICK_MS = 1000
 
 const BUTTON =
   'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
@@ -31,8 +36,8 @@ interface FlowPageProps {
 }
 
 /**
- * The Flow page: title, state and summary with Jump to failure and zoom, the track diagram and
- * the inspector. The first failure is chosen on open (the view stays at the root). Once the reader
+ * The Flow page: title, state and summary with Jump to failure and zoom, the track diagram, the
+ * inspector and the Timeline. A Timeline row chooses and centres a node like Jump to failure. The first failure is chosen on open (the view stays at the root). Once the reader
  * has acted (zoomed, pressed Fit, chosen a node, expanded or collapsed, scrolled), a live update never moves the view;
  * until then a new node that is out of the box is scrolled into it.
  */
@@ -55,8 +60,24 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const scale = zoom ?? 1
   const locked = acted
 
+  // Open bars run to now: the clock ticks once a second while a bar is open and stops otherwise
+  const [now, setNow] = useState(() => Date.now())
+  const timeline = useMemo(
+    () => buildTimeline(nodes, layout, rootId, now),
+    [nodes, layout, rootId, now],
+  )
+  const anyOpen = timeline.rows.some((row) => row.bar?.open)
+  useEffect(() => {
+    if (!anyOpen) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), NOW_TICK_MS)
+    return () => clearInterval(timer)
+  }, [anyOpen])
+
   const rectOf = (id: string) =>
-    layout.tasks.find((task) => task.id === id) ?? layout.containers.find((box) => box.id === id)
+    layout.tasks.find((task) => task.id === id) ??
+    layout.containers.find((box) => box.id === id) ??
+    layout.notRun.find((box) => box.id === id)
 
   // The box's own scrolls (centring, zoom, scroll-into-view) are marked, so that any other
   // scroll, by whatever input (wheel, scrollbar, keys, focus moving to a node), is the reader's.
@@ -247,6 +268,19 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
           onToggleExpanded={toggleExpanded}
         />
       </div>
+
+      <Gantt
+        timeline={timeline}
+        nodes={nodes}
+        layout={layout}
+        selectedId={selected}
+        onSelect={(id, centreId) => {
+          setActed(true)
+          setChosen(id)
+          centreOn(centreId)
+        }}
+        onToggleExpanded={toggleExpanded}
+      />
     </div>
   )
 }

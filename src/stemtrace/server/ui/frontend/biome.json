@@ -27,7 +27,11 @@
   },
   "overrides": [
     {
-      "includes": ["src/components/flow/FlowDiagram.tsx", "src/components/flow/FlowPage.tsx"],
+      "includes": [
+        "src/components/flow/FlowDiagram.tsx",
+        "src/components/flow/FlowPage.tsx",
+        "src/components/flow/Gantt.tsx"
+      ],
       "linter": {
         "rules": {
           "a11y": { "useSemanticElements": "off", "noNoninteractiveTabindex": "off" }
