@@ -381,8 +381,7 @@ test.describe('buildTimeline: the axis', () => {
 })
 
 test.describe('buildTimeline: now', () => {
-  const running = () =>
-    graphOf(timed('a', { f: 0, w: 100, u: 100 }, { state: 'STARTED' }))
+  const running = () => graphOf(timed('a', { f: 0, w: 100, u: 100 }, { state: 'STARTED' }))
 
   test('a running task runs from its start to now', () => {
     const { timeline } = timelineOf(running(), 'a', false, T0 + 5000)
@@ -700,6 +699,16 @@ test.describe('criticalPath', () => {
     )
 
     expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'c'])
+  })
+
+  test('of two branches that end together the one the layout reached first is critical', () => {
+    const nodes = graphOf(
+      timed('a', { f: 0, w: 0, r: 100, u: 100 }, { children: ['b', 'c'] }),
+      timed('b', { f: 100, w: 0, r: 400, u: 500 }, { parent_id: 'a' }),
+      timed('c', { f: 100, w: 0, r: 400, u: 500 }, { parent_id: 'a' }),
+    )
+
+    expect(timelineOf(nodes, 'a').timeline.path).toEqual(['a', 'b'])
   })
 
   test('stops at a task whose children all ended before it did (they ran alongside it)', () => {

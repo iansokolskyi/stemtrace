@@ -304,6 +304,29 @@ test.describe('a running task', () => {
     await expect(timelinePanel(page)).toContainText('+10s')
   })
 
+  test('starts the one-second clock only while a bar is open', async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __ticks: number[] }
+      w.__ticks = []
+      const real = window.setInterval.bind(window)
+      window.setInterval = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+        w.__ticks.push(ms ?? 0)
+        return real(fn, ms, ...rest)
+      }) as typeof window.setInterval
+    })
+    const ticks = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __ticks: number[] }).__ticks.filter((ms) => ms === 1000).length,
+      )
+
+    await openFlow(page, timedChain(3))
+    expect(await ticks()).toBe(0)
+
+    await openFlow(page, runningFlow())
+    await expect.poll(ticks).toBeGreaterThan(0)
+  })
+
   test('leaves the axis alone once nothing runs', async ({ page }) => {
     await page.clock.install({ time: BASE + 4000 })
     await openFlow(page, timedChain(3))
