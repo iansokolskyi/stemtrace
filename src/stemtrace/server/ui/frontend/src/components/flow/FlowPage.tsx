@@ -3,6 +3,7 @@ import type { GraphNode } from '@/api/client'
 import { flowSummary, flowTitle } from '@/components/flows/flowSummary'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
+import { useSetCrumbTitle } from '@/hooks/useCrumbTitle'
 import { FlowDiagram } from './FlowDiagram'
 import { firstFailure, summarizeFlow } from './flowFacts'
 import { Inspector } from './Inspector'
@@ -46,6 +47,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const summary = useMemo(() => summarizeFlow(nodes, rootId), [nodes, rootId])
   const failure = useMemo(() => firstFailure(nodes), [nodes])
   const root = nodes[rootId]
+  useSetCrumbTitle(root ? flowTitle(root.name) : undefined)
   const selected = chosen && nodes[chosen] ? chosen : (failure?.task_id ?? rootId)
   const scale = zoom ?? 1
   const locked = chosen !== null || zoom !== null || moved
@@ -83,6 +85,8 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   }, [scale])
 
   // A node that arrives while the reader has not moved the view is scrolled into the box
+  // No dependency array on purpose: it compares the nodes drawn now with those of the last render,
+  // so a render with nothing new does nothing, and `locked` and `scale` are always current.
   const drawn = useRef<Set<string> | null>(null)
   useEffect(() => {
     const ids = new Set([

@@ -39,8 +39,12 @@ for (const base of ['', '/stemtrace']) {
       await open(page, `/graph/${root}`)
       await expect(page).toHaveURL(`${base}/flows/${root}`)
       await expect(flowNodes(page).first()).toBeVisible()
-      // The breadcrumb links back to the list.
-      await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText(root)
+      // The breadcrumb names the flow by its title (the full ID is its hover text) and links back
+      // to the list.
+      const crumb = page.getByRole('navigation', { name: 'Breadcrumb' })
+      await expect(crumb).toContainText('Flows')
+      await expect(crumb.locator('span[aria-current="page"]')).toHaveText('step_1')
+      await expect(crumb.locator('span[aria-current="page"]')).toHaveAttribute('title', root)
       await page
         .getByRole('navigation', { name: 'Breadcrumb' })
         .getByRole('link', { name: 'Flows' })

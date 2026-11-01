@@ -128,13 +128,13 @@ test.describe('selection', () => {
     graph.nodes.c3.state = 'RETRY'
     await openFlow(page, graph)
 
-    await expect(flowNode(page, 'c0')).toHaveAttribute('aria-label', 'step_0, Success, 1.2s')
+    await expect(flowNode(page, 'c0')).toHaveAttribute('aria-label', 'app.step_0, Success, 1.2s')
     await expect(flowNode(page, 'c1')).toHaveAttribute(
       'aria-label',
-      'step_1, Failure, ValueError, 1.2s',
+      'app.step_1, Failure, ValueError, 1.2s',
     )
-    await expect(flowNode(page, 'c2')).toHaveAttribute('aria-label', 'step_2, Running, 1.2s')
-    await expect(flowNode(page, 'c3')).toHaveAttribute('aria-label', 'step_3, Retry, 1.2s')
+    await expect(flowNode(page, 'c2')).toHaveAttribute('aria-label', 'app.step_2, Running, 1.2s')
+    await expect(flowNode(page, 'c3')).toHaveAttribute('aria-label', 'app.step_3, Retry, 1.2s')
     // each block draws its state's icon beside the word
     for (const id of ['c0', 'c1', 'c2', 'c3']) {
       await expect(flowNode(page, id).locator('svg')).toHaveCount(1)
