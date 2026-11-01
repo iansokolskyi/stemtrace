@@ -1,3 +1,3 @@
 - The sidebar shows the broker kind under the brand and each group's failure rate over the time range. The failure rate needs a server that serves `/api/stats/timeseries`; older servers show no rate.
 - The Executions toolbar is one row (filters, "Filter", "Clear all", density and view). An empty result keeps the table header, names the time range and offers "Clear filters", and says when a filtered task is registered but has never run.
-- The task page breadcrumb reads "Executions > task name > short ID". "Open flow" appears only for a flow of more than one task. The worker button shows the short host, and output lines colour a leading log level (`INFO`, `WARN`, `WARNING`, `ERROR` or `CRITICAL`).
+- The task page breadcrumb reads "Executions > task name > short ID". "Open flow" appears only for a flow of more than one task. The worker button shows the short host, and output lines color a leading log level (`INFO`, `WARN`, `WARNING`, `ERROR` or `CRITICAL`).

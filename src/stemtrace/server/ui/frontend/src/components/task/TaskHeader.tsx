@@ -1,10 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskNode } from '@/api/client'
-import { shortHost } from '@/components/executions/columns'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { shortHost } from '@/utils/format'
 
 const BUTTON =
   'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'

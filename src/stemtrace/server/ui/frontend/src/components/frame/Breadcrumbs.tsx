@@ -29,7 +29,7 @@ export function Breadcrumbs(): ReactElement {
   const { data: task } = useTask(isTask && detail ? detail : '')
   const taskName = task?.task.name
   const exactName =
-    crumb === 'Executions'
+    match?.routeId === '/executions'
       ? (match?.search as { name_exact?: string } | undefined)?.name_exact
       : undefined
 
