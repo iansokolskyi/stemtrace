@@ -1,5 +1,7 @@
+import type { KeyboardEvent } from 'react'
 import type { FlowSummary, GraphNode } from '@/api/client'
 import { formatSpan } from '@/utils/format'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { isFailedState } from './layoutFlow'
 
 /** The colour family of a state (the `s-*` classes of the diagram). */
@@ -95,4 +97,22 @@ export function wrapTwo(text: string, max: number): [string, string] {
     lines[at] = `${lines[at]} ${word}`.trim()
   }
   return [lines[0], truncate(lines[1], max)]
+}
+
+/** Task names that share their last segment, told apart by the shortest suffix no other task has. */
+export function shortNamesOf(nodes: Record<string, GraphNode>): Map<string, string> {
+  return shortestUniqueSuffixes(
+    Object.values(nodes)
+      .filter((entry) => (entry.node_type ?? 'TASK') === 'TASK')
+      .map((entry) => entry.name),
+  )
+}
+
+/** Enter or Space does what a click does on a focusable part of a drawing. */
+export function activate(action: () => void): (event: KeyboardEvent) => void {
+  return (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    action()
+  }
 }

@@ -1,10 +1,9 @@
-import { type KeyboardEvent, type ReactElement, type Ref, useId, useMemo } from 'react'
+import { type ReactElement, type Ref, useId, useMemo } from 'react'
 import type { GraphNode } from '@/api/client'
 import { IconGlyph } from '@/components/Icon'
 import { stateLook } from '@/components/StatusChip'
 import { formatSpan } from '@/utils/format'
-import { shortestUniqueSuffixes } from '@/utils/taskNames'
-import { taskSubtitle, toneOf, truncate, wrapTwo } from './flowFacts'
+import { activate, shortNamesOf, taskSubtitle, toneOf, truncate, wrapTwo } from './flowFacts'
 import { type FlowLayout, lastNameSegment, type PlacedContainer } from './layoutFlow'
 import { trackPath } from './trackPath'
 
@@ -27,15 +26,6 @@ type Item =
   | { kind: 'more'; seq: number; index: number }
   | { kind: 'notRun'; seq: number; index: number }
 
-/** Enter or Space does what a click does on a focusable part of the drawing. */
-function activate(action: () => void): (event: KeyboardEvent) => void {
-  return (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return
-    event.preventDefault()
-    action()
-  }
-}
-
 /**
  * The flow as a track diagram drawn in SVG, left to right, inside a box that scrolls both ways.
  * Every task, container, "+N more" block and not-run box can be focused (tab order is the order
@@ -55,15 +45,7 @@ export function FlowDiagram({
 }: FlowDiagramProps): ReactElement {
   const hatch = useId()
   // Names that share their last segment are told apart by the shortest suffix no other task has
-  const shortNames = useMemo(
-    () =>
-      shortestUniqueSuffixes(
-        Object.values(nodes)
-          .filter((entry) => (entry.node_type ?? 'TASK') === 'TASK')
-          .map((entry) => entry.name),
-      ),
-    [nodes],
-  )
+  const shortNames = useMemo(() => shortNamesOf(nodes), [nodes])
   const containers = new Map(layout.containers.map((box) => [box.id, box]))
 
   const items: Item[] = [
