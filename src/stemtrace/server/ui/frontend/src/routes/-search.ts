@@ -93,17 +93,15 @@ export function executionsSearch(search: Record<string, unknown>): ExecutionsSea
   }
 }
 
-/** Search params of the Flows page: the range, and the explicit dates old links carry. */
+/** Search params of the Flows page (the old graphs list's, unchanged). */
 export interface FlowsSearch {
   from_date?: string
   to_date?: string
-  range?: Range
 }
 
 export function flowsSearch(search: Record<string, unknown>): FlowsSearch {
   return {
     from_date: dateSearchParam(search.from_date),
     to_date: dateSearchParam(search.to_date),
-    ...rangeSearch(search),
   }
 }

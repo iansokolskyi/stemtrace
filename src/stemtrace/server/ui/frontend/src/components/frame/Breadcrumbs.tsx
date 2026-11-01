@@ -22,9 +22,7 @@ export function Breadcrumbs(): ReactElement {
         <>
           <Link
             to={section.to}
-            search={
-              (section.to === '/executions' || section.to === '/flows' ? carried : {}) as never
-            }
+            search={(section.to === '/executions' ? carried : {}) as never}
             className="text-muted hover:text-ink hover:underline"
           >
             {section.label}

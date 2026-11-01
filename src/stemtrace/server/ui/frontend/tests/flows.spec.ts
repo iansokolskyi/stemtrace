@@ -14,8 +14,6 @@ const isRealMode = process.env.E2E_MODE === 'real'
 const rows = (page: Page): Locator => page.getByTestId('flow-row')
 const subtitle = (page: Page): Locator =>
   page.getByRole('heading', { level: 1 }).locator('xpath=following-sibling::p')
-const segment = (page: Page, name: '1h' | '6h' | 'All'): Locator =>
-  page.getByRole('group', { name: 'Time range' }).getByRole('button', { name, exact: true })
 
 /** The query of every GET /api/graphs list request, in order. */
 function recordGraphLists(page: Page): Record<string, string>[] {
@@ -107,7 +105,7 @@ test.describe('Flows list - mocked flows', () => {
 
   test('the header counts the flows in the window, with separators', async ({ page }) => {
     await page.goto('/flows')
-    await expect(subtitle(page)).toHaveText('4 flows in the last 6h')
+    await expect(subtitle(page)).toHaveText('4 flows in the retention window')
   })
 
   test('the header formats the total from the API with separators', async ({ page }) => {
@@ -123,8 +121,8 @@ test.describe('Flows list - mocked flows', () => {
         }),
       })
     })
-    await page.goto('/flows?range=1h')
-    await expect(subtitle(page)).toHaveText('1,204 flows in the last hour')
+    await page.goto('/flows')
+    await expect(subtitle(page)).toHaveText('1,204 flows in the retention window')
   })
 
   test('a row is a link to its flow, reached by Tab and opened by Enter', async ({ page }) => {
@@ -157,19 +155,15 @@ test.describe('Flows list - mocked flows', () => {
     expect(overflow.scroll).toBeLessThanOrEqual(overflow.client)
   })
 
-  test('shows the empty state for the window', async ({ page }) => {
+  test('shows the empty state, and says so when dates are the window', async ({ page }) => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.clearTasks()
     await page.goto('/flows')
-    await expect(page.getByText('No flows in the last 6h.', { exact: true })).toBeVisible()
-    await expect(subtitle(page)).toHaveText('0 flows in the last 6h')
+    await expect(page.getByText('No flows yet.', { exact: true })).toBeVisible()
+    await expect(subtitle(page)).toHaveText('0 flows in the retention window')
 
-    await segment(page, '1h').click()
-    await expect(page.getByText('No flows in the last hour.', { exact: true })).toBeVisible()
-
-    await segment(page, 'All').click()
-    await expect(page.getByText('No flows.', { exact: true })).toBeVisible()
-    await expect(subtitle(page)).toHaveText('0 flows')
+    await page.goto('/flows?from_date=2026-10-01')
+    await expect(page.getByText('No flows in this time window.', { exact: true })).toBeVisible()
   })
 
   test('a failed request says so', async ({ page }) => {
@@ -182,7 +176,9 @@ test.describe('Flows list - mocked flows', () => {
   })
 })
 
-test.describe('Flows list - time range', () => {
+// The server filters and orders list roots by the root's own last update, so a window would hide
+// a flow whose child failed after its root ended: Flows asks for no window, as the prototype's.
+test.describe('Flows list - no time range', () => {
   test.skip(isRealMode, 'Mock-only test')
 
   test.beforeEach(async ({ page }) => {
@@ -194,76 +190,39 @@ test.describe('Flows list - time range', () => {
     const lists = recordGraphLists(page)
     await page.goto(path)
     await expect(rows(page).first()).toBeVisible()
-    await expect(page.getByRole('group', { name: 'Time range' })).toBeVisible()
     return lists
   }
 
   // The first page of the list: the limit, and no offset (0 is not sent)
   const PAGE = { limit: '50' }
 
-  const cases = [
-    { name: 'no range in the URL is 6h', path: '', within: '6h', on: [false, true, false] },
-    { name: 'range=1h', path: '?range=1h', within: '1h', on: [true, false, false] },
-    { name: 'range=6h', path: '?range=6h', within: '6h', on: [false, true, false] },
-    { name: 'range=all sends no window', path: '?range=all', on: [false, false, true] },
-    { name: 'an unknown range is 6h', path: '?range=2d', within: '6h', on: [false, true, false] },
-  ]
-  for (const { name, path, within, on } of cases) {
-    test(`${name}: the full request and the pressed segment`, async ({ page }) => {
+  for (const path of ['', '?range=1h', '?range=all', '?range=6h']) {
+    test(`/flows${path} sends no window and shows no range control`, async ({ page }) => {
       const lists = await open(page, `/flows${path}`)
-      expect(lists[0]).toEqual({ ...PAGE, ...(within ? { within } : {}) })
-      const pressed = await Promise.all(
-        (['1h', '6h', 'All'] as const).map(
-          async (label) => (await segment(page, label).getAttribute('aria-pressed')) === 'true',
-        ),
-      )
-      expect(pressed).toEqual(on)
+      expect(lists[0]).toEqual(PAGE)
+      await expect(page.getByRole('group', { name: 'Time range' })).toHaveCount(0)
     })
   }
 
-  test('explicit dates are sent alone, even next to a range', async ({ page }) => {
+  test('explicit dates are still sent, alone', async ({ page }) => {
     const lists = await open(page, '/flows?range=1h&from_date=2026-10-01&to_date=2026-10-02')
     expect(lists[0]).toEqual({ ...PAGE, from_date: '2026-10-01', to_date: '2026-10-02' })
-    await expect(segment(page, '1h')).toHaveAttribute('aria-pressed', 'false')
-    await expect(subtitle(page)).toHaveText('4 flows')
+    await expect(subtitle(page)).toHaveText('4 flows in the retention window')
   })
 
-  test('one explicit date is enough to drop the window', async ({ page }) => {
+  test('one explicit date is sent alone', async ({ page }) => {
     const lists = await open(page, '/flows?to_date=2026-10-02')
     expect(lists[0]).toEqual({ ...PAGE, to_date: '2026-10-02' })
   })
 
-  test('choosing a segment writes the URL and the request', async ({ page }) => {
-    const lists = await open(page, '/flows')
-    await segment(page, '1h').click()
-    await expect.poll(() => new URL(page.url()).search).toBe('?range=1h')
-    await expect.poll(() => lists.at(-1)).toEqual({ ...PAGE, within: '1h' })
-    await expect(subtitle(page)).toHaveText('4 flows in the last hour')
-
-    await segment(page, 'All').click()
-    await expect.poll(() => lists.at(-1)).toEqual(PAGE)
-    await expect(subtitle(page)).toHaveText('4 flows')
-  })
-
-  test('the range follows you out of Flows and back through the sidebar', async ({ page }) => {
-    await open(page, '/flows?range=1h')
-    const nav = page.getByRole('navigation', { name: 'Sections' })
-    await nav.getByRole('link', { name: 'Executions' }).click()
-    await expect(page).toHaveURL(/\/executions\?range=1h$/)
-    await nav.getByRole('link', { name: 'Flows' }).click()
-    await expect(page).toHaveURL(/\/flows\?range=1h$/)
-    await expect(segment(page, '1h')).toHaveAttribute('aria-pressed', 'true')
-  })
-
-  test('the range chosen on Executions applies to Flows', async ({ page }) => {
-    await page.goto('/executions?range=all')
-    await segment(page, 'All').waitFor()
+  test('the range on Executions does not follow you to Flows', async ({ page }) => {
+    await page.goto('/executions?range=1h')
     const lists = recordGraphLists(page)
     await page
       .getByRole('navigation', { name: 'Sections' })
       .getByRole('link', { name: 'Flows' })
       .click()
-    await expect(page).toHaveURL(/\/flows\?range=all$/)
+    await expect(page).toHaveURL(/\/flows$/)
     await expect.poll(() => lists[0]).toEqual(PAGE)
   })
 })
@@ -297,7 +256,7 @@ test.describe('Flows list - paging and live updates', () => {
     await rows(page).last().scrollIntoViewIfNeeded()
     await expect(rows(page)).toHaveCount(60)
     expect(lists.map((query) => query.offset)).toEqual([undefined, '50'])
-    await expect(subtitle(page)).toHaveText('60 flows in the last 6h')
+    await expect(subtitle(page)).toHaveText('60 flows in the retention window')
   })
 
   test('shows a new flow by polling while the socket is down', async ({ page }) => {
@@ -316,6 +275,6 @@ test.describe('Flows list - paging and live updates', () => {
     api.addTask(chord)
     // The page polls every 5 s
     await expect(rows(page)).toHaveCount(2, { timeout: 15_000 })
-    await expect(subtitle(page)).toHaveText('2 flows in the last 6h')
+    await expect(subtitle(page)).toHaveText('2 flows in the retention window')
   })
 })

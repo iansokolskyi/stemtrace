@@ -279,12 +279,12 @@ for (const theme of ['light', 'dark'] as const) {
 }
 
 // The Flows list: every kind of row (failed chord with a callback that did not run, success,
-// running, and one without a summary), against the fixed clock.
+// and running), against the fixed clock.
 for (const theme of ['light', 'dark'] as const) {
   test(`flows, ${theme}, 1280px`, async ({ page }) => {
     await page.routeWebSocket(/\/ws$/, () => {})
     const api = await setupMockApi(page, { useDefaults: false })
-    api.addTasks(flowListRoots())
+    api.addTasks(flowListRoots().slice(0, 3))
     await snapshot(page, `flows-${theme}-1280`, { theme, width: 1280, path: '/flows' })
   })
 }

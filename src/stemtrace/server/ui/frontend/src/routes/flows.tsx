@@ -1,37 +1,22 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect } from 'react'
 import { useGraphsInfinite } from '@/api/queries'
 import { FlowRow } from '@/components/flows/FlowRow'
-import { carryRange } from '@/hooks/useCarriedRange'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { formatCount } from '@/utils/format'
-import { flowsSearch, hasDates, withinOf } from './-search'
+import { flowsSearch, hasDates } from './-search'
 
 export const Route = createFileRoute('/flows')({
   component: FlowsPage,
   validateSearch: flowsSearch,
-  staticData: { crumb: 'Flows', timeRange: true },
+  staticData: { crumb: 'Flows' },
 })
 
-const WINDOW_WORDS: Record<string, string> = { '1h': 'the last hour', '6h': 'the last 6h' }
-
-/** " in the last 6h"; empty when no window applies (All, or explicit dates). */
-const inWindow = (within: string | undefined): string =>
-  within ? ` in ${WINDOW_WORDS[within]}` : ''
-
 function FlowsPage() {
-  const { range, from_date, to_date } = Route.useSearch()
+  const { from_date, to_date } = Route.useSearch()
   const dates = { from_date, to_date }
-  const within = withinOf(range, dates)
-
-  // Dates set the window without touching the range, so the range stays what it was
-  const datesSet = hasDates(dates)
-  useEffect(() => {
-    if (!datesSet) carryRange(range)
-  }, [datesSet, range])
 
   const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
-    useGraphsInfinite({ within, ...dates })
+    useGraphsInfinite(dates)
 
   const { lastElementRef } = useInfiniteScroll({ hasNextPage, isFetchingNextPage, fetchNextPage })
 
@@ -44,7 +29,7 @@ function FlowsPage() {
         <h1 className="text-2xl font-bold text-ink">Flows</h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
           {total !== undefined &&
-            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'}${inWindow(within)}`}
+            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} in the retention window`}
         </p>
       </div>
 
@@ -54,7 +39,7 @@ function FlowsPage() {
         <div className="py-12 text-center text-failure-t">Failed to load flows</div>
       ) : graphs.length === 0 ? (
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-muted">
-          No flows{inWindow(within)}.
+          {hasDates(dates) ? 'No flows in this time window.' : 'No flows yet.'}
         </p>
       ) : (
         <>

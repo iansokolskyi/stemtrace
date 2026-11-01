@@ -421,7 +421,7 @@ test.describe('Time range only where the page has one', () => {
     await expect(page.getByRole('button', { name: '1h', exact: true })).toHaveCount(0)
   })
 
-  for (const path of ['/workers', '/registry']) {
+  for (const path of ['/flows', '/workers', '/registry']) {
     test(`${path} has no control`, async ({ page }) => {
       await setupMockApi(page)
       await page.goto(`${path}?range=1h`)

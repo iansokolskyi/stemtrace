@@ -358,8 +358,6 @@ function setFilterParams(searchParams: URLSearchParams, filters: TimedFilters): 
 export interface FetchGraphsParams {
   limit?: number
   offset?: number
-  /** Updated within this long (`1h`, `6h`); the API rejects it together with `from_date`. */
-  within?: string
   from_date?: string
   to_date?: string
 }
@@ -401,7 +399,6 @@ export async function fetchGraphs(params?: FetchGraphsParams): Promise<GraphList
   const searchParams = new URLSearchParams()
   if (params?.limit) searchParams.set('limit', params.limit.toString())
   if (params?.offset) searchParams.set('offset', params.offset.toString())
-  if (params?.within) searchParams.set('within', params.within)
   if (params?.from_date) searchParams.set('from_date', params.from_date)
   if (params?.to_date) searchParams.set('to_date', params.to_date)
 
