@@ -318,10 +318,33 @@ export function layoutFlow(
   const notRun: PlacedNotRun[] = []
   let seq = 0
 
-  const place = (id: string, x: number, y: number): Extent =>
+  /**
+   * Placing a node places what it starts first, so a long chain is as deep as it is long. The
+   * placers are generators: one `yield` hands over a child to place and gets its extent back, and
+   * `place` keeps the unfinished placers on its own stack instead of the call stack.
+   */
+  type Placing = Generator<{ id: string; x: number; y: number }, Extent, Extent>
+  const start = (id: string, x: number, y: number): Placing =>
     isContainer(id) ? placeContainer(id, x, y) : placeTask(id, x, y)
 
-  function placeTask(id: string, x: number, y: number): Extent {
+  const place = (id: string, x: number, y: number): Extent => {
+    const stack = [start(id, x, y)]
+    let extent: Extent | undefined
+    for (;;) {
+      const step = stack[stack.length - 1].next(extent as Extent)
+      if (!step.done) {
+        stack.push(start(step.value.id, step.value.x, step.value.y))
+        extent = undefined
+      } else if (stack.length === 1) {
+        return step.value
+      } else {
+        stack.pop()
+        extent = step.value
+      }
+    }
+  }
+
+  function* placeTask(id: string, x: number, y: number): Placing {
     placed.add(id)
     const mySeq = seq++
     const kids = byStart(childrenOf(id)).filter((kid) => !cells.has(kid))
@@ -329,7 +352,7 @@ export function layoutFlow(
     let drawn = 0
     for (const kid of kids) {
       if (placed.has(kid) || callbacks.has(kid)) continue
-      const extent = place(kid, x + TASK_W + GAP_X, bottom)
+      const extent = yield { id: kid, x: x + TASK_W + GAP_X, y: bottom }
       bottom += extent.h + GAP_Y
       drawn++
     }
@@ -350,7 +373,7 @@ export function layoutFlow(
     return { h: height }
   }
 
-  function placeContainer(id: string, x: number, y: number): Extent {
+  function* placeContainer(id: string, x: number, y: number): Placing {
     placed.add(id)
     const node = nodes[id]
     const mySeq = seq++
@@ -514,7 +537,7 @@ export function layoutFlow(
     }
     for (const out of outside) {
       if (placed.has(out.id)) continue
-      const extent = place(out.id, outsideX, slot)
+      const extent = yield { id: out.id, x: outsideX, y: slot }
       slot += extent.h + GAP_Y
       bottom = Math.max(bottom, slot - GAP_Y)
     }
