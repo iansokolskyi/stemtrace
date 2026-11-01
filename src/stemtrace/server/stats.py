@@ -65,6 +65,9 @@ class RunRecord:
     last_updated: datetime
     # The exception class of a FAILURE run; None for other states.
     exception_type: str | None = None
+    # Milliseconds of the last run of a terminal task; None before it ends or
+    # when its STARTED is missing (see ``TaskNode.runtime_ms``).
+    runtime_ms: int | None = None
 
     @classmethod
     def from_node(cls, node: TaskNode) -> RunRecord | None:
@@ -82,6 +85,9 @@ class RunRecord:
             exception_type=node.exception_type
             if node.state == TaskState.FAILURE
             else None,
+            # Same reason: run_times() scans and sorts every event, so only a
+            # terminal task (one more call per run, not per event) reads it.
+            runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
         )
 
 
