@@ -214,3 +214,23 @@ export function useGroupFailureRates(within: string | undefined) {
     retry: false,
   })
 }
+
+/**
+ * What the server already knows of the registry, read without asking the workers
+ * (`refresh=false`: the inspect call blocks while the broker is slow). The sidebar badges and
+ * `useRegisteredTask` share it, so it is one request.
+ */
+export const registrySnapshot = {
+  queryKey: ['badges', 'registry'],
+  queryFn: () => fetchTaskRegistry(undefined, undefined, { refresh: false }),
+}
+
+/** The registry entry for exactly `name`; idle while `name` is undefined, none when the request fails. */
+export function useRegisteredTask(name: string | undefined) {
+  return useQuery({
+    ...registrySnapshot,
+    select: (response) => response.tasks.find((task) => task.name === name),
+    enabled: name !== undefined,
+    retry: false,
+  })
+}

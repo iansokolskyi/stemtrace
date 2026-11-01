@@ -3,7 +3,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
-import { useExecutions } from '@/api/queries'
+import { useExecutions, useRegisteredTask } from '@/api/queries'
+import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
 import { StatusChip } from '../StatusChip'
 import { TaskName } from '../TaskName'
@@ -20,14 +21,18 @@ const MIN_BOX_HEIGHT = 240
 interface ExecutionsTableProps {
   params: FetchExecutionsParams
   density: Density
+  /** Removes the filters (the range stays); undefined when none is set, so there is no button. */
+  onClear?: () => void
 }
 
 /**
  * The Executions table. It remounts when the filters change, which resets what a page load
  * decides once (the column set).
  */
-export function ExecutionsTable({ params, density }: ExecutionsTableProps): ReactElement {
-  return <LoadedTable key={JSON.stringify(params)} params={params} density={density} />
+export function ExecutionsTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
+  return (
+    <LoadedTable key={JSON.stringify(params)} params={params} density={density} onClear={onClear} />
+  )
 }
 
 /**
@@ -58,7 +63,7 @@ function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number
   return height
 }
 
-function LoadedTable({ params, density }: ExecutionsTableProps): ReactElement {
+function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
   const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useExecutions(params)
 
@@ -85,14 +90,7 @@ function LoadedTable({ params, density }: ExecutionsTableProps): ReactElement {
 
   if (isLoading) return <Notice>Loading executions...</Notice>
   if (error) return <Notice tone="error">Failed to load tasks. Is the server running?</Notice>
-  if (!rows.length || !columns) {
-    return (
-      <Notice>
-        <span className="block text-sm font-semibold text-ink">No tasks found</span>
-        Try adjusting your filters or run some Celery tasks.
-      </Notice>
-    )
-  }
+  if (!rows.length || !columns) return <EmptyTable params={params} onClear={onClear} />
 
   return (
     <TableBox
@@ -104,6 +102,61 @@ function LoadedTable({ params, density }: ExecutionsTableProps): ReactElement {
       isFetchingNextPage={isFetchingNextPage}
       fetchNextPage={fetchNextPage}
     />
+  )
+}
+
+/** The header stays, so the page keeps its shape; what the message says depends on the filters. */
+function EmptyTable({
+  params,
+  onClear,
+}: {
+  params: FetchExecutionsParams
+  onClear?: () => void
+}): ReactElement {
+  const columns = columnsFor([])
+  const template = columns.map((column) => column.track).join(' ')
+  const minWidth = columns.reduce((sum, column) => sum + column.min, 0)
+  const during = hasDates(params) ? 'this time window' : WINDOW_WORDS[params.within ?? '']
+  // An exact name that no run matches may still be a task the workers have registered
+  const { data: registered } = useRegisteredTask(params.name_exact)
+  const neverRun = registered?.status === 'never_run'
+
+  return (
+    <div className="overflow-x-auto rounded-lg bg-surface">
+      <div style={{ minWidth }}>
+        <HeaderRow columns={columns} template={template} />
+        <div data-testid="executions-empty" className="px-4 py-8 text-center text-xs text-muted">
+          <p className="m-0">
+            No executions match these filters{during && ` in ${during}`}.
+            {neverRun && ' This task is registered but has never run.'}
+          </p>
+          {onClear && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HeaderRow({ columns, template }: { columns: Column[]; template: string }): ReactElement {
+  return (
+    <div
+      className="sticky top-0 z-10 grid items-center border-b border-rule bg-surface text-xs font-semibold text-muted"
+      style={{ gridTemplateColumns: template, height: 36 }}
+    >
+      {columns.map((column, index) => (
+        <div key={column.id} data-column-header={column.id} className={cellClass(column, index)}>
+          {column.label}
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -203,20 +256,7 @@ function TableBox({
         onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
       >
         <div style={{ minWidth }}>
-          <div
-            className="sticky top-0 z-10 grid items-center border-b border-rule bg-surface text-xs font-semibold text-muted"
-            style={{ gridTemplateColumns: template, height: 36 }}
-          >
-            {columns.map((column, index) => (
-              <div
-                key={column.id}
-                data-column-header={column.id}
-                className={cellClass(column, index)}
-              >
-                {column.label}
-              </div>
-            ))}
-          </div>
+          <HeaderRow columns={columns} template={template} />
           <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
             {items.map((item) => {
               const { row, departed } = rows[item.index]

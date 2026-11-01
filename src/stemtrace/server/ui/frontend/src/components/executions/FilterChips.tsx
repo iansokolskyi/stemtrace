@@ -1,4 +1,11 @@
-import { type ReactElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { ExecutionFilters } from '@/api/client'
 import { parseDateParam } from '@/utils/format'
 import { Icon } from '../Icon'
@@ -83,6 +90,8 @@ interface FilterChipsProps {
   /** Sets the filters. `replace` is true for later steps of one edit, so Back undoes the edit. */
   onChange: (next: ExecutionFilters, options: { replace: boolean }) => void
   suggestions: FilterSuggestions
+  /** The page's other controls (density, view), at the right end of the same row. */
+  trailing?: ReactNode
 }
 
 interface Editing {
@@ -94,10 +103,16 @@ interface Editing {
 }
 
 /**
- * The active filters as chips, an "Add filter" button and a popover to set or edit one. State
- * is in the URL, not here: the chips are drawn from `filters`, so Back restores them.
+ * The toolbar row: the active filters as chips, a "Filter" button and a popover to set or edit
+ * one, "Clear all", and `trailing` at the right. State is in the URL, not here: the chips are
+ * drawn from `filters`, so Back restores them.
  */
-export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps): ReactElement {
+export function FilterChips({
+  filters,
+  onChange,
+  suggestions,
+  trailing,
+}: FilterChipsProps): ReactElement {
   const chips = chipsOf(filters)
   const [editing, setEditing] = useState<Editing | null>(null)
   const barRef = useRef<HTMLDivElement>(null)
@@ -223,7 +238,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
             }
             className="flex h-full min-w-0 items-center gap-1.5 rounded-[3px] pr-1 pl-2.5 hover:bg-hover"
           >
-            <span className="flex-none text-muted">{chip.label}:</span>
+            <span className="flex-none text-muted">{chip.label}</span>
             <b className="min-w-0 truncate font-bold" title={chip.value}>
               {chip.value}
             </b>
@@ -247,7 +262,7 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
         className="flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
       >
         <Icon name="plus" size={13} />
-        Add filter
+        Filter
       </button>
       {chips.length > 0 && (
         <button
@@ -255,14 +270,15 @@ export function FilterChips({ filters, onChange, suggestions }: FilterChipsProps
           onClick={() => onChange({}, { replace: false })}
           className="h-[26px] rounded-[3px] px-2 text-xs text-muted hover:text-ink"
         >
-          Clear
+          Clear all
         </button>
       )}
+      {trailing && <div className="ml-auto flex flex-wrap items-center gap-3">{trailing}</div>}
       {editing && (
         <dialog
           ref={popoverRef}
           open
-          aria-label={editing.field ? `${FIELD_LABEL[editing.field]} filter` : 'Add filter'}
+          aria-label={editing.field ? `${FIELD_LABEL[editing.field]} filter` : 'Filter by'}
           className="absolute top-full z-30 m-0 mt-1.5 rounded-lg bg-surface p-1.5 text-ink shadow-pop"
           style={{ left, width: `min(${POPOVER_WIDTH}px, 100%)` }}
         >

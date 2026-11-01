@@ -174,7 +174,7 @@ test.describe('Tasks Page - exact task filter', () => {
   test('shows the task name as a chip and lists only that task', async ({ page }) => {
     await openWithExactName(page)
 
-    await expect(chip(page)).toHaveText(/^Task:\s*app\.add\s*×$/)
+    await expect(chip(page)).toHaveText(/^Task\s*app\.add\s*×$/)
     // The SUCCESS run of app.add: not app.add_numbers, not the failed run
     await expect(rows(page)).toHaveCount(1)
     await expect(rows(page).first()).toContainText('app.add')
@@ -197,7 +197,7 @@ test.describe('Tasks Page - exact task filter', () => {
   test('Clear removes the chip with the other filters', async ({ page }) => {
     await openWithExactName(page)
 
-    await page.getByRole('button', { name: 'Clear' }).click()
+    await page.getByRole('button', { name: 'Clear all', exact: true }).click()
 
     await expect(chip(page)).toHaveCount(0)
     const search = new URL(page.url()).searchParams

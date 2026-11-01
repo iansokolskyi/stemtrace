@@ -226,13 +226,13 @@ test.describe('Time range control', () => {
 
   test('the filters keep the range, and Clear does not reset it', async ({ page }) => {
     await openExecutions(page, '/executions?range=1h')
-    await page.getByRole('button', { name: 'Add filter' }).click()
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Queue', exact: true }).click()
     await page.keyboard.type('payments')
     await page.keyboard.press('Enter')
     await expect.poll(() => search(page)).toEqual({ range: '1h', queue: 'payments' })
 
-    await page.getByRole('button', { name: 'Clear', exact: true }).click()
+    await page.getByRole('button', { name: 'Clear all', exact: true }).click()
     await expect.poll(() => search(page)).toEqual({ range: '1h' })
     expect(await pressed(page)).toEqual([true, false, false])
   })
@@ -283,8 +283,8 @@ test.describe('Dates and range', () => {
     await page.goto('/executions?range=1h')
     const subtitle = page.getByRole('heading', { level: 1 }).locator('xpath=following-sibling::p')
     await expect(subtitle).toHaveText('1 run in the last hour')
-    await page.getByRole('button', { name: 'Add filter' }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Time', exact: true }).click()
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Time range', exact: true }).click()
     await page.getByRole('dialog').getByLabel('From').focus()
     await page.keyboard.type('10012025')
     await page.getByRole('dialog').getByLabel('To').focus()
