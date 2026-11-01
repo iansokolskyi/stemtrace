@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 
+import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
 import { flowListRoots } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
 import {
@@ -286,5 +287,28 @@ for (const theme of ['light', 'dark'] as const) {
     const api = await setupMockApi(page, { useDefaults: false })
     api.addTasks(flowListRoots().slice(0, 3))
     await snapshot(page, `flows-${theme}-1280`, { theme, width: 1280, path: '/flows' })
+  })
+}
+
+// The Flow page: a chord of 48 whose third header failed (so its callback did not run), the
+// failed header chosen on open, the rest collapsed behind "+45 more".
+for (const theme of ['light', 'dark'] as const) {
+  test(`flow with a failed chord header, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    await setupMockApi(page, { useDefaults: false })
+    const flow = reallocationFlow()
+    await serveFlow(page, flow, {
+      p2: {
+        exception: 'PartnerAPIError: 503 Service Unavailable',
+        kwargs: { partner_id: 'globex', period: '2026-10-16', api_key: '********' },
+      },
+    })
+    await snapshot(page, `flow-failed-chord-${theme}-1280`, {
+      theme,
+      width: 1280,
+      // Taller than the page, so the dev-only router badge at the viewport's corner sits below it
+      height: 1000,
+      path: `/flows/${flow.root_id}`,
+    })
   })
 }

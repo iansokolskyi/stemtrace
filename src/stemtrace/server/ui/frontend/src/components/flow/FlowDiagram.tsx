@@ -430,10 +430,10 @@ function TaskBlock({
       ) : (
         <>
           <text className="t1" x={34} y={21}>
-            {truncate(name, 21)}
+            {truncate(name, 22)}
           </text>
           <text className="t2" x={34} y={38}>
-            {truncate(subtitle, 22)}
+            {truncate(subtitle, 23)}
           </text>
         </>
       )}

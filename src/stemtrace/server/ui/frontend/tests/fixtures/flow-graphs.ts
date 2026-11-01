@@ -143,3 +143,58 @@ export async function serveFlow(
     })
   })
 }
+
+/** The prototype's "Nightly reallocation": a root, then a chord of 48 whose header 2 failed, so the callback did not run. */
+export function reallocationFlow(): FlowGraph {
+  const root = node({
+    task_id: 'root',
+    name: 'reallocation.tasks.run_daily_reallocation',
+    children: ['chord'],
+    runtime_ms: 1200,
+    hostname: 'celery@worker-realloc-1',
+    queue: 'reallocation',
+    queue_wait_ms: 40,
+    first_seen: new Date(2026, 9, 16, 22, 0, 0).toISOString(),
+  })
+  const members = Array.from({ length: 48 }, (_, i) =>
+    node({
+      task_id: `p${i}`,
+      name: 'reallocation.tasks.allocate_partner',
+      group_id: 'chord',
+      state: i === 2 ? 'FAILURE' : 'SUCCESS',
+      exception_type: i === 2 ? 'PartnerAPIError' : null,
+      runtime_ms: 800 + ((i * 37) % 900),
+      hostname: 'celery@worker-realloc-2',
+      queue: 'reallocation',
+      first_seen: new Date(2026, 9, 16, 22, 0, 1, i * 20).toISOString(),
+    }),
+  )
+  const chord = node({
+    task_id: 'chord',
+    name: 'chord',
+    node_type: 'CHORD',
+    state: 'FAILURE',
+    group_id: 'chord',
+    children: members.map((member) => member.task_id),
+    not_run_reason: 'header_failed',
+    duration_ms: 3900,
+  })
+  return { root_id: 'root', nodes: graphOf(root, chord, ...members) }
+}
+
+/** The prototype's "Order" flow: a chain of four tasks that all succeeded. */
+export function checkoutFlow(): FlowGraph {
+  const names = ['place_order', 'reserve_inventory', 'capture_payment', 'send_receipt']
+  const list = names.map((name, i) =>
+    node({
+      task_id: `s${i}`,
+      name: `checkout.tasks.${name}`,
+      children: i < 3 ? [`s${i + 1}`] : [],
+      runtime_ms: 300 + i * 120,
+      hostname: 'celery@worker-checkout-1',
+      queue: 'checkout',
+      first_seen: new Date(2026, 9, 17, 11, 56, i).toISOString(),
+    }),
+  )
+  return { root_id: 's0', nodes: graphOf(...list) }
+}
