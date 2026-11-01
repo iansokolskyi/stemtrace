@@ -480,7 +480,10 @@ test.describe('live updates keep the view', () => {
   // Whatever the reader scrolls with, the view stays: the scrollbar thumb (a plain scrollLeft
   // change), the wheel, the arrow keys, and Tab to a node that is out of the box
   const scrolls: Record<string, (page: Page) => Promise<void>> = {
-    'the scrollbar': (page) => canvas(page).evaluate((el) => void (el.scrollLeft = el.scrollWidth)),
+    'the scrollbar': (page) =>
+      canvas(page).evaluate((el) => {
+        el.scrollLeft = el.scrollWidth
+      }),
     'the wheel': async (page) => {
       const box = (await canvas(page).boundingBox())!
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
