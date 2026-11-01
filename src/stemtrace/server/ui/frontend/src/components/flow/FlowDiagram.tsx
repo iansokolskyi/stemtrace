@@ -1,8 +1,9 @@
-import { type KeyboardEvent, type ReactElement, type Ref, useId } from 'react'
+import { type KeyboardEvent, type ReactElement, type Ref, useId, useMemo } from 'react'
 import type { GraphNode } from '@/api/client'
 import { IconGlyph } from '@/components/Icon'
 import { stateLook } from '@/components/StatusChip'
 import { formatSpan } from '@/utils/format'
+import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { taskSubtitle, toneOf, truncate, wrapTwo } from './flowFacts'
 import { type FlowLayout, lastNameSegment, type PlacedContainer } from './layoutFlow'
 import { trackPath } from './trackPath'
@@ -53,6 +54,16 @@ export function FlowDiagram({
   onUserMove,
 }: FlowDiagramProps): ReactElement {
   const hatch = useId()
+  // Names that share their last segment are told apart by the shortest suffix no other task has
+  const shortNames = useMemo(
+    () =>
+      shortestUniqueSuffixes(
+        Object.values(nodes)
+          .filter((entry) => (entry.node_type ?? 'TASK') === 'TASK')
+          .map((entry) => entry.name),
+      ),
+    [nodes],
+  )
   const containers = new Map(layout.containers.map((box) => [box.id, box]))
 
   const items: Item[] = [
@@ -169,6 +180,9 @@ export function FlowDiagram({
                 placed={placed}
                 node={nodes[item.id]}
                 shortLabel={container?.sharedName ? item.id.slice(0, 8) : null}
+                shortName={
+                  shortNames.get(nodes[item.id].name) ?? lastNameSegment(nodes[item.id].name)
+                }
                 hatch={hatch}
                 selected={selectedId === item.id}
                 onSelect={onSelect}
@@ -368,6 +382,8 @@ interface TaskBlockProps {
   node: GraphNode
   /** A member of a container whose members share a name: its ID's start tells them apart. */
   shortLabel: string | null
+  /** The shortest dotted suffix of the name that no other task in the graph has. */
+  shortName: string
   hatch: string
   selected: boolean
   onSelect: (id: string) => void
@@ -378,16 +394,16 @@ function TaskBlock({
   placed,
   node,
   shortLabel,
+  shortName,
   hatch,
   selected,
   onSelect,
 }: TaskBlockProps): ReactElement {
   const look = stateLook(node.state)
   const tone = toneOf(node.state)
-  const name = lastNameSegment(node.name)
   const member = placed.containerId !== null
   const subtitle = taskSubtitle(node)
-  const label = [`${name}${shortLabel ? ` ${shortLabel}` : ''}`, look.word, subtitle]
+  const label = [`${node.name}${shortLabel ? ` ${shortLabel}` : ''}`, look.word, subtitle]
     .filter(Boolean)
     .join(', ')
   const select = () => onSelect(placed.id)
@@ -421,7 +437,7 @@ function TaskBlock({
       {member ? (
         <>
           <text x={34} y={21} className={shortLabel ? 'mono' : undefined}>
-            {truncate(shortLabel ?? name, 16)}
+            {truncate(shortLabel ?? shortName, 16)}
           </text>
           <text className="rt" x={placed.w - 10} y={21}>
             {formatSpan(node.runtime_ms)}
@@ -429,8 +445,8 @@ function TaskBlock({
         </>
       ) : (
         <>
-          <text className="t1" x={34} y={21}>
-            {truncate(name, 22)}
+          <text className="t1" x={34} y={21} {...{ title: node.name }}>
+            {truncate(shortName, 22)}
           </text>
           <text className="t2" x={34} y={38}>
             {truncate(subtitle, 23)}
