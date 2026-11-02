@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel
 
@@ -584,6 +584,13 @@ class WorkerRegistry:
                     del self._newest_by_node[worker.hostname]
 
 
+class TaskRunSummary(NamedTuple):
+    """How often a task name ran and when it last did (``None`` if never stamped)."""
+
+    execution_count: int
+    last_run: datetime | None
+
+
 class GraphStore:
     """Thread-safe in-memory store for TaskGraph with LRU eviction."""
 
@@ -924,48 +931,27 @@ class GraphStore:
                 if node.node_type == NodeType.TASK
             }
 
-    def get_task_execution_count(self, task_name: str) -> int:
-        """Get number of executions (nodes) for a task name.
+    def get_task_run_summaries(self) -> dict[str, TaskRunSummary]:
+        """Count runs and find the latest activity of every task name, in one pass.
 
-        Excludes synthetic nodes (GROUP, CHORD).
-
-        Args:
-            task_name: Fully qualified task name.
-
-        Returns:
-            Number of task executions (TaskNodes) with this name.
+        Takes the lock once. Excludes synthetic nodes (GROUP, CHORD). A run
+        counts in any state, and ``last_run`` is the newest ``last_updated``.
         """
+        counts: dict[str, int] = {}
+        last_runs: dict[str, datetime | None] = {}
         with self._lock:
-            return sum(
-                1
-                for node in self._graph.nodes.values()
-                if node.name == task_name and node.node_type == NodeType.TASK
-            )
-
-    def get_last_execution_time(self, task_name: str) -> datetime | None:
-        """Get the most recent execution timestamp for a task name.
-
-        Returns the latest event timestamp across all executions of this task.
-        Excludes synthetic nodes (GROUP, CHORD).
-
-        Args:
-            task_name: Fully qualified task name.
-
-        Returns:
-            Most recent event timestamp, or None if task has never been executed.
-        """
-        with self._lock:
-            last_time: datetime | None = None
             for node in self._graph.nodes.values():
-                if (
-                    node.name == task_name
-                    and node.node_type == NodeType.TASK
-                    and node.last_updated is not None
-                ):
-                    node_time = node.last_updated
-                    if last_time is None or node_time > last_time:
-                        last_time = node_time
-            return last_time
+                if node.node_type != NodeType.TASK:
+                    continue
+                counts[node.name] = counts.get(node.name, 0) + 1
+                best = last_runs.setdefault(node.name, None)
+                updated = node.last_updated
+                if updated is not None and (best is None or updated > best):
+                    last_runs[node.name] = updated
+        return {
+            name: TaskRunSummary(count, last_runs[name])
+            for name, count in counts.items()
+        }
 
     def _maybe_evict(self) -> None:
         """Evict the oldest units down to 90% of capacity. Call with lock held.
