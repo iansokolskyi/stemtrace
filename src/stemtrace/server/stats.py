@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import heapq
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Final
@@ -21,7 +22,7 @@ from stemtrace.core.events import TaskState
 from stemtrace.core.graph import TERMINAL_STATES, NodeType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Sequence
 
     from stemtrace.core.graph import TaskNode
 
@@ -65,6 +66,9 @@ class RunRecord:
     last_updated: datetime
     # The exception class of a FAILURE run; None for other states.
     exception_type: str | None = None
+    # Milliseconds of the last run of a terminal task; None before it ends or
+    # when its STARTED is missing (see ``TaskNode.runtime_ms``).
+    runtime_ms: int | None = None
 
     @classmethod
     def from_node(cls, node: TaskNode) -> RunRecord | None:
@@ -82,6 +86,10 @@ class RunRecord:
             exception_type=node.exception_type
             if node.state == TaskState.FAILURE
             else None,
+            # Same reason: run_times() scans and sorts every event, so only a
+            # terminal task reads it: no calls while it runs, then one per event
+            # that arrives after the terminal one (usually none).
+            runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
         )
 
 
@@ -336,3 +344,165 @@ def summarize_failures(by_type: dict[str | None, FailureTally]) -> list[FailureG
     groups = [tally.group(exception_type) for exception_type, tally in by_type.items()]
     groups.sort(key=lambda g: (-g.count, -g.last_seen.timestamp()))
     return groups
+
+
+#: Runs of task names with this prefix are left out of the task stats. Celery's
+#: built-ins (``celery.chord_unlock``, ``celery.accumulate``) are never
+#: registered by a worker, so they would show as unknown tasks (decision D9).
+EXCLUDED_NAME_PREFIX: Final[str] = "celery."
+
+#: States whose run supplies a runtime sample. A REVOKED run was cut short by an
+#: operator, so its time says nothing about how long the task takes (D2).
+RUNTIME_SAMPLE_STATES: Final[frozenset[TaskState]] = frozenset(
+    {TaskState.SUCCESS, TaskState.FAILURE}
+)
+
+#: States that count as a failure. REJECTED is not one, as in the overview (D3).
+FAILURE_STATES: Final[frozenset[TaskState]] = frozenset({TaskState.FAILURE})
+
+#: Percentiles reported, in percent.
+P50: Final[int] = 50
+P95: Final[int] = 95
+
+
+def percentile(sorted_samples: Sequence[int], percent: int) -> int | None:
+    """The nearest-rank percentile of ``sorted_samples`` (ascending); None when empty.
+
+    The value at rank ``ceil(percent * n / 100)``, counted from 1. The rank is
+    computed in integers: ``0.95 * n`` is not exact in floats for every ``n``.
+    """
+    if not sorted_samples:
+        return None
+    rank = -(-percent * len(sorted_samples) // 100)
+    return sorted_samples[rank - 1]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunStats:
+    """Runs, failures and runtime percentiles of a set of task names."""
+
+    runs: int
+    failures: int
+    runtime_samples: int
+    p50_ms: int | None
+    p95_ms: int | None
+    last_run: datetime
+
+    @property
+    def failure_rate(self) -> float | None:
+        """Failures over runs; None with no runs."""
+        return self.failures / self.runs if self.runs else None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NameStats(RunStats):
+    """The stats of one task name."""
+
+    name: str
+    task_group: str
+    last_state: TaskState
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GroupStats(RunStats):
+    """The stats of one task group: all runs of its task names together."""
+
+    name: str
+    task_count: int
+
+
+class _NameTally:
+    """Running totals of one task name's records."""
+
+    __slots__ = ("failures", "last", "runs", "samples")
+
+    def __init__(self) -> None:
+        """Start with no records."""
+        self.runs = self.failures = 0
+        self.samples: list[int] = []
+        # (last_updated, task_id) of the newest record, and its state; the
+        # task ID breaks a tie so the answer doesn't depend on record order.
+        self.last: tuple[datetime, str, TaskState] | None = None
+
+    def add(self, record: RunRecord, *, in_window: bool) -> None:
+        """Count one record; only ``last`` ignores the window."""
+        if self.last is None or (record.last_updated, record.task_id) > self.last[:2]:
+            self.last = (record.last_updated, record.task_id, record.state)
+        if not in_window or record.state not in OUTCOME_STATES:
+            return
+        self.runs += 1
+        self.failures += record.state in FAILURE_STATES
+        if record.state in RUNTIME_SAMPLE_STATES and record.runtime_ms is not None:
+            self.samples.append(record.runtime_ms)
+
+
+def task_stats(
+    records: Iterable[RunRecord],
+    window: Window,
+    group_of: Callable[[str], str],
+    *,
+    name: str | None = None,
+) -> tuple[list[NameStats], list[GroupStats]]:
+    """Per-name stats and per-group rollups of the runs in ``window``, sorted by name.
+
+    A name has a row whenever any of its records exists, so ``last_run`` and
+    ``last_state`` (its newest record of any state) ignore the window. A group's
+    percentiles come from all its names' samples together.
+
+    Args:
+        records: Run records (the store's snapshot).
+        window: Which runs count, placed by ``last_updated``.
+        group_of: Maps a task name to its group name; called once per name.
+        name: Keep only the task with exactly this name.
+    """
+    tallies: dict[str, _NameTally] = {}
+    for record in records:
+        if record.name.startswith(EXCLUDED_NAME_PREFIX):
+            continue
+        if name is not None and record.name != name:
+            continue
+        tally = tallies.get(record.name)
+        if tally is None:
+            tally = tallies[record.name] = _NameTally()
+        tally.add(record, in_window=window.contains(record.last_updated))
+
+    rows: list[NameStats] = []
+    members: dict[str, list[NameStats]] = defaultdict(list)
+    samples_of: dict[str, list[int]] = defaultdict(list)
+    for task_name in sorted(tallies):
+        tally = tallies[task_name]
+        assert tally.last is not None  # a tally exists only once it has a record
+        tally.samples.sort()
+        row = NameStats(
+            name=task_name,
+            task_group=group_of(task_name),
+            runs=tally.runs,
+            failures=tally.failures,
+            runtime_samples=len(tally.samples),
+            p50_ms=percentile(tally.samples, P50),
+            p95_ms=percentile(tally.samples, P95),
+            last_run=tally.last[0],
+            last_state=tally.last[2],
+        )
+        rows.append(row)
+        members[row.task_group].append(row)
+        samples_of[row.task_group] += tally.samples
+
+    groups: list[GroupStats] = []
+    for group_name in sorted(members):
+        # The union of the members' samples, never a mean of their percentiles.
+        samples = sorted(samples_of[group_name])
+        names = members[group_name]
+        groups.append(
+            GroupStats(
+                name=group_name,
+                task_count=len(names),
+                runs=sum(r.runs for r in names),
+                failures=sum(r.failures for r in names),
+                runtime_samples=len(samples),
+                p50_ms=percentile(samples, P50),
+                p95_ms=percentile(samples, P95),
+                last_run=max(r.last_run for r in names),
+            )
+        )
+    return rows, groups

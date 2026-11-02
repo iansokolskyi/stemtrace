@@ -39,6 +39,11 @@ def _task_event(
     )
 
 
+def _last_run(store: GraphStore, name: str) -> datetime | None:
+    summary = store.get_task_run_summaries().get(name)
+    return summary.last_run if summary else None
+
+
 class TestGraphStoreConsistency:
     """Readers must see one consistent snapshot while the consumer writes."""
 
@@ -377,9 +382,7 @@ class TestGraphStoreOutOfOrderEvents:
         late, _ = store.get_nodes(from_date=base_time + timedelta(hours=2))
         assert sorted(n.task_id for n in late) == ["newer", "older"]
 
-        assert store.get_last_execution_time("test.task") == base_time + timedelta(
-            hours=3
-        )
+        assert _last_run(store, "test.task") == base_time + timedelta(hours=3)
 
     def test_add_event_duplicate_not_broadcast_to_listeners(
         self, store: GraphStore, make_event: type
@@ -1664,11 +1667,11 @@ class TestWorkerRegistry:
 
 
 class TestGraphStoreLastExecutionTime:
-    """Tests for get_last_execution_time method."""
+    """Tests for the last run in get_task_run_summaries."""
 
     def test_last_execution_time_empty_store(self, store: GraphStore) -> None:
         """Return None for a task that doesn't exist."""
-        result = store.get_last_execution_time("nonexistent.task")
+        result = _last_run(store, "nonexistent.task")
         assert result is None
 
     def test_last_execution_time_single_execution(
@@ -1677,7 +1680,7 @@ class TestGraphStoreLastExecutionTime:
         """Return timestamp for a single execution."""
         store.add_event(make_event.create("task-1", name="myapp.tasks.process"))
 
-        result = store.get_last_execution_time("myapp.tasks.process")
+        result = _last_run(store, "myapp.tasks.process")
         assert result is not None
         # Should be close to the base time + 1 second (first event)
         assert result.year == 2024
@@ -1691,7 +1694,7 @@ class TestGraphStoreLastExecutionTime:
         store.add_event(make_event.create("task-2", name="myapp.tasks.process"))
         store.add_event(make_event.create("task-3", name="myapp.tasks.process"))
 
-        result = store.get_last_execution_time("myapp.tasks.process")
+        result = _last_run(store, "myapp.tasks.process")
         assert result is not None
 
         # Should be the most recent (task-3's timestamp)
@@ -1714,7 +1717,7 @@ class TestGraphStoreLastExecutionTime:
             make_event.create("task-1", TaskState.SUCCESS, name="myapp.tasks.process")
         )
 
-        result = store.get_last_execution_time("myapp.tasks.process")
+        result = _last_run(store, "myapp.tasks.process")
         assert result is not None
 
         # Should be the SUCCESS event timestamp
@@ -1753,11 +1756,11 @@ class TestGraphStoreLastExecutionTime:
 
         # get_last_execution_time for "group" should return None
         # (synthetic nodes shouldn't count as executions)
-        result = store.get_last_execution_time("group")
+        result = _last_run(store, "group")
         assert result is None
 
         # Real task should have a last execution time
-        result = store.get_last_execution_time("myapp.grouped_task")
+        result = _last_run(store, "myapp.grouped_task")
         assert result is not None
 
     def test_last_execution_time_different_tasks(
@@ -1770,12 +1773,40 @@ class TestGraphStoreLastExecutionTime:
             make_event.create("task-c", name="myapp.task_a")
         )  # Another execution
 
-        result_a = store.get_last_execution_time("myapp.task_a")
-        result_b = store.get_last_execution_time("myapp.task_b")
+        result_a = _last_run(store, "myapp.task_a")
+        result_b = _last_run(store, "myapp.task_b")
 
         assert result_a is not None
         assert result_b is not None
         assert result_a > result_b  # task_a had a later execution
+
+
+class TestGraphStoreTaskRunSummaries:
+    """Tests for get_task_run_summaries counts."""
+
+    def test_summaries_count_runs_in_any_state_and_skip_synthetic_nodes(
+        self, store: GraphStore, make_event: type
+    ) -> None:
+        store.add_event(make_event.create("a1", TaskState.SUCCESS, name="app.a"))
+        store.add_event(make_event.create("a2", TaskState.PENDING, name="app.a"))
+        store.add_event(make_event.create("b1", TaskState.FAILURE, name="app.b"))
+        for task_id in ("g1", "g2"):
+            store.add_event(
+                TaskEvent(
+                    task_id=task_id,
+                    name="app.g",
+                    state=TaskState.SUCCESS,
+                    timestamp=make_event._base_time,
+                    group_id="grp",
+                )
+            )
+
+        counts = {
+            name: summary.execution_count
+            for name, summary in store.get_task_run_summaries().items()
+        }
+
+        assert counts == {"app.a": 2, "app.b": 1, "app.g": 2}
 
 
 class TestGraphStoreRootNodesSyntheticDateFiltering:
