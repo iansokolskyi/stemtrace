@@ -548,9 +548,9 @@ def _registry_status(execution_count: int, registered_by: list[str]) -> TaskStat
 def _registered_task_response(
     name: str,
     *,
-    store: GraphStore,
     worker_registry: WorkerRegistry | None,
     execution_count: int,
+    last_run: datetime | None,
     registered_by: list[str],
     status: TaskStatus,
     groups: GroupConfig,
@@ -574,7 +574,7 @@ def _registered_task_response(
         bound=definition.bound if definition else False,
         execution_count=execution_count,
         registered_by=registered_by,
-        last_run=store.get_last_execution_time(name),
+        last_run=last_run,
         status=status,
         task_group=group.name,
         tags=list(group.tags),
@@ -597,13 +597,14 @@ def _build_task_registry(
     hostnames_by_task = _hostnames_by_registered_task(worker_registry)
 
     tasks: list[RegisteredTaskResponse] = []
-    for name in sorted(_known_task_names(store, hostnames_by_task)):
+    runs = store.get_task_run_summaries()
+    for name in sorted(runs.keys() | hostnames_by_task.keys()):
         # Workers never register built-ins, so they would always read as not_registered.
         if name.startswith(_CELERY_BUILTIN_PREFIX):
             continue
         if query and query.lower() not in name.lower():
             continue
-        execution_count = store.get_task_execution_count(name)
+        execution_count, last_run = runs.get(name, (0, None))
         registered_by = sorted(hostnames_by_task.get(name, ()))
         task_status = _registry_status(execution_count, registered_by)
         if status and task_status.value != status:
@@ -611,9 +612,9 @@ def _build_task_registry(
         tasks.append(
             _registered_task_response(
                 name,
-                store=store,
                 worker_registry=worker_registry,
                 execution_count=execution_count,
+                last_run=last_run,
                 registered_by=registered_by,
                 status=task_status,
                 groups=groups,
