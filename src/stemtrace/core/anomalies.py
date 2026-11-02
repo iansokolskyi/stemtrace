@@ -164,12 +164,10 @@ class RuntimeStats:
 class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
-    ``live_names`` are the task names of every live worker (one that hasn't
-    reported a stop since its last ``worker_ready``). ``any_online`` is whether
-    a live worker was seen within the stale window, and ``any_seen`` whether
-    any worker was seen since the server started. ``authority_at`` is when the
-    last inspect reply that listed every replying worker's tasks arrived, and
-    ``broker_configured`` whether the server can inspect at all.
+    ``live_names``: names of workers with no stop reported since their last
+    ``worker_ready``. ``any_online``: one was seen within the stale window;
+    ``any_seen``: any worker since the server started. ``authority_at``: when
+    an inspect reply last listed every answering worker's tasks.
     """
 
     live_names: frozenset[str]
