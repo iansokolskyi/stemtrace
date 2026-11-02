@@ -93,7 +93,12 @@ function executionRuns(): MockTask[] {
     task: MockTask,
     minutes: number,
     fields: Partial<MockTask> & { state?: string },
-  ): MockTask => Object.assign(task, { last_updated: minutesAgo(minutes) }, fields)
+  ): MockTask => {
+    // Started (first_seen) is the last update minus the queue wait and the runtime.
+    const spentMs = (fields.queue_wait_ms ?? 0) + (fields.runtime_ms ?? 0)
+    const started = minutesAgo(minutes + spentMs / 60_000)
+    return Object.assign(task, { first_seen: started, last_updated: minutesAgo(minutes) }, fields)
+  }
   const group = 'Billing'
   const host = 'celery@worker-billing-1'
   return [

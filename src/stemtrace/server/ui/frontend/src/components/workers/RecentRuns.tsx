@@ -68,7 +68,7 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
                         <span
                           className={clsx(
                             column.id === 'queue' && 'font-mono',
-                            (column.id === 'updated' || column.id === 'queue_wait') && 'text-muted',
+                            (column.id === 'started' || column.id === 'queue_wait') && 'text-muted',
                           )}
                         >
                           {column.text?.(run)}

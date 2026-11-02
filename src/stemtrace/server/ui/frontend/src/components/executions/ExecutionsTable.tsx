@@ -338,7 +338,7 @@ function Cell({
           className={clsx(
             className,
             mono && 'font-mono',
-            (column.id === 'updated' || column.id === 'queue_wait') && 'text-muted',
+            (column.id === 'started' || column.id === 'queue_wait') && 'text-muted',
           )}
         >
           {text}

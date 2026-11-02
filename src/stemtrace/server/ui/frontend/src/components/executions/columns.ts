@@ -9,7 +9,7 @@ export type ColumnId =
   | 'queue'
   | 'queue_wait'
   | 'runtime'
-  | 'updated'
+  | 'started'
 
 export interface Column {
   id: ColumnId
@@ -75,12 +75,12 @@ export const COLUMNS: Column[] = [
     text: (row) => formatSpan(row.runtime_ms),
   },
   {
-    id: 'updated',
-    label: 'Updated',
+    id: 'started',
+    label: 'Started',
     track: '88px',
     min: 88,
     align: 'right',
-    text: (row) => formatAgo(row.last_updated),
+    text: (row) => formatAgo(row.first_seen),
   },
 ]
 

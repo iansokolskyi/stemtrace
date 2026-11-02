@@ -179,11 +179,11 @@ test.describe('Worker page', () => {
     await expect(page).toHaveURL(new RegExp(`/tasks/${task.task_id}$`))
   })
 
-  test('recent runs show State, Task, Queue, Queue wait, Runtime and Updated', async ({ page }) => {
+  test('recent runs show State, Task, Queue, Queue wait, Runtime and Started', async ({ page }) => {
     api.addTask(run('app.billing.send'))
     await openWorker(page)
     const headers = panel(page, 'Recent executions').getByRole('columnheader')
-    await expect(headers).toHaveText(['State', 'Task', 'Queue', 'Queue wait', 'Runtime', 'Updated'])
+    await expect(headers).toHaveText(['State', 'Task', 'Queue', 'Queue wait', 'Runtime', 'Started'])
   })
 
   test('a recent-runs column nothing has a value for is hidden', async ({ page }) => {
