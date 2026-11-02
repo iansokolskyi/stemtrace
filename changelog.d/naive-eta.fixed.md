@@ -1,0 +1,1 @@
+- A task event whose `eta` has no UTC offset, sent by a producer other than stemtrace, is now read as UTC like its timestamp. Before, reading that task's queue wait could fail with a `TypeError`.
