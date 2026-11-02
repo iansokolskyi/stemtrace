@@ -1,0 +1,1 @@
+- A task event whose `eta` has no UTC offset, sent by a producer other than stemtrace, is read as UTC like its timestamp. Before, ingesting it could fail and leave the task half-updated.
