@@ -138,6 +138,23 @@ def test_remove_stale_workers_cleanup_leaves_timeline_intact() -> None:
     assert [e.event_type for e in before["celery@w1"]] == [READY, SHUTDOWN]
 
 
+def test_consumer_stale_sweep_removing_worker_leaves_timeline_intact() -> None:
+    registry = WorkerRegistry()
+    timeline = WorkerTimeline()
+    consumer = _consumer(timeline, registry)
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+    event = WorkerEvent(
+        event_type=READY, hostname="celery@w1", pid=7, timestamp=long_ago
+    )
+    consumer._process_event(event)
+    assert len(registry.get_all_workers()) == 1
+
+    consumer._maybe_check_stale_workers()  # first call: interval 0 has elapsed
+
+    assert registry.get_all_workers() == []
+    assert timeline.events_for("celery@w1") == [WorkerTimelineEntry(long_ago, READY, 7)]
+
+
 def test_record_duplicate_event_is_stored_once() -> None:
     timeline = WorkerTimeline()
     for _ in range(3):
