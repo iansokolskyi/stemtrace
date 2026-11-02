@@ -63,6 +63,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Workers never register these (library/signals.py filters the same prefix).
+_CELERY_BUILTIN_PREFIX = "celery."
+
 
 def _monotonic() -> float:
     """Return a monotonic clock reading.
@@ -99,7 +102,7 @@ def _tasks_for_worker_key(
         return []
     tasks: list[str] = []
     for t in tasks_obj:
-        if isinstance(t, str) and not t.startswith("celery."):
+        if isinstance(t, str) and not t.startswith(_CELERY_BUILTIN_PREFIX):
             tasks.append(t)
     return tasks
 
@@ -595,6 +598,9 @@ def _build_task_registry(
 
     tasks: list[RegisteredTaskResponse] = []
     for name in sorted(_known_task_names(store, hostnames_by_task)):
+        # Workers never register built-ins, so they would always read as not_registered.
+        if name.startswith(_CELERY_BUILTIN_PREFIX):
+            continue
         if query and query.lower() not in name.lower():
             continue
         execution_count = store.get_task_execution_count(name)
@@ -619,7 +625,7 @@ def _build_task_registry(
 def _known_task_names(
     store: GraphStore, hostnames_by_task: Mapping[str, set[str]]
 ) -> set[str]:
-    """Task names seen in events or registered by a worker (the registry's set)."""
+    """Task names seen in events or registered by a worker."""
     return store.get_unique_task_names() | set(hostnames_by_task)
 
 
@@ -987,7 +993,8 @@ def _add_group_routes(
         """List task groups with their source, tags, color and task names.
 
         Task names are the ones the server has seen in events or in workers'
-        registered tasks (the task registry's names). Code-defined groups are
+        registered tasks, including ``celery.*`` built-ins that the task registry
+        hides. Code-defined groups are
         listed even before any of their tasks is seen. Sorted by name, with
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
