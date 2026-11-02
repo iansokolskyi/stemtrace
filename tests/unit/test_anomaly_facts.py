@@ -1,7 +1,12 @@
 """The server adapter builds full facts only for tasks that can be flagged."""
 
-from stemtrace.core.anomalies import NodeLink
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.anomalies import (
+    NodeFacts,
+    NodeLink,
+    TimelineEntry,
+    classify_anomalies,
+)
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEventType
 from stemtrace.server.anomaly_facts import classifier_facts, node_facts, runtime_facts
 from stemtrace.server.store import GraphStore
 from tests.unit.anomaly_pipeline import (
@@ -104,3 +109,24 @@ def test_cancelled_retry_gets_full_facts_and_its_name_no_runtime_stats() -> None
     assert [n.task_id for n in facts.nodes] == ["s"]
     assert facts.runtime_stats == {}
     assert len(node_facts(store.run_records())) == 6
+
+
+def test_classifier_given_full_facts_for_an_ended_task_never_flags_it() -> None:
+    ended = NodeFacts(
+        task_id="done",
+        name="app.work",
+        state=TaskState.SUCCESS,
+        last_updated=at(10),
+        state_since=at(10),
+        state_host="w@a",
+    )
+
+    report = classify_anomalies(
+        [ended],
+        now=at(10_000),
+        runtime_stats={},
+        timeline={"w@a": [TimelineEntry(at(50), WorkerEventType.WORKER_SHUTDOWN)]},
+        settings=SMALL,
+    )
+
+    assert report.anomalies == {}
