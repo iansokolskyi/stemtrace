@@ -4,7 +4,7 @@
 # Stage 1: Build frontend
 # The UI build output is static files, identical for every platform, so build it
 # once on the native build platform instead of under QEMU (npm ci hung there).
-FROM --platform=$BUILDPLATFORM node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:22.23.4-alpine3.24@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS frontend-builder
 
 WORKDIR /app/frontend
 COPY src/stemtrace/server/ui/frontend/package*.json ./
@@ -14,7 +14,7 @@ COPY src/stemtrace/server/ui/frontend/ ./
 RUN npm run build
 
 # Stage 2: Build a virtualenv with the locked dependencies and stemtrace itself
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
+FROM python:3.12.16-slim-trixie@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never \
@@ -38,7 +38,7 @@ COPY --from=frontend-builder /app/frontend/dist/ src/stemtrace/server/ui/fronten
 RUN uv sync --locked --no-build --no-editable && rm -f /opt/venv/.lock
 
 # Stage 3: Production image
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS production
+FROM python:3.12.16-slim-trixie@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07 AS production
 
 WORKDIR /app
 
