@@ -2,6 +2,8 @@
 
 import json
 import random
+import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -150,7 +152,9 @@ def _assert_index_matches_graph(store: GraphStore) -> None:
 def _assert_state_evidence(record: RunRecord, node: TaskNode) -> None:
     """The state-event fields equal a reference that scans every raw event."""
     assert node.events
-    state = max(node.events, key=attribution.precedence)
+    state = max(
+        node.events, key=lambda e: (attribution.precedence(e), attribution.event_key(e))
+    )
     started = [
         e.timestamp
         for e in node.events
@@ -642,3 +646,98 @@ def test_captures_include_runs_with_replacement_progress() -> None:
             store.add_event(event)
         found += sum(r.replaced_progress is not None for r in store.run_records())
     assert found > 0
+
+
+def _lines_run(call: Callable[[], object]) -> int:
+    """Source lines the call executes in stemtrace's own modules (not timing)."""
+    count = 0
+
+    def local(frame: Any, event: str, arg: Any) -> Any:
+        nonlocal count
+        if event == "line":
+            count += 1
+        return local
+
+    def tracer(frame: Any, event: str, arg: Any) -> Any:
+        return local if "stemtrace" in frame.f_code.co_filename else None
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        call()
+    finally:
+        sys.settrace(previous)
+    return count
+
+
+def _record_work_after_replacements(pages: int) -> int:
+    """Lines run building the record of a task that was replaced ``pages`` times."""
+    store = GraphStore()
+    store.add_event(_run_event(TaskState.PENDING, 0, parent_id="p"))
+    store.add_event(_run_event(TaskState.STARTED, 1, parent_id="p"))
+    for page in range(pages):
+        store.add_event(
+            _run_event(TaskState.PENDING, 2 + page, parent_id=f"page{page}")
+        )
+    with store._lock:
+        node = store._graph.nodes["t"]
+        return _lines_run(lambda: RunRecord.from_node(node))
+
+
+def test_record_work_does_not_grow_with_distinct_replacement_parents() -> None:
+    """``paginate_to`` replaces with a new parent per page: per-event work stays constant."""
+    assert _record_work_after_replacements(5) == _record_work_after_replacements(300)
+
+
+def test_replaced_progress_skips_the_reported_parent_among_many() -> None:
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p", eta_seconds=900),
+        _run_event(TaskState.PENDING, 5, parent_id="a", eta_seconds=60),
+        _run_event(TaskState.PENDING, 6, parent_id="b", eta_seconds=30),
+        _run_event(TaskState.PENDING, 7, parent_id="c", eta_seconds=40),
+        _run_event(TaskState.PENDING, 8, parent_id="a", eta_seconds=10),
+        _run_event(TaskState.STARTED, 9, parent_id="p"),
+    )
+
+    assert record.reported_parent_id == "p"
+    assert record.replaced_progress == T0 + timedelta(seconds=60)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_state_event_on_an_exact_tie_does_not_depend_on_arrival_order(
+    reverse: bool,
+) -> None:
+    """Same state, attempt and time on two hosts: one answer, the snapshot's."""
+    events = [
+        _run_event(TaskState.STARTED, 10, hostname="w1@a"),
+        _run_event(TaskState.STARTED, 10, hostname="w2@b"),
+    ]
+    store = GraphStore()
+    for event in reversed(events) if reverse else events:
+        store.add_event(event)
+    other = GraphStore()
+    for event in events if reverse else reversed(events):
+        other.add_event(event)
+
+    node = store.get_node("t")
+    assert node is not None
+    assert node.state_event is not None
+    assert _records(store)["t"].state_host == node.state_event.hostname
+    assert _records(store)["t"] == _records(other)["t"]
+
+
+def test_naive_eta_is_read_as_utc_like_the_timestamp() -> None:
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p"),
+        _run_event(TaskState.STARTED, 1, parent_id="p"),
+        TaskEvent(
+            task_id="t",
+            name="app.work",
+            state=TaskState.PENDING,
+            timestamp=T0 + timedelta(seconds=2),
+            parent_id="t",
+            eta=datetime(2026, 10, 18, 12, 0, 30),
+        ),
+    )
+
+    assert record.replaced_progress == T0 + timedelta(seconds=30)

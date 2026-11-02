@@ -153,7 +153,9 @@ class TaskNode(BaseModel):
         """Time of the latest STARTED of the state event's attempt (same ``retries``), O(1).
 
         None when that attempt has no STARTED event. A cancelled RETRY carries
-        its attempt's count, so this is when the cancelled run began.
+        its attempt's count, so this is when the cancelled run began. A
+        terminal event from the main process has ``retries=0``, so then it is
+        the first attempt's STARTED, not necessarily the last run's.
         """
         index = self._ensure_index()
         current = index.state_event
@@ -165,16 +167,13 @@ class TaskNode(BaseModel):
 
         Such an event is a ``replace()`` replacement's (``parent_id`` is not
         None and not ``reported_parent_id``), so this is when the replacement
-        was due to run. None when there is none. Reads one entry per distinct
-        parent, not the events.
+        was due to run. None when there is none. O(1): the index keeps the two
+        latest by distinct parent.
         """
-        reported = self.reported_parent_id
-        due = [
-            when
-            for parent, when in self._ensure_index().sent_due.items()
-            if parent != reported
-        ]
-        return max(due) if due else None
+        best, second = self._ensure_index().due
+        if best is not None and best[1] != self.reported_parent_id:
+            return best[0]
+        return None if second is None else second[0]
 
     @property
     def exception_type(self) -> str | None:
@@ -298,11 +297,15 @@ class TaskNode(BaseModel):
         )
 
         current = index.state_event
-        if current is None or attribution.precedence(event) > attribution.precedence(
-            current
+        if (
+            current is None
+            or index.state_key is None
+            or (attribution.precedence(event), key)
+            > (attribution.precedence(current), index.state_key)
         ):
             current = event
             index.state_event = event
+            index.state_key = key
         if self.state != current.state:
             self.state = current.state
         return True
@@ -408,12 +411,16 @@ class TaskNode(BaseModel):
         return self.reported_parent_id != previous
 
 
+_Due = tuple[datetime, str]  # a due time and the parent that sent it
+
+
 class _EventIndex:
     """Sort keys, duplicate lookup and state-deciding event for one node."""
 
     __slots__ = (
         "became_reused",
         "by_key",
+        "due",
         "first_own",
         "keys",
         "last_key",
@@ -422,9 +429,9 @@ class _EventIndex:
         "new_identity",
         "parent_key",
         "parents",
-        "sent_due",
         "started_at",
         "state_event",
+        "state_key",
     )
 
     def __init__(self, events: list[TaskEvent]) -> None:
@@ -447,9 +454,9 @@ class _EventIndex:
         }
         self.new_identity = False
         self.became_reused = False
-        # Per reported parent, the latest ``max(timestamp, eta)`` of a
-        # PENDING/RECEIVED event; per ``retries``, the latest STARTED time.
-        self.sent_due: dict[str, datetime] = {}
+        # The two latest ``(max(timestamp, eta), parent_id)`` of PENDING/RECEIVED
+        # events, from different parents; per ``retries``, the latest STARTED time.
+        self.due: tuple[_Due | None, _Due | None] = (None, None)
         self.started_at: dict[int, datetime] = {}
         for event in events:
             self.observe(event)
@@ -459,12 +466,17 @@ class _EventIndex:
         events[:] = [event for _, event in pairs]
         self.keys: list[attribution.EventKey] = [key for key, _ in pairs]
         self.by_key: dict[attribution.EventKey, TaskEvent] = dict(pairs)
-        self.state_event: TaskEvent | None = (
-            max(events, key=attribution.precedence) if events else None
-        )
+        # The state event: highest precedence, an exact tie going to the
+        # larger event key, so it doesn't depend on arrival order.
+        self.state_key: attribution.EventKey | None = None
+        self.state_event: TaskEvent | None = None
+        if pairs:
+            self.state_key, self.state_event = max(
+                pairs, key=lambda p: (attribution.precedence(p[1]), p[0])
+            )
 
     def observe(self, event: TaskEvent) -> None:
-        """Fold one event into ``sent_due`` and ``started_at``."""
+        """Fold one event into ``due`` and ``started_at``."""
         if event.state == TaskState.STARTED:
             seen = self.started_at.get(event.retries)
             if seen is None or event.timestamp > seen:
@@ -472,9 +484,26 @@ class _EventIndex:
         elif event.state in (TaskState.PENDING, TaskState.RECEIVED):
             if event.parent_id is not None:
                 due = max(event.timestamp, event.eta or event.timestamp)
-                seen = self.sent_due.get(event.parent_id)
-                if seen is None or due > seen:
-                    self.sent_due[event.parent_id] = due
+                self._note_due(due, event.parent_id)
+
+    def _note_due(self, due: datetime, parent: str) -> None:
+        """Keep the two latest due times of distinct parents (best, second).
+
+        A parent dropped earlier was below the second, which only grows, so
+        it re-enters only with a time that is its true latest.
+        """
+        best, second = self.due
+        if best is not None and best[1] == parent:
+            best = (max(best[0], due), parent)
+        elif second is not None and second[1] == parent:
+            second = (max(second[0], due), parent)
+        elif best is None or due > best[0]:
+            best, second = (due, parent), best
+        elif second is None or due > second[0]:
+            second = (due, parent)
+        if best is not None and second is not None and second[0] > best[0]:
+            best, second = second, best
+        self.due = (best, second)
 
 
 # Celery's polling task that fires a chord's body when the result backend

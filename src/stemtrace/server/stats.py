@@ -76,7 +76,8 @@ class RunRecord:
     state_host: str | None = None
     cancelled: bool = False
     reported_parent_id: str | None = None
-    # When the state event's attempt started (None if its STARTED is missing),
+    # Latest STARTED with the state event's ``retries`` (None if there is none;
+    # a main-process terminal event has retries=0, so then it is attempt 0's),
     # and when a ``replace()`` replacement was due (None if none was sent).
     attempt_started: datetime | None = None
     replaced_progress: datetime | None = None
