@@ -344,7 +344,7 @@ Durations are a number and a unit (`90s`, `10m`, `1h`, `7d`; at most `3650d`), o
 `timedelta` in Python. `factor` is a positive number of at most 100,000 and `min_samples` is a
 whole number of at least 1. A bad value raises `ConfigurationError` at startup (the CLI exits
 with a usage error). The floor can be above the ceiling: a name with too few runs then uses the
-floor. A `factor × p95` threshold never exceeds 3,650 days, the longest the server keeps a task. An argument wins over the env var,
+floor. A `factor × p95` threshold never exceeds 3,650 days, the longest duration the server accepts. An argument wins over the env var,
 and a blank env var counts as unset. `StemtraceExtension` doesn't read the env vars; `init_app`
 and `stemtrace server` do.
 

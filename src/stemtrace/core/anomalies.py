@@ -61,8 +61,8 @@ _EVIDENCE_OF: Final[dict[WorkerEventType, AnomalyEvidence]] = {
     WorkerEventType.WORKER_READY: AnomalyEvidence.WORKER_RESTARTED,
 }
 
-# The factor's largest value and the longest ``factor x p95`` threshold. The
-# server keeps tasks for at most 3650 days, so a longer threshold never fires.
+# The factor's largest value and the longest ``factor x p95`` threshold: the
+# server's longest accepted duration (``MAX_DURATION``, 3650 days; a test pins it).
 MAX_STUCK_FACTOR: Final[int] = 100_000
 MAX_STUCK_THRESHOLD: Final[timedelta] = timedelta(days=3650)
 
