@@ -8,7 +8,7 @@ from stemtrace.core.anomalies import AnomalySettings
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.store import GraphStore, WorkerTimeline
+from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from tests.unit.anomaly_pipeline import (
     READY,
     SHUTDOWN,
@@ -67,12 +67,16 @@ def make_app(
     store: GraphStore,
     timeline: WorkerTimeline | None = None,
     settings: AnomalySettings = SMALL,
+    registry: WorkerRegistry | None = None,
+    broker_url: str | None = None,
 ) -> FastAPI:
-    """An app serving the API over ``store``, ``timeline`` and ``settings``."""
+    """An app serving the API over ``store``, ``timeline``, ``registry`` and ``settings``."""
     app = FastAPI()
     app.include_router(
         create_api_router(
             store,
+            worker_registry=registry,
+            broker_url=broker_url,
             worker_timeline=timeline,
             anomaly_settings=settings,
         )
