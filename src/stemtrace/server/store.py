@@ -565,18 +565,22 @@ class WorkerRegistry:
                     )
                 self.mark_node_alive(nodename, pid)
 
-    def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
+    def registry_facts(
+        self, *, broker_configured: bool, now: datetime | None = None
+    ) -> RegistryFacts:
         """Copy what the anomaly classifier needs: online names, any online, authority time.
 
         Args:
             broker_configured: Whether the server can inspect a broker.
+            now: The time to judge the stale window at (tests); defaults to now.
         """
+        del now
         with self._lock:
             online = [
                 w for w in self._workers.values() if w.status == WorkerStatus.ONLINE
             ]
             return RegistryFacts(
-                online_names=frozenset(t for w in online for t in w.registered_tasks),
+                live_names=frozenset(t for w in online for t in w.registered_tasks),
                 any_online=bool(online),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,

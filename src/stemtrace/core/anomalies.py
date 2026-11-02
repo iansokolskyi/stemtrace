@@ -164,16 +164,19 @@ class RuntimeStats:
 class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
-    ``online_names`` are the task names the online workers registered.
-    ``authority_at`` is when the last inspect reply that listed every
-    replying worker's tasks arrived, and ``broker_configured`` whether the
-    server can inspect at all.
+    ``live_names`` are the task names of every live worker (one that hasn't
+    reported a stop since its last ``worker_ready``). ``any_online`` is whether
+    a live worker was seen within the stale window, and ``any_seen`` whether
+    any worker was seen since the server started. ``authority_at`` is when the
+    last inspect reply that listed every replying worker's tasks arrived, and
+    ``broker_configured`` whether the server can inspect at all.
     """
 
-    online_names: frozenset[str]
+    live_names: frozenset[str]
     any_online: bool
     authority_at: datetime | None
     broker_configured: bool
+    any_seen: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,7 +331,7 @@ def _authoritative(
     confirmed = registry.authority_at
     if confirmed is not None and now - confirmed <= settings.authority_window:
         return True
-    return not registry.broker_configured and bool(registry.online_names)
+    return not registry.broker_configured and bool(registry.live_names)
 
 
 def _waiting(task: PendingLike, cutoff: datetime) -> bool:
@@ -375,7 +378,7 @@ def _unregistered(
         ]
     by_name: dict[str, list[PendingLike]] = defaultdict(list)
     for task in waiting:
-        if task.name not in registry.online_names:
+        if task.name not in registry.live_names:
             by_name[task.name].append(task)
     by_task: dict[str, Anomaly] = {}
     items: list[Anomaly] = []

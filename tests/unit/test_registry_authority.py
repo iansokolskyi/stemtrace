@@ -94,7 +94,7 @@ def test_apply_stats_reply_with_a_missing_node_keeps_its_previous_task_list() ->
 
     registry.apply_stats_reply({}, {NODE_A: (1, ["app.x"]), NODE_B: (2, None)}, now=T)
 
-    assert facts(registry).online_names == {"app.x", "app.kept"}
+    assert facts(registry).live_names == {"app.x", "app.kept"}
     assert facts(registry).authority_at is None
 
 
@@ -136,7 +136,7 @@ def test_refresh_with_stats_and_registered_replies_sets_the_authority_time() -> 
     stamp = facts(registry).authority_at
     assert stamp is not None
     assert before <= stamp <= datetime.now(timezone.utc)
-    assert facts(registry).online_names == {"app.x"}
+    assert facts(registry).live_names == {"app.x"}
 
 
 @pytest.mark.parametrize(
@@ -210,7 +210,7 @@ def test_registry_facts_collect_only_online_workers_names() -> None:
 
     got = facts(registry)
 
-    assert got.online_names == frozenset({"app.a", "app.shared"})
+    assert got.live_names == frozenset({"app.a", "app.shared"})
     assert got.any_online is True
 
 
@@ -221,7 +221,7 @@ def test_registry_facts_with_every_worker_offline_have_no_names_and_no_online() 
 
     got = facts(registry)
 
-    assert (got.online_names, got.any_online) == (frozenset(), False)
+    assert (got.live_names, got.any_online) == (frozenset(), False)
 
 
 def test_registry_facts_count_an_online_worker_with_no_tasks_as_online() -> None:
@@ -230,7 +230,7 @@ def test_registry_facts_count_an_online_worker_with_no_tasks_as_online() -> None
 
     got = facts(registry)
 
-    assert (got.online_names, got.any_online) == (frozenset(), True)
+    assert (got.live_names, got.any_online) == (frozenset(), True)
 
 
 def test_registry_facts_pass_the_broker_flag_through() -> None:
@@ -247,4 +247,4 @@ def test_registry_facts_are_a_copy_later_registrations_do_not_change() -> None:
 
     registry.register_worker(NODE_B, 2, ["app.b"])
 
-    assert got.online_names == frozenset({"app.a"})
+    assert got.live_names == frozenset({"app.a"})

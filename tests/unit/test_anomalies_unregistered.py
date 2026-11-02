@@ -46,7 +46,7 @@ def registry(
 ) -> RegistryFacts:
     """Registry facts; ``authority`` is seconds after T0 (None: never confirmed)."""
     return RegistryFacts(
-        online_names=frozenset(names),
+        live_names=frozenset(names),
         any_online=online,
         authority_at=None if authority is None else at(authority),
         broker_configured=broker,

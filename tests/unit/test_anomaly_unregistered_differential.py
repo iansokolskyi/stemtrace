@@ -44,7 +44,7 @@ def reference(
     """Items as (kind, name, since, count) and the flagged task IDs, from raw events."""
     confirmed = registry.authority_at
     trusted = (confirmed is not None and (now - confirmed) <= WINDOW) or (
-        not registry.broker_configured and len(registry.online_names) > 0
+        not registry.broker_configured and len(registry.live_names) > 0
     )
     if not trusted:
         return set(), set()
@@ -67,7 +67,7 @@ def reference(
         return {
             ("no_workers_online", None, min(w[2] for w in waiting), len(waiting))
         }, set()
-    unknown = [w for w in waiting if w[1] not in registry.online_names]
+    unknown = [w for w in waiting if w[1] not in registry.live_names]
     items: Expected = set()
     for name in {w[1] for w in unknown}:
         group = [w for w in unknown if w[1] == name]
@@ -87,7 +87,7 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
         ]
     )
     return RegistryFacts(
-        online_names=registered,
+        live_names=registered,
         any_online=bool(registered) or rng.random() < 0.7,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
