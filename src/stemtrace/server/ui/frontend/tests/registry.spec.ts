@@ -157,8 +157,8 @@ test.describe('Registry page', () => {
     page,
   }) => {
     test.skip(isRealMode, 'Mock-only test')
-    mockApi?.setRegistry([active('app.jobs.add', 40, minutesAgo(180)), neverRun('app.jobs.report')])
-    // The server's row for a name whose runs are all older than the window: it exists, with 0 runs
+    mockApi?.setRegistry([active('app.jobs.add', 40, minutesAgo(420)), neverRun('app.jobs.report')])
+    // The server's row for a name whose runs are all older than the 6 h window: 0 runs, last run 7 h ago
     mockApi?.setTaskStats([createTaskStats('app.jobs.add', 0, 0)])
     await loadRegistryPage(page, () => page.goto('/registry'))
     for (const name of ['app.jobs.add', 'app.jobs.report']) {
@@ -169,11 +169,103 @@ test.describe('Registry page', () => {
       await expect(cells.nth(STATS_COLUMNS.p95)).toHaveText('—')
     }
     await expect(rowOf(page, 'app.jobs.add').getByRole('cell').nth(STATS_COLUMNS.last)).toHaveText(
-      '3h ago',
+      '7h ago',
     )
     await expect(
       rowOf(page, 'app.jobs.report').getByRole('cell').nth(STATS_COLUMNS.last),
     ).toHaveText('Never')
+  })
+
+  test.describe('refresh with the socket connected', () => {
+    test.skip(isRealMode, 'Mock-only test')
+
+    const POLL_MS = 30_000
+    const ROW = 'app.jobs.report'
+
+    /** The row's cells as text: Task (with its note), Group, Status, Runs, Fail %, p50, p95, Last run. */
+    const cellsOf = (page: Page, name: string) =>
+      rowOf(page, name)
+        .getByRole('cell')
+        .evaluateAll((cells) => cells.map((cell) => cell.textContent))
+
+    test.beforeEach(async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      await page.clock.install()
+    })
+
+    test('a task that starts running changes status, note, runs and last run in one step', async ({
+      page,
+    }) => {
+      mockApi?.setRegistry([neverRun(ROW)])
+      mockApi?.setTaskStats([])
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      const before = [
+        `${ROW}Registered by worker-1; it has not run yet.`,
+        'jobs',
+        'Never run',
+        '0',
+        '',
+        '—',
+        '—',
+        'Never',
+      ]
+      // evaluateAll does not wait for the row: poll until the first snapshot is rendered
+      await expect.poll(() => cellsOf(page, ROW)).toEqual(before)
+
+      // From here on, record every state the row passes through
+      await page.evaluate((name) => {
+        const seen: (string | null)[][] = []
+        ;(window as unknown as { __rows: typeof seen }).__rows = seen
+        new MutationObserver(() => {
+          const row = [...document.querySelectorAll('tr')].find((tr) =>
+            tr.querySelector(`[title="${name}"]`),
+          )
+          if (row) seen.push([...row.querySelectorAll('td')].map((td) => td.textContent))
+        }).observe(document.body, { subtree: true, childList: true, characterData: true })
+      }, ROW)
+
+      mockApi?.setRegistry([active(ROW, 3, minutesAgo(1))])
+      mockApi?.setTaskStats([createTaskStats(ROW, 3, 1, [400, 500, 600])])
+      await page.clock.runFor(POLL_MS + 1000)
+
+      const after = [ROW, 'jobs', 'Active', '3', '33%', '500ms', '600ms', '1m ago']
+      await expect.poll(() => cellsOf(page, ROW)).toEqual(after)
+      // No intermediate state mixes the old and the new: each is wholly one or the other
+      const seen = await page.evaluate(
+        () => (window as unknown as { __rows: (string | null)[][] }).__rows,
+      )
+      for (const state of seen) expect([before, after]).toContainEqual(state)
+    })
+
+    test('a stats request that fails on a later poll empties the stats cells', async ({ page }) => {
+      mockApi?.setRegistry([active(ROW, 3, minutesAgo(1))])
+      mockApi?.setTaskStats([createTaskStats(ROW, 3, 1, [400, 500, 600])])
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      await expect(rowOf(page, ROW).getByRole('cell').nth(STATS_COLUMNS.runs)).toHaveText('3')
+
+      mockApi?.setTaskStats('error')
+      await page.clock.runFor(POLL_MS + 1000)
+      const cells = rowOf(page, ROW).getByRole('cell')
+      for (const column of ['runs', 'fail', 'p50', 'p95'] as const) {
+        await expect(cells.nth(STATS_COLUMNS[column])).toHaveText('')
+      }
+      await expect(cells.nth(2)).toHaveText('Active')
+      await expect(cells.nth(STATS_COLUMNS.last)).toHaveText('1m ago')
+    })
+
+    test('polls read the stored registry; only the first load asks Celery', async ({ page }) => {
+      const requests: string[] = []
+      page.on('request', (request) => {
+        const url = new URL(request.url())
+        if (url.pathname === '/api/tasks/registry') requests.push(url.search)
+      })
+      mockApi?.setRegistry(mixed())
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      await expect.poll(() => requests.length).toBe(2) // the page's, then the sidebar badge's
+      await page.clock.runFor(POLL_MS + 1000)
+      await expect.poll(() => requests.length).toBe(4) // the page's poll, the badge's poll
+      expect(requests.filter((search) => search === '')).toHaveLength(1)
+    })
   })
 
   test('stats join by exact name: a longer name never lends its numbers', async ({ page }) => {

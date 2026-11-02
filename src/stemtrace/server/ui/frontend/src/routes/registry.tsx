@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useState } from 'react'
-import { useTaskRegistry, useTaskStats } from '@/api/queries'
+import { useRegistryPage } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { RegistryStatus } from '@/components/registry/RegistryStatus'
 import { matchesQuery, noteOf } from '@/components/registry/registry'
@@ -33,11 +33,12 @@ function spanCell(statsKnown: boolean, ms: number | null | undefined): string {
 }
 
 function RegistryPage() {
-  const { data, isLoading, error } = useTaskRegistry()
-  const stats = useTaskStats(STATS_WITHIN)
+  const { data: page, isLoading, error } = useRegistryPage(STATS_WITHIN)
+  const data = page?.registry
+  const stats = page?.stats
   // Joined by exact name. While loading, or when the request fails, no cell shows a number.
-  const statsKnown = stats.data !== undefined
-  const statsByName = new Map(stats.data?.tasks.map((row) => [row.name, row]))
+  const statsKnown = stats != null
+  const statsByName = new Map(stats?.tasks.map((row) => [row.name, row]))
   const carried = useCarriedRange()
   const [query, setQuery] = useState('')
   const tasks = data?.tasks ?? []
