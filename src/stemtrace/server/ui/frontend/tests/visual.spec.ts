@@ -7,6 +7,7 @@ import {
   createFailedTask,
   createMockEvent,
   createSuccessTask,
+  createTaskStats,
   type MockRegisteredTask,
   type MockTask,
   type MockWorker,
@@ -302,7 +303,18 @@ function visualRegistry(): MockRegisteredTask[] {
     task('billing.tasks.sync_invoices_v2', 'billing', 'not_registered', 6, 10, []),
     task('emails.send_digest', 'emails', 'active', 31, 125, ['celery@worker-email-1']),
     task('emails.send_weekly_report', 'emails', 'never_run', 0, null, ['celery@worker-email-1']),
-    task('app.cleanup', 'ungrouped', 'active', 4, 60 * 5, ['celery@worker-billing-1']),
+    task('app.cleanup', 'ungrouped', 'active', 4, 60 * 7, ['celery@worker-billing-1']),
+  ]
+}
+
+/** The Registry's 6 h stats: one row loud, one with nothing in the window, one name with no row. */
+function visualRegistryStats() {
+  return [
+    createTaskStats('billing.invoices.send_receipt', 1204, 4, [90, 120, 180, 240, 900, 2400]),
+    createTaskStats('billing.payments.capture_payment', 86, 9, [800, 1200, 1500, 4100, 61_000]),
+    createTaskStats('billing.tasks.sync_invoices_v2', 6, 0, [300, 450, 520]),
+    createTaskStats('emails.send_digest', 31, 1, [2100, 3300, 9800, 125_000]),
+    createTaskStats('app.cleanup', 0, 0),
   ]
 }
 
@@ -312,6 +324,7 @@ for (const theme of ['light', 'dark'] as const) {
       await page.routeWebSocket(/\/ws$/, () => {})
       const api = await setupMockApi(page, { useDefaults: false })
       api.setRegistry(visualRegistry())
+      api.setTaskStats(visualRegistryStats())
       await snapshot(page, `registry-${theme}-${width}`, { theme, width, path: '/registry' })
     })
   }

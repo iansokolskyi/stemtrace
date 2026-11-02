@@ -26,6 +26,7 @@ import {
   type MockGroup,
   type MockRegisteredTask,
   type MockTask,
+  type MockTaskStats,
   type MockWorker,
 } from './mock-data'
 
@@ -101,6 +102,16 @@ export interface MockApiContext {
    * wants group rates says so. Every request's URL is kept in `statsRequests`.
    */
   setGroupStats: (byTaskGroup: Record<string, Record<string, number[]>> | null | 'error') => void
+
+  /**
+   * Replace the rows GET /stats/tasks answers with (see `createTaskStats`); 'error' answers 500.
+   * Starts empty: no row for any name, as for names with no records. Every request's URL is kept
+   * in `taskStatsRequests`.
+   */
+  setTaskStats: (rows: MockTaskStats[] | 'error') => void
+
+  /** The URLs requested from GET /stats/tasks, oldest first */
+  taskStatsRequests: URL[]
 
   /** The URLs requested from GET /stats/timeseries, oldest first */
   statsRequests: URL[]
@@ -187,6 +198,8 @@ export async function setupMockApi(
   let broker: string | null = null
   let groupStats: Record<string, Record<string, number[]>> | null | 'error' = null
   const statsRequests: URL[] = []
+  let taskStats: MockTaskStats[] | 'error' = []
+  const taskStatsRequests: URL[] = []
 
   const context: MockApiContext = {
     get tasks() {
@@ -250,6 +263,12 @@ export async function setupMockApi(
 
     statsRequests,
 
+    setTaskStats(rows) {
+      taskStats = rows
+    },
+
+    taskStatsRequests,
+
     async teardown() {
       await page.unrouteAll()
     },
@@ -304,6 +323,32 @@ export async function setupMockApi(
         websocket_connections: 0,
         node_count: tasks.length,
         broker,
+      }),
+    })
+  })
+
+  // Stats: GET /stats/tasks (the per-name rows only; no group rollups)
+  await page.route(new RegExp(`${apiPath}/stats/tasks`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    taskStatsRequests.push(new URL(route.request().url()))
+    if (taskStats === 'error') {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Internal Server Error' }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        window: { start: '2026-01-01T00:00:00Z', end: '2026-01-01T06:00:00Z' },
+        tasks: taskStats,
+        groups: [],
       }),
     })
   })

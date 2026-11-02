@@ -20,6 +20,7 @@ import {
   fetchHealth,
   fetchTask,
   fetchTaskRegistry,
+  fetchTaskStats,
   fetchTasks,
   fetchWorkers,
   type GraphListResponse,
@@ -30,6 +31,7 @@ import {
   type TaskGroupListResponse,
   type TaskListResponse,
   type TaskRegistryResponse,
+  type TaskStatsResponse,
   type WorkerListResponse,
 } from './client'
 import { groupFailureRates } from './groupStats'
@@ -176,6 +178,20 @@ export function useTaskRegistry() {
     queryFn: () => fetchTaskRegistry(),
     // Registry refreshes less frequently
     refetchInterval: isConnected ? false : 30000,
+  })
+}
+
+/**
+ * Run stats per task name over `within`, for the Registry's stats columns. Not retried: when it
+ * fails the page shows empty cells and the next 30 s poll tries again. The poll runs with the
+ * socket up too, because events do not invalidate it.
+ */
+export function useTaskStats(within: string) {
+  return useQuery<TaskStatsResponse>({
+    queryKey: ['stats', 'tasks', within],
+    queryFn: () => fetchTaskStats(within),
+    refetchInterval: 30_000,
+    retry: false,
   })
 }
 
