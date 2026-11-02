@@ -14,7 +14,7 @@ COPY src/stemtrace/server/ui/frontend/ ./
 RUN npm run build
 
 # Stage 2: Build a virtualenv with the locked dependencies and stemtrace itself
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
+FROM python:3.12.16-slim-trixie@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never \
@@ -38,7 +38,7 @@ COPY --from=frontend-builder /app/frontend/dist/ src/stemtrace/server/ui/fronten
 RUN uv sync --locked --no-build --no-editable && rm -f /opt/venv/.lock
 
 # Stage 3: Production image
-FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS production
+FROM python:3.12.16-slim-trixie@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07 AS production
 
 WORKDIR /app
 
