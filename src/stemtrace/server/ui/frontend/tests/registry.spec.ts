@@ -4,12 +4,13 @@ import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
   createRegistryEntry,
   createSuccessTask,
+  createTaskStats,
   type MockRegisteredTask,
 } from './fixtures/mock-data'
 import { columnHeaders, expectFilledWithToken } from './fixtures/table'
 
 /**
- * Tests for the Registry page: a table with task, group, status, runs and last run. Mocked API
+ * Tests for the Registry page: a table with task, group, status, 6 h stats and last run. Mocked API
  * responses, no Docker required; run with E2E_MODE=real for the Docker stack.
  */
 
@@ -52,6 +53,15 @@ const rowOf = (page: Page, name: string) =>
     .getByRole('row')
     .filter({ has: page.locator(`[title="${name}"]`) })
 
+/**
+ * Stats for the mixed registry's `app.jobs.add`: 12 runs in the window, 2 failed, 12 runtime
+ * samples. Nearest rank: p50 is the 6th sample (1.2 s), p95 the 12th (125 s).
+ */
+const ADD_RUNTIMES = [100, 200, 300, 400, 500, 1200, 1300, 1400, 2000, 3000, 45_000, 125_000]
+const addStats = () => createTaskStats('app.jobs.add', 12, 2, ADD_RUNTIMES)
+
+const STATS_COLUMNS = { runs: 3, fail: 4, p50: 5, p95: 6, last: 7 } as const
+
 /** A mixed registry: active, never run, and not registered. */
 function mixed(): MockRegisteredTask[] {
   return [
@@ -90,8 +100,11 @@ test.describe('Registry page', () => {
     await expect(page.getByText('1 task name known to workers or seen on the broker')).toBeVisible()
   })
 
-  test('lists one row per task with name, group, status, runs and last run', async ({ page }) => {
+  test('lists one row per task with name, group, status, 6 h stats and last run', async ({
+    page,
+  }) => {
     mockApi?.setRegistry(mixed())
+    mockApi?.setTaskStats([addStats(), createTaskStats('app.jobs.old_sync', 3, 0, [250])])
     await loadRegistryPage(page, () => page.goto('/registry'))
     if (isRealMode) {
       // Real Docker mode: the backend's tasks, never the empty state
@@ -105,7 +118,10 @@ test.describe('Registry page', () => {
       'Task',
       'Group',
       'Status',
-      'Runs',
+      'Runs (6 h)',
+      'Fail %',
+      'p50',
+      'p95',
       'Last run',
     ])
 
@@ -113,18 +129,194 @@ test.describe('Registry page', () => {
     await expect(add.nth(0)).toHaveText('app.jobs.add')
     await expect(add.nth(1)).toHaveText('jobs')
     await expect(add.nth(2)).toHaveText('Active')
-    await expect(add.nth(3)).toHaveText('1,204')
-    await expect(add.nth(4)).toHaveText('2m ago')
-
-    const report = rowOf(page, 'app.jobs.report').getByRole('cell')
-    await expect(report.nth(2)).toHaveText('Never run')
-    await expect(report.nth(3)).toHaveText('0')
-    await expect(report.nth(4)).toHaveText('Never')
+    await expect(add.nth(STATS_COLUMNS.runs)).toHaveText('12')
+    await expect(add.nth(STATS_COLUMNS.fail)).toHaveText('17%')
+    await expect(add.nth(STATS_COLUMNS.p50)).toHaveText('1.2s')
+    await expect(add.nth(STATS_COLUMNS.p95)).toHaveText('2m 5s')
+    // Last run is the registry's own: the lifetime count (1,204) is not what Runs shows
+    await expect(add.nth(STATS_COLUMNS.last)).toHaveText('2m ago')
 
     const old = rowOf(page, 'app.jobs.old_sync').getByRole('cell')
     await expect(old.nth(2)).toHaveText('Not registered')
-    await expect(old.nth(3)).toHaveText('3')
-    await expect(old.nth(4)).toHaveText('10m ago')
+    await expect(old.nth(STATS_COLUMNS.runs)).toHaveText('3')
+    await expect(old.nth(STATS_COLUMNS.fail)).toHaveText('0%')
+    await expect(old.nth(STATS_COLUMNS.p50)).toHaveText('250ms')
+    await expect(old.nth(STATS_COLUMNS.p95)).toHaveText('250ms')
+    await expect(old.nth(STATS_COLUMNS.last)).toHaveText('10m ago')
+  })
+
+  test('the stats request asks for the last 6 hours, once', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry(mixed())
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    await expect.poll(() => mockApi?.taskStatsRequests.length).toBe(1)
+    expect(mockApi?.taskStatsRequests[0].search).toBe('?within=6h')
+  })
+
+  test('a name with no runs in the window shows 0, no rate and dashes, keeping its last run', async ({
+    page,
+  }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry([active('app.jobs.add', 40, minutesAgo(420)), neverRun('app.jobs.report')])
+    // The server's row for a name whose runs are all older than the 6 h window: 0 runs, last run 7 h ago
+    mockApi?.setTaskStats([createTaskStats('app.jobs.add', 0, 0)])
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    for (const name of ['app.jobs.add', 'app.jobs.report']) {
+      const cells = rowOf(page, name).getByRole('cell')
+      await expect(cells.nth(STATS_COLUMNS.runs)).toHaveText('0')
+      await expect(cells.nth(STATS_COLUMNS.fail)).toHaveText('')
+      await expect(cells.nth(STATS_COLUMNS.p50)).toHaveText('—')
+      await expect(cells.nth(STATS_COLUMNS.p95)).toHaveText('—')
+    }
+    await expect(rowOf(page, 'app.jobs.add').getByRole('cell').nth(STATS_COLUMNS.last)).toHaveText(
+      '7h ago',
+    )
+    await expect(
+      rowOf(page, 'app.jobs.report').getByRole('cell').nth(STATS_COLUMNS.last),
+    ).toHaveText('Never')
+  })
+
+  test.describe('refresh with the socket connected', () => {
+    test.skip(isRealMode, 'Mock-only test')
+
+    const POLL_MS = 30_000
+    const ROW = 'app.jobs.report'
+
+    /** The row's cells as text: Task (with its note), Group, Status, Runs, Fail %, p50, p95, Last run. */
+    const cellsOf = (page: Page, name: string) =>
+      rowOf(page, name)
+        .getByRole('cell')
+        .evaluateAll((cells) => cells.map((cell) => cell.textContent))
+
+    test.beforeEach(async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      await page.clock.install()
+    })
+
+    test('a task that starts running changes status, note, runs and last run in one step', async ({
+      page,
+    }) => {
+      mockApi?.setRegistry([neverRun(ROW)])
+      mockApi?.setTaskStats([])
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      const before = [
+        `${ROW}Registered by worker-1; it has not run yet.`,
+        'jobs',
+        'Never run',
+        '0',
+        '',
+        '—',
+        '—',
+        'Never',
+      ]
+      // evaluateAll does not wait for the row: poll until the first snapshot is rendered
+      await expect.poll(() => cellsOf(page, ROW)).toEqual(before)
+
+      // From here on, record every state the row passes through
+      await page.evaluate((name) => {
+        const seen: (string | null)[][] = []
+        ;(window as unknown as { __rows: typeof seen }).__rows = seen
+        new MutationObserver(() => {
+          const row = [...document.querySelectorAll('tr')].find((tr) =>
+            tr.querySelector(`[title="${name}"]`),
+          )
+          if (row) seen.push([...row.querySelectorAll('td')].map((td) => td.textContent))
+        }).observe(document.body, { subtree: true, childList: true, characterData: true })
+      }, ROW)
+
+      mockApi?.setRegistry([active(ROW, 3, minutesAgo(1))])
+      mockApi?.setTaskStats([createTaskStats(ROW, 3, 1, [400, 500, 600])])
+      await page.clock.runFor(POLL_MS + 1000)
+
+      const after = [ROW, 'jobs', 'Active', '3', '33%', '500ms', '600ms', '1m ago']
+      await expect.poll(() => cellsOf(page, ROW)).toEqual(after)
+      // No intermediate state mixes the old and the new: each is wholly one or the other
+      const seen = await page.evaluate(
+        () => (window as unknown as { __rows: (string | null)[][] }).__rows,
+      )
+      for (const state of seen) expect([before, after]).toContainEqual(state)
+    })
+
+    test('a stats request that fails on a later poll empties the stats cells', async ({ page }) => {
+      mockApi?.setRegistry([active(ROW, 3, minutesAgo(1))])
+      mockApi?.setTaskStats([createTaskStats(ROW, 3, 1, [400, 500, 600])])
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      await expect(rowOf(page, ROW).getByRole('cell').nth(STATS_COLUMNS.runs)).toHaveText('3')
+
+      mockApi?.setTaskStats('error')
+      await page.clock.runFor(POLL_MS + 1000)
+      const cells = rowOf(page, ROW).getByRole('cell')
+      for (const column of ['runs', 'fail', 'p50', 'p95'] as const) {
+        await expect(cells.nth(STATS_COLUMNS[column])).toHaveText('')
+      }
+      await expect(cells.nth(2)).toHaveText('Active')
+      await expect(cells.nth(STATS_COLUMNS.last)).toHaveText('1m ago')
+    })
+
+    test('polls read the stored registry; only the first load asks Celery', async ({ page }) => {
+      const requests: string[] = []
+      page.on('request', (request) => {
+        const url = new URL(request.url())
+        if (url.pathname === '/api/tasks/registry') requests.push(url.search)
+      })
+      mockApi?.setRegistry(mixed())
+      await loadRegistryPage(page, () => page.goto('/registry'))
+      await expect.poll(() => requests.length).toBe(2) // the page's, then the sidebar badge's
+      await page.clock.runFor(POLL_MS + 1000)
+      await expect.poll(() => requests.length).toBe(4) // the page's poll, the badge's poll
+      expect(requests.filter((search) => search === '')).toHaveLength(1)
+    })
+  })
+
+  test('stats join by exact name: a longer name never lends its numbers', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry([active('app.add'), active('app.add_numbers')])
+    mockApi?.setTaskStats([createTaskStats('app.add_numbers', 9, 3, [500])])
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    await expect(
+      rowOf(page, 'app.add_numbers').getByRole('cell').nth(STATS_COLUMNS.runs),
+    ).toHaveText('9')
+    await expect(rowOf(page, 'app.add').getByRole('cell').nth(STATS_COLUMNS.runs)).toHaveText('0')
+  })
+
+  test('a failure rate above 1% is bold and in the failure colour; 1% and under is not', async ({
+    page,
+  }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry([active('a.high'), active('a.edge'), active('a.none')])
+    mockApi?.setTaskStats([
+      createTaskStats('a.high', 100, 2, [10]),
+      createTaskStats('a.edge', 100, 1, [10]),
+      createTaskStats('a.none', 100, 0, [10]),
+    ])
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    const fail = (name: string) => rowOf(page, name).getByRole('cell').nth(STATS_COLUMNS.fail)
+    await expect(fail('a.high')).toHaveText('2.0%')
+    await expect(fail('a.high')).toHaveCSS('font-weight', '700')
+    await expect(fail('a.edge')).toHaveText('1.0%')
+    await expect(fail('a.edge')).not.toHaveCSS('font-weight', '700')
+    await expect(fail('a.none')).toHaveText('0%')
+    await expect(fail('a.none')).not.toHaveCSS('font-weight', '700')
+  })
+
+  test('when the stats request fails the table still shows, with empty stats cells', async ({
+    page,
+  }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry(mixed())
+    mockApi?.setTaskStats('error')
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    await expect.poll(() => mockApi?.taskStatsRequests.length).toBe(1)
+    await expect(page.getByText('Failed to load task registry')).toHaveCount(0)
+    expect(await table(page).getByRole('row').count()).toBe(4)
+    const add = rowOf(page, 'app.jobs.add').getByRole('cell')
+    await expect(add.nth(2)).toHaveText('Active')
+    for (const column of ['runs', 'fail', 'p50', 'p95'] as const) {
+      await expect(add.nth(STATS_COLUMNS[column])).toHaveText('')
+    }
+    await expect(add.nth(STATS_COLUMNS.last)).toHaveText('2m ago')
+    // No made-up zero for a name whose stats are unknown
+    await expect(table(page).getByText('0', { exact: true })).toHaveCount(0)
   })
 
   test('a task name shows its module muted and the task in semibold, full name on hover', async ({
@@ -230,15 +422,13 @@ test.describe('Registry page', () => {
     )
   })
 
-  test('shows no column for what the API does not send', async ({ page }) => {
+  test('shows no Queue column: the registry API does not send a queue per name', async ({
+    page,
+  }) => {
     test.skip(isRealMode, 'Mock-only test')
     mockApi?.setRegistry(mixed())
     await loadRegistryPage(page, () => page.goto('/registry'))
-    for (const absent of ['Queue', 'Fail %', 'p50', 'p95', 'Runs (6 h)']) {
-      await expect(table(page).getByRole('columnheader', { name: absent })).toHaveCount(0)
-    }
-    // No placeholder dash stands in for them either
-    await expect(table(page).getByText('—')).toHaveCount(0)
+    await expect(table(page).getByRole('columnheader', { name: 'Queue' })).toHaveCount(0)
   })
 
   test('the Group column appears only when the server sends groups', async ({ page }) => {

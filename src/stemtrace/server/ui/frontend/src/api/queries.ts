@@ -5,7 +5,12 @@
  * When WS is connected, real-time updates come via WS invalidation.
  */
 
-import { type InfiniteData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import {
+  type InfiniteData,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
 import {
   type ExecutionListResponse,
@@ -20,6 +25,7 @@ import {
   fetchHealth,
   fetchTask,
   fetchTaskRegistry,
+  fetchTaskStats,
   fetchTasks,
   fetchWorkers,
   type GraphListResponse,
@@ -30,6 +36,7 @@ import {
   type TaskGroupListResponse,
   type TaskListResponse,
   type TaskRegistryResponse,
+  type TaskStatsResponse,
   type WorkerListResponse,
 } from './client'
 import { groupFailureRates } from './groupStats'
@@ -167,15 +174,36 @@ export function useHealth() {
   })
 }
 
-/** Every task name, refreshed from Celery; the Registry page filters it in the browser. */
-export function useTaskRegistry() {
-  const { isConnected } = useWebSocketContext()
+/** What the Registry page shows: the registry and the stats read together, so a row never mixes two moments. */
+export interface RegistryPageData {
+  registry: TaskRegistryResponse
+  /** Null when the stats request failed in this snapshot: the stats cells stay empty. */
+  stats: TaskStatsResponse | null
+}
 
-  return useQuery<TaskRegistryResponse>({
-    queryKey: ['taskRegistry'],
-    queryFn: () => fetchTaskRegistry(),
-    // Registry refreshes less frequently
-    refetchInterval: isConnected ? false : 30000,
+const REGISTRY_POLL_MS = 30_000
+
+/**
+ * The registry and its `within` stats in one query, one interval, so every row comes from one
+ * snapshot. The first load asks Celery (inspect); polls read the stored state (`refresh=false`),
+ * because inspect blocks while the broker is slow. The poll runs with the socket up too: events
+ * do not invalidate this query. A failed stats request does not fail the page.
+ */
+export function useRegistryPage(within: string) {
+  const queryClient = useQueryClient()
+  const queryKey = ['registryPage', within]
+
+  return useQuery<RegistryPageData>({
+    queryKey,
+    queryFn: async () => {
+      const refresh = queryClient.getQueryData(queryKey) === undefined
+      const [registry, stats] = await Promise.all([
+        fetchTaskRegistry(undefined, undefined, { refresh }),
+        fetchTaskStats(within).catch(() => null),
+      ])
+      return { registry, stats }
+    },
+    refetchInterval: REGISTRY_POLL_MS,
   })
 }
 

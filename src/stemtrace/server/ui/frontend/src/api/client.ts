@@ -479,6 +479,28 @@ export async function fetchGroups(): Promise<TaskGroupListResponse> {
   return apiFetch(`${API_BASE}/groups`, 'Failed to fetch groups')
 }
 
+/** One task name's numbers from `GET /api/stats/tasks` (the fields the Registry reads). */
+export interface TaskStats {
+  name: string
+  runs: number
+  failures: number
+  /** Null with no runs in the window. */
+  failure_rate: number | null
+  /** Null with no runtime samples in the window. */
+  p50_ms: number | null
+  p95_ms: number | null
+}
+
+export interface TaskStatsResponse {
+  tasks: TaskStats[]
+}
+
+/** Per-name run stats over `within` (`6h`); a name with any record has a row, with zero runs if none are in the window. */
+export async function fetchTaskStats(within: string): Promise<TaskStatsResponse> {
+  const searchParams = new URLSearchParams({ within })
+  return apiFetch(`${API_BASE}/stats/tasks?${searchParams}`, 'Failed to fetch task stats')
+}
+
 /** `GET /api/stats/timeseries?group_by=task_group`: only the per-group counts are read. */
 export interface GroupTimeseriesResponse {
   /** Group name -> state -> runs per bucket; null when the server ignored `group_by`. */

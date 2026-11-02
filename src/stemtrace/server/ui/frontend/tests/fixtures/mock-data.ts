@@ -566,3 +566,37 @@ export function createRegistryEntry(name: string, executionCount = 1): MockRegis
     status: 'active',
   }
 }
+
+/** One row of GET /stats/tasks, the fields the Registry reads (the server's TaskStatsResponse). */
+export interface MockTaskStats {
+  name: string
+  runs: number
+  failures: number
+  failure_rate: number | null
+  p50_ms: number | null
+  p95_ms: number | null
+}
+
+/**
+ * A stats row built the way the server does: the rate is failures / runs, and null with no runs;
+ * percentiles are null with no runtime samples. `runtimes` are the sampled runs' runtimes in ms
+ * (nearest rank: the value at ceil(p * n) in the sorted samples).
+ */
+export function createTaskStats(
+  name: string,
+  runs: number,
+  failures: number,
+  runtimes: number[] = [],
+): MockTaskStats {
+  const sorted = [...runtimes].sort((a, b) => a - b)
+  const rank = (p: number): number | null =>
+    sorted.length === 0 ? null : sorted[Math.ceil(p * sorted.length) - 1]
+  return {
+    name,
+    runs,
+    failures,
+    failure_rate: runs === 0 ? null : failures / runs,
+    p50_ms: rank(0.5),
+    p95_ms: rank(0.95),
+  }
+}
