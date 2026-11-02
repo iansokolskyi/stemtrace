@@ -619,3 +619,26 @@ def test_ingesting_events_never_rescans_a_nodes_events(
     assert "latest" not in calls
     assert calls.count("precedence") <= 2 * count
     assert _records(store)["t"].state_host == "w@h"
+
+
+def test_record_state_since_is_the_state_events_not_the_last_events() -> None:
+    """IGNORED loses to FAILURE yet sorts last: ``last_updated`` is its time."""
+    record = _record_of(
+        _run_event(TaskState.FAILURE, 5, hostname="w1@a"),
+        _run_event(TaskState.IGNORED, 10, hostname="w2@b"),
+    )
+
+    assert record.last_updated == T0 + timedelta(seconds=10)
+    assert record.state_since == T0 + timedelta(seconds=5)
+    assert record.state_host == "w1@a"
+
+
+def test_captures_include_runs_with_replacement_progress() -> None:
+    """The differential is not vacuous for rule (a): some capture has a replacement."""
+    found = 0
+    for flow in _CAPTURES:
+        store = GraphStore()
+        for event in _shuffled(flow, seed=0):
+            store.add_event(event)
+        found += sum(r.replaced_progress is not None for r in store.run_records())
+    assert found > 0
