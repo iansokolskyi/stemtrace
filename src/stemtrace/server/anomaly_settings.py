@@ -83,11 +83,10 @@ def configured_anomaly_settings(
 ) -> AnomalySettings:
     """As ``anomaly_settings``, but a missing or blank argument reads its env var.
 
-    The variables are ``STEMTRACE_ANOMALY_STUCK_FACTOR``, ``_FLOOR``,
-    ``_CEILING`` and ``_MIN_SAMPLES``, ``STEMTRACE_ANOMALY_PENDING_GRACE`` and
+    The variables are ``STEMTRACE_ANOMALY_STUCK_*`` (``FACTOR``, ``FLOOR``,
+    ``CEILING``, ``MIN_SAMPLES``), ``STEMTRACE_ANOMALY_PENDING_GRACE`` and
     ``STEMTRACE_ANOMALY_REGISTRY_WINDOW``; a blank one counts as unset.
-    ``argument_labels`` renames the six arguments in error messages (the CLI
-    passes its flags).
+    ``argument_labels`` renames the arguments in error messages (the CLI flags).
 
     Raises:
         ConfigurationError: As ``anomaly_settings``; the message names the

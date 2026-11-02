@@ -39,6 +39,7 @@ def _group_config_option(groups: str | None) -> "GroupConfig":
 
 
 def _anomaly_settings_option(
+    *,
     factor: str | None,
     floor: str | None,
     ceiling: str | None,
@@ -330,12 +331,12 @@ def server(
     group_config = _group_config_option(groups)
     effective_api_key = _api_key_option(api_key)
     stuck = _anomaly_settings_option(
-        anomaly_stuck_factor,
-        anomaly_stuck_floor,
-        anomaly_stuck_ceiling,
-        anomaly_stuck_min_samples,
-        anomaly_pending_grace,
-        anomaly_registry_window,
+        factor=anomaly_stuck_factor,
+        floor=anomaly_stuck_floor,
+        ceiling=anomaly_stuck_ceiling,
+        min_samples=anomaly_stuck_min_samples,
+        grace=anomaly_pending_grace,
+        window=anomaly_registry_window,
     )
 
     form_auth_config: FormAuthConfig | None = None

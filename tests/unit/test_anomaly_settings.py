@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import uvicorn
@@ -38,6 +37,9 @@ from stemtrace.server.fastapi import extension as extension_module
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.ui import static
 from tests.unit.anomaly_pipeline import at, completed_runs, task_event
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ALL_ENV = [
     FACTOR_ENV_VAR,
