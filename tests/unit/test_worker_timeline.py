@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from stemtrace.core.events import WorkerEvent, WorkerEventType
+from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import EventConsumer
 from stemtrace.server.store import (
     WORKER_TIMELINE_EVENTS_PER_NODE,
@@ -224,3 +225,85 @@ def test_snapshot_returns_copy_that_later_writes_do_not_change() -> None:
 
 def test_events_for_unknown_nodename_returns_empty_list() -> None:
     assert WorkerTimeline().events_for("nobody@nowhere") == []
+
+
+def _naive_event(
+    event_type: WorkerEventType, *, hostname: str = "celery@w1", seconds: float = 0
+) -> WorkerEvent:
+    return WorkerEvent(
+        event_type=event_type,
+        hostname=hostname,
+        pid=100,
+        timestamp=(T0 + timedelta(seconds=seconds)).replace(tzinfo=None),
+    )
+
+
+def test_record_naive_and_aware_timestamps_on_one_node_both_kept_as_utc() -> None:
+    timeline = WorkerTimeline()
+    timeline.record(_event(READY, seconds=10))
+    timeline.record(_naive_event(SHUTDOWN, seconds=20))
+
+    assert timeline.events_for("celery@w1") == [
+        WorkerTimelineEntry(T0 + timedelta(seconds=10), READY, 100),
+        WorkerTimelineEntry(T0 + timedelta(seconds=20), SHUTDOWN, 100),
+    ]
+
+
+def test_record_node_bound_holds_when_a_naive_node_is_present() -> None:
+    timeline = WorkerTimeline(max_nodes=2)
+    timeline.record(_event(hostname="a", seconds=10))
+    timeline.record(_naive_event(READY, hostname="b", seconds=20))
+    timeline.record(_event(hostname="c", seconds=30))
+    timeline.record(_event(hostname="d", seconds=40))
+
+    assert sorted(timeline.snapshot()) == ["c", "d"]
+
+
+def test_consumer_naive_shutdown_after_aware_ready_still_marks_worker_offline() -> None:
+    registry = WorkerRegistry()
+    consumer = _consumer(WorkerTimeline(), registry)
+    consumer._handle_event(_event(READY, seconds=10))
+    consumer._handle_event(_naive_event(SHUTDOWN, seconds=20))
+
+    assert [w.status for w in registry.get_all_workers()] == [WorkerStatus.OFFLINE]
+
+
+class _FailingTimeline(WorkerTimeline):
+    def record(self, event: WorkerEvent) -> None:
+        raise RuntimeError("timeline failure")
+
+
+def test_consumer_failing_timeline_still_updates_registry() -> None:
+    registry = WorkerRegistry()
+    consumer = _consumer(_FailingTimeline(), registry)
+
+    consumer._handle_event(_event(READY, seconds=10))
+    consumer._handle_event(_event(SHUTDOWN, seconds=20))
+
+    assert [w.status for w in registry.get_all_workers()] == [WorkerStatus.OFFLINE]
+
+
+def test_record_eviction_judges_node_by_newest_event_not_oldest() -> None:
+    timeline = WorkerTimeline(max_nodes=2)
+    timeline.record(_event(hostname="long", seconds=1))
+    timeline.record(_event(hostname="long", seconds=100, pid=2))
+    timeline.record(_event(hostname="mid", seconds=50))
+
+    timeline.record(_event(hostname="new", seconds=200))
+
+    assert sorted(timeline.snapshot()) == ["long", "new"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "name"),
+    [
+        ({"max_events_per_node": 0}, "max_events_per_node"),
+        ({"max_nodes": 0}, "max_nodes"),
+        ({"max_events_per_node": -1}, "max_events_per_node"),
+    ],
+)
+def test_init_bound_below_one_raises_value_error(
+    kwargs: dict[str, int], name: str
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        WorkerTimeline(**kwargs)

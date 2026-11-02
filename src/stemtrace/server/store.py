@@ -232,7 +232,13 @@ class WorkerTimeline:
         max_events_per_node: int = WORKER_TIMELINE_EVENTS_PER_NODE,
         max_nodes: int = WORKER_TIMELINE_MAX_NODES,
     ) -> None:
-        """Initialize an empty timeline with the given bounds."""
+        """Initialize an empty timeline with the given bounds.
+
+        Raises:
+            ValueError: If either bound is below 1.
+        """
+        if max_events_per_node < 1 or max_nodes < 1:
+            raise ValueError("max_events_per_node and max_nodes must be at least 1")
         self._max_events_per_node = max_events_per_node
         self._max_nodes = max_nodes
         # Nodename -> entries sorted ascending by (timestamp, type, pid), no
@@ -244,13 +250,17 @@ class WorkerTimeline:
 
     def record(self, event: WorkerEvent) -> None:
         """Add a worker event (any type) to its nodename's timeline."""
-        entry = WorkerTimelineEntry(event.timestamp, event.event_type, event.pid)
+        # A naive timestamp (older worker) can't be compared with aware ones.
+        entry = WorkerTimelineEntry(
+            ensure_tz_aware(event.timestamp), event.event_type, event.pid
+        )
         with self._lock:
-            entries = self._by_node.setdefault(event.hostname, [])
+            entries = self._by_node.get(event.hostname, [])
             index = bisect.bisect_left(entries, entry)
             if index == len(entries) or entries[index] != entry:
                 entries.insert(index, entry)
                 del entries[: -self._max_events_per_node]
+            self._by_node[event.hostname] = entries
             if len(self._by_node) > self._max_nodes:
                 self._evict_oldest_node()
 

@@ -220,9 +220,10 @@ class EventConsumer:
     def _process_event(self, event: TaskEvent | WorkerEvent) -> None:
         """Route event to appropriate handler based on type."""
         if isinstance(event, WorkerEvent):
+            self._handle_worker_event(event)
+            # After the registry update: a timeline failure must not skip it.
             if self._worker_timeline is not None:
                 self._worker_timeline.record(event)
-            self._handle_worker_event(event)
         else:
             self._store.add_event(event)
             logger.debug("Consumed task event: %s (%s)", event.task_id, event.state)
