@@ -116,7 +116,7 @@ class AnomalyEvaluator:
     async def evaluate(self) -> Evaluation:
         """Copy the facts under their locks, then classify them off both and the loop."""
         now = params.utcnow()
-        # Two copies under two locks, microseconds apart: a worker event that
+        # Copies under three locks, microseconds apart: a worker event that
         # lands between them only adds evidence, which the next poll sees.
         records = self._store.run_records()
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}

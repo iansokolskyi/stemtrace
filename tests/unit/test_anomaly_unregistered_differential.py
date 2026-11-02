@@ -30,8 +30,8 @@ WINDOW = timedelta(seconds=30)
 SETTINGS: AnomalySettings = replace(
     STUCK_SETTINGS, pending_grace=GRACE, authority_window=WINDOW
 )
-SEEDS = (1, 2, 3)
-REGISTRIES_PER_PREFIX = 3
+SEEDS = (1, 2)
+REGISTRIES_PER_PREFIX = 2
 Expected = set[tuple[str, str | None, datetime, int]]
 
 

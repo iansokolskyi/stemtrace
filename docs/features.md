@@ -308,7 +308,7 @@ never has one.
 - Each request judges all the tasks the server holds, in a worker thread, so it adds work to
   `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks (3,000 of them PENDING) on a 2-vCPU host,
   it added a median of 36 to 51 ms to the p95 of `GET /api/tasks` and `GET /api/graphs` (the
-  worst of 54 runs added 105 ms).
+  worst of 44 runs added 105 ms).
 
 ### Stuck
 

@@ -1,7 +1,8 @@
 """Unregistered end to end: a real consumer, store, registry and refresher.
 
-The only fake is the Celery ``Inspect`` the refresher builds (the one thing
-that needs a live broker and workers) and the transport that hands events over.
+The fakes are the Celery ``Inspect`` the refresher builds (the one thing that
+needs a live broker and workers) and the transport that hands events over; one
+test stops a worker through the registry, as the consumer does.
 Celery 5.6.3 ``Inspect.stats()`` and ``registered()`` return ``{nodename: ...}``
 or None when nothing answers.
 """
@@ -116,6 +117,27 @@ def _run_extension(
     ]
     with fed(consumer, stream):
         return _items(_extension_client(extension))
+
+
+def test_route_after_a_restart_without_replay_flags_nothing_until_inspect_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Row 26: RabbitMQ doesn't replay worker_ready, so the registry starts empty.
+    extension = StemtraceExtension(broker_url=BROKER, serve_ui=False)
+    consumer = extension.consumer
+    assert consumer is not None
+    monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: None)
+
+    with fed(consumer, [waiting("a", "app.missing")]):
+        before = _items(_extension_client(extension))
+        answered = _Inspect(
+            stats={NODE: {"pid": 11}}, registered={NODE: ["app.known"]}, ping=None
+        )
+        monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: answered)
+        after = _items(_extension_client(extension))
+
+    assert before == []
+    assert after == [("unregistered", "app.missing", 1)]
 
 
 def test_route_flags_a_name_no_online_worker_registers_after_a_complete_inspect_reply(
