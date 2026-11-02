@@ -2229,6 +2229,7 @@ class TestApiRouteTable:
             "/api/overview",
             "/api/stats/timeseries",
             "/api/failures",
+            "/api/stats/tasks",
             "/api/workers",
             "/api/workers/{hostname}",
         ]
