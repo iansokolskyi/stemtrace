@@ -289,20 +289,19 @@ never has one.
 
 - `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
   `since` first, then by task ID, then by name (an item without a task ID or a name comes
-  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`; any other
-  value is a `422`. `hostname` and `name` match exactly, so an item without a hostname or
+  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`, which the
+  server doesn't report, so its count is 0; any other value is a `422`. `hostname` and `name` match exactly, so an item without a hostname or
   name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
   for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
   `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
   is the time the server judged at, and every `since` is in UTC.
 - Stuck and interrupted are one item per task. Unregistered is one item per task name, with
-  `task_id` `null`, `task_count` and the oldest waiting `since`. `no_workers_online` is one
-  item for the whole fleet, with `task_id` and `name` `null`. `counts` counts items, so a name
-  with 40 waiting tasks counts once.
+  `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
+  name with 40 waiting tasks counts once.
 - `anomaly` (`stuck`, `interrupted` or `unregistered`, else `null`) is on each task in
   `GET /api/tasks`, on the task and its children in `GET /api/tasks/{id}` and
   `GET /api/tasks/{id}/children`, and on each node in `GET /api/graphs` and
-  `GET /api/graphs/{root_id}`. It is never `no_workers_online`. `anomaly_detail` on
+  `GET /api/graphs/{root_id}`. `anomaly_detail` on
   `GET /api/tasks/{id}` has the same fields as a list item; for an unregistered task it is the
   item of the task's name.
 - Each request judges all the tasks the server holds, in a worker thread, so it adds work to
@@ -348,7 +347,8 @@ registered. A task a worker received is RECEIVED, so it never counts, and neithe
 process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
 or a newer `worker_ready` from the same nodename replaces it, and again after its own next
 `worker_ready`. A worker that missed one `inspect` call, or that has been silent for more than
-3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. A name that only a stopped worker registered is unregistered, and a new
+3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. 
+A name that only a stopped worker registered is unregistered, and a new
 worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
 oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
 
@@ -365,28 +365,9 @@ trusted when either of these holds:
 When neither holds, no task is reported unregistered. That includes a server restarted after
 its workers (the registry is empty until a worker answers) and a server with a broker URL
 whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
-never fires.**
-
-### No workers online
-
-When some task has waited past `grace` and no worker is online, the server reports one
-`no_workers_online` item instead of any per-name item, and no task gets `anomaly`
-`unregistered`. The item's `task_count` is all the tasks past `grace` and `since` the oldest.
-With no task past `grace`, nothing is reported (the Workers page already shows the fleet).
-
-No worker is online when every worker is stopped (or the 30-minute cleanup removed them), or
-when silence counts as evidence and no live worker was seen within the last 3 minutes. Silence
-counts only when an `inspect` `stats()` call completed within `authority_window`: it returned
-without a transport error, even with no reply, so the server could reach the broker and heard no
-worker. Without a broker URL, or while `inspect` can't reach the broker, silence proves nothing:
-an idle fleet, whose workers send no events, isn't reported, and a worker killed without a
-shutdown event stays live until the cleanup removes it. The item needs no trusted registry. It
-stays for the whole outage, including after the cleanup, and needs the server to have seen a
-worker since it started, through a worker event or any task event: a server restarted while the
-whole fleet is already down reports nothing. A task event from a worker the server doesn't know
-yet (no `worker_ready` or `inspect` reply seen) makes that worker count as live and online for
-this item, so a busy worker never looks like an offline fleet. It adds no task names, and it
-doesn't appear on the Workers page.
+never fires.** While every worker is stopped, the same rules apply: a worker killed without a
+shutdown event keeps its names until the 30-minute cleanup, and after the cleanup the registry
+is empty, so nothing fires until a worker answers.
 
 ### Settings
 
@@ -438,15 +419,6 @@ and `stemtrace server` do.
 - **A broker URL needs a working inspect.** The server reports no unregistered task while it
   can't inspect the workers (see [Unregistered](#unregistered)). The same holds after a restart
   until a worker answers.
-- **A restart during an outage shows nothing.** A server started while the whole fleet is down
-  has seen no worker, so it doesn't report `no_workers_online`.
-- **A killed fleet is found late without `inspect`.** After a SIGKILL there is no shutdown
-  event. With no broker URL, or while `inspect` can't reach the broker, the server reports no
-  `no_workers_online` item until the 30-minute cleanup removes the workers. A clean shutdown of
-  every worker is reported at once.
-- **A busy fleet can look offline.** With a broker URL, a fleet made only of busy solo-pool
-  workers (each running one task for more than 3 minutes, so none answers `inspect` or sends
-  events) gives a `no_workers_online` item while it is alive.
 - **A killed worker's names count for up to 30 minutes.** After a SIGKILL there is no shutdown
   event, so a name only that worker registered is reported unregistered up to 30 minutes late.
 - **Two machines, one nodename.** Workers that share a nodename can make the server flag a

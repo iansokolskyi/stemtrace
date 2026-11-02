@@ -61,13 +61,6 @@ def reference(
             waiting.append((task_id, name, state.timestamp))
     if not waiting:
         return set(), set()
-    heard = registry.inspect_completed_at
-    silence_is_evidence = heard is not None and (now - heard) <= WINDOW
-    online = registry.any_online if silence_is_evidence else registry.any_live
-    if registry.any_seen and not online:
-        return {
-            ("no_workers_online", None, min(w[2] for w in waiting), len(waiting))
-        }, set()
     if not trusted:
         return set(), set()
     unknown = [w for w in waiting if w[1] not in registry.live_names]
@@ -89,24 +82,10 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
             None,
         ]
     )
-    online = rng.random() < 0.7
-    live = online or bool(registered) or rng.random() < 0.5
-    completed = rng.choice(
-        [
-            now - WINDOW,
-            now - WINDOW - timedelta(seconds=0.001),
-            now - WINDOW + timedelta(seconds=0.001),
-            None,
-        ]
-    )
     return RegistryFacts(
         live_names=registered,
-        any_online=online,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
-        any_seen=live or rng.random() < 0.5,
-        any_live=live,
-        inspect_completed_at=completed,
     )
 
 
@@ -188,4 +167,4 @@ def test_the_sample_reaches_every_outcome_of_the_rule() -> None:
             if not items and any(r.state == TaskState.PENDING for r in records):
                 seen.add("pending-but-quiet")
 
-    assert seen == {"unregistered", "no_workers_online", "pending-but-quiet"}
+    assert seen == {"unregistered", "pending-but-quiet"}

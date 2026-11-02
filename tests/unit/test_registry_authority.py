@@ -211,26 +211,25 @@ def test_registry_facts_collect_only_online_workers_names() -> None:
     got = facts(registry)
 
     assert got.live_names == frozenset({"app.a", "app.shared"})
-    assert got.any_online is True
 
 
-def test_registry_facts_with_every_worker_offline_have_no_names_and_no_online() -> None:
+def test_registry_facts_with_every_worker_stopped_have_no_names() -> None:
     registry = WorkerRegistry()
     registry.register_worker(NODE_A, 1, ["app.a"])
     registry.mark_shutdown(NODE_A, 1)
 
     got = facts(registry)
 
-    assert (got.live_names, got.any_online) == (frozenset(), False)
+    assert got.live_names == frozenset()
 
 
-def test_registry_facts_count_an_online_worker_with_no_tasks_as_online() -> None:
+def test_registry_facts_of_a_live_worker_with_no_tasks_have_no_names() -> None:
     registry = WorkerRegistry()
     registry.register_worker(NODE_A, 1, [])
 
     got = facts(registry)
 
-    assert (got.live_names, got.any_online) == (frozenset(), True)
+    assert got.live_names == frozenset()
 
 
 def test_registry_facts_pass_the_broker_flag_through() -> None:
@@ -248,52 +247,3 @@ def test_registry_facts_are_a_copy_later_registrations_do_not_change() -> None:
     registry.register_worker(NODE_B, 2, ["app.b"])
 
     assert got.live_names == frozenset({"app.a"})
-
-
-# --- The inspect clock: a stats() call that completed, even with no reply --------
-
-
-@pytest.mark.parametrize(
-    ("inspector", "completed"),
-    [
-        pytest.param(
-            _Inspect(stats={NODE_A: {"pid": 1}}, registered={NODE_A: ["x"]}),
-            True,
-            id="complete-reply",
-        ),
-        pytest.param(_Inspect(stats=None, ping=None), True, id="nobody-answered-none"),
-        pytest.param(_Inspect(stats={}, ping=None), True, id="nobody-answered-empty"),
-        pytest.param(
-            _Inspect(stats={}, ping={NODE_A: {"ok": "pong"}}), True, id="ping-only"
-        ),
-        pytest.param(
-            _Inspect(stats={NODE_A: {"pid": 1}}, registered=RuntimeError("down")),
-            True,
-            id="registered-raises",
-        ),
-        # Celery 5.6.3 Inspect._request -> Control.broadcast -> kombu 5.6.2
-        # Mailbox._broadcast: an unreachable broker raises, no reply returns None.
-        pytest.param(
-            _Inspect(stats=RuntimeError("broker down")), False, id="stats-raises"
-        ),
-        pytest.param(
-            _Inspect(stats=ConnectionError("refused"), ping=None),
-            False,
-            id="connection-error",
-        ),
-    ],
-)
-def test_refresh_records_when_an_inspect_stats_call_completed(
-    inspector: _Inspect, completed: bool
-) -> None:
-    registry = WorkerRegistry()
-    before = datetime.now(timezone.utc)
-
-    refresh(registry, inspector)
-
-    stamp = facts(registry).inspect_completed_at
-    if completed:
-        assert stamp is not None
-        assert before <= stamp <= datetime.now(timezone.utc)
-    else:
-        assert stamp is None

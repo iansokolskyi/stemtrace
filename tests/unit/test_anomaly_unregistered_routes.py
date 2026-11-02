@@ -1,4 +1,4 @@
-"""``/api/anomalies`` and the node fields for unregistered and no_workers_online (D4)."""
+"""``/api/anomalies`` and the node fields for unregistered (D4)."""
 
 import threading
 from typing import Any
@@ -87,34 +87,23 @@ async def test_anomalies_returns_one_item_per_unregistered_name_with_the_contrac
     assert body["counts"]["unregistered"] == 1
 
 
-async def test_anomalies_fleet_offline_returns_one_no_workers_online_item() -> None:
+async def test_anomalies_with_every_worker_stopped_flag_each_unknown_name_and_no_fleet_item() -> (
+    None
+):
     store = store_of(pending("a", 5, "app.a"), pending("b", 9, "app.b"))
     app = make_app(store, registry=confirmed_registry(online=False), broker_url=BROKER)
 
     body = await list_body(app)
 
-    assert body["anomalies"] == [
-        {
-            "kind": "no_workers_online",
-            "task_id": None,
-            "name": None,
-            "since": "2026-11-02T12:00:05Z",
-            "hostname": None,
-            "queue": None,
-            "task_count": 2,
-            "elapsed_ms": None,
-            "threshold_ms": None,
-            "p95_ms": None,
-            "runtime_samples": None,
-            "evidence": None,
-            "similar_name": None,
-        }
+    assert [(a["kind"], a["name"]) for a in body["anomalies"]] == [
+        ("unregistered", "app.a"),
+        ("unregistered", "app.b"),
     ]
     assert body["counts"] == {
         "stuck": 0,
         "interrupted": 0,
-        "unregistered": 0,
-        "no_workers_online": 1,
+        "unregistered": 2,
+        "no_workers_online": 0,
     }
 
 
@@ -168,20 +157,17 @@ async def test_anomalies_filters_apply_to_unregistered_items(
     }
 
 
-async def test_anomalies_name_and_hostname_filters_drop_the_fleet_item() -> None:
+async def test_anomalies_kind_no_workers_online_is_accepted_and_empty() -> None:
     app = make_app(
         store_of(pending("a", 5)),
         registry=confirmed_registry(online=False),
         broker_url=BROKER,
     )
 
-    by_name = await list_body(app, "?name=app.new")
-    by_host = await list_body(app, "?hostname=w@a")
-    by_kind = await list_body(app, "?kind=no_workers_online")
+    body = await list_body(app, "?kind=no_workers_online")
 
-    assert (by_name["anomalies"], by_host["anomalies"]) == ([], [])
-    assert [a["kind"] for a in by_kind["anomalies"]] == ["no_workers_online"]
-    assert by_name["counts"]["no_workers_online"] == 1
+    assert body["anomalies"] == []
+    assert body["counts"]["no_workers_online"] == 0
 
 
 # --- The gate through the router ----------------------------------------------
@@ -287,18 +273,6 @@ async def test_task_detail_of_an_unregistered_task_has_its_names_item() -> None:
     assert detail["anomaly_detail"] == listed["anomalies"][0]
     assert detail["anomaly_detail"]["task_id"] is None
     assert detail["anomaly_detail"]["task_count"] == 1
-
-
-async def test_no_node_carries_an_anomaly_while_the_fleet_is_offline() -> None:
-    app = _node_app(online=False)
-
-    tasks = (await get(app, "/api/tasks")).json()["tasks"]
-    graphs = (await get(app, "/api/graphs")).json()["graphs"]
-    detail = (await get(app, "/api/tasks/u1")).json()
-
-    assert {t["anomaly"] for t in tasks} == {None}
-    assert {g["anomaly"] for g in graphs} == {None}
-    assert detail["anomaly_detail"] is None
 
 
 # --- Off the loop and off the registry lock -----------------------------------

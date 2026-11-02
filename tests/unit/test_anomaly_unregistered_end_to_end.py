@@ -174,7 +174,7 @@ def test_route_flags_nothing_with_a_broker_and_no_complete_inspect_reply(
     assert _run_extension(monkeypatch, inspector) == []
 
 
-def test_route_reports_the_fleet_offline_after_the_workers_answered_then_stopped(
+def test_route_with_the_worker_stopped_flags_its_names_and_no_fleet_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     answered = _Inspect(
@@ -185,20 +185,17 @@ def test_route_reports_the_fleet_offline_after_the_workers_answered_then_stopped
     consumer = extension.consumer
     assert consumer is not None
 
-    with fed(consumer, [ready("app.known"), waiting("a", "app.missing")]):
-        assert _items(_extension_client(extension)) == [
-            ("unregistered", "app.missing", 1)
-        ]
-        # The worker stops and nobody answers inspect, but the last complete
-        # reply is still recent. A new router has a new refresher (no rate limit).
+    with fed(consumer, [ready("app.known"), waiting("a", "app.known")]):
+        assert _items(_extension_client(extension)) == []
+        # The worker reports a stop; the last complete reply is still recent.
         extension.worker_registry.mark_shutdown(NODE, 11)
         monkeypatch.setattr(
             routes, "_get_inspector", lambda _url, **_: _Inspect(None, None, None)
         )
-        client = _extension_client(extension)
 
-        assert _items(client) == [("no_workers_online", None, 1)]
-        assert client.get("/api/tasks/a").json()["task"]["anomaly"] is None
+        assert _items(_extension_client(extension)) == [
+            ("unregistered", "app.known", 1)
+        ]
 
 
 def test_route_without_a_broker_trusts_worker_ready_events() -> None:

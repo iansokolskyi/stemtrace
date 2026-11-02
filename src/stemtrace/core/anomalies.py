@@ -164,19 +164,15 @@ class RuntimeStats:
 class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
-    ``live_names``: names of workers with no stop reported since their last
-    ``worker_ready`` (``any_live``: there is one); ``any_online``: one was seen
-    in the stale window; ``any_seen``: any worker since the server started.
-    ``authority_at``, ``inspect_completed_at``: last complete reply, last ``stats()``.
+    ``live_names`` are the names of every live worker (no stop reported since
+    its last ``worker_ready``, not superseded). ``authority_at`` is when an
+    inspect reply last listed every answering worker's tasks, and
+    ``broker_configured`` whether the server can inspect.
     """
 
     live_names: frozenset[str]
-    any_online: bool
     authority_at: datetime | None
     broker_configured: bool
-    any_seen: bool = False
-    any_live: bool = False
-    inspect_completed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +198,7 @@ DEFAULT_SETTINGS: Final[AnomalySettings] = AnomalySettings()
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Anomaly:
-    """One flagged item: a task, a task name, or (``no_workers_online``) the fleet.
+    """One flagged item: a task, or a task name (``task_id`` is then None).
 
     ``task_id`` is None for a per-name item and ``name`` for the fleet item.
     ``task_count`` is how many PENDING tasks an unregistered or fleet item
@@ -334,22 +330,6 @@ def _authoritative(
     return not registry.broker_configured and bool(registry.live_names)
 
 
-def _fleet_offline(
-    registry: RegistryFacts, now: datetime, settings: AnomalySettings
-) -> bool:
-    """A worker was seen and none is online; silence counts only as evidence.
-
-    Silence is evidence when an inspect ``stats()`` completed within the
-    window: the server could hear workers and heard none. Otherwise only a
-    reported stop (no live worker) makes the fleet offline.
-    """
-    if not registry.any_seen:
-        return False
-    heard = registry.inspect_completed_at
-    silence_counts = heard is not None and now - heard <= settings.authority_window
-    return not (registry.any_online if silence_counts else registry.any_live)
-
-
 def _waiting(task: PendingLike, cutoff: datetime) -> bool:
     """A PENDING task stamped before ``cutoff`` (now minus the grace) that isn't a built-in."""
     since = task.state_since
@@ -370,12 +350,10 @@ def _unregistered(
     registry: RegistryFacts | None,
     settings: AnomalySettings,
 ) -> tuple[dict[str, Anomaly], list[Anomaly]]:
-    """The unregistered tasks by ID and their per-name items, or the one fleet item.
+    """The unregistered tasks by ID and their per-name items.
 
     A PENDING task waits past ``pending_grace`` for a name no live worker
-    registered, if the registry is trusted. Once a worker was seen and none is
-    online, the waiting tasks make one ``no_workers_online`` item instead, with
-    no trust needed, and no task is flagged.
+    registered, and the registry is trusted (see ``_authoritative``).
     """
     if registry is None:
         return {}, []
@@ -383,16 +361,6 @@ def _unregistered(
     waiting = [task for task in pending if _waiting(task, cutoff)]
     if not waiting:
         return {}, []
-    if _fleet_offline(registry, now, settings):
-        return {}, [
-            Anomaly(
-                kind=AnomalyKind.NO_WORKERS_ONLINE,
-                task_id=None,
-                name=None,
-                since=_oldest(waiting),
-                task_count=len(waiting),
-            )
-        ]
     if not _authoritative(registry, now, settings):
         return {}, []
     by_name: dict[str, list[PendingLike]] = defaultdict(list)
