@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, overload
 from fastapi import Request  # noqa: TC002
 from fastapi.responses import RedirectResponse
 
+from stemtrace.server.anomaly_settings import anomaly_settings
 from stemtrace.server.consumer import AsyncEventConsumer
 from stemtrace.server.fastapi.api_key import normalize_api_key
 from stemtrace.server.fastapi.login_throttle import LoginThrottle
@@ -21,6 +22,7 @@ from stemtrace.server.websocket import WebSocketManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
+    from datetime import timedelta
 
     from fastapi import APIRouter, FastAPI
 
@@ -81,6 +83,10 @@ class StemtraceExtension:
         node_alias_from_arguments: str | None = None,
         groups: GroupsInput = None,
         api_key: str | None = None,
+        anomaly_stuck_factor: float | str | None = None,
+        anomaly_stuck_floor: timedelta | str | None = None,
+        anomaly_stuck_ceiling: timedelta | str | None = None,
+        anomaly_stuck_min_samples: int | str | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -108,10 +114,21 @@ class StemtraceExtension:
                 which the dependency doesn't cover, needs the key). At least 16
                 visible ASCII characters. Unlike
                 ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
+            anomaly_stuck_factor: A running task is stuck after this many times
+                its name's p95 runtime (default 3).
+            anomaly_stuck_floor: Never stuck sooner than this (default 10 minutes).
+            anomaly_stuck_ceiling: Stuck after this long when the name has too few
+                runs to have a p95 (default 1 hour).
+            anomaly_stuck_min_samples: Completed runs a name needs before its p95
+                counts (default 5). The durations are a ``timedelta`` or a string
+                like ``90s``, ``10m`` or ``1h``. Unlike ``init_app()``, these
+                don't read the ``STEMTRACE_ANOMALY_STUCK_*`` env vars.
 
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be
-                loaded, or ``api_key`` is too short or has invalid characters.
+                loaded, ``api_key`` is too short or has invalid characters, or an
+                ``anomaly_stuck_*`` value isn't positive or the floor exceeds
+                the ceiling.
                 A bad ``auth_dependency`` doesn't raise here, but in ``router``.
         """
         self._broker_url = broker_url
@@ -121,6 +138,12 @@ class StemtraceExtension:
         self._auth_dependency = auth_dependency
         self._form_auth_config = form_auth_config
 
+        self._anomaly_settings = anomaly_settings(
+            stuck_factor=anomaly_stuck_factor,
+            stuck_floor=anomaly_stuck_floor,
+            stuck_ceiling=anomaly_stuck_ceiling,
+            stuck_min_samples=anomaly_stuck_min_samples,
+        )
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()
         self._worker_timeline = WorkerTimeline()
@@ -202,6 +225,8 @@ class StemtraceExtension:
             groups=self._groups,
             api_key=self._api_key,
             auth_throttle=self._auth_throttle,
+            worker_timeline=self._worker_timeline,
+            anomaly_settings=self._anomaly_settings,
         )
 
         if self._serve_ui:

@@ -2,13 +2,19 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from stemtrace.core.events import TaskState
 from stemtrace.core.graph import ChordNotRunReason, NodeType
 from stemtrace.core.groups import GroupSource
+
+# "orphaned" joins in a later release; clients ignore kinds they don't know.
+AnomalyKind = Literal["stuck", "interrupted", "unregistered", "no_workers_online"]
+AnomalyEvidence = Literal[
+    "worker_shutdown", "worker_terminating", "worker_restarted", "cancelled_retry"
+]
 
 
 class WorkerStatus(str, Enum):
@@ -56,6 +62,47 @@ class TaskEventResponse(BaseModel):
     eta: datetime | None = None
 
 
+class AnomalyResponse(BaseModel):
+    """One task that needs attention (see ``core/anomalies.py``)."""
+
+    kind: AnomalyKind
+    # None for a per-name item (unregistered) and for no_workers_online.
+    task_id: str | None
+    # None only for no_workers_online.
+    name: str | None
+    # stuck: when it started; interrupted: when the worker stopped; unregistered:
+    # the oldest PENDING. Always UTC.
+    since: datetime
+    # stuck: the host of the task's latest event; interrupted: the stopped worker.
+    hostname: str | None = None
+    queue: str | None = None
+    # unregistered: how many PENDING tasks of the name.
+    task_count: int = 1
+    # stuck: time since it last made progress, its threshold, and the name's
+    # p95 runtime (None without samples) and sample count.
+    elapsed_ms: int | None = None
+    threshold_ms: int | None = None
+    p95_ms: int | None = None
+    runtime_samples: int | None = None
+    # interrupted: what showed the worker stopped.
+    evidence: AnomalyEvidence | None = None
+    similar_name: str | None = None
+
+
+class AnomalyListResponse(BaseModel):
+    """Anomalies, oldest ``since`` first, with a count for every kind."""
+
+    anomalies: list[AnomalyResponse]
+    # Every kind, 0 included; ignores the kind, hostname and name filters.
+    counts: dict[str, int]
+    # Anomalies that pass the filters, before limit and offset.
+    total: int
+    limit: int
+    offset: int
+    # The clock the classification used.
+    evaluated_at: datetime
+
+
 class TaskNodeResponse(BaseModel):
     """Task node with events and timing info."""
 
@@ -93,6 +140,8 @@ class TaskNodeResponse(BaseModel):
     hostname: str | None = None
     queue: str | None = None
     routing_key: str | None = None
+    # What is wrong with the task, if anything. Never set on GROUP/CHORD nodes.
+    anomaly: AnomalyKind | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -109,6 +158,8 @@ class TaskDetailResponse(BaseModel):
 
     task: TaskNodeResponse
     children: list[TaskNodeResponse] = Field(default_factory=list)
+    # The task's anomaly with its evidence; None when it has none.
+    anomaly_detail: AnomalyResponse | None = None
 
 
 class GraphNodeResponse(BaseModel):
@@ -147,6 +198,8 @@ class GraphNodeResponse(BaseModel):
     # CHORD nodes in a full graph (GET /graphs/{root_id}) only: why the
     # callback hasn't run (see chord_not_run_reasons).
     not_run_reason: ChordNotRunReason | None = None
+    # What is wrong with the task, if anything. Never set on GROUP/CHORD nodes.
+    anomaly: AnomalyKind | None = None
 
 
 class GraphResponse(BaseModel):

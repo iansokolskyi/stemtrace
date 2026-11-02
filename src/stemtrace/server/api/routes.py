@@ -24,10 +24,18 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
 from stemtrace.core.graph import ChordNotRunReason, NodeType, chord_not_run_reasons
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
+from stemtrace.server.api.anomaly_routes import (
+    AnomalyEvaluator,
+    add_anomaly_routes,
+    anomaly_response,
+    kind_name,
+)
 from stemtrace.server.api.schemas import (
+    AnomalyKind,
     ErrorResponse,
     GraphListResponse,
     GraphNodeResponse,
@@ -56,10 +64,11 @@ if TYPE_CHECKING:
     from celery.app.control import Inspect
     from starlette.types import Receive, Scope, Send
 
+    from stemtrace.core.anomalies import Anomaly
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
-    from stemtrace.server.store import GraphStore, WorkerRegistry
+    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
     from stemtrace.server.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -179,12 +188,29 @@ def _group_task_names(
     return frozenset(filter(accepts, store.get_unique_task_names()))
 
 
+_NO_ANOMALIES: Mapping[str, Anomaly] = {}
+
+
+def _anomaly_of(node: TaskNode, anomalies: Mapping[str, Anomaly]) -> Anomaly | None:
+    """The node's anomaly; GROUP/CHORD nodes never have one."""
+    return anomalies.get(node.task_id) if node.node_type == NodeType.TASK else None
+
+
+def _anomaly_kind(
+    node: TaskNode, anomalies: Mapping[str, Anomaly]
+) -> AnomalyKind | None:
+    """The kind of the node's anomaly, for the ``anomaly`` field."""
+    anomaly = _anomaly_of(node, anomalies)
+    return kind_name(anomaly) if anomaly is not None else None
+
+
 def _node_to_response(
     node: TaskNode,
     *,
     include_output: bool = False,
     include_events: bool = True,
     group_of: Callable[[str], ResolvedGroup],
+    anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
 ) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
@@ -196,6 +222,7 @@ def _node_to_response(
         include_events: Embed the events; off for ``compact=1`` lists, which
             then carry ``events: null``.
         group_of: Task group by task name (see ``group_lookup``).
+        anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -235,6 +262,7 @@ def _node_to_response(
         hostname=node.hostname,
         queue=node.queue,
         routing_key=node.routing_key,
+        anomaly=_anomaly_kind(node, anomalies),
     )
 
 
@@ -280,6 +308,7 @@ def _node_to_graph_response(
     *,
     group_of: Callable[[str], ResolvedGroup],
     not_run_reason: ChordNotRunReason | None = None,
+    anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -293,6 +322,7 @@ def _node_to_graph_response(
         not_run_reason: Why a CHORD's callback hasn't run; only known
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
+        anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -354,6 +384,7 @@ def _node_to_graph_response(
         queue=node.queue,
         routing_key=node.routing_key,
         not_run_reason=not_run_reason,
+        anomaly=_anomaly_kind(node, anomalies),
     )
 
 
@@ -698,6 +729,7 @@ def _add_task_routes(
     worker_registry: WorkerRegistry | None,
     refresher: _InspectRefresher,
     groups: GroupConfig,
+    evaluator: AnomalyEvaluator,
 ) -> None:
     """Register the task list, task registry, task detail and children routes.
 
@@ -783,6 +815,7 @@ def _add_task_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
+        anomalies = (await evaluator.evaluate()).anomalies
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -798,7 +831,12 @@ def _add_task_routes(
         )
         return TaskListResponse(
             tasks=[
-                _node_to_response(n, include_events=not compact, group_of=group_of)
+                _node_to_response(
+                    n,
+                    include_events=not compact,
+                    group_of=group_of,
+                    anomalies=anomalies,
+                )
                 for n in nodes
             ],
             total=total,
@@ -863,9 +901,17 @@ def _add_task_routes(
 
         node, children = found
         group_of = group_lookup(groups)
+        anomalies = (await evaluator.evaluate()).anomalies
+        anomaly = _anomaly_of(node, anomalies)
         return TaskDetailResponse(
-            task=_node_to_response(node, include_output=True, group_of=group_of),
-            children=[_node_to_response(c, group_of=group_of) for c in children],
+            task=_node_to_response(
+                node, include_output=True, group_of=group_of, anomalies=anomalies
+            ),
+            children=[
+                _node_to_response(c, group_of=group_of, anomalies=anomalies)
+                for c in children
+            ],
+            anomaly_detail=anomaly_response(anomaly) if anomaly is not None else None,
         )
 
     @router.get(
@@ -886,8 +932,11 @@ def _add_task_routes(
 
         _, children = found
         group_of = group_lookup(groups)
+        anomalies = (await evaluator.evaluate()).anomalies
         return [
-            _node_to_response(c, include_events=not compact, group_of=group_of)
+            _node_to_response(
+                c, include_events=not compact, group_of=group_of, anomalies=anomalies
+            )
             for c in children
         ]
 
@@ -898,6 +947,7 @@ def _add_graph_routes(
     store: GraphStore,
     node_alias_key: str | None,
     groups: GroupConfig,
+    evaluator: AnomalyEvaluator,
 ) -> None:
     """Register the graph list and graph detail routes."""
 
@@ -934,6 +984,7 @@ def _add_graph_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
+        anomalies = (await evaluator.evaluate()).anomalies
         # Roots plus children (for synthetic node timing) from one snapshot
         roots, all_nodes, total = store.get_root_nodes_with_children(
             limit=limit,
@@ -945,7 +996,11 @@ def _add_graph_routes(
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
-                    r, all_nodes, node_alias_key=node_alias_key, group_of=group_of
+                    r,
+                    all_nodes,
+                    node_alias_key=node_alias_key,
+                    group_of=group_of,
+                    anomalies=anomalies,
                 )
                 for r in roots
             ],
@@ -970,6 +1025,7 @@ def _add_graph_routes(
         # The whole graph is here, so every header that has run is known. A
         # pass over every node and event: off the event loop.
         not_run = await run_in_threadpool(chord_not_run_reasons, all_nodes)
+        anomalies = (await evaluator.evaluate()).anomalies
         return GraphResponse(
             root_id=root_id,
             nodes={
@@ -979,6 +1035,7 @@ def _add_graph_routes(
                     node_alias_key=node_alias_key,
                     group_of=group_of,
                     not_run_reason=not_run.get(tid),
+                    anomalies=anomalies,
                 )
                 for tid, n in graph.items()
             },
@@ -1139,6 +1196,8 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     broker_url: str | None = None,
     node_alias_from_arguments: str | None = None,
     groups: GroupsInput = None,
+    worker_timeline: WorkerTimeline | None = None,
+    anomaly_settings: AnomalySettings = DEFAULT_SETTINGS,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -1153,6 +1212,10 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         groups: Code-defined task groups, as for ``StemtraceExtension``: a
             GroupConfig, a list of GroupRule or dicts, or a TOML file path.
             None gives automatic groups only.
+        worker_timeline: Worker event history that tells an interrupted task from
+            a running one (see ``StemtraceExtension``); None means no task is
+            ever reported interrupted.
+        anomaly_settings: Thresholds for stuck tasks; see ``anomaly_settings()``.
 
     Returns:
         Configured API router.
@@ -1164,6 +1227,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)
+    evaluator = AnomalyEvaluator(store, worker_timeline, anomaly_settings)
 
     _add_health_routes(
         router,
@@ -1179,12 +1243,14 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         worker_registry=worker_registry,
         refresher=refresher,
         groups=group_config,
+        evaluator=evaluator,
     )
     _add_graph_routes(
         router,
         store=store,
         node_alias_key=node_alias_from_arguments,
         groups=group_config,
+        evaluator=evaluator,
     )
     _add_group_routes(
         router, store=store, worker_registry=worker_registry, groups=group_config
@@ -1193,5 +1259,6 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    add_anomaly_routes(router, evaluator=evaluator, refresher=refresher)
     _serve_head_on_get_routes(router)
     return router
