@@ -1,0 +1,224 @@
+{
+ "description": "prefork worker, SIGQUIT while output_test.sleepy(30) runs (M3b)",
+ "celery": "5.6.3",
+ "recorded": "2026-11-02",
+ "entries": [
+  {
+   "event_type": "worker_ready",
+   "hostname": "anomaly3f7a6c14@localhost",
+   "pid": 505730,
+   "timestamp": "2026-11-02T12:11:49.548101Z",
+   "registered_tasks": [
+    "output_test.rejected_once",
+    "output_test.sleepy",
+    "output_test.sleepy_late",
+    "output_test.flaky",
+    "output_test.tagged",
+    "output_test.warn",
+    "output_test.ignored",
+    "output_test.rejected_requeue_early_ack",
+    "output_test.replaced",
+    "output_test.busy",
+    "output_test.noisy",
+    "output_test.dies_once",
+    "output_test.print_variants",
+    "output_test.soft_limited",
+    "output_test.rejected"
+   ],
+   "task_definitions": {
+    "output_test.rejected_once": {
+     "name": "output_test.rejected_once",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> str",
+     "docstring": "Reject with requeue on the first delivery; succeed on the next one.",
+     "bound": false
+    },
+    "output_test.sleepy": {
+     "name": "output_test.sleepy",
+     "module": "tests.integration.output_worker_app",
+     "signature": "(seconds: float) -> str",
+     "docstring": "Run for ``seconds``, long enough to stop the worker meanwhile.",
+     "bound": false
+    },
+    "output_test.sleepy_late": {
+     "name": "output_test.sleepy_late",
+     "module": "tests.integration.output_worker_app",
+     "signature": "(seconds: float) -> str",
+     "docstring": "Like ``sleepy``, acknowledged only after it finishes (redelivered if lost).",
+     "bound": false
+    },
+    "output_test.flaky": {
+     "name": "output_test.flaky",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "Retry once, then fail; each attempt prints its number.",
+     "bound": false
+    },
+    "output_test.tagged": {
+     "name": "output_test.tagged",
+     "module": "tests.integration.output_worker_app",
+     "signature": "(tag: str) -> None",
+     "docstring": "Print a tag a few times, slowly, so concurrent tasks interleave.",
+     "bound": false
+    },
+    "output_test.warn": {
+     "name": "output_test.warn",
+     "module": "tests.integration.output_worker_app",
+     "signature": "(tag: str) -> None",
+     "docstring": "Log one warning from a plain module logger.",
+     "bound": false
+    },
+    "output_test.ignored": {
+     "name": "output_test.ignored",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "Print, then end through Celery's Ignore (no task_failure).",
+     "bound": false
+    },
+    "output_test.rejected_requeue_early_ack": {
+     "name": "output_test.rejected_requeue_early_ack",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "Reject with requeue, but the message was acknowledged before the run.",
+     "bound": false
+    },
+    "output_test.replaced": {
+     "name": "output_test.replaced",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "Replace this task with ``noisy``, which takes over its task ID.",
+     "bound": false
+    },
+    "output_test.busy": {
+     "name": "output_test.busy",
+     "module": "tests.integration.output_worker_app",
+     "signature": "(seconds: float) -> str",
+     "docstring": "Run Python code for ``seconds`` without yielding to gevent's hub.",
+     "bound": false
+    },
+    "output_test.noisy": {
+     "name": "output_test.noisy",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> str",
+     "docstring": "Write through every channel a task commonly uses.",
+     "bound": false
+    },
+    "output_test.dies_once": {
+     "name": "output_test.dies_once",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> str",
+     "docstring": "Kill the pool child on the first delivery; Celery requeues, so a second runs.\n\nPrefork only: elsewhere this would kill the worker itself. The marker lives\nin Redis because the second run is in a new process.",
+     "bound": false
+    },
+    "output_test.print_variants": {
+     "name": "output_test.print_variants",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "print() with several arguments and with end=\"\" (several write chunks).",
+     "bound": false
+    },
+    "output_test.soft_limited": {
+     "name": "output_test.soft_limited",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> str",
+     "docstring": "Hit the soft time limit while print() is inside the output capture.\n\nThe limit arrives as SIGUSR1 in this prefork child and raises\nSoftTimeLimitExceeded wherever the task is, here inside ``TeeStream.write``\n(a stalled capture lookup stands in for the microseconds a real task\nspends there). The task must fail; if the capture code swallowed the\nexception, the second print would run and the task would succeed.",
+     "bound": false
+    },
+    "output_test.rejected": {
+     "name": "output_test.rejected",
+     "module": "tests.integration.output_worker_app",
+     "signature": "() -> None",
+     "docstring": "End through Reject without requeue: the message is dropped.",
+     "bound": false
+    }
+   },
+   "shutdown_time": null
+  },
+  {
+   "task_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "name": "output_test.sleepy",
+   "state": "RECEIVED",
+   "timestamp": "2026-11-02T12:11:49.695788Z",
+   "parent_id": null,
+   "root_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "chord_body_first_id": null,
+   "trace_id": null,
+   "retries": 0,
+   "args": null,
+   "kwargs": null,
+   "result": null,
+   "exception": null,
+   "traceback": null,
+   "output": null,
+   "exception_type": null,
+   "hostname": "anomaly3f7a6c14@localhost",
+   "queue": "anomaly-3f7a6c14",
+   "routing_key": "anomaly-3f7a6c14",
+   "eta": null
+  },
+  {
+   "task_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "name": "output_test.sleepy",
+   "state": "STARTED",
+   "timestamp": "2026-11-02T12:11:49.698865Z",
+   "parent_id": null,
+   "root_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "chord_body_first_id": null,
+   "trace_id": null,
+   "retries": 0,
+   "args": [
+    30
+   ],
+   "kwargs": {},
+   "result": null,
+   "exception": null,
+   "traceback": null,
+   "output": null,
+   "exception_type": null,
+   "hostname": "anomaly3f7a6c14@localhost",
+   "queue": "anomaly-3f7a6c14",
+   "routing_key": "anomaly-3f7a6c14",
+   "eta": null
+  },
+  {
+   "task_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "name": "output_test.sleepy",
+   "state": "RETRY",
+   "timestamp": "2026-11-02T12:11:49.897505Z",
+   "parent_id": null,
+   "root_id": "9b7a1321-cacf-4d6e-b2a5-a8a354722593",
+   "group_id": null,
+   "chord_id": null,
+   "chord_callback_id": null,
+   "chord_body_first_id": null,
+   "trace_id": null,
+   "retries": 0,
+   "args": null,
+   "kwargs": null,
+   "result": null,
+   "exception": "cancelled by Celery",
+   "traceback": null,
+   "output": null,
+   "exception_type": null,
+   "hostname": "anomaly3f7a6c14@localhost",
+   "queue": "anomaly-3f7a6c14",
+   "routing_key": "anomaly-3f7a6c14",
+   "eta": null
+  },
+  {
+   "event_type": "worker_terminating",
+   "hostname": "anomaly3f7a6c14@localhost",
+   "pid": 505730,
+   "timestamp": "2026-11-02T12:11:50.905268Z",
+   "registered_tasks": [],
+   "task_definitions": {},
+   "shutdown_time": null
+  }
+ ]
+}
