@@ -53,7 +53,7 @@ test.describe('Empty result', () => {
     for (const [url, text] of cases) {
       await page.goto(url)
       await expect(page.getByTestId('executions-empty-text')).toHaveText(text)
-      await expect(page.locator('[data-column-header]')).toHaveText(['State', 'Task', 'Updated'])
+      await expect(page.locator('[data-column-header]')).toHaveText(['State', 'Task', 'Started'])
     }
   })
 

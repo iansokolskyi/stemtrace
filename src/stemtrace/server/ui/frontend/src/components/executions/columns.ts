@@ -9,7 +9,7 @@ export type ColumnId =
   | 'queue'
   | 'queue_wait'
   | 'runtime'
-  | 'updated'
+  | 'started'
 
 export interface Column {
   id: ColumnId
@@ -28,7 +28,7 @@ export interface Column {
 const present = (value: string | null | undefined): boolean => !!value
 const finite = (value: number | null | undefined): boolean => value !== null && value !== undefined
 
-/** Every column in display order. State, name and updated always show; the rest are optional. */
+/** Every column in display order. State, name and started always show; the rest are optional. */
 export const COLUMNS: Column[] = [
   { id: 'state', label: 'State', track: '104px', min: 104 },
   { id: 'name', label: 'Task', track: 'minmax(260px, 1fr)', min: 260 },
@@ -75,12 +75,12 @@ export const COLUMNS: Column[] = [
     text: (row) => formatSpan(row.runtime_ms),
   },
   {
-    id: 'updated',
-    label: 'Updated',
+    id: 'started',
+    label: 'Started',
     track: '88px',
     min: 88,
     align: 'right',
-    text: (row) => formatAgo(row.last_updated),
+    text: (row) => formatAgo(row.first_seen),
   },
 ]
 

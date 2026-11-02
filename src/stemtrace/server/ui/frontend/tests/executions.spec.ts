@@ -127,7 +127,7 @@ test.describe('Executions table', () => {
     expect(await rows(page).count()).toBeLessThan(60)
   })
 
-  test('each row shows state, name, group, worker, queue, waits, runtime and age', async ({
+  test('each row shows state, name, group, worker, queue, waits, runtime and start', async ({
     page,
   }) => {
     const api = await setupMockApi(page, { useDefaults: false })
@@ -137,6 +137,7 @@ test.describe('Executions table', () => {
       queue: 'invoices',
       queue_wait_ms: 120,
       runtime_ms: 1500,
+      first_seen: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
       last_updated: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
     }))
     api.addTask(task)
@@ -153,7 +154,8 @@ test.describe('Executions table', () => {
     await expect(row.locator('[data-cell="queue"]')).toHaveText('invoices')
     await expect(row.locator('[data-cell="queue_wait"]')).toHaveText('120ms')
     await expect(row.locator('[data-cell="runtime"]')).toHaveText('1.5s')
-    await expect(row.locator('[data-cell="updated"]')).toHaveText('5m ago')
+    // Started is first_seen, not the latest event (the prototype's column)
+    await expect(row.locator('[data-cell="started"]')).toHaveText('20m ago')
     await row.click()
     await expect(page).toHaveURL(new RegExp(`/tasks/${task.task_id}$`))
   })
@@ -225,7 +227,7 @@ test.describe('Executions table', () => {
       })),
     )
     await page.goto('/executions')
-    for (const column of ['group', 'worker', 'queue', 'queue_wait', 'runtime', 'updated']) {
+    for (const column of ['group', 'worker', 'queue', 'queue_wait', 'runtime', 'started']) {
       await expect(header(page, column)).toBeVisible()
     }
     expect(await scrollBox(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0)
