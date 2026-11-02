@@ -52,7 +52,8 @@ def _celery_registered_reply(name: str, **task_attrs: Any) -> list[str]:
     for attr, value in task_attrs.items():
         setattr(task, attr, value)
     reply: list[str] = Panel.data["registered"](_State(app), taskinfoitems=())
-    return reply
+    # Shared tasks other test modules define join every app; keep only this one.
+    return [entry for entry in reply if entry.startswith(name)]
 
 
 @pytest.mark.parametrize(
@@ -83,7 +84,7 @@ def test_refresh_with_info_suffix_stores_bare_task_name(
     reply = _celery_registered_reply(name, **task_attrs)
     worker_registry = WorkerRegistry()
 
-    routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect(reply))  # type: ignore[arg-type]
+    routes._refresh_worker_registry_from_inspect(worker_registry, _Inspect(reply))  # type: ignore[arg-type]  # structural fake
 
     (worker,) = worker_registry.get_all_workers()
     assert worker.registered_tasks == [name]
