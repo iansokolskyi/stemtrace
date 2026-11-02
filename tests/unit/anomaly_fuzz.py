@@ -10,7 +10,7 @@ import json
 import random
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from stemtrace.core.anomalies import (
@@ -82,7 +82,8 @@ def _synthetic(
         task_id=task,
         name="syn.work",
         state=state,
-        timestamp=datetime(2026, 11, 2, 12, 0, tzinfo=UTC) + timedelta(seconds=seconds),
+        timestamp=datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+        + timedelta(seconds=seconds),
         hostname=host,
         **kw,  # type: ignore[arg-type]
     )
@@ -124,7 +125,7 @@ def synthetic_flows() -> dict[str, list[TaskEvent]]:
                 "w@h2",
                 retries=1,
                 parent_id="r1",
-                eta=datetime(2026, 11, 2, 12, 0, 3, tzinfo=UTC),
+                eta=datetime(2026, 11, 2, 12, 0, 3, tzinfo=timezone.utc),
             ),
             _synthetic("r1", s, 3, "w@h1", retries=1),
         ],
