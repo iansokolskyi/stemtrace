@@ -1,9 +1,10 @@
-"""Summary endpoints: overview KPIs, runs over time, failures by exception.
+"""Summary endpoints: overview KPIs, runs over time, failures, per-name task stats.
 
 Each request copies the store's run records once (``GraphStore.run_records``,
 references only) and aggregates outside the store lock: O(n) in the records
 held (at most the store's ``max_nodes``), plus O(buckets) for time series.
-The aggregation runs in slices that yield to the event loop between them.
+The aggregation runs in slices that yield to the event loop between them; the
+task stats sort runtimes, so they run in a worker thread instead.
 """
 
 from __future__ import annotations
@@ -21,9 +22,12 @@ from stemtrace.server.api import params
 from stemtrace.server.api.schemas import (
     FailureGroupListResponse,
     FailureGroupResponse,
+    GroupStatsResponse,
     KpiCountResponse,
     KpiResponse,
     OverviewResponse,
+    TaskStatsListResponse,
+    TaskStatsResponse,
     TimeSeriesResponse,
     TimeWindowResponse,
     WorkerCountsResponse,
@@ -42,6 +46,7 @@ from stemtrace.server.stats import (
     count_runs,
     parse_duration,
     summarize_failures,
+    task_stats,
     time_series,
     window_stats,
 )
@@ -118,10 +123,11 @@ def add_summary_routes(
     worker_registry: WorkerRegistry | None,
     groups: GroupConfig,
 ) -> None:
-    """Register ``/overview``, ``/stats/timeseries`` and ``/failures``."""
+    """Register ``/overview``, ``/stats/timeseries``, ``/failures`` and ``/stats/tasks``."""
     _add_overview_route(router, store=store, worker_registry=worker_registry)
     _add_timeseries_route(router, store=store, groups=groups)
     _add_failures_route(router, store=store)
+    _add_task_stats_route(router, store=store, groups=groups)
 
 
 def _add_stats(total: WindowStats, part: WindowStats) -> WindowStats:
@@ -315,5 +321,73 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
                     sample_task_ids=list(g.sample_task_ids),
                 )
                 for g in groups_
+            ],
+        )
+
+
+def _add_task_stats_route(
+    router: APIRouter, *, store: GraphStore, groups: GroupConfig
+) -> None:
+    @router.get("/stats/tasks", response_model=TaskStatsListResponse)
+    async def stats_tasks(
+        within: Annotated[str | None, Query(description=_WITHIN_HELP)] = None,
+        from_date: Annotated[
+            datetime | None, Query(description="Start (ISO format) instead of within")
+        ] = None,
+        name: Annotated[
+            str | None, Query(description="Only the task with exactly this name")
+        ] = None,
+    ) -> TaskStatsListResponse:
+        """Runs, failures and runtime percentiles per task name, and per task group.
+
+        Without ``within`` or ``from_date``, from the oldest run held, at most
+        3650 days back. ``last_run`` and ``last_state`` ignore the window. It
+        reads the server's own records and never asks the workers.
+        """
+        now = params.utcnow()
+        records = store.run_records()
+        window = _recent_window(
+            within, from_date, now, min(await _oldest(records, now), now)
+        )
+        group_of = group_lookup(groups)
+
+        def group_name(task_name: str) -> str:
+            """The name of the task's group (resolved once per task name)."""
+            return group_of(task_name).name
+
+        # Sorts the runtimes: off the event loop, like the other per-name work.
+        tasks, rollups = await run_in_threadpool(
+            task_stats, records, window, group_name, name=name
+        )
+        return TaskStatsListResponse(
+            window=_window_response(window),
+            tasks=[
+                TaskStatsResponse(
+                    name=t.name,
+                    task_group=t.task_group,
+                    runs=t.runs,
+                    failures=t.failures,
+                    failure_rate=t.failure_rate,
+                    runtime_samples=t.runtime_samples,
+                    p50_ms=t.p50_ms,
+                    p95_ms=t.p95_ms,
+                    last_run=t.last_run,
+                    last_state=t.last_state,
+                )
+                for t in tasks
+            ],
+            groups=[
+                GroupStatsResponse(
+                    name=g.name,
+                    task_count=g.task_count,
+                    runs=g.runs,
+                    failures=g.failures,
+                    failure_rate=g.failure_rate,
+                    runtime_samples=g.runtime_samples,
+                    p50_ms=g.p50_ms,
+                    p95_ms=g.p95_ms,
+                    last_run=g.last_run,
+                )
+                for g in rollups
             ],
         )
