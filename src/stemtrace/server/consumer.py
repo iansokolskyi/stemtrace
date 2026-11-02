@@ -13,7 +13,7 @@ from stemtrace.transports import get_transport
 
 if TYPE_CHECKING:
     from stemtrace.core.ports import EventTransport
-    from stemtrace.server.store import GraphStore, WorkerRegistry
+    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class EventConsumer:
         prefix: str = "stemtrace",
         ttl: int = 86400,
         worker_registry: WorkerRegistry | None = None,
+        worker_timeline: WorkerTimeline | None = None,
         stale_check_interval: int = STALE_CHECK_INTERVAL,
     ) -> None:
         """Initialize consumer with broker URL and target store."""
@@ -45,6 +46,7 @@ class EventConsumer:
         self._prefix = prefix
         self._ttl = ttl
         self._worker_registry = worker_registry
+        self._worker_timeline = worker_timeline
         self._stale_check_interval = stale_check_interval
         self._transport: EventTransport | None = None
         self._thread: threading.Thread | None = None
@@ -218,6 +220,8 @@ class EventConsumer:
     def _process_event(self, event: TaskEvent | WorkerEvent) -> None:
         """Route event to appropriate handler based on type."""
         if isinstance(event, WorkerEvent):
+            if self._worker_timeline is not None:
+                self._worker_timeline.record(event)
             self._handle_worker_event(event)
         else:
             self._store.add_event(event)
@@ -274,6 +278,7 @@ class AsyncEventConsumer:
         prefix: str = "stemtrace",
         ttl: int = 86400,
         worker_registry: WorkerRegistry | None = None,
+        worker_timeline: WorkerTimeline | None = None,
         stale_check_interval: int = STALE_CHECK_INTERVAL,
     ) -> None:
         """Initialize async consumer wrapper with broker URL and target store."""
@@ -283,6 +288,7 @@ class AsyncEventConsumer:
             prefix=prefix,
             ttl=ttl,
             worker_registry=worker_registry,
+            worker_timeline=worker_timeline,
             stale_check_interval=stale_check_interval,
         )
 
