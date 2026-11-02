@@ -1,40 +1,22 @@
 """Events through a real consumer and store: ``/api/anomalies`` equals the classifier."""
 
 import time
-from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from stemtrace.core.events import TaskEvent, WorkerEvent
 from stemtrace.server.api import params, routes
 from stemtrace.server.fastapi.extension import StemtraceExtension
-from tests.unit.anomaly_api import NOW_S, seeded_events
+from tests.unit.anomaly_api import NOW_S, ReplayTransport, seeded_events
 from tests.unit.anomaly_pipeline import SMALL, at, classify
 
+if TYPE_CHECKING:
+    from stemtrace.core.events import TaskEvent, WorkerEvent
+
 DEADLINE_S = 10
-
-
-class _ReplayTransport:
-    """Hands the consumer its events once, then waits until stopped."""
-
-    def __init__(self, events: list[TaskEvent | WorkerEvent]) -> None:
-        self._events = events
-        self.consumed = 0
-        self._stop = False
-
-    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
-        for event in self._events:
-            yield event
-            self.consumed += 1
-        while not self._stop:
-            time.sleep(0.01)
-
-    def stop(self) -> None:
-        self._stop = True
 
 
 def test_anomalies_after_a_real_consumer_equal_the_classifier_on_the_same_events(
@@ -42,7 +24,7 @@ def test_anomalies_after_a_real_consumer_equal_the_classifier_on_the_same_events
 ) -> None:
     tasks, workers = seeded_events()
     stream: list[TaskEvent | WorkerEvent] = [*tasks, *workers]
-    transport = _ReplayTransport(stream)
+    transport = ReplayTransport(stream)
     now = at(NOW_S)
     monkeypatch.setattr(params, "utcnow", lambda: now)
 
