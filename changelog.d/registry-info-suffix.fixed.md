@@ -1,0 +1,1 @@
+- Tasks that set `rate_limit` (or `exchange` or `routing_key`) no longer show as "Not registered" after the Workers or Registry page refreshes worker state. Celery's registered-tasks reply appends these settings to the task name, for example `myapp.send [rate_limit=10/m]`, and stemtrace now removes them.

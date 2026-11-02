@@ -1181,6 +1181,38 @@ class TestInspectRefreshBranches:
         assert workers[0].hostname == "celery@worker-1"
         assert workers[0].registered_tasks == ["myapp.tasks.process"]
 
+    @pytest.mark.parametrize(
+        ("registered_reply", "expected_tasks"),
+        [
+            # stats() and registered() are separate broadcasts (Celery 5.6.3
+            # app/control.py Inspect._request): a node can answer one and miss the other.
+            ({"celery@worker-2": ["other.task"]}, ["myapp.tasks.process"]),
+            ({"celery@worker-1": {"error": "boom"}}, ["myapp.tasks.process"]),
+            ({"celery@worker-1": None}, ["myapp.tasks.process"]),
+            ({"celery@worker-1": []}, []),
+            ({"celery@worker-1": ["myapp.tasks.new"]}, ["myapp.tasks.new"]),
+        ],
+        ids=["no-answer", "not-a-list", "null", "answered-empty", "answered"],
+    )
+    def test_refresh_worker_registry_without_registered_answer_keeps_tasks(
+        self, registered_reply: dict[str, object], expected_tasks: list[str]
+    ) -> None:
+        """Only a node's own registered() answer replaces its task list."""
+        worker_registry = WorkerRegistry()
+        worker_registry.register_worker(
+            "celery@worker-1", 1111, ["myapp.tasks.process"]
+        )
+        inspector = _FakeInspect(
+            ping_result=None,
+            stats_result={"celery@worker-1": {"pid": 1111}},
+            registered_result=registered_reply,
+        )
+
+        routes._refresh_worker_registry_from_inspect(worker_registry, inspector)  # type: ignore[arg-type]
+
+        (worker,) = worker_registry.get_all_workers()
+        assert worker.registered_tasks == expected_tasks
+
     def test_refresh_worker_registry_marks_missing_workers_offline(self) -> None:
         """Workers not present in stats responders are marked offline."""
         worker_registry = WorkerRegistry()
@@ -2229,6 +2261,7 @@ class TestApiRouteTable:
             "/api/overview",
             "/api/stats/timeseries",
             "/api/failures",
+            "/api/stats/tasks",
             "/api/workers",
             "/api/workers/{hostname}",
         ]
