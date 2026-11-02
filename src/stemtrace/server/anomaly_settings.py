@@ -4,7 +4,11 @@ import math
 import os
 from datetime import timedelta
 
-from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
+from stemtrace.core.anomalies import (
+    DEFAULT_SETTINGS,
+    MAX_STUCK_FACTOR,
+    AnomalySettings,
+)
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server.stats import MAX_DURATION, parse_duration
 
@@ -47,7 +51,7 @@ def anomaly_settings(
 
     Raises:
         ConfigurationError: If a value isn't positive (``stuck_min_samples``
-            at least 1), or the floor is above the ceiling.
+            at least 1, ``stuck_factor`` at most ``MAX_STUCK_FACTOR``).
     """
     return _build(
         _Input(stuck_factor, _PARAMETER_LABELS[0]),
@@ -109,7 +113,7 @@ def _build(
     factor: _Input, floor: _Input, ceiling: _Input, min_samples: _Input
 ) -> AnomalySettings:
     defaults = DEFAULT_SETTINGS
-    settings = AnomalySettings(
+    return AnomalySettings(
         stuck_factor=defaults.stuck_factor if factor.value is None else _factor(factor),
         stuck_floor=defaults.stuck_floor if floor.value is None else _duration(floor),
         stuck_ceiling=defaults.stuck_ceiling
@@ -119,19 +123,13 @@ def _build(
         if min_samples.value is None
         else _min_samples(min_samples),
     )
-    if settings.stuck_floor > settings.stuck_ceiling:
-        raise ConfigurationError(
-            f"The stuck floor ({int(settings.stuck_floor.total_seconds())}s) must not "
-            f"exceed the stuck ceiling ({int(settings.stuck_ceiling.total_seconds())}s): "
-            f"change {floor.label} or {ceiling.label}."
-        )
-    return settings
 
 
 def _factor(setting: _Input) -> float:
     value = setting.value
     error = ConfigurationError(
-        f"{setting.label} must be a positive number, got {value!r}."
+        f"{setting.label} must be a positive number of at most {MAX_STUCK_FACTOR}, "
+        f"got {value!r}."
     )
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise error
@@ -139,7 +137,7 @@ def _factor(setting: _Input) -> float:
         number = float(value)
     except ValueError:
         raise error from None
-    if not math.isfinite(number) or number <= 0:
+    if not math.isfinite(number) or not 0 < number <= MAX_STUCK_FACTOR:
         raise error
     return number
 

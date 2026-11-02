@@ -21,6 +21,8 @@ from stemtrace.core.events import TaskState, WorkerEventType
 
 __all__ = [
     "DEFAULT_SETTINGS",
+    "MAX_STUCK_FACTOR",
+    "MAX_STUCK_THRESHOLD",
     "Anomaly",
     "AnomalyEvidence",
     "AnomalyKind",
@@ -58,6 +60,11 @@ _EVIDENCE_OF: Final[dict[WorkerEventType, AnomalyEvidence]] = {
     WorkerEventType.WORKER_TERMINATING: AnomalyEvidence.WORKER_TERMINATING,
     WorkerEventType.WORKER_READY: AnomalyEvidence.WORKER_RESTARTED,
 }
+
+# The factor's largest value and the longest ``factor x p95`` threshold. The
+# server keeps tasks for at most 3650 days, so a longer threshold never fires.
+MAX_STUCK_FACTOR: Final[int] = 100_000
+MAX_STUCK_THRESHOLD: Final[timedelta] = timedelta(days=3650)
 
 # Celery's built-ins get no p95 (they have no stats row), so they use the ceiling.
 _BUILTIN_PREFIX: Final[str] = "celery."
@@ -288,7 +295,14 @@ def _stuck(
 def _threshold(stats: RuntimeStats, settings: AnomalySettings) -> timedelta:
     """``max(k x p95, floor)`` with enough samples, else ``max(ceiling, floor)``."""
     if stats.p95_ms is not None and stats.runtime_samples >= settings.stuck_min_samples:
-        scaled = timedelta(milliseconds=settings.stuck_factor * stats.p95_ms)
+        scaled_ms = settings.stuck_factor * stats.p95_ms
+        # Total for any factor: timedelta raises OverflowError above ~8.6e16 ms,
+        # and inf x 0 is nan, which fails the comparison and takes the cap too.
+        scaled = (
+            timedelta(milliseconds=scaled_ms)
+            if scaled_ms < MAX_STUCK_THRESHOLD / _MILLISECOND
+            else MAX_STUCK_THRESHOLD
+        )
         return max(scaled, settings.stuck_floor)
     return max(settings.stuck_ceiling, settings.stuck_floor)
 

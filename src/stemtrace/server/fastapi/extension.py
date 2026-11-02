@@ -115,7 +115,7 @@ class StemtraceExtension:
                 visible ASCII characters. Unlike
                 ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
             anomaly_stuck_factor: A running task is stuck after this many times
-                its name's p95 runtime (default 3).
+                its name's p95 runtime (default 3, at most 100000).
             anomaly_stuck_floor: Never stuck sooner than this (default 10 minutes).
             anomaly_stuck_ceiling: Stuck after this long when the name has too few
                 runs to have a p95 (default 1 hour).
@@ -127,8 +127,8 @@ class StemtraceExtension:
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be
                 loaded, ``api_key`` is too short or has invalid characters, or an
-                ``anomaly_stuck_*`` value isn't positive or the floor exceeds
-                the ceiling.
+                ``anomaly_stuck_*`` value isn't positive (the factor also
+                at most 100000).
                 A bad ``auth_dependency`` doesn't raise here, but in ``router``.
         """
         self._broker_url = broker_url
@@ -203,6 +203,11 @@ class StemtraceExtension:
     def worker_registry(self) -> WorkerRegistry:
         """The worker registry for lifecycle tracking."""
         return self._worker_registry
+
+    @property
+    def worker_timeline(self) -> WorkerTimeline:
+        """The worker event history that tells an interrupted task from a running one."""
+        return self._worker_timeline
 
     @property
     def router(self) -> APIRouter:

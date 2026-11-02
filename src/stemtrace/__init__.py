@@ -280,7 +280,7 @@ def init_app(
         ConfigurationError: If no broker URL can be determined, the groups
             are invalid or their file can't be loaded, or the API key is too
             short or has invalid characters, or an ``anomaly_stuck_*`` value
-            (or its env var) isn't positive or the floor exceeds the ceiling,
+            (or its env var) isn't positive (the factor also at most 100000),
             or ``auth_dependency`` isn't a ``Depends(...)`` or
             ``Security(...)`` that wraps a callable (the app is left
             unchanged).

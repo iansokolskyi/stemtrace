@@ -218,7 +218,7 @@ def server(
             show_default=False,
             help=(
                 "A running task is stuck after this many times its name's p95 "
-                "runtime (default: 3)."
+                "runtime, up to 100000 (default: 3)."
             ),
         ),
     ] = None,
@@ -228,7 +228,7 @@ def server(
             "--anomaly-stuck-floor",
             envvar="STEMTRACE_ANOMALY_STUCK_FLOOR",
             show_default=False,
-            help="Never stuck sooner than this, e.g. 90s, 10m or 1h (default: 10m).",
+            help="Never stuck sooner than this, for example 90s, 10m or 1h (default: 10m).",
         ),
     ] = None,
     anomaly_stuck_ceiling: Annotated[
@@ -239,7 +239,7 @@ def server(
             show_default=False,
             help=(
                 "Stuck after this long when the task name has too few runs for "
-                "a p95, e.g. 30m or 2h (default: 1h)."
+                "a p95, for example 30m or 2h (default: 1h)."
             ),
         ),
     ] = None,

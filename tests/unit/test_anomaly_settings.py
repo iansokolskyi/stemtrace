@@ -14,7 +14,11 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 import stemtrace
-from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
+from stemtrace.core.anomalies import (
+    DEFAULT_SETTINGS,
+    MAX_STUCK_FACTOR,
+    AnomalySettings,
+)
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server import __main__ as cli
@@ -157,12 +161,23 @@ def test_anomaly_settings_accepts_numbers_timedeltas_and_duration_strings() -> N
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("stuck_factor", 0, "anomaly_stuck_factor must be a positive number, got 0."),
-        ("stuck_factor", -1, "anomaly_stuck_factor must be a positive number, got -1."),
-        ("stuck_factor", "abc", "must be a positive number, got 'abc'."),
+        (
+            "stuck_factor",
+            0,
+            "anomaly_stuck_factor must be a positive number of at most 100000, got 0.",
+        ),
+        (
+            "stuck_factor",
+            -1,
+            "anomaly_stuck_factor must be a positive number of at most 100000, got -1.",
+        ),
+        ("stuck_factor", "abc", "of at most 100000, got 'abc'."),
         ("stuck_factor", float("inf"), "must be a positive number"),
         ("stuck_factor", float("nan"), "must be a positive number"),
-        ("stuck_factor", True, "must be a positive number, got True."),
+        ("stuck_factor", True, "of at most 100000, got True."),
+        ("stuck_factor", 100_001, "of at most 100000, got 100001."),
+        ("stuck_factor", "1e15", "of at most 100000, got '1e15'."),
+        ("stuck_factor", 1e308, "must be a positive number of at most 100000"),
         (
             "stuck_floor",
             timedelta(0),
@@ -189,15 +204,15 @@ def test_anomaly_settings_rejects_bad_values_with_a_clear_message(
         anomaly_settings(**{field: value})
 
 
-@pytest.mark.parametrize(
-    ("floor", "ceiling"),
-    [("20m", "10m"), ("2h", None), (None, "5m")],
-)
-def test_anomaly_settings_rejects_a_floor_above_the_ceiling(
-    floor: str | None, ceiling: str | None
-) -> None:
-    with pytest.raises(ConfigurationError, match=r"floor \(\d+s\) must not exceed"):
-        anomaly_settings(stuck_floor=floor, stuck_ceiling=ceiling)
+def test_anomaly_settings_accepts_the_largest_factor() -> None:
+    assert anomaly_settings(stuck_factor=MAX_STUCK_FACTOR).stuck_factor == 100_000
+
+
+def test_anomaly_settings_accepts_a_floor_above_the_ceiling() -> None:
+    settings = anomaly_settings(stuck_floor="2h")
+
+    assert settings.stuck_floor == timedelta(hours=2)
+    assert settings.stuck_ceiling == timedelta(hours=1)
 
 
 def test_anomaly_settings_accepts_a_floor_equal_to_the_ceiling() -> None:
@@ -243,7 +258,11 @@ def test_configured_settings_treat_a_blank_env_var_as_unset(
 @pytest.mark.parametrize(
     ("env_var", "value", "message"),
     [
-        (FACTOR_ENV_VAR, "x", f"{FACTOR_ENV_VAR} must be a positive number, got 'x'."),
+        (
+            FACTOR_ENV_VAR,
+            "x",
+            f"{FACTOR_ENV_VAR} must be a positive number of at most 100000, got 'x'.",
+        ),
         (FLOOR_ENV_VAR, "0", f"{FLOOR_ENV_VAR} must be a positive duration"),
         (CEILING_ENV_VAR, "-5m", f"{CEILING_ENV_VAR} must be a positive duration"),
         (MIN_SAMPLES_ENV_VAR, "0", f"{MIN_SAMPLES_ENV_VAR} must be a whole number"),
@@ -436,12 +455,42 @@ def test_cli_with_a_bad_value_is_a_usage_error_naming_the_flag(
     assert captured_extensions == []
 
 
-def test_cli_with_a_floor_above_the_ceiling_is_a_usage_error(
-    captured_extensions: list[StemtraceExtension],
+# --- a floor above the ceiling: T = max(ceiling, floor) -------------------------
+
+_RUNNING = [task_event("run", TaskState.STARTED, 0, name="app.work", host="w@a")]
+
+
+def _thresholds(
+    extension: StemtraceExtension, minutes: int, monkeypatch: pytest.MonkeyPatch
+) -> list[int | None]:
+    """The ``threshold_ms`` of the stuck tasks ``minutes`` after the task started."""
+    for event in _RUNNING:
+        extension.store.add_event(event)
+    app = FastAPI()
+    app.include_router(extension.router)
+    now = at(minutes * 60)
+    monkeypatch.setattr(params, "utcnow", lambda: now)
+    body = TestClient(app).get("/api/anomalies?kind=stuck").json()
+    return [item["threshold_ms"] for item in body["anomalies"]]
+
+
+@pytest.mark.parametrize(("minutes", "expected"), [(90, []), (150, [7_200_000])])
+def test_floor_alone_above_the_default_ceiling_sets_the_threshold_to_the_floor(
+    minutes: int, expected: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(FLOOR_ENV_VAR, "2h")
+    extension = stemtrace.init_app(
+        FastAPI(), broker_url="memory://", embedded_consumer=False, serve_ui=False
+    )
+
+    # No finished runs, so T = max(ceiling 1 h, floor 2 h) = 2 h.
+    assert _thresholds(extension, minutes, monkeypatch) == expected
+
+
+def test_cli_with_a_floor_above_the_ceiling_starts_and_uses_the_floor(
+    captured_extensions: list[StemtraceExtension], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     code, output = _run("--anomaly-stuck-floor", "2h")
 
-    assert code == 2
-    # Typer draws the error in a box that wraps long lines.
-    assert "must not exceed" in " ".join(re.sub(r"[│╭╮╰╯─]", " ", output).split())
-    assert captured_extensions == []
+    assert code == 0, output
+    assert _thresholds(captured_extensions[0], 150, monkeypatch) == [7_200_000]

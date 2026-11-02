@@ -11,9 +11,10 @@ from stemtrace.core.anomalies import AnomalyKind
 from stemtrace.core.events import TaskState, WorkerEvent, WorkerEventType
 from stemtrace.server.api import routes
 from stemtrace.server.fastapi.auth import require_api_key
+from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
-from tests.unit.anomaly_api import freeze_clock, get, make_app, seeded
+from tests.unit.anomaly_api import freeze_clock, get, make_app, seeded, seeded_events
 from tests.unit.anomaly_pipeline import at, task_event
 
 ORDER = ["s0", "s1", "i1", "i2", "s2"]
@@ -289,3 +290,22 @@ async def test_anomalies_without_a_worker_timeline_never_report_interrupted() ->
     assert body["counts"] == {**ZERO_COUNTS, "stuck": 5}
     assert {i["kind"] for i in body["anomalies"]} == {"stuck"}
     assert _ids(body) == ORDER
+
+
+async def test_extension_worker_timeline_feeds_interrupted_for_a_custom_consumer() -> (
+    None
+):
+    extension = StemtraceExtension(
+        broker_url="memory://", embedded_consumer=False, serve_ui=False
+    )
+    tasks, workers = seeded_events()
+    for event in tasks:
+        extension.store.add_event(event)
+    for worker in workers:
+        extension.worker_timeline.record(worker)
+    app = FastAPI()
+    app.include_router(extension.router)
+
+    body = (await get(app, "/api/anomalies?kind=interrupted")).json()
+
+    assert _ids(body) == ["i1", "i2"]

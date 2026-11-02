@@ -299,12 +299,13 @@ never has one.
   each node in `GET /api/graphs` and `GET /api/graphs/{root_id}`. `anomaly_detail` on
   `GET /api/tasks/{id}` has the same fields as a list item.
 - Each request judges all the tasks the server holds, in a worker thread, so it adds work to
-  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks on a 2-vCPU host, it adds about 40 to 55 ms per request.
+  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks on a 2-vCPU host, the p95 of `GET /api/tasks` went from 35 to
+  38 ms to 80 to 86 ms, and that of `GET /api/graphs` from 14 to 15 ms to 62 to 67 ms.
 
 ### Stuck
 
 A task is **stuck** when its state is STARTED and no result or progress has been seen for
-longer than a threshold. The threshold is `max(factor x p95, floor)`, where `p95` is the 95th
+longer than a threshold. The threshold is `max(factor × p95, floor)`, where `p95` is the 95th
 percentile of the runtimes of the finished runs of the same task name (the same numbers as
 `GET /api/stats/tasks`). A name with fewer than `min_samples` such runs has no usable p95, so
 its threshold is `max(ceiling, floor)`. `celery.*` tasks never have a p95. The task is stuck once
@@ -340,9 +341,10 @@ is both stuck and interrupted is reported as interrupted.
 | `min_samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `--anomaly-stuck-min-samples` | `anomaly_stuck_min_samples` | `5` |
 
 Durations are a number and a unit (`90s`, `10m`, `1h`, `7d`; at most `3650d`), or a
-`timedelta` in Python. `factor` is a positive number and `min_samples` is a whole number of at
-least 1. Every value must be positive and the floor can't exceed the ceiling, or startup
-raises `ConfigurationError` (the CLI exits with a usage error). An argument wins over the env var,
+`timedelta` in Python. `factor` is a positive number of at most 100,000 and `min_samples` is a
+whole number of at least 1. A bad value raises `ConfigurationError` at startup (the CLI exits
+with a usage error). The floor can be above the ceiling: a name with too few runs then uses the
+floor. A `factor × p95` threshold never exceeds 3,650 days, the longest the server keeps a task. An argument wins over the env var,
 and a blank env var counts as unset. `StemtraceExtension` doesn't read the env vars; `init_app`
 and `stemtrace server` do.
 
@@ -377,7 +379,7 @@ and `stemtrace server` do.
   nodename and 1,024 nodenames, and `max_nodes` tasks. A task evicted from the store has no flag,
   its runtimes leave the p95, and an evicted nodename loses its evidence.
 - **No worker timeline, no interrupted.** `create_router` and `create_api_router` report nothing as
-  interrupted unless you pass the `worker_timeline` that your consumer feeds.
+  interrupted unless you pass the `worker_timeline` that your consumer feeds (`StemtraceExtension.worker_timeline`).
 
 ## Summary endpoints
 

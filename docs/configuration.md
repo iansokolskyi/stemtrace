@@ -183,7 +183,7 @@ If the argument is missing, the task name is shown. This is a **server** setting
 
 ### Stuck task thresholds
 
-A STARTED task is flagged stuck when it runs for longer than `max(factor x p95, floor)`, or
+A STARTED task is flagged stuck when it runs for longer than `max(factor × p95, floor)`, or
 `max(ceiling, floor)` for a task name with fewer than `min_samples` finished runs. Four server
 settings control it:
 
@@ -195,7 +195,7 @@ settings control it:
 | `--anomaly-stuck-min-samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `anomaly_stuck_min_samples` | `5` |
 
 Durations are `90s`, `10m`, `1h` or `7d` (a `timedelta` in Python). Values must be positive, and
-the floor can't exceed the ceiling. See [Stuck and interrupted
+`factor` at most 100,000. The floor can be above the ceiling. See [Stuck and interrupted
 tasks](features.md#stuck-and-interrupted-tasks) for what the flags mean and their limits.
 
 ### Task groups
