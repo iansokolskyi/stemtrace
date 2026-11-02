@@ -102,7 +102,9 @@ def classifier_facts(
     links: list[LinkLike] = []
     started_names: set[str] = set()
     for r in records:
-        if r.state == TaskState.STARTED or (r.state == TaskState.RETRY and r.cancelled):
+        if r.state in (TaskState.STARTED, TaskState.PENDING) or (
+            r.state == TaskState.RETRY and r.cancelled
+        ):
             nodes.extend(node_facts((r,)))
             if r.state == TaskState.STARTED:
                 started_names.add(r.name)

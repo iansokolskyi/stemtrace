@@ -8,6 +8,7 @@ from pathlib import Path
 from stemtrace.core.anomalies import (
     AnomalyReport,
     AnomalySettings,
+    RegistryFacts,
     classify_anomalies,
 )
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
@@ -90,6 +91,7 @@ def classify(
     settings: AnomalySettings = SMALL,
     max_nodes: int = 10_000,
     timeline: WorkerTimeline | None = None,
+    registry: RegistryFacts | None = None,
 ) -> AnomalyReport:
     """Feed the raw events to a real store and timeline, then classify."""
     store = GraphStore(max_nodes=max_nodes)
@@ -100,7 +102,9 @@ def classify(
         timeline.record(worker)
     moment = now if isinstance(now, datetime) else at(now)
     facts = classifier_facts(store.run_records(), timeline.snapshot(), moment)
-    return classify_anomalies(**facts._asdict(), now=moment, settings=settings)
+    return classify_anomalies(
+        **facts._asdict(), now=moment, settings=settings, registry=registry
+    )
 
 
 def load_recording(name: str) -> list[TaskEvent | WorkerEvent]:
