@@ -2264,6 +2264,7 @@ class TestApiRouteTable:
             "/api/stats/tasks",
             "/api/workers",
             "/api/workers/{hostname}",
+            "/api/anomalies",
         ]
         # Each GET route, then a HEAD route for it (kept out of the schema).
         assert table == [(path, ["GET"]) for path in get_paths] + [

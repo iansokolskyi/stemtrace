@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, params
 
+from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
 from stemtrace.core.exceptions import ConfigurationError
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.api.websocket import create_websocket_router
@@ -16,7 +17,7 @@ from stemtrace.server.fastapi.api_key import (
 )
 from stemtrace.server.fastapi.key_or_dependency import include_key_or_dependency
 from stemtrace.server.fastapi.login_throttle import LoginThrottle
-from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from stemtrace.server.websocket import WebSocketManager
 
 if TYPE_CHECKING:
@@ -57,6 +58,8 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     groups: GroupsInput = None,
     api_key: str | None = None,
     auth_throttle: LoginThrottle | None = None,
+    worker_timeline: WorkerTimeline | None = None,
+    anomaly_settings: AnomalySettings = DEFAULT_SETTINGS,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension.
 
@@ -83,6 +86,11 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
             (except the liveness probe) and the WebSocket.
         auth_throttle: Counts failed keys per client IP (a new one if None;
             pass the login's to share its counts).
+        worker_timeline: The timeline your consumer feeds with worker events
+            (``StemtraceExtension`` passes its own). Without one, no task is
+            reported interrupted.
+        anomaly_settings: Thresholds for stuck tasks; build them with
+            ``stemtrace.server.anomaly_settings.anomaly_settings()``.
 
     Raises:
         ConfigurationError: Here, not on the first request, if ``groups`` is
@@ -111,6 +119,8 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         broker_url=broker_url,
         node_alias_from_arguments=node_alias_from_arguments,
         groups=groups,
+        worker_timeline=worker_timeline,
+        anomaly_settings=anomaly_settings,
     )
     ws_router = create_websocket_router(
         ws_manager, form_auth_config=form_auth_config, api_key_guard=guard

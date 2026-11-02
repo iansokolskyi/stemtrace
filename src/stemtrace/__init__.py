@@ -18,6 +18,7 @@ Example:
 import logging
 import os
 import warnings
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from stemtrace._version import __version__
@@ -30,6 +31,7 @@ from stemtrace.library.bootsteps import register_bootsteps
 from stemtrace.library.config import StemtraceConfig, _reset_config, set_config
 from stemtrace.library.config import get_config as _get_config
 from stemtrace.library.signals import connect_signals
+from stemtrace.server.anomaly_settings import configured_anomaly_settings
 from stemtrace.server.fastapi import (
     StemtraceExtension,
     create_router,
@@ -211,6 +213,10 @@ def init_app(
     node_alias_from_arguments: str | None = None,
     groups: GroupsInput = None,
     api_key: str | None = None,
+    anomaly_stuck_factor: float | str | None = None,
+    anomaly_stuck_floor: timedelta | str | None = None,
+    anomaly_stuck_ceiling: timedelta | str | None = None,
+    anomaly_stuck_min_samples: int | str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -254,6 +260,18 @@ def init_app(
             needs the key). At least 16 visible ASCII
             characters. If None or blank, uses the STEMTRACE_API_KEY env var
             (blank means unset).
+        anomaly_stuck_factor: A running task is stuck after this many times its
+            name's p95 runtime (default 3). If None or blank, uses the
+            STEMTRACE_ANOMALY_STUCK_FACTOR env var.
+        anomaly_stuck_floor: Never stuck sooner than this (default 10 minutes).
+            A ``timedelta`` or a string like ``90s``, ``10m`` or ``1h``. If None
+            or blank, uses STEMTRACE_ANOMALY_STUCK_FLOOR.
+        anomaly_stuck_ceiling: Stuck after this long when the name has too few
+            runs for a p95 (default 1 hour). If None or blank, uses
+            STEMTRACE_ANOMALY_STUCK_CEILING.
+        anomaly_stuck_min_samples: Completed runs a name needs before its p95
+            counts (default 5). If None or blank, uses
+            STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES.
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -261,9 +279,11 @@ def init_app(
     Raises:
         ConfigurationError: If no broker URL can be determined, the groups
             are invalid or their file can't be loaded, or the API key is too
-            short or has invalid characters, or ``auth_dependency`` isn't a
-            ``Depends(...)`` or ``Security(...)`` that wraps a callable (the
-            app is left unchanged).
+            short or has invalid characters, or an ``anomaly_stuck_*`` value
+            (or its env var) isn't positive (the factor also at most 100000),
+            or ``auth_dependency`` isn't a ``Depends(...)`` or
+            ``Security(...)`` that wraps a callable (the app is left
+            unchanged).
     """
     if broker_url is None:
         broker_url = os.getenv("STEMTRACE_BROKER_URL")
@@ -287,6 +307,12 @@ def init_app(
     check_auth_dependency(auth_dependency)
     group_config = configured_groups(groups)
     effective_api_key = configured_api_key(api_key)
+    stuck = configured_anomaly_settings(
+        stuck_factor=anomaly_stuck_factor,
+        stuck_floor=anomaly_stuck_floor,
+        stuck_ceiling=anomaly_stuck_ceiling,
+        stuck_min_samples=anomaly_stuck_min_samples,
+    )
 
     mount_prefix = f"/{prefix.strip('/')}"
 
@@ -324,6 +350,10 @@ def init_app(
         node_alias_from_arguments=node_alias,
         groups=group_config,
         api_key=effective_api_key,
+        anomaly_stuck_factor=stuck.stuck_factor,
+        anomaly_stuck_floor=stuck.stuck_floor,
+        anomaly_stuck_ceiling=stuck.stuck_ceiling,
+        anomaly_stuck_min_samples=stuck.stuck_min_samples,
     )
     if form_auth_config is not None:
         _install_stemtrace_form_auth(

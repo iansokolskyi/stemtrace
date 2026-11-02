@@ -9,6 +9,7 @@ either `stemtrace server` or `stemtrace.init_app(...)` inside your FastAPI app.
   - [Received events (opt-in)](#received-events-opt-in)
 - [Server options](#server-options)
   - [Node names from task arguments](#node-names-from-task-arguments)
+  - [Stuck task thresholds](#stuck-task-thresholds)
 - [Embedded server options (`init_app`)](#embedded-server-options-init_app)
 - [Environment variables](#environment-variables)
 
@@ -152,6 +153,7 @@ stemtrace server \
     --port 8000 \
     --node-alias-from-arguments operator_type \
     --groups groups.toml \
+    --anomaly-stuck-ceiling 2h \
     --api-key "$STEMTRACE_API_KEY" \
     --root-path /monitoring \
     --reload  # For development
@@ -178,6 +180,23 @@ If the argument is missing, the task name is shown. This is a **server** setting
 `stemtrace server` prints `Node alias: <key>` at startup when it is set. Workers need
 `capture_args=True` (the default) so the arguments are available. Passing it to
 `stemtrace.init_worker(...)` has no effect and is deprecated.
+
+### Stuck task thresholds
+
+A STARTED task is flagged stuck when it runs for longer than `max(factor × p95, floor)`, or
+`max(ceiling, floor)` for a task name with fewer than `min_samples` finished runs. Four server
+settings control it:
+
+| Flag | Env var | `init_app` argument | Default |
+|---|---|---|---|
+| `--anomaly-stuck-factor` | `STEMTRACE_ANOMALY_STUCK_FACTOR` | `anomaly_stuck_factor` | `3` |
+| `--anomaly-stuck-floor` | `STEMTRACE_ANOMALY_STUCK_FLOOR` | `anomaly_stuck_floor` | `10m` |
+| `--anomaly-stuck-ceiling` | `STEMTRACE_ANOMALY_STUCK_CEILING` | `anomaly_stuck_ceiling` | `1h` |
+| `--anomaly-stuck-min-samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `anomaly_stuck_min_samples` | `5` |
+
+Durations are `90s`, `10m`, `1h` or `7d` (a `timedelta` in Python). Values must be positive, and
+`factor` at most 100,000. The floor can be above the ceiling. See [Stuck and interrupted
+tasks](features.md#stuck-and-interrupted-tasks) for what the flags mean and their limits.
 
 ### Task groups
 
@@ -271,6 +290,7 @@ extension = stemtrace.init_app(
     api_key=None,               # Bearer key for scripts/agents; see Security: API key
     node_alias_from_arguments=None,  # e.g. "operator_type" or "0"; see Node Names from Task Arguments
     groups=None,                # Task group rules or a TOML path; see Task groups
+    anomaly_stuck_ceiling="1h",  # Also anomaly_stuck_factor, _floor, _min_samples; see Stuck task thresholds
 )
 ```
 
@@ -308,6 +328,7 @@ stemtrace.init_app(
 | `STEMTRACE_API_KEY` | Server only: require `Authorization: Bearer <key>` on the JSON API and WebSocket (see [Security: API key](security.md#api-key-for-scripts-and-coding-agents)). Same as `--api-key` / `init_app(api_key=...)`. At least 16 characters. | Unset (no key). |
 | `STEMTRACE_NODE_ALIAS_FROM_ARGUMENTS` | Server only: show a task argument as the graph node name (see [Node names from task arguments](#node-names-from-task-arguments)). Same as `--node-alias-from-arguments` / `init_app(node_alias_from_arguments=...)`. | Unset (task names are shown). |
 | `STEMTRACE_GROUPS` | Server only: path to a TOML file of code-defined task groups (see [Task groups](#task-groups)). Same as `--groups`; `init_app(groups=...)` wins over it. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension` or `create_router`. | Unset (automatic groups only). |
+| `STEMTRACE_ANOMALY_STUCK_FACTOR`, `STEMTRACE_ANOMALY_STUCK_FLOOR`, `STEMTRACE_ANOMALY_STUCK_CEILING`, `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | Server only: when a running task counts as stuck (see [Stuck task thresholds](#stuck-task-thresholds)). Same as the `--anomaly-stuck-*` flags; an `init_app()` argument wins. Read by `stemtrace server` and `init_app()` only, not by `StemtraceExtension`. | `3`, `10m`, `1h`, `5`. |
 
 `STEMTRACE_LOGIN_SECRET` and `FORWARDED_ALLOW_IPS` are described with the built-in login in
 [Security](security.md#built-in-login-page).
