@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel
 
+from stemtrace.core.anomalies import RegistryFacts
 from stemtrace.core.events import TaskState, WorkerEventType
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
@@ -300,6 +301,11 @@ class WorkerRegistry:
         # asked; an event applied since is newer than it (see apply_stats_reply).
         self._event_generation: dict[str, int] = {}
         self._task_definitions_by_name: dict[str, RegisteredTaskDefinition] = {}
+        # When the last inspect reply listed the tasks of every node that
+        # answered. Not the refresher's clock, which also moves on empty and
+        # ping-only replies; kept apart from the workers, so the cleanup that
+        # deletes them leaves it.
+        self._authority_at: datetime | None = None
         self._lock = threading.RLock()
 
     def register_worker(
@@ -515,6 +521,8 @@ class WorkerRegistry:
         self,
         seen: Mapping[str, int],
         replies: Mapping[str, tuple[int | None, list[str] | None]],
+        *,
+        now: datetime | None = None,
     ) -> None:
         """Apply a non-empty ``inspect.stats()`` reply, atomically.
 
@@ -533,6 +541,7 @@ class WorkerRegistry:
             seen: ``event_generations()`` taken before the inspect call.
             replies: Nodename -> (pid or None, registered task names or None).
                 None tasks keep the worker's current list.
+            now: When the reply arrived (tests); defaults to now.
         """
         with self._lock:
             for worker in self._workers.values():
@@ -541,7 +550,11 @@ class WorkerRegistry:
                 ):
                     worker.status = WorkerStatus.OFFLINE
 
-            now = datetime.now(timezone.utc)
+            now = now or datetime.now(timezone.utc)
+            # A node with no list (``registered()`` failed or missed it) keeps
+            # its old one, which may be stale: the registry isn't authoritative.
+            if replies and all(tasks is not None for _, tasks in replies.values()):
+                self._authority_at = now
             for nodename, (pid, tasks) in replies.items():
                 if self._is_stale(nodename, seen):
                     continue
@@ -551,6 +564,23 @@ class WorkerRegistry:
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
                 self.mark_node_alive(nodename, pid)
+
+    def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
+        """Copy what the anomaly classifier needs: online names, any online, authority time.
+
+        Args:
+            broker_configured: Whether the server can inspect a broker.
+        """
+        with self._lock:
+            online = [
+                w for w in self._workers.values() if w.status == WorkerStatus.ONLINE
+            ]
+            return RegistryFacts(
+                online_names=frozenset(t for w in online for t in w.registered_tasks),
+                any_online=bool(online),
+                authority_at=self._authority_at,
+                broker_configured=broker_configured,
+            )
 
     def apply_ping_reply(self, nodenames: Iterable[str]) -> None:
         """Apply an ``inspect.ping()`` reply.
