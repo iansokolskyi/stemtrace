@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 
@@ -66,6 +67,10 @@ logger = logging.getLogger(__name__)
 # Workers never register these (library/signals.py filters the same prefix).
 _CELERY_BUILTIN_PREFIX = "celery."
 
+# Celery 5.6.3 worker/control.py registered() appends "name [rate_limit=10/m ...]"
+# for the DEFAULT_TASK_INFO_ITEMS a task sets.
+_TASK_INFO_SUFFIX = re.compile(r" \[(?:exchange|routing_key|rate_limit)=.*\]\Z")
+
 
 def _monotonic() -> float:
     """Return a monotonic clock reading.
@@ -103,7 +108,7 @@ def _tasks_for_worker_key(
     tasks: list[str] = []
     for t in tasks_obj:
         if isinstance(t, str) and not t.startswith(_CELERY_BUILTIN_PREFIX):
-            tasks.append(t)
+            tasks.append(_TASK_INFO_SUFFIX.sub("", t))
     return tasks
 
 
