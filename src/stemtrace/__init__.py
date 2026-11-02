@@ -217,6 +217,8 @@ def init_app(
     anomaly_stuck_floor: timedelta | str | None = None,
     anomaly_stuck_ceiling: timedelta | str | None = None,
     anomaly_stuck_min_samples: int | str | None = None,
+    anomaly_pending_grace: timedelta | str | None = None,
+    anomaly_registry_window: timedelta | str | None = None,
 ) -> StemtraceExtension:
     """Initialize stemtrace as a FastAPI extension.
 
@@ -272,6 +274,12 @@ def init_app(
         anomaly_stuck_min_samples: Completed runs a name needs before its p95
             counts (default 5). If None or blank, uses
             STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES.
+        anomaly_pending_grace: How long a task may wait for a worker that knows
+            its name before it counts as unregistered (default 5 minutes). If
+            None or blank, uses STEMTRACE_ANOMALY_PENDING_GRACE.
+        anomaly_registry_window: How recent the last inspect reply must be for
+            task names to be trusted (default 10 minutes). If None or blank,
+            uses STEMTRACE_ANOMALY_REGISTRY_WINDOW.
 
     Returns:
         The initialized StemtraceExtension instance.
@@ -279,7 +287,7 @@ def init_app(
     Raises:
         ConfigurationError: If no broker URL can be determined, the groups
             are invalid or their file can't be loaded, or the API key is too
-            short or has invalid characters, or an ``anomaly_stuck_*`` value
+            short or has invalid characters, or an ``anomaly_*`` value
             (or its env var) isn't positive (the factor also at most 100000),
             or ``auth_dependency`` isn't a ``Depends(...)`` or
             ``Security(...)`` that wraps a callable (the app is left
@@ -312,6 +320,8 @@ def init_app(
         stuck_floor=anomaly_stuck_floor,
         stuck_ceiling=anomaly_stuck_ceiling,
         stuck_min_samples=anomaly_stuck_min_samples,
+        pending_grace=anomaly_pending_grace,
+        authority_window=anomaly_registry_window,
     )
 
     mount_prefix = f"/{prefix.strip('/')}"
@@ -354,6 +364,8 @@ def init_app(
         anomaly_stuck_floor=stuck.stuck_floor,
         anomaly_stuck_ceiling=stuck.stuck_ceiling,
         anomaly_stuck_min_samples=stuck.stuck_min_samples,
+        anomaly_pending_grace=stuck.pending_grace,
+        anomaly_registry_window=stuck.authority_window,
     )
     if form_auth_config is not None:
         _install_stemtrace_form_auth(

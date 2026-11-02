@@ -1,9 +1,10 @@
-"""The four stuck settings: kwargs, env vars, CLI flags, validation and effect."""
+"""The six anomaly settings: kwargs, env vars, CLI flags, validation and effect."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -26,7 +27,9 @@ from stemtrace.server.anomaly_settings import (
     CEILING_ENV_VAR,
     FACTOR_ENV_VAR,
     FLOOR_ENV_VAR,
+    GRACE_ENV_VAR,
     MIN_SAMPLES_ENV_VAR,
+    WINDOW_ENV_VAR,
     anomaly_settings,
     configured_anomaly_settings,
 )
@@ -36,13 +39,31 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.ui import static
 from tests.unit.anomaly_pipeline import at, completed_runs, task_event
 
-ALL_ENV = [FACTOR_ENV_VAR, FLOOR_ENV_VAR, CEILING_ENV_VAR, MIN_SAMPLES_ENV_VAR]
+ALL_ENV = [
+    FACTOR_ENV_VAR,
+    FLOOR_ENV_VAR,
+    CEILING_ENV_VAR,
+    MIN_SAMPLES_ENV_VAR,
+    GRACE_ENV_VAR,
+    WINDOW_ENV_VAR,
+]
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _confirmed_at(seconds: float) -> Callable[[StemtraceExtension], None]:
+    """Seed the registry: one online worker, its tasks confirmed at ``seconds`` after T0."""
+
+    def seed(extension: StemtraceExtension) -> None:
+        extension.worker_registry.apply_stats_reply(
+            {}, {"w@a": (1, ["app.known"])}, now=at(seconds)
+        )
+
+    return seed
 
 
 @dataclass(frozen=True)
 class Flip:
-    """A scenario that is not stuck by default and is stuck with one setting changed."""
+    """A scenario that is not flagged by default and is with one setting changed."""
 
     events: list[TaskEvent]
     now_s: float
@@ -50,6 +71,9 @@ class Flip:
     value: str
     env_var: str
     flag: str
+    kind: str = "stuck"
+    flagged: list[str] = field(default_factory=lambda: ["run"])
+    seed: Callable[[StemtraceExtension], None] | None = None
 
 
 def _one_running(seconds: float = 0) -> TaskEvent:
@@ -93,27 +117,53 @@ FLIPS = {
         MIN_SAMPLES_ENV_VAR,
         "--anomaly-stuck-min-samples",
     ),
+    # PENDING 3 min, confirmed 30 s ago: under the 5 min grace, over 1 min.
+    "grace": Flip(
+        [task_event("wait", TaskState.PENDING, 0, name="app.new")],
+        3 * 60,
+        "anomaly_pending_grace",
+        "1m",
+        GRACE_ENV_VAR,
+        "--anomaly-pending-grace",
+        kind="unregistered",
+        flagged=["app.new"],
+        seed=_confirmed_at(3 * 60 - 30),
+    ),
+    # PENDING 20 min, confirmed 12 min ago: over the 10 min window, under 15 min.
+    "window": Flip(
+        [task_event("wait", TaskState.PENDING, 0, name="app.new")],
+        20 * 60,
+        "anomaly_registry_window",
+        "15m",
+        WINDOW_ENV_VAR,
+        "--anomaly-registry-window",
+        kind="unregistered",
+        flagged=["app.new"],
+        seed=_confirmed_at(20 * 60 - 12 * 60),
+    ),
 }
 
 
 def _typed(kwarg: str, value: str) -> Any:
     """The kwarg as a Python caller writes it: a timedelta, float or int."""
-    if kwarg.endswith(("floor", "ceiling")):
+    if kwarg.endswith(("floor", "ceiling", "grace", "window")):
         return timedelta(minutes=int(value.rstrip("m")))
     return float(value) if kwarg.endswith("factor") else int(value)
 
 
-def _stuck_ids(
+def _flagged_ids(
     extension: StemtraceExtension, flip: Flip, monkeypatch: pytest.MonkeyPatch
 ) -> list[str]:
     for event in flip.events:
         extension.store.add_event(event)
+    if flip.seed is not None:
+        flip.seed(extension)
     now = at(flip.now_s)
     monkeypatch.setattr(params, "utcnow", lambda: now)
     app = FastAPI()
     app.include_router(extension.router)
-    body = TestClient(app).get("/api/anomalies?kind=stuck").json()
-    return [item["task_id"] for item in body["anomalies"]]
+    body = TestClient(app).get(f"/api/anomalies?kind={flip.kind}").json()
+    return [item["task_id"] or item["name"] for item in body["anomalies"]]
 
 
 def _extension(**kwargs: Any) -> StemtraceExtension:
@@ -144,7 +194,14 @@ def _no_inspect(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_anomaly_settings_without_input_is_the_documented_default() -> None:
     assert anomaly_settings() == DEFAULT_SETTINGS
     assert (
-        AnomalySettings(3, timedelta(minutes=10), timedelta(hours=1), 5)
+        AnomalySettings(
+            3,
+            timedelta(minutes=10),
+            timedelta(hours=1),
+            5,
+            timedelta(minutes=5),
+            timedelta(minutes=10),
+        )
         == DEFAULT_SETTINGS
     )
 
@@ -155,7 +212,16 @@ def test_anomaly_settings_accepts_numbers_timedeltas_and_duration_strings() -> N
         stuck_floor=timedelta(seconds=90),
         stuck_ceiling="2h",
         stuck_min_samples=7,
-    ) == AnomalySettings(2.5, timedelta(seconds=90), timedelta(hours=2), 7)
+        pending_grace="30s",
+        authority_window=timedelta(minutes=3),
+    ) == AnomalySettings(
+        2.5,
+        timedelta(seconds=90),
+        timedelta(hours=2),
+        7,
+        timedelta(seconds=30),
+        timedelta(minutes=3),
+    )
 
 
 @pytest.mark.parametrize(
@@ -189,6 +255,22 @@ def test_anomaly_settings_accepts_numbers_timedeltas_and_duration_strings() -> N
         ("stuck_floor", "-1h", "must be a positive duration"),
         ("stuck_floor", 600, "must be a positive duration"),
         ("stuck_ceiling", "4000d", "at most 3650d"),
+        (
+            "pending_grace",
+            timedelta(0),
+            "anomaly_pending_grace must be a positive duration",
+        ),
+        ("pending_grace", "0m", "must be a positive duration"),
+        ("pending_grace", "5", "must be a positive duration like 90s"),
+        ("pending_grace", "4000d", "at most 3650d"),
+        (
+            "authority_window",
+            timedelta(seconds=-1),
+            "anomaly_registry_window must be a positive duration",
+        ),
+        ("authority_window", "-1h", "must be a positive duration"),
+        ("authority_window", 600, "must be a positive duration"),
+        ("authority_window", timedelta(days=4000), "at most 3650d"),
         ("stuck_ceiling", timedelta(days=4000), "at most 3650d"),
         ("stuck_min_samples", 0, "anomaly_stuck_min_samples must be a whole number"),
         ("stuck_min_samples", -3, "must be a whole number of at least 1, got -3."),
@@ -229,9 +311,16 @@ def test_configured_settings_read_each_env_var(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv(FLOOR_ENV_VAR, "90s")
     monkeypatch.setenv(CEILING_ENV_VAR, "2h")
     monkeypatch.setenv(MIN_SAMPLES_ENV_VAR, "8")
+    monkeypatch.setenv(GRACE_ENV_VAR, "2m")
+    monkeypatch.setenv(WINDOW_ENV_VAR, "1h")
 
     assert configured_anomaly_settings() == AnomalySettings(
-        2.0, timedelta(seconds=90), timedelta(hours=2), 8
+        2.0,
+        timedelta(seconds=90),
+        timedelta(hours=2),
+        8,
+        timedelta(minutes=2),
+        timedelta(hours=1),
     )
 
 
@@ -242,6 +331,20 @@ def test_configured_settings_prefer_the_argument_over_the_env_var(
 
     assert configured_anomaly_settings(stuck_ceiling="30m").stuck_ceiling == timedelta(
         minutes=30
+    )
+
+
+def test_configured_settings_prefer_the_new_arguments_over_their_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(GRACE_ENV_VAR, "2m")
+    monkeypatch.setenv(WINDOW_ENV_VAR, "1h")
+
+    got = configured_anomaly_settings(pending_grace="7m", authority_window="9m")
+
+    assert (got.pending_grace, got.authority_window) == (
+        timedelta(minutes=7),
+        timedelta(minutes=9),
     )
 
 
@@ -266,6 +369,8 @@ def test_configured_settings_treat_a_blank_env_var_as_unset(
         (FLOOR_ENV_VAR, "0", f"{FLOOR_ENV_VAR} must be a positive duration"),
         (CEILING_ENV_VAR, "-5m", f"{CEILING_ENV_VAR} must be a positive duration"),
         (MIN_SAMPLES_ENV_VAR, "0", f"{MIN_SAMPLES_ENV_VAR} must be a whole number"),
+        (GRACE_ENV_VAR, "0", f"{GRACE_ENV_VAR} must be a positive duration"),
+        (WINDOW_ENV_VAR, "-5m", f"{WINDOW_ENV_VAR} must be a positive duration"),
     ],
 )
 def test_configured_settings_name_the_env_var_in_the_error(
@@ -284,21 +389,21 @@ def test_configured_settings_name_the_env_var_in_the_error(
 def test_default_settings_do_not_flag_the_scenario(
     setting: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert _stuck_ids(_extension(), FLIPS[setting], monkeypatch) == []
+    assert _flagged_ids(_extension(), FLIPS[setting], monkeypatch) == []
 
 
 @pytest.mark.parametrize("setting", FLIPS)
-def test_extension_kwarg_changes_the_stuck_threshold(
+def test_extension_kwarg_changes_what_is_flagged(
     setting: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flip = FLIPS[setting]
     extension = _extension(**{flip.kwarg: _typed(flip.kwarg, flip.value)})
 
-    assert _stuck_ids(extension, flip, monkeypatch) == ["run"]
+    assert _flagged_ids(extension, flip, monkeypatch) == flip.flagged
 
 
 @pytest.mark.parametrize("setting", FLIPS)
-def test_init_app_env_var_changes_the_stuck_threshold(
+def test_init_app_env_var_changes_what_is_flagged(
     setting: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flip = FLIPS[setting]
@@ -307,11 +412,11 @@ def test_init_app_env_var_changes_the_stuck_threshold(
         FastAPI(), broker_url="memory://", embedded_consumer=False, serve_ui=False
     )
 
-    assert _stuck_ids(extension, flip, monkeypatch) == ["run"]
+    assert _flagged_ids(extension, flip, monkeypatch) == flip.flagged
 
 
 @pytest.mark.parametrize("setting", FLIPS)
-def test_init_app_kwarg_changes_the_stuck_threshold(
+def test_init_app_kwarg_changes_what_is_flagged(
     setting: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flip = FLIPS[setting]
@@ -323,7 +428,7 @@ def test_init_app_kwarg_changes_the_stuck_threshold(
         **{flip.kwarg: _typed(flip.kwarg, flip.value)},
     )
 
-    assert _stuck_ids(extension, flip, monkeypatch) == ["run"]
+    assert _flagged_ids(extension, flip, monkeypatch) == flip.flagged
 
 
 def test_init_app_kwarg_wins_over_the_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,7 +442,7 @@ def test_init_app_kwarg_wins_over_the_env_var(monkeypatch: pytest.MonkeyPatch) -
         anomaly_stuck_ceiling="2h",
     )
 
-    assert _stuck_ids(extension, flip, monkeypatch) == []
+    assert _flagged_ids(extension, flip, monkeypatch) == []
 
 
 @pytest.mark.parametrize("setting", FLIPS)
@@ -392,7 +497,7 @@ def _run(*args: str, env: dict[str, str] | None = None) -> tuple[int, str]:
 
 
 @pytest.mark.parametrize("setting", FLIPS)
-def test_cli_flag_changes_the_stuck_threshold(
+def test_cli_flag_changes_what_is_flagged(
     setting: str,
     captured_extensions: list[StemtraceExtension],
     monkeypatch: pytest.MonkeyPatch,
@@ -402,11 +507,11 @@ def test_cli_flag_changes_the_stuck_threshold(
     code, output = _run(flip.flag, flip.value)
 
     assert code == 0, output
-    assert _stuck_ids(captured_extensions[0], flip, monkeypatch) == ["run"]
+    assert _flagged_ids(captured_extensions[0], flip, monkeypatch) == flip.flagged
 
 
 @pytest.mark.parametrize("setting", FLIPS)
-def test_cli_env_var_changes_the_stuck_threshold(
+def test_cli_env_var_changes_what_is_flagged(
     setting: str,
     captured_extensions: list[StemtraceExtension],
     monkeypatch: pytest.MonkeyPatch,
@@ -416,7 +521,7 @@ def test_cli_env_var_changes_the_stuck_threshold(
     code, output = _run(env={flip.env_var: flip.value})
 
     assert code == 0, output
-    assert _stuck_ids(captured_extensions[0], flip, monkeypatch) == ["run"]
+    assert _flagged_ids(captured_extensions[0], flip, monkeypatch) == flip.flagged
 
 
 def test_cli_flag_wins_over_the_env_var(
@@ -427,7 +532,7 @@ def test_cli_flag_wins_over_the_env_var(
     code, output = _run(flip.flag, "2h", env={flip.env_var: "20m"})
 
     assert code == 0, output
-    assert _stuck_ids(captured_extensions[0], flip, monkeypatch) == []
+    assert _flagged_ids(captured_extensions[0], flip, monkeypatch) == []
 
 
 @pytest.mark.parametrize("setting", FLIPS)
@@ -439,7 +544,7 @@ def test_cli_without_flags_uses_the_defaults(
     code, output = _run(env={FLIPS[setting].env_var: " "})
 
     assert code == 0, output
-    assert _stuck_ids(captured_extensions[0], FLIPS[setting], monkeypatch) == []
+    assert _flagged_ids(captured_extensions[0], FLIPS[setting], monkeypatch) == []
 
 
 @pytest.mark.parametrize("setting", FLIPS)
