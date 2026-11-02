@@ -29,12 +29,13 @@ def _event(
     hostname: str = "celery@w1",
     pid: int = 100,
     seconds: float = 0,
+    base: datetime = T0,
 ) -> WorkerEvent:
     return WorkerEvent(
         event_type=event_type,
         hostname=hostname,
         pid=pid,
-        timestamp=T0 + timedelta(seconds=seconds),
+        timestamp=base + timedelta(seconds=seconds),
     )
 
 
@@ -228,13 +229,17 @@ def test_events_for_unknown_nodename_returns_empty_list() -> None:
 
 
 def _naive_event(
-    event_type: WorkerEventType, *, hostname: str = "celery@w1", seconds: float = 0
+    event_type: WorkerEventType,
+    *,
+    hostname: str = "celery@w1",
+    seconds: float = 0,
+    base: datetime = T0,
 ) -> WorkerEvent:
     return WorkerEvent(
         event_type=event_type,
         hostname=hostname,
         pid=100,
-        timestamp=(T0 + timedelta(seconds=seconds)).replace(tzinfo=None),
+        timestamp=(base + timedelta(seconds=seconds)).replace(tzinfo=None),
     )
 
 
@@ -262,8 +267,10 @@ def test_record_node_bound_holds_when_a_naive_node_is_present() -> None:
 def test_consumer_naive_shutdown_after_aware_ready_still_marks_worker_offline() -> None:
     registry = WorkerRegistry()
     consumer = _consumer(WorkerTimeline(), registry)
-    consumer._handle_event(_event(READY, seconds=10))
-    consumer._handle_event(_naive_event(SHUTDOWN, seconds=20))
+    # _handle_event runs the wall-clock stale check, so stamp the events now.
+    now = datetime.now(timezone.utc)
+    consumer._handle_event(_event(READY, base=now))
+    consumer._handle_event(_naive_event(SHUTDOWN, seconds=10, base=now))
 
     assert [w.status for w in registry.get_all_workers()] == [WorkerStatus.OFFLINE]
 
@@ -276,9 +283,10 @@ class _FailingTimeline(WorkerTimeline):
 def test_consumer_failing_timeline_still_updates_registry() -> None:
     registry = WorkerRegistry()
     consumer = _consumer(_FailingTimeline(), registry)
+    now = datetime.now(timezone.utc)
 
-    consumer._handle_event(_event(READY, seconds=10))
-    consumer._handle_event(_event(SHUTDOWN, seconds=20))
+    consumer._handle_event(_event(READY, base=now))
+    consumer._handle_event(_event(SHUTDOWN, seconds=10, base=now))
 
     assert [w.status for w in registry.get_all_workers()] == [WorkerStatus.OFFLINE]
 
