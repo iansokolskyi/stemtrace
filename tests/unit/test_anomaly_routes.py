@@ -278,3 +278,14 @@ def test_create_router_hands_the_worker_timeline_to_the_api() -> None:
         "i1",
         "i2",
     ]
+
+
+async def test_anomalies_without_a_worker_timeline_never_report_interrupted() -> None:
+    store, _ = seeded()
+
+    body = await _list(make_app(store, None))
+
+    # i1 and i2 fall back to stuck: they started long ago and nothing finished them.
+    assert body["counts"] == {**ZERO_COUNTS, "stuck": 5}
+    assert {i["kind"] for i in body["anomalies"]} == {"stuck"}
+    assert _ids(body) == ORDER

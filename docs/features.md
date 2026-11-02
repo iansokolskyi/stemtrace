@@ -279,6 +279,106 @@ Limitations:
   too short (0 at worst) or empty, and a hard time limit's FAILURE after missed events can make
   the runtime too long.
 
+## Stuck and interrupted tasks
+
+stemtrace flags a task that needs attention without you reading every row. A flag is computed
+on each request from the tasks and worker events the server holds, and is never stored, so one
+appears as time passes even when no event arrives. A task has at most one flag, and only the
+task's latest attempt counts. A task that has ended, and the GROUP and CHORD nodes of a graph,
+never has one.
+
+- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged tasks, oldest
+  `since` first (ties by task ID). `kind` is `stuck` or `interrupted` (`unregistered` and
+  `no_workers_online` are accepted, and the server doesn't report them yet; any other value is
+  a `422`). `hostname` and `name` match exactly. `limit` is 1 to 500 (default 100). `counts`
+  has a number for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it
+  suits a badge; `total` counts the items that pass the filters, before `limit` and `offset`.
+  `evaluated_at` is the time the server judged at, and every `since` is in UTC.
+- `anomaly` (`stuck` or `interrupted`, else `null`) is on each task in `GET /api/tasks`, on the
+  task and its children in `GET /api/tasks/{id}` and `GET /api/tasks/{id}/children`, and on
+  each node in `GET /api/graphs` and `GET /api/graphs/{root_id}`. `anomaly_detail` on
+  `GET /api/tasks/{id}` has the same fields as a list item.
+- Each request judges all the tasks the server holds, in a worker thread, so it adds work to
+  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks on a 2-vCPU host, it adds about 40 to 55 ms per request.
+
+### Stuck
+
+A task is **stuck** when its state is STARTED and no result or progress has been seen for
+longer than a threshold. The threshold is `max(factor x p95, floor)`, where `p95` is the 95th
+percentile of the runtimes of the finished runs of the same task name (the same numbers as
+`GET /api/stats/tasks`). A name with fewer than `min_samples` such runs has no usable p95, so
+its threshold is `max(ceiling, floor)`. `celery.*` tasks never have a p95. The task is stuck once
+the time without progress is strictly longer than the threshold.
+
+Without progress means since the start, or since a later sign of progress:
+
+- the time a `replace()` replacement was due to run, or
+- the newest update of any task it started, at any depth (a chain or a group below it).
+
+The server can't tell a task that lost its result from one that still runs, so the wording is
+"no result seen". A STARTED task whose terminal event was lost is stuck until its worker's
+next restart, and then **interrupted**.
+
+### Interrupted
+
+A task is **interrupted** when its worker stopped or restarted while it ran. The server must
+have a worker event from the same nodename (`name@host`) stamped after the task's start:
+`worker_shutdown`, `worker_terminating` or a new `worker_ready`. `since` is the earliest such
+event, and `evidence` says which one (`worker_restarted` for a `worker_ready`). A task that
+Celery cancelled in a cold stop (a RETRY with the exception `cancelled by Celery`) is
+interrupted too, with `evidence` `cancelled_retry`, when its worker also shows evidence. A
+later event for the task (a redelivery's STARTED, or a result) clears the flag. A task that
+is both stuck and interrupted is reported as interrupted.
+
+### Settings
+
+| Setting | Env var | `stemtrace server` flag | `init_app` and `StemtraceExtension` argument | Default |
+|---|---|---|---|---|
+| `factor` | `STEMTRACE_ANOMALY_STUCK_FACTOR` | `--anomaly-stuck-factor` | `anomaly_stuck_factor` | `3` |
+| `floor` | `STEMTRACE_ANOMALY_STUCK_FLOOR` | `--anomaly-stuck-floor` | `anomaly_stuck_floor` | `10m` |
+| `ceiling` | `STEMTRACE_ANOMALY_STUCK_CEILING` | `--anomaly-stuck-ceiling` | `anomaly_stuck_ceiling` | `1h` |
+| `min_samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `--anomaly-stuck-min-samples` | `anomaly_stuck_min_samples` | `5` |
+
+Durations are a number and a unit (`90s`, `10m`, `1h`, `7d`; at most `3650d`), or a
+`timedelta` in Python. `factor` is a positive number and `min_samples` is a whole number of at
+least 1. Every value must be positive and the floor can't exceed the ceiling, or startup
+raises `ConfigurationError` (the CLI exits with a usage error). An argument wins over the env var,
+and a blank env var counts as unset. `StemtraceExtension` doesn't read the env vars; `init_app`
+and `stemtrace server` do.
+
+### Limitations
+
+- **No hostname, no interrupted.** A task without a `hostname` (an eager `apply()`, or a worker
+  up to 0.4.0) is never interrupted, because the server can't tell which worker ran it.
+- **Skewed clocks move stuck.** Stuck compares the server's clock with the worker's start time,
+  so a worker clock 1 hour ahead delays the flag by up to 1 hour, and one behind brings it
+  forward. A retry's RECEIVED from another host whose clock is ahead delays it by the skew too.
+  Interrupted compares two events from the same worker clock, so skew doesn't change it.
+- **A task a worker never started isn't flagged.** A task in RECEIVED whose worker died, and a
+  RETRY whose ETA passed with no next start, never become stuck.
+- **A killed worker is found at its next start.** After a SIGKILL, the task is stuck once
+  the threshold passes and interrupted only when the same nodename sends `worker_ready` again. With no
+  restart it stays stuck. Workers before 0.4.2 don't send `worker_terminating`, so their cold
+  stops are also found only at the restart.
+- **Older workers.** Workers before 0.4.2 don't send IGNORED or REJECTED, so such a task stays
+  STARTED and can be flagged stuck.
+- **A cancelled RETRY needs evidence.** Celery sends the same `cancelled by Celery` RETRY when
+  the broker connection drops, and the task can still run, so without a worker event the server
+  doesn't flag it.
+- **A busy child hides a stuck parent.** A task that started children is judged by the
+  newest update below it, so a parent that is stuck while a child keeps running isn't flagged
+  until the subtree goes quiet.
+- **Redelivery to a host that is behind.** If an `acks_late` redelivery's STARTED is stamped earlier
+  than the first start (the new host's clock is behind), the first start stays the latest
+  event and the task stays interrupted.
+- **Two machines, one nodename.** Workers that share a nodename can make the server flag a
+  task as interrupted when the other machine restarts.
+- **The server's history is bounded.** The server keeps the newest 32 worker events for each
+  nodename and 1,024 nodenames, and `max_nodes` tasks. A task evicted from the store has no flag,
+  its runtimes leave the p95, and an evicted nodename loses its evidence.
+- **No worker timeline, no interrupted.** `create_router` and `create_api_router` report nothing as
+  interrupted unless you pass the `worker_timeline` that your consumer feeds.
+
 ## Summary endpoints
 
 Aggregates over the tasks the server holds, for dashboards and scripts that shouldn't page

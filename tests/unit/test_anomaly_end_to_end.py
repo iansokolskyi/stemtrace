@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, WorkerEvent
-from stemtrace.server.api import params
+from stemtrace.server.api import params, routes
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from tests.unit.anomaly_api import NOW_S, seeded_events
 from tests.unit.anomaly_pipeline import SMALL, at, classify
@@ -45,6 +45,11 @@ def test_anomalies_after_a_real_consumer_equal_the_classifier_on_the_same_events
     transport = _ReplayTransport(stream)
     now = at(NOW_S)
     monkeypatch.setattr(params, "utcnow", lambda: now)
+
+    async def no_inspect(_self: object) -> None:
+        """The extension has a broker URL; don't wait on a real inspect."""
+
+    monkeypatch.setattr(routes._InspectRefresher, "maybe_refresh", no_inspect)
     extension = StemtraceExtension(
         broker_url="memory://",
         serve_ui=False,
