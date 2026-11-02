@@ -43,6 +43,7 @@ def registry(
     online: bool = True,
     authority: float | None = FRESH,
     broker: bool = True,
+    seen: bool = True,
 ) -> RegistryFacts:
     """Registry facts; ``authority`` is seconds after T0 (None: never confirmed)."""
     return RegistryFacts(
@@ -50,6 +51,7 @@ def registry(
         any_online=online,
         authority_at=None if authority is None else at(authority),
         broker_configured=broker,
+        any_seen=seen,
     )
 
 
@@ -347,8 +349,9 @@ def test_gate_follows_the_authority_window_setting() -> None:
     assert (len(wide), len(narrow)) == (1, 0)
 
 
-def test_empty_registry_with_a_broker_flags_nothing() -> None:
-    facts = registry((), online=False, authority=None)
+def test_row28a_server_restarted_while_the_fleet_is_down_flags_nothing() -> None:
+    # No worker seen since the server started: nothing to call a fleet.
+    facts = registry((), online=False, authority=None, seen=False)
 
     items, nodes, counts = run([pending("t1", OLD)], facts)
 
@@ -395,35 +398,53 @@ def test_fleet_offline_without_an_eligible_node_emits_nothing() -> None:
     assert all(n == 0 for n in counts.values())
 
 
-def test_fleet_offline_is_gated_like_unregistered() -> None:
-    stale = registry((), online=False, authority=NOW - WINDOW - 1)
-    items, _, _ = run([pending("t1", OLD)], stale)
-
-    assert items == []
-
-
-def test_fleet_offline_with_offline_names_only_and_no_broker_is_gated() -> None:
-    # No broker: the gate needs an online worker with registered tasks, so a
-    # fleet that is entirely offline never reports no_workers_online.
-    items, _, _ = run(
-        [pending("t1", OLD)], registry((), online=False, authority=None, broker=False)
-    )
-
-    assert items == []
-
-
-def test_row28_whole_fleet_offline_one_item_before_cleanup_and_nothing_after() -> None:
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize(
+    "authority", [None, NOW - 30, NOW - WINDOW - 1, NOW - 1800, NOW - 7200]
+)
+def test_row28_fleet_offline_item_does_not_depend_on_the_authority_or_the_broker(
+    authority: float | None, broker: bool
+) -> None:
     events = [pending("t1", OLD, "app.a"), pending("t2", OLD, "app.b")]
-    before_cleanup = registry((), online=False, authority=NOW - 30)
-    after_cleanup = registry((), online=False, authority=NOW - 30 - 1800)
+    facts = registry((), online=False, authority=authority, broker=broker)
 
-    before, before_nodes, _ = run(events, before_cleanup)
-    after, after_nodes, _ = run(events, after_cleanup)
+    items, nodes, counts = run(events, facts)
 
-    assert [(a.kind, a.task_count) for a in before] == [
+    assert [(a.kind, a.task_count) for a in items] == [
         (AnomalyKind.NO_WORKERS_ONLINE, 2)
     ]
-    assert (before_nodes, after, after_nodes) == ({}, [], {})
+    assert nodes == {}
+    assert counts[AnomalyKind.NO_WORKERS_ONLINE] == 1
+
+
+@pytest.mark.parametrize("broker", [True, False])
+def test_row28a_no_worker_seen_since_the_server_started_emits_nothing(
+    broker: bool,
+) -> None:
+    facts = registry((), online=False, authority=None, broker=broker, seen=False)
+
+    assert run([pending("t1", OLD)], facts)[:2] == ([], {})
+
+
+def test_fleet_offline_wins_over_per_name_items_when_the_gate_is_open() -> None:
+    facts = registry(("app.known",), online=False, authority=FRESH)
+
+    items, nodes, _ = run([pending("t1", OLD, "app.new")], facts)
+
+    assert [a.kind for a in items] == [AnomalyKind.NO_WORKERS_ONLINE]
+    assert nodes == {}
+
+
+def test_row28c_silent_workers_keep_their_names_and_the_fleet_item_fires() -> None:
+    # Live names stay (no per-name item for "app.known"), nobody is online.
+    facts = registry(("app.known",), online=False, authority=None, broker=False)
+
+    items, nodes, _ = run([pending("t1", OLD, "app.known")], facts)
+
+    assert [(a.kind, a.task_count) for a in items] == [
+        (AnomalyKind.NO_WORKERS_ONLINE, 1)
+    ]
+    assert nodes == {}
 
 
 def test_classifier_accepts_node_facts_as_pending_tasks() -> None:

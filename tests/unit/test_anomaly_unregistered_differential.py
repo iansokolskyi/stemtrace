@@ -46,8 +46,6 @@ def reference(
     trusted = (confirmed is not None and (now - confirmed) <= WINDOW) or (
         not registry.broker_configured and len(registry.live_names) > 0
     )
-    if not trusted:
-        return set(), set()
     by_task: dict[str, list[TaskEvent]] = {}
     for event in task_events:
         by_task.setdefault(event.task_id, []).append(event)
@@ -63,10 +61,12 @@ def reference(
             waiting.append((task_id, name, state.timestamp))
     if not waiting:
         return set(), set()
-    if not registry.any_online:
+    if registry.any_seen and not registry.any_online:
         return {
             ("no_workers_online", None, min(w[2] for w in waiting), len(waiting))
         }, set()
+    if not trusted:
+        return set(), set()
     unknown = [w for w in waiting if w[1] not in registry.live_names]
     items: Expected = set()
     for name in {w[1] for w in unknown}:
@@ -86,11 +86,13 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
             None,
         ]
     )
+    online = rng.random() < 0.7
     return RegistryFacts(
         live_names=registered,
-        any_online=bool(registered) or rng.random() < 0.7,
+        any_online=online,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
+        any_seen=online or bool(registered) or rng.random() < 0.5,
     )
 
 

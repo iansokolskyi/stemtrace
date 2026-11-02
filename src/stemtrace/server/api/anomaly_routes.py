@@ -121,7 +121,9 @@ class AnomalyEvaluator:
         records = self._store.run_records()
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}
         registry = (
-            self._registry.registry_facts(broker_configured=self._broker_configured)
+            self._registry.registry_facts(
+                broker_configured=self._broker_configured, now=now
+            )
             if self._registry is not None
             else None
         )

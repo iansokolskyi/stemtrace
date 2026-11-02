@@ -189,7 +189,8 @@ async def test_anomalies_name_and_hostname_filters_drop_the_fleet_item() -> None
 
 async def test_anomalies_with_a_broker_and_no_confirmed_inspect_flag_nothing() -> None:
     registry = WorkerRegistry()
-    registry.register_worker("w@a", 1, [KNOWN])  # worker_ready only
+    # worker_ready only, seen just now
+    registry.register_worker("w@a", 1, [KNOWN], event_timestamp=at(NOW_S - 5))
     app = make_app(store_of(pending("t1", 0)), registry=registry, broker_url=BROKER)
 
     body = await list_body(app)
@@ -200,6 +201,8 @@ async def test_anomalies_with_a_broker_and_no_confirmed_inspect_flag_nothing() -
 async def test_anomalies_with_a_stale_inspect_reply_flag_nothing() -> None:
     registry = WorkerRegistry()
     registry.apply_stats_reply({}, {"w@a": (1, [KNOWN])}, now=at(NOW_S - 601))
+    # The worker's task events keep it online; only the reply is old.
+    registry.mark_seen("w@a", at(NOW_S - 5), now=at(NOW_S))
     app = make_app(store_of(pending("t1", 0)), registry=registry, broker_url=BROKER)
 
     assert (await list_body(app))["anomalies"] == []
@@ -209,7 +212,7 @@ async def test_anomalies_without_a_broker_trust_the_events_of_an_online_worker()
     None
 ):
     registry = WorkerRegistry()
-    registry.register_worker("w@a", 1, [KNOWN])
+    registry.register_worker("w@a", 1, [KNOWN], event_timestamp=at(NOW_S - 5))
     app = make_app(store_of(pending("t1", 0)), registry=registry)
 
     body = await list_body(app)

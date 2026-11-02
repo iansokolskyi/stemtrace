@@ -325,7 +325,7 @@ def _authoritative(
     """Whether the registry can say a name is unknown, not just not heard of yet.
 
     True after a recent inspect reply that listed every replying worker's
-    tasks, or, with no broker to inspect, while an online worker has
+    tasks, or, with no broker to inspect, while a live worker has
     registered tasks (the events are then the only source).
     """
     confirmed = registry.authority_at
@@ -356,17 +356,18 @@ def _unregistered(
 ) -> tuple[dict[str, Anomaly], list[Anomaly]]:
     """The unregistered tasks by ID and their per-name items, or the one fleet item.
 
-    A PENDING task waits past ``pending_grace`` for a name no online worker
-    registered. With no worker online the names say nothing, so the waiting
-    tasks make one ``no_workers_online`` item and no task is flagged.
+    A PENDING task waits past ``pending_grace`` for a name no live worker
+    registered, if the registry is trusted. Once a worker was seen and none is
+    online, the waiting tasks make one ``no_workers_online`` item instead, with
+    no trust needed, and no task is flagged.
     """
-    if registry is None or not _authoritative(registry, now, settings):
+    if registry is None:
         return {}, []
     cutoff = now - settings.pending_grace
     waiting = [task for task in pending if _waiting(task, cutoff)]
     if not waiting:
         return {}, []
-    if not registry.any_online:
+    if registry.any_seen and not registry.any_online:
         return {}, [
             Anomaly(
                 kind=AnomalyKind.NO_WORKERS_ONLINE,
@@ -376,6 +377,8 @@ def _unregistered(
                 task_count=len(waiting),
             )
         ]
+    if not _authoritative(registry, now, settings):
+        return {}, []
     by_name: dict[str, list[PendingLike]] = defaultdict(list)
     for task in waiting:
         if task.name not in registry.live_names:

@@ -306,6 +306,9 @@ class WorkerRegistry:
         # ping-only replies; kept apart from the workers, so the cleanup that
         # deletes them leaves it.
         self._authority_at: datetime | None = None
+        # Whether any worker was registered since the server started; the
+        # cleanup that deletes the workers leaves it.
+        self._ever_seen = False
         self._lock = threading.RLock()
 
     def register_worker(
@@ -380,6 +383,7 @@ class WorkerRegistry:
                     status=WorkerStatus.ONLINE,
                 )
             self._newest_by_node[hostname] = worker_id
+            self._ever_seen = True
 
     def _retire_other_pids(self, hostname: str, keep: str) -> None:
         """Mark every pid of the node except ``keep`` (a worker_id) offline."""
@@ -470,7 +474,9 @@ class WorkerRegistry:
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
 
-    def mark_node_alive(self, hostname: str, pid: int | None = None) -> None:
+    def mark_node_alive(
+        self, hostname: str, pid: int | None = None, *, now: datetime | None = None
+    ) -> None:
         """Apply "this nodename answered a Celery inspect call" to its processes.
 
         A nodename has at most one live process, so every other pid registered
@@ -485,6 +491,7 @@ class WorkerRegistry:
         Args:
             hostname: Worker nodename that answered.
             pid: Live process ID if the reply names it, otherwise None.
+            now: When the node answered (tests); defaults to now.
         """
         with self._lock:
             live_id = (
@@ -499,7 +506,7 @@ class WorkerRegistry:
                 return
             live.status = WorkerStatus.ONLINE
             live.shutdown_reported = False
-            live.last_seen = datetime.now(timezone.utc)
+            live.last_seen = now or datetime.now(timezone.utc)
 
     def event_generations(self) -> dict[str, int]:
         """Snapshot, per nodename, how many worker events were applied so far.
@@ -553,7 +560,9 @@ class WorkerRegistry:
             now = now or datetime.now(timezone.utc)
             # A node with no list (``registered()`` failed or missed it) keeps
             # its old one, which may be stale: the registry isn't authoritative.
-            if replies and all(tasks is not None for _, tasks in replies.values()):
+            # Nodes skipped as stale were not applied, so they confirm nothing.
+            fresh = [n for n in replies if not self._is_stale(n, seen)]
+            if fresh and all(tasks is not None for _, tasks in replies.values()):
                 self._authority_at = now
             for nodename, (pid, tasks) in replies.items():
                 if self._is_stale(nodename, seen):
@@ -563,27 +572,32 @@ class WorkerRegistry:
                     self._register(
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
-                self.mark_node_alive(nodename, pid)
+                self.mark_node_alive(nodename, pid, now=now)
 
     def registry_facts(
         self, *, broker_configured: bool, now: datetime | None = None
     ) -> RegistryFacts:
-        """Copy what the anomaly classifier needs: online names, any online, authority time.
+        """Copy what the anomaly classifier needs from the registry.
+
+        Names count from every live worker (no stop reported since its last
+        ``worker_ready``), however long ago it answered; the fleet is online
+        while a live worker was seen within ``WORKER_STALE_TIMEOUT_MINUTES``.
 
         Args:
             broker_configured: Whether the server can inspect a broker.
             now: The time to judge the stale window at (tests); defaults to now.
         """
-        del now
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(
+            minutes=WORKER_STALE_TIMEOUT_MINUTES
+        )
         with self._lock:
-            online = [
-                w for w in self._workers.values() if w.status == WorkerStatus.ONLINE
-            ]
+            live = [w for w in self._workers.values() if not w.shutdown_reported]
             return RegistryFacts(
-                live_names=frozenset(t for w in online for t in w.registered_tasks),
-                any_online=bool(online),
+                live_names=frozenset(t for w in live for t in w.registered_tasks),
+                any_online=any(w.last_seen >= cutoff for w in live),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
+                any_seen=self._ever_seen,
             )
 
     def apply_ping_reply(self, nodenames: Iterable[str]) -> None:

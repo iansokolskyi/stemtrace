@@ -52,13 +52,16 @@ ALL_ENV = [
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _confirmed_at(seconds: float) -> Callable[[StemtraceExtension], None]:
-    """Seed the registry: one online worker, its tasks confirmed at ``seconds`` after T0."""
+def _confirmed_at(seconds: float, now_s: float) -> Callable[[StemtraceExtension], None]:
+    """Seed the registry: one worker, its tasks confirmed at ``seconds`` after T0.
+
+    Its task events kept it online until ``now_s``.
+    """
 
     def seed(extension: StemtraceExtension) -> None:
-        extension.worker_registry.apply_stats_reply(
-            {}, {"w@a": (1, ["app.known"])}, now=at(seconds)
-        )
+        registry = extension.worker_registry
+        registry.apply_stats_reply({}, {"w@a": (1, ["app.known"])}, now=at(seconds))
+        registry.mark_seen("w@a", at(now_s - 5), now=at(now_s))
 
     return seed
 
@@ -129,7 +132,7 @@ FLIPS = {
         "--anomaly-pending-grace",
         kind="unregistered",
         flagged=["app.new"],
-        seed=_confirmed_at(3 * 60 - 30),
+        seed=_confirmed_at(3 * 60 - 30, 3 * 60),
     ),
     # PENDING 20 min, confirmed 12 min ago: over the 10 min window, under 15 min.
     "window": Flip(
@@ -141,7 +144,7 @@ FLIPS = {
         "--anomaly-registry-window",
         kind="unregistered",
         flagged=["app.new"],
-        seed=_confirmed_at(20 * 60 - 12 * 60),
+        seed=_confirmed_at(20 * 60 - 12 * 60, 20 * 60),
     ),
 }
 
