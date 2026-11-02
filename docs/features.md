@@ -346,9 +346,9 @@ reported receiving it), it has waited longer than `grace`, and no live worker ha
 registered. A task a worker received is RECEIVED, so it never counts, and neither does a
 `celery.*` task. The wait is measured from the PENDING event's timestamp, which the sending
 process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
-and again after its next `worker_ready`. A worker that missed one `inspect` call, or that has
-been silent for more than 3 minutes without a shutdown, keeps its names until the 30-minute
-cleanup removes it. A name that only a stopped worker registered is unregistered, and a new
+or a newer `worker_ready` from the same nodename replaces it, and again after its own next
+`worker_ready`. A worker that missed one `inspect` call, or that has been silent for more than
+3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. A name that only a stopped worker registered is unregistered, and a new
 worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
 oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
 
@@ -374,11 +374,16 @@ When some task has waited past `grace` and no worker is online, the server repor
 `unregistered`. The item's `task_count` is all the tasks past `grace` and `since` the oldest.
 With no task past `grace`, nothing is reported (the Workers page already shows the fleet).
 
-A worker counts as online while it is live and the server saw it, through an event or an
-`inspect` reply, within the last 3 minutes. This needs no trusted registry and no broker URL,
-and the item stays for the whole outage, including after the 30-minute cleanup removes the
-workers. It needs the server to have seen a worker since it started: a server restarted while
-the whole fleet is already down reports nothing.
+No worker is online when every worker is stopped (or the 30-minute cleanup removed them), or
+when silence counts as evidence and no live worker was seen within the last 3 minutes. Silence
+counts only when an `inspect` `stats()` call completed within `authority_window`: it returned
+without a transport error, even with no reply, so the server could reach the broker and heard no
+worker. Without a broker URL, or while `inspect` can't reach the broker, silence proves nothing:
+an idle fleet, whose workers send no events, isn't reported, and a worker killed without a
+shutdown event stays live until the cleanup removes it. The item needs no trusted registry. It
+stays for the whole outage, including after the cleanup, and needs the server to have seen a
+worker since it started, through a worker event or any task event: a server restarted while the
+whole fleet is already down reports nothing.
 
 ### Settings
 
@@ -432,9 +437,13 @@ and `stemtrace server` do.
   until a worker answers.
 - **A restart during an outage shows nothing.** A server started while the whole fleet is down
   has seen no worker, so it doesn't report `no_workers_online`.
-- **A busy fleet can look offline.** A worker that is silent for 3 minutes without a shutdown
-  counts as offline, so a fleet made only of busy solo-pool workers (each running one task for
-  more than 3 minutes) gives a `no_workers_online` item while it is alive.
+- **A killed fleet is found late without `inspect`.** After a SIGKILL there is no shutdown
+  event. With no broker URL, or while `inspect` can't reach the broker, the server reports no
+  `no_workers_online` item until the 30-minute cleanup removes the workers. A clean shutdown of
+  every worker is reported at once.
+- **A busy fleet can look offline.** With a broker URL, a fleet made only of busy solo-pool
+  workers (each running one task for more than 3 minutes, so none answers `inspect` or sends
+  events) gives a `no_workers_online` item while it is alive.
 - **A killed worker's names count for up to 30 minutes.** After a SIGKILL there is no shutdown
   event, so a name only that worker registered is reported unregistered up to 30 minutes late.
 - **Two machines, one nodename.** Workers that share a nodename can make the server flag a
