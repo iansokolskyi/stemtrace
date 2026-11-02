@@ -282,9 +282,7 @@ def _subtree_progress(nodes: Sequence[NodeFacts]) -> dict[str, datetime]:
         )
     for task_id in tainted:
         newest.pop(task_id, None)
-        value = _reachable_newest(task_id, by_id, children)
-        if value is not None:
-            newest[task_id] = value
+        newest[task_id] = _reachable_newest(task_id, by_id, children)
     return newest
 
 
@@ -313,36 +311,31 @@ def _walk(
                 stack.append((kid, 0))
             continue
         on_path.discard(task_id)
-        best: datetime | None = None
-        for kid in kids:
-            candidate = by_id[kid].last_updated
-            below = newest.get(kid)
-            if below is not None and below > candidate:
-                candidate = below
-            if best is None or candidate > best:
-                best = candidate
-            if kid in tainted:
-                tainted.add(task_id)
-        if best is not None:
-            newest[task_id] = best
+        # ``kids`` is never empty: only nodes that have children are walked.
+        seen = [by_id[kid].last_updated for kid in kids]
+        seen += [newest[kid] for kid in kids if kid in newest]
+        newest[task_id] = max(seen)
+        if any(kid in tainted for kid in kids):
+            tainted.add(task_id)
 
 
 def _reachable_newest(
     start: str,
     by_id: Mapping[str, NodeFacts],
     children: Mapping[str, list[str]],
-) -> datetime | None:
-    """Newest ``last_updated`` among the nodes reachable below ``start`` (not itself)."""
+) -> datetime:
+    """Newest ``last_updated`` among the nodes reachable below ``start`` (not itself).
+
+    ``start`` has a child other than itself, so something is always reachable.
+    """
     seen = {start}
-    pending = list(children.get(start, ()))
-    best: datetime | None = None
+    pending = list(children[start])
+    reached: list[datetime] = []
     while pending:
         task_id = pending.pop()
         if task_id in seen:
             continue
         seen.add(task_id)
-        updated = by_id[task_id].last_updated
-        if best is None or updated > best:
-            best = updated
+        reached.append(by_id[task_id].last_updated)
         pending.extend(children.get(task_id, ()))
-    return best
+    return max(reached)
