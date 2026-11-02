@@ -288,12 +288,82 @@ def test_a_superseded_pid_does_not_keep_the_fleet_live_after_the_new_one_stops()
     assert (got.any_live, got.live_names) == (False, frozenset())
 
 
-def test_a_task_event_from_an_unknown_nodename_sets_the_seen_flag() -> None:
+UNKNOWN = "celery@unknown"
+
+
+def test_a_task_event_from_an_unknown_nodename_makes_it_known_live_and_online() -> None:
     registry = WorkerRegistry()
 
-    registry.mark_seen("celery@ghost", D, now=D)
+    registry.mark_seen(UNKNOWN, D, now=D)
 
     got = facts(registry, D)
+    assert (got.any_seen, got.any_live, got.any_online) == (True, True, True)
+    assert got.live_names == frozenset()  # no names, so the no-broker gate stays shut
+
+
+def test_an_unknown_nodename_adds_no_row_to_the_workers_page() -> None:
+    registry = WorkerRegistry()
+
+    registry.mark_seen(UNKNOWN, D, now=D)
+
+    assert registry.get_all_workers() == []
+
+
+@pytest.mark.parametrize(
+    "completed", [True, False], ids=["inspect-completed", "no-inspect"]
+)
+@pytest.mark.parametrize("age_s", [1, 179, 181, 600])
+def test_row28f_a_busy_worker_unknown_to_the_registry_is_never_no_workers_online(
+    age_s: int, completed: bool
+) -> None:
+    # An empty registry (restart without replay) and task events from a worker
+    # that is running tasks: it must not read as an offline fleet.
+    registry = WorkerRegistry()
+    now = D + 20 * MINUTE
+    registry.mark_seen(UNKNOWN, now - timedelta(seconds=age_s), now=now)
+    if completed:
+        registry.note_inspect_completed(now - timedelta(seconds=30))
+    store = GraphStore()
+    store.add_event(task_event("t1", TaskState.PENDING, 0, name="app.new"))
+
+    report = classify(store, facts(registry, now, broker=completed), now)
+
+    silent_and_heard = age_s > 180 and completed
+    assert [a.kind for a in report.items] == (
+        [AnomalyKind.NO_WORKERS_ONLINE] if silent_and_heard else []
+    )
+
+
+def test_a_later_worker_ready_for_an_unknown_nodename_registers_its_names() -> None:
+    registry = WorkerRegistry()
+    registry.mark_seen(UNKNOWN, D, now=D)
+
+    registry.register_worker(UNKNOWN, 7, ["app.new"], event_timestamp=D + MINUTE)
+
+    got = facts(registry, D + MINUTE)
+    assert got.live_names == {"app.new"}
+    assert [(w.hostname, w.pid) for w in registry.get_all_workers()] == [(UNKNOWN, 7)]
+
+
+def test_a_stopped_worker_is_not_revived_by_the_unknown_nodename_record() -> None:
+    registry = WorkerRegistry()
+    registry.mark_seen(UNKNOWN, D, now=D)
+    registry.register_worker(UNKNOWN, 7, ["app.new"], event_timestamp=D)
+    registry.mark_shutdown(UNKNOWN, 7)
+
+    got = facts(registry, D)
+
+    assert (got.any_live, got.any_online) == (False, False)
+
+
+def test_the_cleanup_forgets_an_unknown_nodename_after_thirty_minutes() -> None:
+    registry = WorkerRegistry()
+    registry.mark_seen(UNKNOWN, D, now=D)
+    now = D + 45 * MINUTE
+    registry.remove_stale_workers(now=now)
+
+    got = facts(registry, now)
+
     assert (got.any_seen, got.any_live) == (True, False)
 
 

@@ -383,7 +383,10 @@ an idle fleet, whose workers send no events, isn't reported, and a worker killed
 shutdown event stays live until the cleanup removes it. The item needs no trusted registry. It
 stays for the whole outage, including after the cleanup, and needs the server to have seen a
 worker since it started, through a worker event or any task event: a server restarted while the
-whole fleet is already down reports nothing.
+whole fleet is already down reports nothing. A task event from a worker the server doesn't know
+yet (no `worker_ready` or `inspect` reply seen) makes that worker count as live and online for
+this item, so a busy worker never looks like an offline fleet. It adds no task names, and it
+doesn't appear on the Workers page.
 
 ### Settings
 

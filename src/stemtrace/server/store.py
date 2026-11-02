@@ -311,6 +311,9 @@ class WorkerRegistry:
         # Whether any worker was registered since the server started; the
         # cleanup that deletes the workers leaves it.
         self._ever_seen = False
+        # Nodenames a task event named before any worker_ready or stats reply
+        # did, with the event time. Anomaly-only: the Workers page lists none.
+        self._unregistered_seen: dict[str, datetime] = {}
         # When an inspect ``stats()`` call last completed, even with no reply:
         # then silence from the workers is evidence they are gone.
         self._inspect_completed_at: datetime | None = None
@@ -389,6 +392,7 @@ class WorkerRegistry:
                     status=WorkerStatus.ONLINE,
                 )
             self._newest_by_node[hostname] = worker_id
+            self._unregistered_seen.pop(hostname, None)
             self._ever_seen = True
 
     def _retire_other_pids(self, hostname: str, keep: str) -> None:
@@ -456,10 +460,12 @@ class WorkerRegistry:
             self._ever_seen = True
             live_id = self._newest_by_node.get(hostname)
             worker = self._workers.get(live_id) if live_id else None
-            if worker is None:
-                return
             current = now or datetime.now(timezone.utc)
             seen_at = min(ensure_tz_aware(timestamp), current)
+            if worker is None:
+                known = self._unregistered_seen.get(hostname)
+                self._unregistered_seen[hostname] = max(seen_at, known or seen_at)
+                return
             if seen_at > worker.last_seen:
                 worker.last_seen = seen_at
             recent = seen_at >= current - timedelta(
@@ -616,11 +622,12 @@ class WorkerRegistry:
             ]
             return RegistryFacts(
                 live_names=frozenset(t for w in live for t in w.registered_tasks),
-                any_online=any(w.last_seen >= cutoff for w in live),
+                any_online=any(w.last_seen >= cutoff for w in live)
+                or any(t >= cutoff for t in self._unregistered_seen.values()),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
                 any_seen=self._ever_seen,
-                any_live=bool(live),
+                any_live=bool(live) or bool(self._unregistered_seen),
                 inspect_completed_at=self._inspect_completed_at,
             )
 
@@ -720,6 +727,11 @@ class WorkerRegistry:
             cleanup_cutoff = now - timedelta(minutes=cleanup_timeout_minutes)
 
             # Mark stale workers offline, remove very old offline workers
+            self._unregistered_seen = {
+                node: seen
+                for node, seen in self._unregistered_seen.items()
+                if seen >= cleanup_cutoff
+            }
             to_remove: list[str] = []
             for worker_id, worker_info in self._workers.items():
                 if worker_info.last_seen < stale_cutoff:
