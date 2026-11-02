@@ -12,6 +12,7 @@ from typing import NamedTuple
 from stemtrace.core.anomalies import (
     LinkLike,
     NodeFacts,
+    PendingLike,
     RuntimeStats,
     TimelineEntry,
 )
@@ -81,6 +82,7 @@ class ClassifierFacts(NamedTuple):
 
     nodes: list[NodeFacts]
     links: list[LinkLike]
+    pending: list[PendingLike]
     runtime_stats: dict[str, RuntimeStats]
     timeline: dict[str, list[TimelineEntry]]
 
@@ -94,25 +96,28 @@ def classifier_facts(
 
     Only a STARTED task or a cold-stop cancelled RETRY can be flagged, so only
     those get full ``NodeFacts``; other records pass on as they are, to keep
-    their ancestors' subtree progress. Runtime stats cover the names of the
-    STARTED tasks, the only ones judged by a p95.
+    their ancestors' subtree progress. PENDING records are also listed as
+    ``pending``, uncopied. Runtime stats cover the names of the STARTED tasks,
+    the only ones judged by a p95.
     """
     records = list(records)
     nodes: list[NodeFacts] = []
     links: list[LinkLike] = []
+    pending: list[PendingLike] = []
     started_names: set[str] = set()
     for r in records:
-        if r.state in (TaskState.STARTED, TaskState.PENDING) or (
-            r.state == TaskState.RETRY and r.cancelled
-        ):
+        if r.state == TaskState.STARTED or (r.state == TaskState.RETRY and r.cancelled):
             nodes.extend(node_facts((r,)))
             if r.state == TaskState.STARTED:
                 started_names.add(r.name)
         else:
             links.append(r)
+            if r.state == TaskState.PENDING:
+                pending.append(r)
     return ClassifierFacts(
         nodes,
         links,
+        pending,
         runtime_facts(records, now, started_names) if started_names else {},
         timeline_facts(snapshot),
     )

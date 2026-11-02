@@ -17,7 +17,9 @@ from stemtrace.core.anomalies import (
     Anomaly,
     AnomalyKind,
     AnomalySettings,
+    NodeFacts,
     RegistryFacts,
+    classify_anomalies,
 )
 from stemtrace.core.events import TaskEvent, TaskState
 from tests.unit.anomaly_pipeline import SMALL, at, classify, task_event
@@ -422,6 +424,45 @@ def test_row28_whole_fleet_offline_one_item_before_cleanup_and_nothing_after() -
         (AnomalyKind.NO_WORKERS_ONLINE, 2)
     ]
     assert (before_nodes, after, after_nodes) == ({}, [], {})
+
+
+def test_classifier_accepts_node_facts_as_pending_tasks() -> None:
+    waiting = NodeFacts(
+        task_id="n1",
+        name="app.new",
+        state=P,
+        last_updated=at(OLD),
+        state_since=at(OLD),
+    )
+
+    report = classify_anomalies(
+        [],
+        now=at(NOW),
+        runtime_stats={},
+        timeline={},
+        settings=SETTINGS,
+        pending=[waiting],
+        registry=registry(),
+    )
+
+    assert [(a.name, a.task_count) for a in report.items] == [("app.new", 1)]
+    assert set(report.anomalies) == {"n1"}
+
+
+def test_classifier_ignores_a_pending_task_with_no_stamp() -> None:
+    unstamped = NodeFacts(task_id="n1", name="app.new", state=P, last_updated=at(OLD))
+
+    report = classify_anomalies(
+        [],
+        now=at(NOW),
+        runtime_stats={},
+        timeline={},
+        settings=SETTINGS,
+        pending=[unstamped],
+        registry=registry(),
+    )
+
+    assert list(report.items) == []
 
 
 def test_one_online_worker_with_no_tasks_keeps_per_name_items() -> None:

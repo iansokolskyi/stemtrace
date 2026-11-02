@@ -31,6 +31,7 @@ __all__ = [
     "LinkLike",
     "NodeFacts",
     "NodeLink",
+    "PendingLike",
     "RegistryFacts",
     "RuntimeStats",
     "TimelineEntry",
@@ -114,6 +115,25 @@ class LinkLike(Protocol):
     @property
     def last_updated(self) -> datetime:
         """The lifecycle-last event's timestamp."""
+        ...
+
+
+class PendingLike(Protocol):
+    """What unregistered reads of a PENDING task (a ``NodeFacts`` or a run record works)."""
+
+    @property
+    def task_id(self) -> str:
+        """The task's ID."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """The task's name."""
+        ...
+
+    @property
+    def state_since(self) -> datetime | None:
+        """When the sender stamped the PENDING event."""
         ...
 
 
@@ -226,13 +246,16 @@ def classify_anomalies(
     timeline: Mapping[str, Sequence[TimelineEntry]],
     settings: AnomalySettings = DEFAULT_SETTINGS,
     links: Iterable[LinkLike] = (),
+    pending: Iterable[PendingLike] = (),
     registry: RegistryFacts | None = None,
 ) -> AnomalyReport:
     """Flag the stuck, interrupted and unregistered nodes; interrupted wins over stuck.
 
     ``nodes`` and ``links`` together must cover every TASK node (the subtree
-    rule walks them all); only ``nodes`` are classified. ``timeline`` maps a
-    nodename to its worker events, ascending by timestamp. Costs O(n log n).
+    rule walks them all); only ``nodes`` are classified for stuck and
+    interrupted, and ``pending`` (the PENDING tasks, also in one of the other two)
+    for unregistered. ``timeline`` maps a nodename to its worker events,
+    ascending by timestamp. Costs O(n log n).
     """
     node_list = list(nodes)
     subtree = _subtree_progress(
@@ -247,8 +270,8 @@ def classify_anomalies(
         if anomaly is not None:
             found[node.task_id] = anomaly
     items = list(found.values())
-    by_node, listed = _unregistered(node_list, now, registry, settings)
-    found.update(by_node)
+    by_task, listed = _unregistered(pending, now, registry, settings)
+    found.update(by_task)
     items.extend(listed)
     counts = dict.fromkeys(AnomalyKind, 0)
     for anomaly in items:
@@ -309,8 +332,22 @@ def _authoritative(
     return not registry.broker_configured and bool(registry.online_names)
 
 
+def _waiting(task: PendingLike, cutoff: datetime) -> bool:
+    """A PENDING task stamped before ``cutoff`` (now minus the grace) that isn't a built-in."""
+    since = task.state_since
+    return (
+        since is not None
+        and since < cutoff
+        and not task.name.startswith(_BUILTIN_PREFIX)
+    )
+
+
+def _oldest(tasks: Iterable[PendingLike]) -> datetime:
+    return min(since for t in tasks if (since := t.state_since) is not None)
+
+
 def _unregistered(
-    nodes: Iterable[NodeFacts],
+    pending: Iterable[PendingLike],
     now: datetime,
     registry: RegistryFacts | None,
     settings: AnomalySettings,
@@ -323,44 +360,37 @@ def _unregistered(
     """
     if registry is None or not _authoritative(registry, now, settings):
         return {}, []
-    waiting = [
-        (node.state_since, node)
-        for node in nodes
-        if node.state == TaskState.PENDING
-        and node.state_since is not None
-        and not node.name.startswith(_BUILTIN_PREFIX)
-        and now - node.state_since > settings.pending_grace
-    ]
+    cutoff = now - settings.pending_grace
+    waiting = [task for task in pending if _waiting(task, cutoff)]
     if not waiting:
         return {}, []
     if not registry.any_online:
-        oldest = min(since for since, _ in waiting)
         return {}, [
             Anomaly(
                 kind=AnomalyKind.NO_WORKERS_ONLINE,
                 task_id=None,
                 name=None,
-                since=oldest,
+                since=_oldest(waiting),
                 task_count=len(waiting),
             )
         ]
-    by_name: dict[str, list[tuple[datetime, NodeFacts]]] = defaultdict(list)
-    for since, node in waiting:
-        if node.name not in registry.online_names:
-            by_name[node.name].append((since, node))
-    by_node: dict[str, Anomaly] = {}
+    by_name: dict[str, list[PendingLike]] = defaultdict(list)
+    for task in waiting:
+        if task.name not in registry.online_names:
+            by_name[task.name].append(task)
+    by_task: dict[str, Anomaly] = {}
     items: list[Anomaly] = []
     for name, group in by_name.items():
         item = Anomaly(
             kind=AnomalyKind.UNREGISTERED,
             task_id=None,
             name=name,
-            since=min(since for since, _ in group),
+            since=_oldest(group),
             task_count=len(group),
         )
         items.append(item)
-        by_node.update((node.task_id, item) for _, node in group)
-    return by_node, items
+        by_task.update(dict.fromkeys((t.task_id for t in group), item))
+    return by_task, items
 
 
 def _timestamp(entry: TimelineEntry) -> datetime:
