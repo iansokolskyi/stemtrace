@@ -94,11 +94,10 @@ def classifier_facts(
 ) -> ClassifierFacts:
     """Facts for ``classify_anomalies``, built only for what can be flagged.
 
-    Only a STARTED task or a cold-stop cancelled RETRY can be flagged, so only
-    those get full ``NodeFacts``; other records pass on as they are, to keep
-    their ancestors' subtree progress. PENDING records are also listed as
-    ``pending``, uncopied. Runtime stats cover the names of the STARTED tasks,
-    the only ones judged by a p95.
+    Only a STARTED task or a cold-stop cancelled RETRY gets full ``NodeFacts``;
+    other records pass on as they are, to keep their ancestors' subtree
+    progress, and PENDING ones are also listed as ``pending``. Runtime stats
+    cover the names of the STARTED tasks, the only ones judged by a p95.
     """
     records = list(records)
     nodes: list[NodeFacts] = []

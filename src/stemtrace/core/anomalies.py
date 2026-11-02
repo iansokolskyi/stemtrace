@@ -252,10 +252,9 @@ def classify_anomalies(
     """Flag the stuck, interrupted and unregistered nodes; interrupted wins over stuck.
 
     ``nodes`` and ``links`` together must cover every TASK node (the subtree
-    rule walks them all); only ``nodes`` are classified for stuck and
-    interrupted, and ``pending`` (the PENDING tasks, also in one of the other two)
-    for unregistered. ``timeline`` maps a nodename to its worker events,
-    ascending by timestamp. Costs O(n log n).
+    rule walks them all); only ``nodes`` are judged for stuck and interrupted.
+    ``pending`` lists the PENDING tasks (also in one of those) for unregistered.
+    ``timeline`` maps a nodename to its worker events, ascending. O(n log n).
     """
     node_list = list(nodes)
     subtree = _subtree_progress(
