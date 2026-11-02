@@ -26,7 +26,7 @@ from stemtrace.core.events import (
     WorkerEvent,
     WorkerEventType,
 )
-from stemtrace.server.anomaly_facts import node_facts, runtime_facts, timeline_facts
+from stemtrace.server.anomaly_facts import classifier_facts
 from stemtrace.server.store import GraphStore, WorkerTimeline
 from tests.unit.anomaly_pipeline import load_recording
 from tests.unit.anomaly_reference import (
@@ -288,14 +288,8 @@ def candidate_nows(built: Built) -> list[datetime]:
 
 def classify_fast(built: Built, now: datetime) -> AnomalyReport:
     """The classifier through the server adapter."""
-    records = built.store.run_records()
-    return classify_anomalies(
-        node_facts(records),
-        now=now,
-        runtime_stats=runtime_facts(records, now),
-        timeline=timeline_facts(built.timeline.snapshot()),
-        settings=SETTINGS,
-    )
+    facts = classifier_facts(built.store.run_records(), built.timeline.snapshot(), now)
+    return classify_anomalies(**facts._asdict(), now=now, settings=SETTINGS)
 
 
 def raw_runtime_stats(
@@ -401,15 +395,9 @@ def mismatches(built: Built, now: datetime, terminal: frozenset[str]) -> list[st
 
 
 def _without_workers(built: Built, now: datetime) -> dict[str, object]:
-    records = built.store.run_records()
+    facts = classifier_facts(built.store.run_records(), {}, now)
     return dict(
-        classify_anomalies(
-            node_facts(records),
-            now=now,
-            runtime_stats=runtime_facts(records, now),
-            timeline={},
-            settings=SETTINGS,
-        ).anomalies
+        classify_anomalies(**facts._asdict(), now=now, settings=SETTINGS).anomalies
     )
 
 

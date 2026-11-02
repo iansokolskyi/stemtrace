@@ -5,14 +5,27 @@ the server converts them here. Pure and O(n log n); callers take the two
 snapshots under their own locks and run this off both.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
+from typing import NamedTuple
 
-from stemtrace.core.anomalies import NodeFacts, RuntimeStats, TimelineEntry
+from stemtrace.core.anomalies import (
+    LinkLike,
+    NodeFacts,
+    RuntimeStats,
+    TimelineEntry,
+)
+from stemtrace.core.events import TaskState
 from stemtrace.server.stats import MAX_DURATION, RunRecord, Window, task_stats
 from stemtrace.server.store import WorkerTimelineEntry
 
-__all__ = ["node_facts", "runtime_facts", "timeline_facts"]
+__all__ = [
+    "ClassifierFacts",
+    "classifier_facts",
+    "node_facts",
+    "runtime_facts",
+    "timeline_facts",
+]
 
 
 def node_facts(records: Iterable[RunRecord]) -> list[NodeFacts]:
@@ -45,14 +58,60 @@ def timeline_facts(
 
 
 def runtime_facts(
-    records: Iterable[RunRecord], now: datetime
+    records: Iterable[RunRecord],
+    now: datetime,
+    names: Collection[str] | None = None,
 ) -> dict[str, RuntimeStats]:
     """Per-name ``(p95_ms, runtime_samples)`` over the whole retention.
 
     The open-ended window from ``now - MAX_DURATION`` equals whole retention
-    without the endpoint's extra pass for the oldest record.
+    without the endpoint's extra pass for the oldest record. With ``names``,
+    only those names are computed (a name's row reads only its own records).
     """
+    if names is not None:
+        records = [r for r in records if r.name in names]
     rows, _ = task_stats(
         records, Window(now - MAX_DURATION, now, open_end=True), lambda name: name
     )
     return {row.name: RuntimeStats(row.p95_ms, row.runtime_samples) for row in rows}
+
+
+class ClassifierFacts(NamedTuple):
+    """Keyword arguments of ``classify_anomalies`` that come from the store."""
+
+    nodes: list[NodeFacts]
+    links: list[LinkLike]
+    runtime_stats: dict[str, RuntimeStats]
+    timeline: dict[str, list[TimelineEntry]]
+
+
+def classifier_facts(
+    records: Iterable[RunRecord],
+    snapshot: Mapping[str, Sequence[WorkerTimelineEntry]],
+    now: datetime,
+) -> ClassifierFacts:
+    """Facts for ``classify_anomalies``, built only for what can be flagged.
+
+    Only a STARTED task or a cold-stop cancelled RETRY can be flagged, so only
+    those get full ``NodeFacts``; every other record is passed on as it is, to
+    keep its ancestors' subtree progress. Runtime stats are computed for the names
+    of the STARTED tasks (the only ones judged by a p95; a node's own name,
+    never its state event's).
+    """
+    records = list(records)
+    nodes: list[NodeFacts] = []
+    links: list[LinkLike] = []
+    started_names: set[str] = set()
+    for r in records:
+        if r.state == TaskState.STARTED or (r.state == TaskState.RETRY and r.cancelled):
+            nodes.extend(node_facts((r,)))
+            if r.state == TaskState.STARTED:
+                started_names.add(r.name)
+        else:
+            links.append(r)
+    return ClassifierFacts(
+        nodes,
+        links,
+        runtime_facts(records, now, started_names) if started_names else {},
+        timeline_facts(snapshot),
+    )

@@ -9,12 +9,13 @@ Internal: not part of stemtrace's public API; names may change without notice.
 """
 
 import bisect
+import itertools
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Final, NamedTuple
+from typing import Final, NamedTuple, Protocol
 
 from stemtrace.core.events import TaskState, WorkerEventType
 
@@ -25,7 +26,9 @@ __all__ = [
     "AnomalyKind",
     "AnomalyReport",
     "AnomalySettings",
+    "LinkLike",
     "NodeFacts",
+    "NodeLink",
     "RuntimeStats",
     "TimelineEntry",
     "classify_anomalies",
@@ -79,6 +82,39 @@ class NodeFacts:
     reported_parent_id: str | None = None
     attempt_started: datetime | None = None
     replaced_progress: datetime | None = None
+
+
+class LinkLike(Protocol):
+    """What rule (b)'s subtree walk reads of a node that can't be flagged.
+
+    Such a node (not STARTED, not a cancelled RETRY) still holds its ancestors'
+    progress up, so it is passed as a link instead of full ``NodeFacts``. Any
+    object with these attributes works, so a caller can pass its own records
+    without copying them.
+    """
+
+    @property
+    def task_id(self) -> str:
+        """The task's ID."""
+        ...
+
+    @property
+    def reported_parent_id(self) -> str | None:
+        """The parent the task's events reported."""
+        ...
+
+    @property
+    def last_updated(self) -> datetime:
+        """The lifecycle-last event's timestamp."""
+        ...
+
+
+class NodeLink(NamedTuple):
+    """A plain ``LinkLike``."""
+
+    task_id: str
+    reported_parent_id: str | None
+    last_updated: datetime
 
 
 class TimelineEntry(NamedTuple):
@@ -144,15 +180,21 @@ def classify_anomalies(
     runtime_stats: Mapping[str, RuntimeStats],
     timeline: Mapping[str, Sequence[TimelineEntry]],
     settings: AnomalySettings = DEFAULT_SETTINGS,
+    links: Iterable[LinkLike] = (),
 ) -> AnomalyReport:
     """Flag the stuck and interrupted nodes; interrupted wins over stuck.
 
-    ``nodes`` must hold every TASK node (the subtree rule walks them all).
-    ``timeline`` maps a nodename to its worker events, ascending by timestamp.
-    Costs O(n log n): one pass for subtree progress, one bisect per node.
+    ``nodes`` and ``links`` together must cover every TASK node (the subtree
+    rule walks them all); a node may be given as full facts or as a link, and
+    only full facts are classified. ``timeline`` maps a nodename to its worker
+    events, ascending by timestamp. Costs O(n log n): one pass for subtree
+    progress, one bisect per node.
     """
     node_list = list(nodes)
-    subtree = _subtree_progress(node_list)
+    subtree = _subtree_progress(
+        itertools.chain(node_list, links),
+        [n.task_id for n in node_list if n.state == TaskState.STARTED],
+    )
     found: dict[str, Anomaly] = {}
     for node in node_list:
         anomaly = _interrupted(node, timeline) or _stuck(
@@ -253,28 +295,34 @@ def _threshold(stats: RuntimeStats, settings: AnomalySettings) -> timedelta:
     return max(settings.stuck_ceiling, settings.stuck_floor)
 
 
-def _subtree_progress(nodes: Sequence[NodeFacts]) -> dict[str, datetime]:
-    """Newest ``last_updated`` below each node, walking ``reported_parent_id`` edges.
+def _subtree_progress(
+    entries: Iterable[LinkLike], roots: Sequence[str]
+) -> dict[str, datetime]:
+    """Newest ``last_updated`` below each of ``roots``, walking ``reported_parent_id`` edges.
 
-    Only nodes that have descendants appear. One memoized pass; a parent cycle
+    Only roots that have descendants appear. One memoized pass; a parent cycle
     (impossible from Celery's IDs) is cut at its back edge and the nodes it
     touches are recomputed by a plain walk, so the answer stays exact.
     """
-    by_id = {node.task_id: node for node in nodes}
+    if not roots:
+        return {}
+    updated: dict[str, datetime] = {}
     children: dict[str, list[str]] = defaultdict(list)
-    for node in nodes:
-        parent = node.reported_parent_id
-        if parent is not None and parent in by_id and parent != node.task_id:
-            children[parent].append(node.task_id)
+    for entry in entries:
+        updated[entry.task_id] = entry.last_updated
+        parent = entry.reported_parent_id
+        # A parent that holds no node is never walked: roots and children are nodes.
+        if parent is not None and parent != entry.task_id:
+            children[parent].append(entry.task_id)
     newest: dict[str, datetime] = {}
     tainted: set[str] = set()
     on_path: set[str] = set()
-    for root in children:
-        if root in newest or root in on_path:
+    for root in roots:
+        if root not in children or root in newest or root in on_path:
             continue
         _walk(
             root,
-            by_id=by_id,
+            updated=updated,
             children=children,
             newest=newest,
             tainted=tainted,
@@ -282,14 +330,14 @@ def _subtree_progress(nodes: Sequence[NodeFacts]) -> dict[str, datetime]:
         )
     for task_id in tainted:
         newest.pop(task_id, None)
-        newest[task_id] = _reachable_newest(task_id, by_id, children)
+        newest[task_id] = _reachable_newest(task_id, updated, children)
     return newest
 
 
 def _walk(
     root: str,
     *,
-    by_id: Mapping[str, NodeFacts],
+    updated: Mapping[str, datetime],
     children: Mapping[str, list[str]],
     newest: dict[str, datetime],
     tainted: set[str],
@@ -312,7 +360,7 @@ def _walk(
             continue
         on_path.discard(task_id)
         # ``kids`` is never empty: only nodes that have children are walked.
-        seen = [by_id[kid].last_updated for kid in kids]
+        seen = [updated[kid] for kid in kids]
         seen += [newest[kid] for kid in kids if kid in newest]
         newest[task_id] = max(seen)
         if any(kid in tainted for kid in kids):
@@ -321,7 +369,7 @@ def _walk(
 
 def _reachable_newest(
     start: str,
-    by_id: Mapping[str, NodeFacts],
+    updated: Mapping[str, datetime],
     children: Mapping[str, list[str]],
 ) -> datetime:
     """Newest ``last_updated`` among the nodes reachable below ``start`` (not itself).
@@ -336,6 +384,6 @@ def _reachable_newest(
         if task_id in seen:
             continue
         seen.add(task_id)
-        reached.append(by_id[task_id].last_updated)
+        reached.append(updated[task_id])
         pending.extend(children.get(task_id, ()))
     return max(reached)

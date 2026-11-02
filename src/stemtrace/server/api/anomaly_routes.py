@@ -24,7 +24,7 @@ from stemtrace.core.anomalies import (
     AnomalySettings,
     classify_anomalies,
 )
-from stemtrace.server.anomaly_facts import node_facts, runtime_facts, timeline_facts
+from stemtrace.server.anomaly_facts import classifier_facts
 from stemtrace.server.api import params
 from stemtrace.server.api.schemas import AnomalyEvidence as EvidenceName
 from stemtrace.server.api.schemas import AnomalyKind as KindName
@@ -114,13 +114,8 @@ class AnomalyEvaluator:
         snapshot: Mapping[str, Sequence[WorkerTimelineEntry]],
         now: datetime,
     ) -> AnomalyReport:
-        return classify_anomalies(
-            node_facts(records),
-            now=now,
-            runtime_stats=runtime_facts(records, now),
-            timeline=timeline_facts(snapshot),
-            settings=self._settings,
-        )
+        facts = classifier_facts(records, snapshot, now)
+        return classify_anomalies(**facts._asdict(), now=now, settings=self._settings)
 
 
 def anomaly_response(anomaly: Anomaly) -> AnomalyResponse:

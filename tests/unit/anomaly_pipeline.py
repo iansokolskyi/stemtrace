@@ -11,7 +11,7 @@ from stemtrace.core.anomalies import (
     classify_anomalies,
 )
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from stemtrace.server.anomaly_facts import node_facts, runtime_facts, timeline_facts
+from stemtrace.server.anomaly_facts import classifier_facts
 from stemtrace.server.store import GraphStore, WorkerTimeline
 
 T0 = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
@@ -99,14 +99,8 @@ def classify(
     for worker in worker_events:
         timeline.record(worker)
     moment = now if isinstance(now, datetime) else at(now)
-    records = store.run_records()
-    return classify_anomalies(
-        node_facts(records),
-        now=moment,
-        runtime_stats=runtime_facts(records, moment),
-        timeline=timeline_facts(timeline.snapshot()),
-        settings=settings,
-    )
+    facts = classifier_facts(store.run_records(), timeline.snapshot(), moment)
+    return classify_anomalies(**facts._asdict(), now=moment, settings=settings)
 
 
 def load_recording(name: str) -> list[TaskEvent | WorkerEvent]:
