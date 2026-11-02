@@ -27,6 +27,7 @@ from stemtrace.core.events import (
 )
 from stemtrace.server.anomaly_facts import node_facts, runtime_facts, timeline_facts
 from stemtrace.server.store import GraphStore, WorkerTimeline
+from tests.unit.anomaly_pipeline import load_recording
 from tests.unit.anomaly_reference import RefAnomaly, reference_anomalies
 
 DATA = Path(__file__).parents[1] / "data"
@@ -137,7 +138,22 @@ def load_flows() -> dict[str, list[TaskEvent]]:
         name: [TaskEvent.model_validate(e) for e in events]
         for name, events in raw.items()
     }
-    return {**flows, **synthetic_flows()}
+    return {**flows, **synthetic_flows(), **recorded_flows()}
+
+
+def recorded_flows() -> dict[str, list[TaskEvent]]:
+    """The task events of the real-worker recordings (M3b, M4, M5), on host w@h1.
+
+    Their worker events are left out: cells inject their own.
+    """
+    flows: dict[str, list[TaskEvent]] = {}
+    for name in ("m3b_cold_stop", "m4_acks_late_sigkill", "m5_sigkill_restart"):
+        flows[f"rec_{name}"] = [
+            e.model_copy(update={"hostname": HOSTS[0]})
+            for e in load_recording(name)
+            if isinstance(e, TaskEvent)
+        ]
+    return flows
 
 
 def _shift(moment: datetime, seconds: float) -> datetime:
@@ -393,7 +409,7 @@ def full_cells(flows: dict[str, list[TaskEvent]]) -> Iterator[Cell]:
 def random_cell(rng: random.Random, flows: dict[str, list[TaskEvent]]) -> Cell:
     """One cell drawn from the same space, with arrival order and up to 3 worker events."""
     # Captures hold almost none of the interesting cells; favor the synthetic ones.
-    pool = [n for n in sorted(flows) if n.startswith("syn_")]
+    pool = [n for n in sorted(flows) if n.startswith(("syn_", "rec_"))]
     name = rng.choice(pool if rng.random() < 0.3 else sorted(flows))
     events = tuple(flows[name][: rng.randint(1, len(flows[name]))])
     workers = tuple(

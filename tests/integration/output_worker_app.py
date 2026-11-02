@@ -10,6 +10,8 @@ queue and stemtrace stream:
 - ``OUTPUT_TEST_NOOP_LOGGING=1`` connects a ``setup_logging`` receiver that
   configures nothing, so the worker has no logging handlers and Python falls
   back to ``logging.lastResort`` (WARNING+ to stderr).
+- ``OUTPUT_TEST_VISIBILITY_TIMEOUT=<seconds>`` shortens Redis's visibility
+  timeout, so an unacknowledged ``acks_late`` message is redelivered quickly.
 """
 
 import logging
@@ -37,6 +39,10 @@ app.conf.update(
     worker_hijack_root_logger=True,
     worker_redirect_stdouts=os.environ.get("OUTPUT_TEST_REDIRECT", "1") != "0",
 )
+if "OUTPUT_TEST_VISIBILITY_TIMEOUT" in os.environ:
+    app.conf.broker_transport_options = {
+        "visibility_timeout": int(os.environ["OUTPUT_TEST_VISIBILITY_TIMEOUT"])
+    }
 
 if os.environ.get("OUTPUT_TEST_NOOP_LOGGING") == "1":
 

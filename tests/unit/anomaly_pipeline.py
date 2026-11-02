@@ -1,7 +1,9 @@
 """Shared harness: raw events -> real store and timeline -> adapter -> classifier."""
 
+import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from stemtrace.core.anomalies import (
     AnomalyReport,
@@ -105,3 +107,13 @@ def classify(
         timeline=timeline_facts(timeline.snapshot()),
         settings=settings,
     )
+
+
+def load_recording(name: str) -> list[TaskEvent | WorkerEvent]:
+    """The events of a real-worker recording in ``tests/data``, in stream order."""
+    path = Path(__file__).parents[1] / "data" / f"anomaly_{name}.json"
+    entries: list[TaskEvent | WorkerEvent] = []
+    for raw in json.loads(path.read_text())["entries"]:
+        model = WorkerEvent if "event_type" in raw else TaskEvent
+        entries.append(model.model_validate(raw))
+    return entries
