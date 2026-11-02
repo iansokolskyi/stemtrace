@@ -31,6 +31,7 @@ from celery.utils.time import maybe_iso8601
 
 from stemtrace.core.chord_body import body_first_task_id
 from stemtrace.core.events import (
+    CANCELLED_RETRY_REASON,
     RegisteredTaskDefinition,
     TaskEvent,
     TaskState,
@@ -110,9 +111,6 @@ _published_ids = _RecentIds()
 # Guard against overly-large docstrings bloating broker events.
 _MAX_DOCSTRING_CHARS = 4000
 
-# Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
-# with no reason and no einfo; mirror the reason Celery itself records.
-_CANCELLED_RETRY_REASON = "cancelled by Celery"
 # The Ignore message Celery's Task.replace() raises (celery 5.2.2 to 5.6.3); the
 # replacement keeps running under the same task ID.
 _REPLACED_BY_NEW_TASK = "Replaced by new task"
@@ -893,7 +891,7 @@ def _on_task_retry(
     elif reason is not None:
         exc_message = str(reason)
     else:
-        exc_message = _format_exception(None, einfo) or _CANCELLED_RETRY_REASON
+        exc_message = _format_exception(None, einfo) or CANCELLED_RETRY_REASON
 
     chord_id, chord_callback_id, chord_body_first_id = _extract_chord_info(
         getattr(request, "chord", None)

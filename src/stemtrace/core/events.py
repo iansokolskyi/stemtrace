@@ -22,6 +22,12 @@ class TaskState(str, Enum):
     IGNORED = "IGNORED"
 
 
+# Celery's cancel path (lost broker connection, cold shutdown) sends task_retry
+# with no reason and no einfo; stemtrace publishes the reason Celery itself
+# records, and the server reads it back to tell such a RETRY from a real one.
+CANCELLED_RETRY_REASON = "cancelled by Celery"
+
+
 class WorkerEventType(str, Enum):
     """Worker lifecycle event types."""
 
