@@ -89,6 +89,7 @@ class _Input:
     """A raw setting and the name an error message calls it."""
 
     def __init__(self, value: object, label: str) -> None:
+        """Keep the raw value and its label."""
         self.value = value
         self.label = label
 

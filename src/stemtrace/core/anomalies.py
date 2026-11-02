@@ -185,10 +185,8 @@ def classify_anomalies(
     """Flag the stuck and interrupted nodes; interrupted wins over stuck.
 
     ``nodes`` and ``links`` together must cover every TASK node (the subtree
-    rule walks them all); a node may be given as full facts or as a link, and
-    only full facts are classified. ``timeline`` maps a nodename to its worker
-    events, ascending by timestamp. Costs O(n log n): one pass for subtree
-    progress, one bisect per node.
+    rule walks them all); only ``nodes`` are classified. ``timeline`` maps a
+    nodename to its worker events, ascending by timestamp. Costs O(n log n).
     """
     node_list = list(nodes)
     subtree = _subtree_progress(
