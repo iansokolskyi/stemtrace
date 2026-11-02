@@ -15,7 +15,7 @@ from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.groups import build_group_config
-from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from stemtrace.server.ui.static import get_static_router
 from stemtrace.server.websocket import WebSocketManager
 
@@ -123,6 +123,7 @@ class StemtraceExtension:
 
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()
+        self._worker_timeline = WorkerTimeline()
         self._ws_manager = WebSocketManager()
         self._consumer: AsyncEventConsumer | None = None
 
@@ -133,6 +134,7 @@ class StemtraceExtension:
                 prefix=self._prefix,
                 ttl=ttl,
                 worker_registry=self._worker_registry,
+                worker_timeline=self._worker_timeline,
             )
 
         self._node_alias_from_arguments = node_alias_from_arguments

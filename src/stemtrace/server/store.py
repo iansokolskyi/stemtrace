@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import threading
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel
 
-from stemtrace.core.events import TaskState
+from stemtrace.core.events import TaskState, WorkerEventType
 from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.stats import RunRecord
@@ -17,7 +18,11 @@ from stemtrace.server.stats import RunRecord
 if TYPE_CHECKING:
     from collections.abc import Collection
 
-    from stemtrace.core.events import RegisteredTaskDefinition, TaskEvent
+    from stemtrace.core.events import (
+        RegisteredTaskDefinition,
+        TaskEvent,
+        WorkerEvent,
+    )
 
 
 class WorkerInfo(BaseModel):
@@ -197,6 +202,82 @@ if TYPE_CHECKING:
 # A worker not seen for this long is shown offline (see remove_stale_workers).
 # Seen means a worker_ready, a task event from its nodename, or an inspect reply.
 WORKER_STALE_TIMEOUT_MINUTES = 3
+
+
+# Bounds of the worker timeline: events kept per nodename, nodenames kept.
+WORKER_TIMELINE_EVENTS_PER_NODE = 32
+WORKER_TIMELINE_MAX_NODES = 1024
+
+
+class WorkerTimelineEntry(NamedTuple):
+    """One worker event of a nodename, as the worker's clock stamped it."""
+
+    timestamp: datetime
+    event_type: WorkerEventType
+    pid: int
+
+
+class WorkerTimeline:
+    """Bounded per-nodename history of worker events, kept apart from the registry.
+
+    ``WorkerRegistry`` deletes offline workers after 30 minutes and
+    ``mark_shutdown`` drops the event time; this keeps ``(timestamp, type, pid)``.
+    """
+
+    # Threading model: the consumer thread writes, request threads read; every
+    # access holds ``_lock``. Readers get copies of immutable entries.
+
+    def __init__(
+        self,
+        max_events_per_node: int = WORKER_TIMELINE_EVENTS_PER_NODE,
+        max_nodes: int = WORKER_TIMELINE_MAX_NODES,
+    ) -> None:
+        """Initialize an empty timeline with the given bounds.
+
+        Raises:
+            ValueError: If either bound is below 1.
+        """
+        if max_events_per_node < 1 or max_nodes < 1:
+            raise ValueError("max_events_per_node and max_nodes must be at least 1")
+        self._max_events_per_node = max_events_per_node
+        self._max_nodes = max_nodes
+        # Nodename -> entries sorted ascending by (timestamp, type, pid), no
+        # duplicates. Sorting by the whole entry makes the kept set (the newest
+        # K) independent of arrival order, which Redis replay and RabbitMQ
+        # don't guarantee.
+        self._by_node: dict[str, list[WorkerTimelineEntry]] = {}
+        self._lock = threading.RLock()
+
+    def record(self, event: WorkerEvent) -> None:
+        """Add a worker event (any type) to its nodename's timeline."""
+        # A naive timestamp (older worker) can't be compared with aware ones.
+        entry = WorkerTimelineEntry(
+            ensure_tz_aware(event.timestamp), event.event_type, event.pid
+        )
+        with self._lock:
+            entries = self._by_node.get(event.hostname, [])
+            index = bisect.bisect_left(entries, entry)
+            if index == len(entries) or entries[index] != entry:
+                entries.insert(index, entry)
+                del entries[: -self._max_events_per_node]
+            self._by_node[event.hostname] = entries
+            if len(self._by_node) > self._max_nodes:
+                self._evict_oldest_node()
+
+    def events_for(self, nodename: str) -> list[WorkerTimelineEntry]:
+        """Return a copy of the nodename's entries, oldest first (empty if unknown)."""
+        with self._lock:
+            return list(self._by_node.get(nodename, ()))
+
+    def snapshot(self) -> dict[str, list[WorkerTimelineEntry]]:
+        """Return a copy of every nodename's entries, taken in one locked pass."""
+        with self._lock:
+            return {node: list(entries) for node, entries in self._by_node.items()}
+
+    def _evict_oldest_node(self) -> None:
+        """Drop the nodename whose newest event is oldest (ties: smallest name)."""
+        oldest = min(self._by_node, key=lambda n: (self._by_node[n][-1], n))
+        del self._by_node[oldest]
 
 
 class WorkerRegistry:
