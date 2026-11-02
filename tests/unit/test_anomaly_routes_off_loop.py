@@ -45,8 +45,10 @@ async def test_classification_runs_in_a_worker_thread_with_both_locks_free(
         other.start()
         other.join(LOCK_WAIT_S)
         seen["locks_free"] = not other.is_alive()
-        other.join()
-        return real(*args, **kwargs)
+        try:
+            return real(*args, **kwargs)
+        finally:
+            other.join()  # after the classification, so a held lock can't deadlock it
 
     monkeypatch.setattr(anomaly_routes, "classify_anomalies", probing)
 
