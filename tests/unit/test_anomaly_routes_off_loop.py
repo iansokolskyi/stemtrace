@@ -45,14 +45,13 @@ async def test_classification_runs_in_a_worker_thread_with_both_locks_free(
         other.start()
         other.join(LOCK_WAIT_S)
         seen["locks_free"] = not other.is_alive()
-        try:
-            return real(*args, **kwargs)
-        finally:
-            other.join()  # after the classification, so a held lock can't deadlock it
+        seen["ingest"] = other  # joined by the test, once the request is over
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(anomaly_routes, "classify_anomalies", probing)
 
     response = await get(make_app(store, timeline), path)
+    seen["ingest"].join()
 
     assert response.status_code == 200
     assert seen["thread"] != loop_thread
