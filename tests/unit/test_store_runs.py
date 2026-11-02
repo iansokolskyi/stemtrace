@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
+from stemtrace.core import attribution
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
+from stemtrace.core.graph import TERMINAL_STATES, NodeType, TaskGraph, TaskNode
 from stemtrace.server.stats import RunRecord
 from stemtrace.server.store import GraphStore
 
@@ -57,6 +58,7 @@ def test_run_record_follows_the_task_through_its_states() -> None:
         state=TaskState.FAILURE,
         last_updated=T0 + timedelta(seconds=5),
         exception_type="myapp.PartnerError",
+        runtime_ms=5000,
     )
 
 
@@ -128,6 +130,13 @@ def _assert_index_matches_graph(store: GraphStore) -> None:
             if node.node_type == NodeType.TASK
         }
     assert _records(store) == expected
+    # Oracle read off the node, not through from_node: the last run's runtime
+    # once the task is terminal, None before.
+    for task_id, record in _records(store).items():
+        node = store.get_node(task_id)
+        assert node is not None
+        want = node.runtime_ms if node.state in TERMINAL_STATES else None
+        assert record.runtime_ms == want, task_id
 
 
 def _shuffled(flow: str, seed: int) -> list[TaskEvent]:
@@ -209,6 +218,17 @@ def test_index_matches_the_graph_on_real_captures(flow: str, max_nodes: int) -> 
             _assert_index_matches_graph(store)
 
 
+def test_captures_include_runs_with_a_runtime() -> None:
+    """The oracle above is not vacuous: some capture ends with a measured runtime."""
+    measured = 0
+    for flow in _CAPTURES:
+        store = GraphStore()
+        for event in _shuffled(flow, seed=0):
+            store.add_event(event)
+        measured += sum(r.runtime_ms is not None for r in store.run_records())
+    assert measured > 0
+
+
 def test_retry_events_never_read_the_exception_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -249,3 +269,99 @@ def test_retry_events_never_read_the_exception_class(
 
     assert reads == ["t"]
     assert _records(store)["t"].exception_type == "Final"
+
+
+def test_record_runtime_is_the_last_runs_not_the_total() -> None:
+    """A retried task has three runs of 1s, 2s and 4s: the record holds the 4s."""
+    store = GraphStore()
+    plan = [
+        (TaskState.STARTED, 0, 0),
+        (TaskState.RETRY, 1, 0),
+        (TaskState.STARTED, 10, 1),
+        (TaskState.RETRY, 12, 1),
+        (TaskState.STARTED, 20, 2),
+        (TaskState.SUCCESS, 24, 2),
+    ]
+    for state, seconds, retries in plan:
+        store.add_event(
+            TaskEvent(
+                task_id="t",
+                name="app.flaky",
+                state=state,
+                retries=retries,
+                timestamp=T0 + timedelta(seconds=seconds),
+            )
+        )
+
+    node = store.get_node("t")
+    assert node is not None
+    assert node.run_times() == (4000, 7000)
+    assert _records(store)["t"].runtime_ms == 4000
+
+
+def test_record_has_no_runtime_before_the_task_ends() -> None:
+    store = GraphStore()
+    store.add_event(_event("t", TaskState.STARTED, 0))
+    store.add_event(_event("t", TaskState.RETRY, 3))
+
+    assert _records(store)["t"].runtime_ms is None
+
+
+def test_record_runtime_follows_a_late_terminal_event() -> None:
+    """STARTED then SUCCESS arriving out of order still gives the 5s run."""
+    store = GraphStore()
+    store.add_event(_event("t", TaskState.SUCCESS, 5))
+    assert _records(store)["t"].runtime_ms is None  # no STARTED yet
+
+    store.add_event(_event("t", TaskState.STARTED, 0))
+
+    assert _records(store)["t"].runtime_ms == 5000
+
+
+def test_non_terminal_events_never_compute_run_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Computing it scans and sorts every event: on each event under the lock, ingest went quadratic."""
+    calls: list[int] = []
+    real = attribution.run_times
+
+    def counting(events: list[TaskEvent]) -> tuple[int | None, int | None]:
+        calls.append(len(events))
+        return real(events)
+
+    monkeypatch.setattr(attribution, "run_times", counting)
+    store = GraphStore()
+    for i in range(200):
+        state = TaskState.STARTED if i % 2 == 0 else TaskState.RETRY
+        store.add_event(
+            TaskEvent(
+                task_id="t",
+                name="app.poll",
+                state=state,
+                retries=i // 2,
+                timestamp=T0 + timedelta(seconds=i),
+            )
+        )
+    store.add_event(
+        TaskEvent(
+            task_id="t",
+            name="app.poll",
+            state=TaskState.STARTED,
+            retries=100,
+            timestamp=T0 + timedelta(seconds=300),
+        )
+    )
+    assert calls == []
+
+    store.add_event(
+        TaskEvent(
+            task_id="t",
+            name="app.poll",
+            state=TaskState.SUCCESS,
+            retries=100,
+            timestamp=T0 + timedelta(seconds=307),
+        )
+    )
+
+    assert len(calls) == 1
+    assert _records(store)["t"].runtime_ms == 7000
