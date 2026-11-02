@@ -342,36 +342,43 @@ is both stuck and interrupted is reported as interrupted.
 ### Unregistered
 
 A task is **unregistered** when its state is PENDING (the sender published it and no worker has
-reported receiving it), it has waited longer than `grace`, and no online worker has its name
+reported receiving it), it has waited longer than `grace`, and no live worker has its name
 registered. A task a worker received is RECEIVED, so it never counts, and neither does a
 `celery.*` task. The wait is measured from the PENDING event's timestamp, which the sending
-process stamps. Offline workers don't count: a name only an offline worker registered is
-unregistered while another worker is online, and a new worker that registers the name within
-`grace` of a rolling deploy clears it. `since` is the oldest waiting task's PENDING time and
-`task_count` the number of waiting tasks of the name.
+process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
+and again after its next `worker_ready`. A worker that missed one `inspect` call, or that has
+been silent for more than 3 minutes without a shutdown, keeps its names until the 30-minute
+cleanup removes it. A name that only a stopped worker registered is unregistered, and a new
+worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
+oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
 
 The server reports a name as unregistered only when it can trust its registry. The registry is
 trusted when either of these holds:
 
 - The last `inspect` reply that listed the tasks of every worker that answered arrived at most
   `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
-  seconds. A reply with only a ping, an empty reply, or a worker that answered `stats()` but
-  not `registered()` doesn't count.
-- No broker URL is configured, so the server has only worker events, and at least one online
+  seconds. A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  `registered()`, or a reply that a worker event overtook doesn't count.
+- No broker URL is configured, so the server has only worker events, and at least one live
   worker has registered tasks.
 
-When neither holds, no task is reported unregistered and `no_workers_online` isn't reported.
-That includes a server restarted after its workers (the registry is empty until a worker
-answers) and a server with a broker URL whose workers can't be inspected: **with a broker URL
-but inspect unreachable, unregistered never fires.**
+When neither holds, no task is reported unregistered. That includes a server restarted after
+its workers (the registry is empty until a worker answers) and a server with a broker URL
+whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
+never fires.**
 
-When the registry is trusted, some task has waited past `grace`, and no worker is online, the
-server reports one `no_workers_online` item instead of the per-name items, and no task gets
-`anomaly` `unregistered`. The item's `task_count` is all the tasks past `grace` and `since` the
-oldest. With no task past `grace`, nothing is reported (the Workers page already shows the
-fleet). The registry stays trusted for `authority_window` after the last complete reply, so
-`no_workers_online` appears only within that window after the workers stop answering. With no
-broker URL it never appears, because the registry is trusted only while a worker is online.
+### No workers online
+
+When some task has waited past `grace` and no worker is online, the server reports one
+`no_workers_online` item instead of any per-name item, and no task gets `anomaly`
+`unregistered`. The item's `task_count` is all the tasks past `grace` and `since` the oldest.
+With no task past `grace`, nothing is reported (the Workers page already shows the fleet).
+
+A worker counts as online while it is live and the server saw it, through an event or an
+`inspect` reply, within the last 3 minutes. This needs no trusted registry and no broker URL,
+and the item stays for the whole outage, including after the 30-minute cleanup removes the
+workers. It needs the server to have seen a worker since it started: a server restarted while
+the whole fleet is already down reports nothing.
 
 ### Settings
 
@@ -420,9 +427,16 @@ and `stemtrace server` do.
 - **Skewed sender clocks move unregistered.** `grace` compares the server's clock with the
   sending process's PENDING stamp, so a sender clock ahead delays the flag by the skew and one
   behind brings it forward.
-- **A broker URL needs a working inspect.** The server reports no unregistered task, and no
-  `no_workers_online` item, while it can't inspect the workers (see [Unregistered](#unregistered)).
-  The same holds after a restart until a worker answers.
+- **A broker URL needs a working inspect.** The server reports no unregistered task while it
+  can't inspect the workers (see [Unregistered](#unregistered)). The same holds after a restart
+  until a worker answers.
+- **A restart during an outage shows nothing.** A server started while the whole fleet is down
+  has seen no worker, so it doesn't report `no_workers_online`.
+- **A busy fleet can look offline.** A worker that is silent for 3 minutes without a shutdown
+  counts as offline, so a fleet made only of busy solo-pool workers (each running one task for
+  more than 3 minutes) gives a `no_workers_online` item while it is alive.
+- **A killed worker's names count for up to 30 minutes.** After a SIGKILL there is no shutdown
+  event, so a name only that worker registered is reported unregistered up to 30 minutes late.
 - **Two machines, one nodename.** Workers that share a nodename can make the server flag a
   task as interrupted when the other machine restarts.
 - **The server's history is bounded.** The server keeps the newest 32 worker events for each
