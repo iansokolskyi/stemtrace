@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 
@@ -63,6 +64,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Workers never register these (library/signals.py filters the same prefix).
+_CELERY_BUILTIN_PREFIX = "celery."
+
+# Celery 5.6.3 worker/control.py registered() appends "name [rate_limit=10/m ...]"
+# for the DEFAULT_TASK_INFO_ITEMS a task sets.
+_TASK_INFO_SUFFIX = re.compile(r" \[(?:exchange|routing_key|rate_limit)=.*\]\Z")
+
 
 def _monotonic() -> float:
     """Return a monotonic clock reading.
@@ -89,18 +97,18 @@ def _tasks_for_worker_key(
 ) -> list[str] | None:
     """Return registered task names for a worker key.
 
-    Returns None when the registered mapping is unavailable, so callers can
-    preserve any existing task list.
+    Returns None when this node gave no list (no reply at all, or it missed
+    the registered() broadcast), so callers can preserve its existing task list.
     """
     if not registered or not isinstance(registered, dict):
         return None
     tasks_obj = registered.get(worker_key)
     if not isinstance(tasks_obj, list):
-        return []
+        return None
     tasks: list[str] = []
     for t in tasks_obj:
-        if isinstance(t, str) and not t.startswith("celery."):
-            tasks.append(t)
+        if isinstance(t, str) and not t.startswith(_CELERY_BUILTIN_PREFIX):
+            tasks.append(_TASK_INFO_SUFFIX.sub("", t))
     return tasks
 
 
@@ -545,9 +553,9 @@ def _registry_status(execution_count: int, registered_by: list[str]) -> TaskStat
 def _registered_task_response(
     name: str,
     *,
-    store: GraphStore,
     worker_registry: WorkerRegistry | None,
     execution_count: int,
+    last_run: datetime | None,
     registered_by: list[str],
     status: TaskStatus,
     groups: GroupConfig,
@@ -571,7 +579,7 @@ def _registered_task_response(
         bound=definition.bound if definition else False,
         execution_count=execution_count,
         registered_by=registered_by,
-        last_run=store.get_last_execution_time(name),
+        last_run=last_run,
         status=status,
         task_group=group.name,
         tags=list(group.tags),
@@ -594,10 +602,14 @@ def _build_task_registry(
     hostnames_by_task = _hostnames_by_registered_task(worker_registry)
 
     tasks: list[RegisteredTaskResponse] = []
-    for name in sorted(_known_task_names(store, hostnames_by_task)):
+    runs = store.get_task_run_summaries()
+    for name in sorted(runs.keys() | hostnames_by_task.keys()):
+        # Workers never register built-ins, so they would always read as not_registered.
+        if name.startswith(_CELERY_BUILTIN_PREFIX):
+            continue
         if query and query.lower() not in name.lower():
             continue
-        execution_count = store.get_task_execution_count(name)
+        execution_count, last_run = runs.get(name, (0, None))
         registered_by = sorted(hostnames_by_task.get(name, ()))
         task_status = _registry_status(execution_count, registered_by)
         if status and task_status.value != status:
@@ -605,9 +617,9 @@ def _build_task_registry(
         tasks.append(
             _registered_task_response(
                 name,
-                store=store,
                 worker_registry=worker_registry,
                 execution_count=execution_count,
+                last_run=last_run,
                 registered_by=registered_by,
                 status=task_status,
                 groups=groups,
@@ -619,7 +631,7 @@ def _build_task_registry(
 def _known_task_names(
     store: GraphStore, hostnames_by_task: Mapping[str, set[str]]
 ) -> set[str]:
-    """Task names seen in events or registered by a worker (the registry's set)."""
+    """Task names seen in events or registered by a worker."""
     return store.get_unique_task_names() | set(hostnames_by_task)
 
 
@@ -987,7 +999,8 @@ def _add_group_routes(
         """List task groups with their source, tags, color and task names.
 
         Task names are the ones the server has seen in events or in workers'
-        registered tasks (the task registry's names). Code-defined groups are
+        registered tasks, including ``celery.*`` built-ins that the task registry
+        hides. Code-defined groups are
         listed even before any of their tasks is seen. Sorted by name, with
         ``ungrouped`` last. Doesn't query workers: see ``/tasks/registry``.
         """
