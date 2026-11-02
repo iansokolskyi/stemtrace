@@ -61,7 +61,10 @@ def reference(
             waiting.append((task_id, name, state.timestamp))
     if not waiting:
         return set(), set()
-    if registry.any_seen and not registry.any_online:
+    heard = registry.inspect_completed_at
+    silence_is_evidence = heard is not None and (now - heard) <= WINDOW
+    online = registry.any_online if silence_is_evidence else registry.any_live
+    if registry.any_seen and not online:
         return {
             ("no_workers_online", None, min(w[2] for w in waiting), len(waiting))
         }, set()
@@ -87,12 +90,23 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
         ]
     )
     online = rng.random() < 0.7
+    live = online or bool(registered) or rng.random() < 0.5
+    completed = rng.choice(
+        [
+            now - WINDOW,
+            now - WINDOW - timedelta(seconds=0.001),
+            now - WINDOW + timedelta(seconds=0.001),
+            None,
+        ]
+    )
     return RegistryFacts(
         live_names=registered,
         any_online=online,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
-        any_seen=online or bool(registered) or rng.random() < 0.5,
+        any_seen=live or rng.random() < 0.5,
+        any_live=live,
+        inspect_completed_at=completed,
     )
 
 

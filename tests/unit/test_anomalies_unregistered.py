@@ -44,14 +44,22 @@ def registry(
     authority: float | None = FRESH,
     broker: bool = True,
     seen: bool = True,
+    live: bool | None = None,
+    completed: float | None = None,
 ) -> RegistryFacts:
-    """Registry facts; ``authority`` is seconds after T0 (None: never confirmed)."""
+    """Registry facts; times are seconds after T0 (None: never).
+
+    ``live`` is whether some worker has no stop reported (default: ``online``);
+    ``completed`` is when an inspect ``stats()`` last completed.
+    """
     return RegistryFacts(
         live_names=frozenset(names),
         any_online=online,
         authority_at=None if authority is None else at(authority),
         broker_configured=broker,
         any_seen=seen,
+        any_live=online if live is None else live,
+        inspect_completed_at=None if completed is None else at(completed),
     )
 
 
@@ -435,9 +443,12 @@ def test_fleet_offline_wins_over_per_name_items_when_the_gate_is_open() -> None:
     assert nodes == {}
 
 
-def test_row28c_silent_workers_keep_their_names_and_the_fleet_item_fires() -> None:
-    # Live names stay (no per-name item for "app.known"), nobody is online.
-    facts = registry(("app.known",), online=False, authority=None, broker=False)
+def test_row28c_inspect_completing_and_silent_workers_give_the_fleet_item() -> None:
+    # Live names stay (no per-name item for "app.known"); the server could hear
+    # workers (an inspect completed a moment ago) and heard nothing.
+    facts = registry(
+        ("app.known",), online=False, live=True, authority=None, completed=FRESH
+    )
 
     items, nodes, _ = run([pending("t1", OLD, "app.known")], facts)
 
@@ -445,6 +456,74 @@ def test_row28c_silent_workers_keep_their_names_and_the_fleet_item_fires() -> No
         (AnomalyKind.NO_WORKERS_ONLINE, 1)
     ]
     assert nodes == {}
+
+
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize(
+    "completed", [None, NOW - WINDOW - 1], ids=["never", "past-the-window"]
+)
+def test_row28d_an_idle_healthy_fleet_without_a_recent_inspect_gives_per_name_items(
+    completed: float | None, broker: bool
+) -> None:
+    # Silence isn't evidence: nothing refreshed last_seen. The names count, and
+    # the gate is open (a fresh complete reply, or no broker with live names).
+    facts = registry(
+        ("app.known",),
+        online=False,
+        live=True,
+        authority=FRESH if broker else None,
+        broker=broker,
+        completed=completed,
+    )
+
+    items, _, _ = run([pending("t1", OLD, "app.new")], facts)
+
+    assert [(a.kind, a.name) for a in items] == [(AnomalyKind.UNREGISTERED, "app.new")]
+
+
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize(
+    "completed", [None, NOW - WINDOW - 1], ids=["never", "past-the-window"]
+)
+def test_row28e_a_sigkilled_fleet_without_a_recent_inspect_gives_no_fleet_item(
+    completed: float | None, broker: bool
+) -> None:
+    facts = registry(
+        ("app.known",), online=False, live=True, broker=broker, completed=completed
+    )
+
+    items, _, _ = run([pending("t1", OLD, "app.known")], facts)
+
+    assert items == []
+
+
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize(
+    "completed",
+    [None, NOW - 30, NOW - WINDOW, NOW - WINDOW - 1],
+    ids=["never", "recent", "at-the-window", "past-the-window"],
+)
+@pytest.mark.parametrize("stopped", [True, False])
+def test_fleet_item_depends_on_a_stop_or_on_silence_being_evidence(
+    stopped: bool, completed: float | None, broker: bool
+) -> None:
+    # Fleet silent for > 3 min (any_online False). Stopped: every worker reported
+    # a stop. Otherwise silence counts only when an inspect completed in the window.
+    facts = registry(
+        ("app.known",),
+        online=False,
+        live=not stopped,
+        broker=broker,
+        completed=completed,
+    )
+    evidence = completed is not None and NOW - completed <= WINDOW
+
+    items, _, _ = run([pending("t1", OLD, "app.known")], facts)
+
+    expected = stopped or evidence
+    assert [a.kind for a in items] == (
+        [AnomalyKind.NO_WORKERS_ONLINE] if expected else []
+    )
 
 
 def test_classifier_accepts_node_facts_as_pending_tasks() -> None:

@@ -248,3 +248,52 @@ def test_registry_facts_are_a_copy_later_registrations_do_not_change() -> None:
     registry.register_worker(NODE_B, 2, ["app.b"])
 
     assert got.live_names == frozenset({"app.a"})
+
+
+# --- The inspect clock: a stats() call that completed, even with no reply --------
+
+
+@pytest.mark.parametrize(
+    ("inspector", "completed"),
+    [
+        pytest.param(
+            _Inspect(stats={NODE_A: {"pid": 1}}, registered={NODE_A: ["x"]}),
+            True,
+            id="complete-reply",
+        ),
+        pytest.param(_Inspect(stats=None, ping=None), True, id="nobody-answered-none"),
+        pytest.param(_Inspect(stats={}, ping=None), True, id="nobody-answered-empty"),
+        pytest.param(
+            _Inspect(stats={}, ping={NODE_A: {"ok": "pong"}}), True, id="ping-only"
+        ),
+        pytest.param(
+            _Inspect(stats={NODE_A: {"pid": 1}}, registered=RuntimeError("down")),
+            True,
+            id="registered-raises",
+        ),
+        # Celery 5.6.3 Inspect._request -> Control.broadcast -> kombu 5.6.2
+        # Mailbox._broadcast: an unreachable broker raises, no reply returns None.
+        pytest.param(
+            _Inspect(stats=RuntimeError("broker down")), False, id="stats-raises"
+        ),
+        pytest.param(
+            _Inspect(stats=ConnectionError("refused"), ping=None),
+            False,
+            id="connection-error",
+        ),
+    ],
+)
+def test_refresh_records_when_an_inspect_stats_call_completed(
+    inspector: _Inspect, completed: bool
+) -> None:
+    registry = WorkerRegistry()
+    before = datetime.now(timezone.utc)
+
+    refresh(registry, inspector)
+
+    stamp = facts(registry).inspect_completed_at
+    if completed:
+        assert stamp is not None
+        assert before <= stamp <= datetime.now(timezone.utc)
+    else:
+        assert stamp is None

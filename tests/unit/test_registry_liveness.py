@@ -177,36 +177,150 @@ def test_a_reply_with_one_fresh_node_stamps() -> None:
 # --- Row 28: the fleet item holds for the whole outage ----------------------------
 
 
+@pytest.mark.parametrize("stopped", [True, False])
+@pytest.mark.parametrize("minutes", [2, 6, 29, 45, 120])
+@pytest.mark.parametrize(
+    "completed_ago_s", [None, 60, 600], ids=["never", "within-window", "past-window"]
+)
 @pytest.mark.parametrize("broker", [True, False])
-@pytest.mark.parametrize("age_s", [0, 300, 660])
-@pytest.mark.parametrize("minutes", [2, 6, 12, 29, 45, 120])
-def test_row28_the_fleet_item_holds_for_the_whole_outage_after_a_sigkill(
-    minutes: int, age_s: int, broker: bool
+def test_row28_the_fleet_item_follows_stops_and_inspect_evidence_for_the_whole_outage(
+    broker: bool, completed_ago_s: int | None, minutes: int, stopped: bool
 ) -> None:
-    """The fleet dies silently; its last sign of life was ``age_s`` before ``D``."""
+    """The fleet's last sign of life is at ``D``; then nothing arrives."""
     registry = WorkerRegistry()
-    last_sign = D - timedelta(seconds=age_s)
-    if broker:
-        registry.apply_stats_reply({}, {SOLO: (1, ["app.known"])}, now=last_sign)
-    else:
-        registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=last_sign)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=D)
+    if stopped:
+        registry.mark_shutdown(SOLO, 1)  # a clean stop
     now = D + minutes * MINUTE
+    if completed_ago_s is not None:
+        registry.note_inspect_completed(now - timedelta(seconds=completed_ago_s))
     registry.remove_stale_workers(now=now)  # what the consumer runs periodically
     store = GraphStore()
-    store.add_event(
-        task_event("t1", TaskState.PENDING, -3600, name="app.known")
-    )  # waiting an hour
-    silent_for = now - last_sign
+    store.add_event(task_event("t1", TaskState.PENDING, -3600, name="app.known"))
+    silent = minutes > 3
+    evidence = completed_ago_s is not None and completed_ago_s <= 120
+    deleted = minutes > 30  # the 30-minute cleanup removed the worker
 
     report = classify(store, facts(registry, now, broker=broker), now)
 
-    if silent_for > timedelta(minutes=3):
-        assert [(a.kind, a.task_count) for a in report.items] == [
-            (AnomalyKind.NO_WORKERS_ONLINE, 1)
-        ]
-        assert dict(report.anomalies) == {}
-    else:
-        assert list(report.items) == []  # still inside the stale window
+    expected = stopped or deleted or (silent and evidence)
+    assert [(a.kind, a.task_count) for a in report.items] == (
+        [(AnomalyKind.NO_WORKERS_ONLINE, 1)] if expected else []
+    )
+    assert dict(report.anomalies) == {}
+
+
+def test_row28d_the_reviewer_poc_an_idle_fleet_flags_the_new_name_not_the_fleet() -> (
+    None
+):
+    # broker_configured=False, worker_ready at T, PENDING app.new at T+1 min,
+    # judged at T+6.5 min: nothing refreshed last_seen, but nothing says it died.
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=D)
+    store = GraphStore()
+    store.add_event(task_event("t1", TaskState.PENDING, 60, name="app.new"))
+    now = D + timedelta(minutes=6, seconds=30)
+
+    report = classify(store, facts(registry, now, broker=False), now)
+
+    assert [(a.kind, a.name) for a in report.items] == [
+        (AnomalyKind.UNREGISTERED, "app.new")
+    ]
+
+
+def test_row28e_a_sigkilled_fleet_without_inspect_gives_no_fleet_item() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=D)
+    store = GraphStore()
+    store.add_event(task_event("t1", TaskState.PENDING, 60, name="app.known"))
+    now = D + 20 * MINUTE
+
+    report = classify(store, facts(registry, now, broker=False), now)
+
+    assert list(report.items) == []
+
+
+def test_a_clean_shutdown_of_every_worker_gives_the_fleet_item_at_once() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=D)
+    registry.mark_shutdown(SOLO, 1)
+    store = GraphStore()
+    store.add_event(task_event("t1", TaskState.PENDING, 0, name="app.known"))
+    now = D + 2 * MINUTE
+
+    report = classify(store, facts(registry, now, broker=False), now)
+
+    assert [a.kind for a in report.items] == [AnomalyKind.NO_WORKERS_ONLINE]
+
+
+# --- Superseded pids, events from unknown nodes, the inspect clock -------------
+
+
+def test_a_pid_superseded_by_a_newer_worker_ready_is_not_live() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.old"], event_timestamp=D)
+    registry.register_worker(SOLO, 2, ["app.new"], event_timestamp=D + MINUTE)
+
+    got = facts(registry, D + MINUTE)
+
+    assert got.live_names == {"app.new"}
+
+
+def test_a_pid_a_stats_reply_supersedes_is_not_live() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.old"], event_timestamp=D)
+    seen = registry.event_generations()
+    registry.apply_stats_reply(seen, {SOLO: (2, ["app.new"])}, now=D + MINUTE)
+
+    assert facts(registry, D + MINUTE).live_names == {"app.new"}
+
+
+def test_a_superseded_pid_does_not_keep_the_fleet_live_after_the_new_one_stops() -> (
+    None
+):
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.old"], event_timestamp=D)
+    registry.register_worker(SOLO, 2, ["app.new"], event_timestamp=D + MINUTE)
+    registry.mark_shutdown(SOLO, 2)
+
+    got = facts(registry, D + MINUTE)
+
+    assert (got.any_live, got.live_names) == (False, frozenset())
+
+
+def test_a_task_event_from_an_unknown_nodename_sets_the_seen_flag() -> None:
+    registry = WorkerRegistry()
+
+    registry.mark_seen("celery@ghost", D, now=D)
+
+    got = facts(registry, D)
+    assert (got.any_seen, got.any_live) == (True, False)
+
+
+def test_a_new_registry_has_no_inspect_time_and_note_inspect_completed_sets_it() -> (
+    None
+):
+    registry = WorkerRegistry()
+    assert facts(registry, D).inspect_completed_at is None
+
+    registry.note_inspect_completed(D)
+
+    assert facts(registry, D).inspect_completed_at == D
+
+
+def test_the_inspect_time_is_separate_from_the_authority_time() -> None:
+    registry = WorkerRegistry()
+    registry.note_inspect_completed(D)
+
+    assert facts(registry, D).authority_at is None
+
+
+def test_registry_facts_say_whether_a_live_worker_exists() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=D)
+    silent = facts(registry, D + 20 * MINUTE)
+
+    assert (silent.any_live, silent.any_online) == (True, False)
 
 
 def test_row28b_a_missed_broadcast_alone_never_makes_the_fleet_offline() -> None:

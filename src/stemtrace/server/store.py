@@ -38,6 +38,8 @@ class WorkerInfo(BaseModel):
     # True once a worker_shutdown event closed this process. Only a fresh
     # registration (worker_ready, or stats naming this pid) clears it.
     shutdown_reported: bool = False
+    # True while a newer pid of the same nodename is the live process.
+    superseded: bool = False
 
 
 def ensure_tz_aware(dt: datetime) -> datetime:
@@ -309,6 +311,9 @@ class WorkerRegistry:
         # Whether any worker was registered since the server started; the
         # cleanup that deletes the workers leaves it.
         self._ever_seen = False
+        # When an inspect ``stats()`` call last completed, even with no reply:
+        # then silence from the workers is evidence they are gone.
+        self._inspect_completed_at: datetime | None = None
         self._lock = threading.RLock()
 
     def register_worker(
@@ -372,6 +377,7 @@ class WorkerRegistry:
                 self._workers[worker_id].last_seen = timestamp
                 self._workers[worker_id].status = WorkerStatus.ONLINE
                 self._workers[worker_id].shutdown_reported = False
+                self._workers[worker_id].superseded = False
             else:
                 # New worker registration
                 self._workers[worker_id] = WorkerInfo(
@@ -386,10 +392,11 @@ class WorkerRegistry:
             self._ever_seen = True
 
     def _retire_other_pids(self, hostname: str, keep: str) -> None:
-        """Mark every pid of the node except ``keep`` (a worker_id) offline."""
+        """Mark every pid of the node except ``keep`` (a worker_id) offline and not live."""
         for worker_id, worker in self._workers.items():
             if worker.hostname == hostname and worker_id != keep:
                 worker.status = WorkerStatus.OFFLINE
+                worker.superseded = True
 
     def get_task_definition(self, name: str) -> RegisteredTaskDefinition | None:
         """Get task definition metadata by task name.
@@ -446,6 +453,7 @@ class WorkerRegistry:
             now: Current time (tests); defaults to now.
         """
         with self._lock:
+            self._ever_seen = True
             live_id = self._newest_by_node.get(hostname)
             worker = self._workers.get(live_id) if live_id else None
             if worker is None:
@@ -506,6 +514,7 @@ class WorkerRegistry:
                 return
             live.status = WorkerStatus.ONLINE
             live.shutdown_reported = False
+            live.superseded = False
             live.last_seen = now or datetime.now(timezone.utc)
 
     def event_generations(self) -> dict[str, int]:
@@ -574,6 +583,15 @@ class WorkerRegistry:
                     )
                 self.mark_node_alive(nodename, pid, now=now)
 
+    def note_inspect_completed(self, now: datetime | None = None) -> None:
+        """Record that an inspect ``stats()`` call completed (it didn't raise).
+
+        Args:
+            now: When it completed (tests); defaults to now.
+        """
+        with self._lock:
+            self._inspect_completed_at = now or datetime.now(timezone.utc)
+
     def registry_facts(
         self, *, broker_configured: bool, now: datetime | None = None
     ) -> RegistryFacts:
@@ -591,13 +609,19 @@ class WorkerRegistry:
             minutes=WORKER_STALE_TIMEOUT_MINUTES
         )
         with self._lock:
-            live = [w for w in self._workers.values() if not w.shutdown_reported]
+            live = [
+                w
+                for w in self._workers.values()
+                if not (w.shutdown_reported or w.superseded)
+            ]
             return RegistryFacts(
                 live_names=frozenset(t for w in live for t in w.registered_tasks),
                 any_online=any(w.last_seen >= cutoff for w in live),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
                 any_seen=self._ever_seen,
+                any_live=bool(live),
+                inspect_completed_at=self._inspect_completed_at,
             )
 
     def apply_ping_reply(self, nodenames: Iterable[str]) -> None:

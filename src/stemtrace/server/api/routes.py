@@ -452,8 +452,16 @@ def _refresh_worker_registry_from_inspect(
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
 
-    with contextlib.suppress(Exception):
+    stats_completed = False
+    try:
         stats = inspector.stats()
+        # Celery 5.6.3 Inspect._request -> Control.broadcast -> kombu 5.6.2
+        # Mailbox._broadcast: an unreachable broker raises, no reply gives None.
+        stats_completed = True
+    except Exception:
+        logger.debug("inspect stats() failed", exc_info=True)
+    if stats_completed:
+        worker_registry.note_inspect_completed()
 
     with contextlib.suppress(Exception):
         registered = inspector.registered()

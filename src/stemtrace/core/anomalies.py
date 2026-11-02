@@ -165,10 +165,9 @@ class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
     ``live_names``: names of workers with no stop reported since their last
-    ``worker_ready``; ``any_live``: there is one. ``any_online``: one was seen
-    within the stale window. ``any_seen``: any worker since the server started.
-    ``authority_at``: when an inspect reply last listed every worker's tasks.
-    ``inspect_completed_at``: when an inspect ``stats()`` last completed.
+    ``worker_ready`` (``any_live``: there is one); ``any_online``: one was seen
+    in the stale window; ``any_seen``: any worker since the server started.
+    ``authority_at``, ``inspect_completed_at``: last complete reply, last ``stats()``.
     """
 
     live_names: frozenset[str]
@@ -335,6 +334,22 @@ def _authoritative(
     return not registry.broker_configured and bool(registry.live_names)
 
 
+def _fleet_offline(
+    registry: RegistryFacts, now: datetime, settings: AnomalySettings
+) -> bool:
+    """A worker was seen and none is online; silence counts only as evidence.
+
+    Silence is evidence when an inspect ``stats()`` completed within the
+    window: the server could hear workers and heard none. Otherwise only a
+    reported stop (no live worker) makes the fleet offline.
+    """
+    if not registry.any_seen:
+        return False
+    heard = registry.inspect_completed_at
+    silence_counts = heard is not None and now - heard <= settings.authority_window
+    return not (registry.any_online if silence_counts else registry.any_live)
+
+
 def _waiting(task: PendingLike, cutoff: datetime) -> bool:
     """A PENDING task stamped before ``cutoff`` (now minus the grace) that isn't a built-in."""
     since = task.state_since
@@ -368,7 +383,7 @@ def _unregistered(
     waiting = [task for task in pending if _waiting(task, cutoff)]
     if not waiting:
         return {}, []
-    if registry.any_seen and not registry.any_online:
+    if _fleet_offline(registry, now, settings):
         return {}, [
             Anomaly(
                 kind=AnomalyKind.NO_WORKERS_ONLINE,
