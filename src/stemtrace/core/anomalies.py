@@ -165,9 +165,10 @@ class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
     ``live_names``: names of workers with no stop reported since their last
-    ``worker_ready``. ``any_online``: one was seen within the stale window;
-    ``any_seen``: any worker since the server started. ``authority_at``: when
-    an inspect reply last listed every answering worker's tasks.
+    ``worker_ready``; ``any_live``: there is one. ``any_online``: one was seen
+    within the stale window. ``any_seen``: any worker since the server started.
+    ``authority_at``: when an inspect reply last listed every worker's tasks.
+    ``inspect_completed_at``: when an inspect ``stats()`` last completed.
     """
 
     live_names: frozenset[str]
@@ -175,6 +176,8 @@ class RegistryFacts:
     authority_at: datetime | None
     broker_configured: bool
     any_seen: bool = False
+    any_live: bool = False
+    inspect_completed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
