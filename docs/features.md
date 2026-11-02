@@ -286,7 +286,7 @@ through every task. A task counts at the time of its last event in lifecycle ord
 attempt's PENDING or RECEIVED stamped late by a sender whose clock is ahead doesn't move it) and
 under its current state, so a task that failed and then succeeded on retry counts as a SUCCESS.
 Windows run from `within` (`30s`, `15m`, `6h`, `7d`; at most `3650d`) before now, or, on the
-time series and failures, from `from_date` (pass one or the other). A time without a timezone is
+time series, failures and task stats, from `from_date` (pass one or the other). A time without a timezone is
 UTC. A date alone (`2026-10-18`) means its UTC midnight on current pydantic (checked with 2.13);
 pydantic 2.4, the oldest supported, rejects it, as on the task list. A start after now is a
 `422`. A window reaches at most 3,650 days back, whatever `from_date` or the oldest task says (a
@@ -312,6 +312,29 @@ tasks stamped later by a worker whose clock is ahead.
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
   class form one group with `exception_type: null`.
+- `GET /api/stats/tasks?within=1h&name=`: one row per task name and one rollup per
+  [task group](configuration.md#task-groups), for the Registry and health views. Each row has
+  `runs`, `failures`, `failure_rate` (`null` with no runs), `runtime_samples`, `p50_ms`, `p95_ms`,
+  `last_run`, `last_state` and `task_group`. Runs are the same tasks the overview counts, so the
+  runs of all groups add up to the overview's runs for the same window, less the `celery.*`
+  tasks. Without `within` or `from_date` it covers all the tasks the server holds.
+  - **Runtime.** Percentiles come from the runtime of the last run of tasks that ended SUCCESS
+    or FAILURE and whose start could be paired with its end. REVOKED and REJECTED runs count as
+    runs but give no sample, and neither does a task without a paired start. So
+    `runtime_samples` can be lower than `runs`: compare them before you trust a percentile.
+  - **Percentile rule.** Nearest rank: the value at position `ceil(p * n)` of the `n` sorted
+    runtimes, in whole milliseconds. With one sample, every percentile is that sample. A
+    group's percentiles come from all its names' samples together, not from an average of
+    their percentiles.
+  - **Failures.** Only FAILURE counts. REJECTED tasks aren't failures here, as in the overview.
+  - **`last_run` and `last_state`.** The newest event of any task with that name, in any state
+    and whatever the window, so a name that didn't run in the window still has a row with
+    `runs: 0`.
+  - **Left out.** Celery's own `celery.*` tasks and the synthetic group and chord nodes never
+    appear. `name` keeps the one task with exactly that name, and its group's rollup then
+    covers only that task.
+  - It reads only the records the server holds. It never asks the workers, so it adds no
+    broker traffic.
 
 Each request copies the server's list of task summaries once and computes outside the lock that
 the event consumer uses, so it never holds up incoming events for longer than that copy.
