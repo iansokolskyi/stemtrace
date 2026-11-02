@@ -24,7 +24,7 @@ from celery import Celery
 
 from stemtrace.core.anomalies import AnomalyEvidence, AnomalyKind, AnomalySettings
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from tests.unit.anomaly_pipeline import classify
+from tests.unit.anomaly_pipeline import classify, through_nth_ready
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +62,7 @@ class Run:
         self.queue = f"anomaly-{suffix}"
         self.prefix = f"anomaly_{suffix}"
         self.stream_key = f"{self.prefix}:events"
+        self.unacked_prefix = f"unacked_{suffix}"
         self.nodename = f"anomaly{suffix}@localhost"
         self.client = redis.from_url(REDIS_URL)
         self.sender = Celery("anomaly_sender", broker=REDIS_URL)
@@ -77,6 +78,7 @@ class Run:
             "REDIS_URL": REDIS_URL,
             "OUTPUT_TEST_QUEUE": self.queue,
             "OUTPUT_TEST_PREFIX": self.prefix,
+            "OUTPUT_TEST_UNACKED_PREFIX": self.unacked_prefix,
         }
         if visibility_timeout is not None:
             env["OUTPUT_TEST_VISIBILITY_TIMEOUT"] = str(visibility_timeout)
@@ -158,8 +160,9 @@ class Run:
             self.stream_key,
             self.queue,
             f"_kombu.binding.{self.queue}",
-            "unacked",
-            "unacked_index",
+            self.unacked_prefix,
+            f"{self.unacked_prefix}_index",
+            f"{self.unacked_prefix}_mutex",
         )
 
 
@@ -316,8 +319,12 @@ def test_m4_acks_late_sigkill_restart_is_interrupted_then_cleared(run: Run) -> N
     time.sleep(6)
 
     run.start("prefork", visibility_timeout=5)
-    before = run.wait("second worker_ready", lambda es: _ready(es) == 2)
-    assert _count(before, task_id, TaskState.STARTED) == 1, "redelivered too early"
+    # The redelivery lands within ~20-200 ms of the second worker_ready, so the
+    # polled snapshot may already hold it: judge the stream up to that event.
+    before = through_nth_ready(
+        run.wait("second worker_ready", lambda es: _ready(es) == 2), 2
+    )
+    assert _count(before, task_id, TaskState.STARTED) == 1
     assert _kinds(before, _after_last(before, 0.5)) == {
         task_id: (AnomalyKind.INTERRUPTED, AnomalyEvidence.WORKER_RESTARTED)
     }
@@ -356,7 +363,9 @@ def test_m5_sigkill_is_stuck_until_the_same_nodename_restarts(run: Run) -> None:
     }
 
     run.start("prefork")
-    restarted = run.wait("second worker_ready", lambda es: _ready(es) == 2)
+    restarted = through_nth_ready(
+        run.wait("second worker_ready", lambda es: _ready(es) == 2), 2
+    )
     _record(
         "anomaly_m5_sigkill_restart",
         "prefork output_test.sleepy(60), SIGKILL of the worker's process group, "

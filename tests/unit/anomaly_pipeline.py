@@ -117,3 +117,37 @@ def load_recording(name: str) -> list[TaskEvent | WorkerEvent]:
         model = WorkerEvent if "event_type" in raw else TaskEvent
         entries.append(model.model_validate(raw))
     return entries
+
+
+def through_nth_ready(
+    entries: list[TaskEvent | WorkerEvent], n: int
+) -> list[TaskEvent | WorkerEvent]:
+    """The stream up to and including its ``n``-th ``worker_ready``.
+
+    A polled snapshot may already hold events published right after that
+    ``worker_ready`` (a redelivery lands within ~20 ms), so judging "as of the
+    restart" must cut at the event, not at the poll.
+    """
+    seen = 0
+    for index, entry in enumerate(entries):
+        if isinstance(entry, WorkerEvent) and entry.event_type == READY:
+            seen += 1
+            if seen == n:
+                return entries[: index + 1]
+    raise AssertionError(f"fewer than {n} worker_ready events")
+
+
+def sample_runs(
+    name: str,
+    runtimes: Iterable[float],
+    *,
+    at_s: float = -10_000,
+    prefix: str = "sample",
+) -> list[TaskEvent]:
+    """One finished run of ``name`` per runtime, each stamped ``at_s`` seconds from ``T0``."""
+    events: list[TaskEvent] = []
+    for i, runtime in enumerate(runtimes):
+        task_id = f"{prefix}-{name}-{i}"
+        events.append(task_event(task_id, TaskState.STARTED, at_s, name=name))
+        events.append(task_event(task_id, TaskState.SUCCESS, at_s + runtime, name=name))
+    return events

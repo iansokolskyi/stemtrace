@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from stemtrace.core.anomalies import AnomalyEvidence, AnomalyKind
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
-from tests.unit.anomaly_pipeline import classify, load_recording
+from tests.unit.anomaly_pipeline import classify, load_recording, through_nth_ready
 
 
 def _split(
@@ -46,16 +46,22 @@ def test_m3b_cold_stop_stamps_the_cancel_retry_before_worker_terminating() -> No
     }
 
 
-def test_m4_restart_is_interrupted_until_the_redelivered_started() -> None:
+def test_m4_prefix_through_the_second_ready_excludes_the_redelivery() -> None:
+    # A snapshot polled after the restart already holds the redelivered STARTED
+    # (recorded 19 ms and 189 ms after the second worker_ready); the old
+    # integration assertion "one STARTED" on such a snapshot failed in CI.
     entries = load_recording("m4_acks_late_sigkill")
-    second_ready = [
-        i
-        for i, e in enumerate(entries)
-        if isinstance(e, WorkerEvent) and e.event_type == WorkerEventType.WORKER_READY
-    ][1]
     (task_id,) = {e.task_id for e in entries if isinstance(e, TaskEvent)}
 
-    assert _verdicts(entries[: second_ready + 1], 0.5) == {
+    def started(stream: list[TaskEvent | WorkerEvent]) -> int:
+        return sum(
+            isinstance(e, TaskEvent) and e.state == TaskState.STARTED for e in stream
+        )
+
+    prefix = through_nth_ready(entries, 2)
+
+    assert (started(entries), started(prefix)) == (2, 1)
+    assert _verdicts(prefix, 0.5) == {
         task_id: (AnomalyKind.INTERRUPTED, AnomalyEvidence.WORKER_RESTARTED)
     }
     assert _verdicts(entries, 0.5) == {}

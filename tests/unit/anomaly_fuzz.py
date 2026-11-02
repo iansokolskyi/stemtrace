@@ -7,6 +7,7 @@ reference gets the same raw events. Used by ``test_anomaly_differential.py``.
 """
 
 import json
+import math
 import random
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -28,7 +29,11 @@ from stemtrace.core.events import (
 from stemtrace.server.anomaly_facts import node_facts, runtime_facts, timeline_facts
 from stemtrace.server.store import GraphStore, WorkerTimeline
 from tests.unit.anomaly_pipeline import load_recording
-from tests.unit.anomaly_reference import RefAnomaly, reference_anomalies
+from tests.unit.anomaly_reference import (
+    RefAnomaly,
+    _state_event,
+    reference_anomalies,
+)
 
 DATA = Path(__file__).parents[1] / "data"
 HOUR = 3600.0
@@ -38,16 +43,29 @@ SETTINGS = AnomalySettings(
     stuck_ceiling=timedelta(seconds=5),
     stuck_min_samples=3,
 )
-# Offsets of "now" from the newest event: both sides of the floor (1 s), the
-# scaled threshold (3 x 1.5 s) and the ceiling (5 s), and 2 h later.
-NOW_OFFSETS = (0.0, 0.999, 1.001, 4.499, 4.501, 4.999, 5.001, 7200.0)
-# Offsets from a node's own clock (state, replacement, last update).
-NODE_OFFSETS = (0.999, 1.0, 1.001, 4.499, 4.5, 4.501, 4.999, 5.0, 5.001)
+# The thresholds the settings and SAMPLE_RUNTIMES reach: the floor (1 s), the
+# ceiling (5 s), k x p95 of "many" (3 x 1.2 s) and of "three" (3 x 2 s).
+THRESHOLDS = (1.0, 3.6, 5.0, 6.0)
+# Offsets of "now" from the newest event: both sides of each, and 2 h later.
+NOW_OFFSETS = (0.0, 7200.0, *(t + d for t in THRESHOLDS for d in (-0.001, 0.001)))
+# Offsets from a node's own clock (state, replacement, last update): also the
+# exact threshold, where the comparison must be strict.
+NODE_OFFSETS = tuple(t + d for t in THRESHOLDS for d in (-0.001, 0.0, 0.001))
 WORKER_TYPES = tuple(WorkerEventType)
 POSITIONS = ("before", "mid", "after")
 HOSTS = ("w@h1", "w@h2")
 SKEWS = (-HOUR, 0.0, HOUR)
-SAMPLE_RUNS = {"none": 0, "few": 2, "enough": 3}
+# Runtimes (s) of the finished runs added per task name. They differ within a
+# name, so p50, p95 and max differ for "many" (p50 0.75, p95 1.2, max 1.25 with
+# n = 20); "three" is exactly N, where p95 is the max.
+SAMPLE_RUNTIMES: dict[str, tuple[float, ...]] = {
+    "none": (),
+    "few": (0.5, 1.0),
+    "three": (1.0, 1.5, 2.0),
+    "fast": (0.1, 0.2, 0.3),
+    "many": tuple(0.3 + 0.05 * i for i in range(20)),
+}
+SAMPLE_NAMES = tuple(SAMPLE_RUNTIMES)
 WORKER_SIDE = frozenset(TaskState) - {TaskState.PENDING}
 
 WorkerSpec = tuple[tuple[WorkerEventType, str, str], ...]
@@ -199,7 +217,7 @@ def prepare(cell: Cell) -> tuple[list[TaskEvent], list[WorkerEvent]]:
     ]
     names = sorted({e.name for e in cell.events})
     for name in names:
-        for run in range(SAMPLE_RUNS[cell.samples]):
+        for run, runtime in enumerate(SAMPLE_RUNTIMES[cell.samples]):
             started = _shift(low, -10_000 - run)
             task_id = f"sample-{name}-{run}"
             task_events.append(
@@ -215,7 +233,7 @@ def prepare(cell: Cell) -> tuple[list[TaskEvent], list[WorkerEvent]]:
                     task_id=task_id,
                     name=name,
                     state=TaskState.SUCCESS,
-                    timestamp=_shift(started, 1.5),
+                    timestamp=_shift(started, runtime),
                 )
             )
     if cell.order_seed:
@@ -280,17 +298,63 @@ def classify_fast(built: Built, now: datetime) -> AnomalyReport:
     )
 
 
+def raw_runtime_stats(
+    task_events: Sequence[TaskEvent], names: dict[str, str]
+) -> dict[str, tuple[int | None, int]]:
+    """Per-name ``(p95_ms, samples)`` from the raw events alone, as slowly as possible.
+
+    A sample is a SUCCESS or FAILURE task (by the reference's own state rule)
+    with a STARTED: the latest one not after the end, on the end's host and
+    attempt when it names them. p95 is ``sorted()[ceil(0.95 n) - 1]``. No
+    ``RunRecord``, ``task_stats`` or ``percentile``.
+    """
+    by_task: dict[str, list[TaskEvent]] = {}
+    for event in task_events:
+        by_task.setdefault(event.task_id, []).append(event)
+    samples: dict[str, list[int]] = {}
+    for task_id, events in by_task.items():
+        end = _state_event(events)
+        if end.state not in (TaskState.SUCCESS, TaskState.FAILURE):
+            continue
+        starts = [
+            e
+            for e in events
+            if e.state == TaskState.STARTED and e.timestamp <= end.timestamp
+        ]
+        exact = [
+            e
+            for e in starts
+            if end.hostname in (None, e.hostname) and end.retries in (0, e.retries)
+        ]
+        chosen = exact or starts
+        if not chosen:
+            continue
+        start = max(chosen, key=lambda e: e.timestamp)
+        millis = int((end.timestamp - start.timestamp).total_seconds() * 1000 + 1e-6)
+        samples.setdefault(names[task_id], []).append(max(millis, 0))
+    out: dict[str, tuple[int | None, int]] = {}
+    for name, values in samples.items():
+        ordered = sorted(values)
+        out[name] = (ordered[math.ceil(0.95 * len(ordered)) - 1], len(ordered))
+    return out
+
+
 def classify_reference(built: Built, now: datetime) -> dict[str, RefAnomaly]:
-    """The reference over the same raw events, with stats and parents from the store."""
+    """The reference over the same raw events.
+
+    Task names and reported parents come from the store's graph (resolving them
+    is the graph's job, not the classifier's); the runtime statistics are
+    recomputed from the raw events.
+    """
     records = built.store.run_records()
-    stats = runtime_facts(records, now)
     parents: dict[str, str | None] = {}
     for record in records:
         node = built.store.get_node(record.task_id)
         parents[record.task_id] = None if node is None else node.reported_parent_id
-    # The reference reads the name off the state event; spec line 218 says "the
-    # node's name" (a ``replace()`` replacement carries another name, the
-    # graph keeps the task's own). It is fed the node's name on every event.
+    # The reference reads the name off the state event; spec reading 9 (settled
+    # after #253) says "the node's name" decides celery.* and the p95 lookup (a
+    # ``replace()`` replacement carries another name, the graph keeps the task's
+    # own). It is fed the node's name on every event.
     names = {r.task_id: r.name for r in records}
     task_events = [
         e.model_copy(update={"name": names[e.task_id]}) for e in built.task_events
@@ -298,7 +362,7 @@ def classify_reference(built: Built, now: datetime) -> dict[str, RefAnomaly]:
     return reference_anomalies(
         task_events,
         built.worker_events,
-        {name: (s.p95_ms, s.runtime_samples) for name, s in stats.items()},
+        raw_runtime_stats(task_events, names),
         parents,
         now,
         stuck_factor=SETTINGS.stuck_factor,
@@ -395,16 +459,24 @@ def prefixes(
 
 def full_cells(flows: dict[str, list[TaskEvent]]) -> Iterator[Cell]:
     """The whole structured product (the full sweep, sharded by the caller)."""
+    position = 0
     for name, events in prefixes(flows):
         has_retry = any(e.state == TaskState.RETRY for e in events)
         for hosting in ("one", "two"):
             for skew in SKEWS:
                 for workers in worker_specs():
-                    for samples in SAMPLE_RUNS:
-                        for cancel in (False, True) if has_retry else (False,):
-                            yield Cell(
-                                name, events, hosting, skew, workers, samples, cancel, 0
-                            )
+                    for cancel in (False, True) if has_retry else (False,):
+                        # One sample variant per cell, picked by a seeded draw
+                        # (the 20-run variant costs 40 events per name, so a
+                        # product would triple the sweep). The draw doesn't
+                        # follow the shard modulus.
+                        samples = SAMPLE_NAMES[
+                            random.Random(position).randrange(len(SAMPLE_NAMES))
+                        ]
+                        position += 1
+                        yield Cell(
+                            name, events, hosting, skew, workers, samples, cancel, 0
+                        )
 
 
 def random_cell(rng: random.Random, flows: dict[str, list[TaskEvent]]) -> Cell:
@@ -423,7 +495,7 @@ def random_cell(rng: random.Random, flows: dict[str, list[TaskEvent]]) -> Cell:
         rng.choice(("one", "two")),
         rng.choice(SKEWS),
         workers,
-        rng.choice(list(SAMPLE_RUNS)),
+        rng.choice(SAMPLE_NAMES),
         rng.random() < 0.3,
         rng.choice((0, rng.randint(1, 10_000))),
     )

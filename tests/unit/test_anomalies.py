@@ -42,6 +42,7 @@ from tests.unit.anomaly_pipeline import (
     at,
     classify,
     completed_runs,
+    sample_runs,
     task_event,
     worker_event,
 )
@@ -854,3 +855,51 @@ def test_runtime_stats_with_too_few_samples_use_the_ceiling() -> None:
         return report.anomalies["t1"].threshold_ms or 0
 
     assert (run(2), run(3)) == (300_000, 60_000)
+
+
+# --- The statistic and its window --------------------------------------------
+
+# k 1, so the threshold is the statistic itself: runtimes 1..20 s give
+# p50 10 s, p95 19 s (nearest rank, ceil(0.95 x 20) = 19th), max 20 s, mean 10.5 s.
+P95_SETTINGS = AnomalySettings(
+    stuck_factor=1,
+    stuck_floor=timedelta(seconds=1),
+    stuck_ceiling=timedelta(seconds=1000),
+    stuck_min_samples=3,
+)
+
+
+@pytest.mark.parametrize(
+    ("now", "flagged"),
+    [
+        pytest.param(15, False, id="p50 (10 s) would flag here"),
+        pytest.param(19, False, id="exactly p95"),
+        pytest.param(19.001, True, id="just past p95, before max (20 s)"),
+    ],
+)
+def test_stuck_threshold_is_the_p95_of_the_names_runtimes(
+    now: float, flagged: bool
+) -> None:
+    events = [*sample_runs("app.work", range(1, 21)), task_event("t1", S, 0)]
+
+    report = classify(events, now=now, settings=P95_SETTINGS)
+
+    assert set(report.anomalies) == ({"t1"} if flagged else set())
+    if flagged:
+        anomaly = report.anomalies["t1"]
+        assert (anomaly.threshold_ms, anomaly.p95_ms, anomaly.runtime_samples) == (
+            19_000,
+            19_000,
+            20,
+        )
+
+
+def test_samples_stamped_after_now_still_count_toward_the_p95() -> None:
+    # A worker whose clock is ahead stamps its finished runs after the server's
+    # "now"; the window is open-ended, so they still count.
+    ahead = sample_runs("app.work", range(1, 21), at_s=3600)
+    events = [*ahead, task_event("t1", S, 0)]
+
+    anomaly = classify(events, now=100, settings=P95_SETTINGS).anomalies["t1"]
+
+    assert (anomaly.threshold_ms, anomaly.runtime_samples) == (19_000, 20)

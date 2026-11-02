@@ -13,7 +13,9 @@ import time
 import pytest
 
 from stemtrace.core.anomalies import AnomalyEvidence
+from stemtrace.core.events import WorkerEventType
 from tests.unit.anomaly_fuzz import (
+    Cell,
     build,
     candidate_nows,
     classify_fast,
@@ -70,8 +72,19 @@ def test_sample_reaches_every_kind_evidence_and_threshold_branch() -> None:
     flows = load_flows()
     rng = random.Random(7)
     seen: set[object] = set()
-    for _ in range(300):
-        built = build(random_cell(rng, flows))
+    cancelled = Cell(
+        "syn_cancelled_retry",
+        tuple(flows["syn_cancelled_retry"][:3]),
+        "one",
+        0.0,
+        ((WorkerEventType.WORKER_TERMINATING, "mid", "w@h1"),),
+        "none",
+        False,
+        0,
+    )
+    cells = [cancelled, *(random_cell(rng, flows) for _ in range(300))]
+    for cell in cells:
+        built = build(cell)
         for now in candidate_nows(built):
             for anomaly in classify_fast(built, now).anomalies.values():
                 seen.add(anomaly.kind.value)
@@ -79,7 +92,7 @@ def test_sample_reaches_every_kind_evidence_and_threshold_branch() -> None:
                 seen.add(anomaly.threshold_ms)
 
     assert {"stuck", "interrupted"} <= seen
-    assert {1000, 4500, 5000} <= seen  # floor, k x p95, ceiling
+    assert {1000, 3600, 5000, 6000} <= seen  # floor, k x p95 (n 20, n 3), ceiling
     assert {
         "worker_shutdown",
         "worker_terminating",

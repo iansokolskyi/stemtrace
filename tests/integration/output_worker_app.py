@@ -12,6 +12,8 @@ queue and stemtrace stream:
   back to ``logging.lastResort`` (WARNING+ to stderr).
 - ``OUTPUT_TEST_VISIBILITY_TIMEOUT=<seconds>`` shortens Redis's visibility
   timeout, so an unacknowledged ``acks_late`` message is redelivered quickly.
+- ``OUTPUT_TEST_UNACKED_PREFIX=<name>`` gives the worker its own kombu
+  unacked hash, index and mutex, so a run never restores another run's messages.
 """
 
 import logging
@@ -39,10 +41,20 @@ app.conf.update(
     worker_hijack_root_logger=True,
     worker_redirect_stdouts=os.environ.get("OUTPUT_TEST_REDIRECT", "1") != "0",
 )
+_transport_options: dict[str, str | int] = {}
 if "OUTPUT_TEST_VISIBILITY_TIMEOUT" in os.environ:
-    app.conf.broker_transport_options = {
-        "visibility_timeout": int(os.environ["OUTPUT_TEST_VISIBILITY_TIMEOUT"])
-    }
+    _transport_options["visibility_timeout"] = int(
+        os.environ["OUTPUT_TEST_VISIBILITY_TIMEOUT"]
+    )
+if "OUTPUT_TEST_UNACKED_PREFIX" in os.environ:
+    # kombu 5.6.2 redis.Channel: these default to the database-wide
+    # 'unacked', 'unacked_index' and 'unacked_mutex'.
+    _prefix = os.environ["OUTPUT_TEST_UNACKED_PREFIX"]
+    _transport_options["unacked_key"] = _prefix
+    _transport_options["unacked_index_key"] = f"{_prefix}_index"
+    _transport_options["unacked_mutex_key"] = f"{_prefix}_mutex"
+if _transport_options:
+    app.conf.broker_transport_options = _transport_options
 
 if os.environ.get("OUTPUT_TEST_NOOP_LOGGING") == "1":
 
