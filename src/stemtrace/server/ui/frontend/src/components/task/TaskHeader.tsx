@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskNode } from '@/api/client'
+import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
@@ -46,6 +47,7 @@ export function TaskHeader({ task, flowRootId, childCount = 0 }: TaskHeaderProps
       <h1 className="text-xl font-bold leading-tight [overflow-wrap:anywhere]">{title}</h1>
       <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1.5">
         <StatusChip state={task.state} />
+        {task.anomaly && <AnomalyFlag kind={task.anomaly} />}
         <TaskIdentifier taskId={task.task_id} />
       </div>
       <div className="flex max-w-full flex-wrap gap-1.5">

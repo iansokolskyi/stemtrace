@@ -4,6 +4,7 @@ import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
 import { flowListRoots } from './fixtures/flows-list'
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
+  createAnomaly,
   createFailedTask,
   createMockEvent,
   createRegistryEntry,
@@ -543,4 +544,99 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(page).toHaveScreenshot(`palette-${theme}-${width}.png`)
     })
   }
+}
+
+/** Anomalies against the fixed clock: one of each kind, a rename hint and the fleet banner. */
+function visualAnomalies() {
+  const ago = (minutes: number) =>
+    new Date(Date.parse('2026-10-17T12:00:00Z') - minutes * 60_000).toISOString()
+  const stuckRun = createSuccessTask('media.tasks.transcode_upload')
+  Object.assign(stuckRun, { state: 'STARTED', hostname: 'celery@media-gpu-2', anomaly: 'stuck' })
+  const lostRun = createSuccessTask('media.tasks.transcode_upload')
+  Object.assign(lostRun, {
+    state: 'STARTED',
+    hostname: 'celery@media-gpu-1',
+    anomaly: 'interrupted',
+  })
+  for (const [run, minutes] of [
+    [stuckRun, 41],
+    [lostRun, 38],
+  ] as const) {
+    run.events = [
+      createMockEvent(run.task_id, run.name, 'PENDING', { timestamp: ago(minutes + 1) }),
+      createMockEvent(run.task_id, run.name, 'STARTED', { timestamp: ago(minutes) }),
+    ]
+    Object.assign(run, {
+      first_seen: ago(minutes + 1),
+      last_updated: ago(minutes),
+      duration_ms: null,
+      queue_wait_ms: 60_000,
+      runtime_ms: null,
+      total_runtime_ms: null,
+    })
+  }
+  const items = [
+    createAnomaly('no_workers_online', { since: ago(95), task_count: 14 }),
+    createAnomaly('unregistered', {
+      name: 'billing.tasks.sync_invoices_v2',
+      since: ago(55),
+      task_count: 6,
+      similar_name: 'billing.tasks.sync_invoices',
+    }),
+    createAnomaly('stuck', {
+      task_id: stuckRun.task_id,
+      name: stuckRun.name,
+      since: ago(41),
+      hostname: 'celery@media-gpu-2',
+      elapsed_ms: 41 * 60_000,
+      threshold_ms: 66 * 60_000,
+      p95_ms: 22 * 60_000,
+      runtime_samples: 12,
+    }),
+    createAnomaly('interrupted', {
+      task_id: lostRun.task_id,
+      name: lostRun.name,
+      since: ago(38),
+      hostname: 'celery@media-gpu-1',
+      evidence: 'worker_shutdown',
+    }),
+  ]
+  return { items, stuckRun, lostRun }
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    test(`anomalies, ${theme}, ${width}px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      const { items, stuckRun, lostRun } = visualAnomalies()
+      api.addTasks([stuckRun, lostRun])
+      api.setAnomalies(items)
+      await snapshot(page, `anomalies-${theme}-${width}`, { theme, width, path: '/anomalies' })
+    })
+  }
+
+  test(`anomalies empty, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    await setupMockApi(page, { useDefaults: false })
+    await snapshot(page, `anomalies-empty-${theme}-1280`, {
+      theme,
+      width: 1280,
+      path: '/anomalies',
+    })
+  })
+
+  test(`task page, stuck, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    const { items, stuckRun } = visualAnomalies()
+    api.addTask(stuckRun)
+    api.setAnomalies(items)
+    await snapshot(page, `task-stuck-${theme}-1280`, {
+      theme,
+      width: 1280,
+      height: 1240,
+      path: `/tasks/${stuckRun.task_id}`,
+    })
+  })
 }

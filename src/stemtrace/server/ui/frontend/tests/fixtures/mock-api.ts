@@ -22,6 +22,7 @@ import {
   DEFAULT_REGISTRY,
   DEFAULT_TASKS,
   DEFAULT_WORKERS,
+  type MockAnomaly,
   type MockFlowSummary,
   type MockGroup,
   type MockRegisteredTask,
@@ -80,6 +81,18 @@ export interface MockApiContext {
 
   /** Replace the task registry (the entries of GET /tasks/registry) */
   setRegistry: (registry: MockRegisteredTask[]) => void
+
+  /**
+   * Replace what GET /anomalies lists (oldest first, as the API sorts them); `counts` is derived,
+   * a count per kind, 0 included. 'error' answers 500, null 404 (an older server). Starts empty.
+   */
+  setAnomalies: (anomalies: MockAnomaly[] | null | 'error') => void
+
+  /** Make GET /anomalies answer only after this many milliseconds (0: at once). */
+  setAnomalyDelay: (ms: number) => void
+
+  /** The URLs requested from GET /anomalies, oldest first */
+  anomalyRequests: URL[]
 
   /** Replace all workers */
   setWorkers: (workers: MockWorker[]) => void
@@ -196,6 +209,9 @@ export async function setupMockApi(
   // No groups by default: the sidebar shows no Groups or Tags section
   let groups: MockGroup[] | null | 'error' = []
   let broker: string | null = null
+  let anomalies: MockAnomaly[] | null | 'error' = []
+  let anomalyDelayMs = 0
+  const anomalyRequests: URL[] = []
   let groupStats: Record<string, Record<string, number[]>> | null | 'error' = null
   const statsRequests: URL[] = []
   let taskStats: MockTaskStats[] | 'error' = []
@@ -253,6 +269,16 @@ export async function setupMockApi(
       groups = newGroups
     },
 
+    setAnomalies(next) {
+      anomalies = next
+    },
+
+    setAnomalyDelay(ms) {
+      anomalyDelayMs = ms
+    },
+
+    anomalyRequests,
+
     setBroker(kind: string | null) {
       broker = kind
     },
@@ -304,6 +330,7 @@ export async function setupMockApi(
     total_runtime_ms: t.total_runtime_ms ?? null,
     routing_key: t.routing_key ?? null,
     eta: t.eta ?? null,
+    anomaly: t.anomaly ?? null,
   })
 
   // Health endpoint (use regex like other routes)
@@ -411,6 +438,47 @@ export async function setupMockApi(
     })
   })
 
+  // Anomalies: GET /anomalies
+  await page.route(new RegExp(`${apiPath}/anomalies(\\?|$)`), async (route: Route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const url = new URL(route.request().url())
+    anomalyRequests.push(url)
+    if (anomalyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, anomalyDelayMs))
+    if (anomalies === null || anomalies === 'error') {
+      const missing = anomalies === null
+      await route.fulfill({
+        status: missing ? 404 : 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: missing ? 'Not Found' : 'Internal Server Error' }),
+      })
+      return
+    }
+    const counts = { stuck: 0, interrupted: 0, unregistered: 0, no_workers_online: 0 }
+    for (const item of anomalies) counts[item.kind] += 1
+    // Like the API: filter by kind, then page; `counts` ignores the filter
+    const kind = url.searchParams.get('kind')
+    const limit = Number(url.searchParams.get('limit') ?? 100)
+    const matching = anomalies.filter((item) => !kind || item.kind === kind)
+    await route
+      .fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          anomalies: matching.slice(0, limit),
+          counts,
+          total: matching.length,
+          limit,
+          offset: 0,
+          evaluated_at: new Date().toISOString(),
+        }),
+      })
+      // The page gave up (client timeout) before this answer: nothing to deliver
+      .catch(() => {})
+  })
+
   // Registry: GET /tasks/registry (more specific, register first)
   await page.route(new RegExp(`${apiPath}/tasks/registry`), async (route: Route) => {
     if (route.request().method() !== 'GET') {
@@ -502,6 +570,11 @@ export async function setupMockApi(
       body: JSON.stringify({
         task: serializeTask(task),
         children: children.map(serializeTask),
+        anomaly_detail:
+          task.anomaly_detail !== undefined
+            ? task.anomaly_detail
+            : (Array.isArray(anomalies) && anomalies.find((x) => x.task_id === task.task_id)) ||
+              null,
         flow_root_id: task.flow_root_id === undefined ? flowRootOf(tasks, task) : task.flow_root_id,
       }),
     })

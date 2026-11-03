@@ -1,4 +1,5 @@
 import type { ReactElement, Ref } from 'react'
+import { anomalyTotal, useAnomalyBadge } from '@/api/anomalies'
 import { useHealth } from '@/api/queries'
 import { LogoutButton } from '@/components/LogoutButton'
 import { SproutMark } from '@/components/SproutMark'
@@ -20,6 +21,8 @@ interface SidebarProps {
 export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): ReactElement {
   const { offlineWorkers, notRegistered } = useProblemCounts()
   const { data: health } = useHealth()
+  const { data: anomalies } = useAnomalyBadge()
+  const anomalyCount = anomalies ? anomalyTotal(anomalies.counts) : 0
   const hidden = isDrawer && !open
 
   return (
@@ -68,6 +71,13 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
                 ? { text: `${notRegistered} not registered`, tone: 'anomaly' }
                 : undefined
             }
+          />
+          <NavItem
+            to="/anomalies"
+            label="Anomalies"
+            icon="alert"
+            onNavigate={onNavigate}
+            badge={anomalyCount ? { text: String(anomalyCount), tone: 'anomaly' } : undefined}
           />
         </nav>
         <SidebarGroups onNavigate={onNavigate} />

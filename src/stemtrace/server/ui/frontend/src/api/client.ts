@@ -2,6 +2,8 @@
  * API client for stemtrace backend.
  */
 
+import type { Anomaly, AnomalyKind } from './anomalies'
+
 // Extend window type for injected base path
 declare global {
   interface Window {
@@ -119,8 +121,12 @@ async function readUnauthorizedReason(response: Response): Promise<string | null
  * GET a JSON API resource. On 401, explain a session signed by a different
  * secret, otherwise send the user to the login page.
  */
-async function apiFetch<T>(url: string, errorMessage: string): Promise<T> {
-  const response = await fetch(url)
+export async function apiFetch<T>(
+  url: string,
+  errorMessage: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(url, { signal })
   if (response.status === 401) {
     if ((await readUnauthorizedReason(response)) === SESSION_SECRET_MISMATCH) {
       // Signing in again wouldn't help, so explain instead of redirecting.
@@ -208,6 +214,8 @@ export interface TaskNode {
   routing_key?: string | null
   /** When the first attempt was scheduled to run (countdown or eta), ISO 8601. */
   eta?: string | null
+  /** What is wrong with the task; null or absent when nothing is (never set on GROUP/CHORD). */
+  anomaly?: AnomalyKind | null
 }
 
 /** A task as `GET /api/tasks?compact=1` lists it: no events. */
@@ -232,6 +240,8 @@ export interface TaskDetailResponse {
   children: TaskNode[]
   /** Root of the graph that holds the task (what `/api/graphs/{id}` takes); null when unknown. */
   flow_root_id?: string | null
+  /** The task's anomaly with its evidence; null when it has none. */
+  anomaly_detail?: Anomaly | null
 }
 
 /** Totals over a flow's whole graph, on the root nodes of the graphs list. */
@@ -274,6 +284,8 @@ export interface GraphNode {
   not_run_reason?: 'header_failed' | 'header_revoked' | 'header_ignored' | null
   /** Root nodes in the graphs list only; null when the server has no summary for the flow. */
   flow?: FlowSummary | null
+  /** What is wrong with the task; null or absent when nothing is (never set on GROUP/CHORD). */
+  anomaly?: AnomalyKind | null
 }
 
 export interface GraphResponse {
