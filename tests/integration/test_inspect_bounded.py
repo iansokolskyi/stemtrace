@@ -211,12 +211,12 @@ class SilenceAfterStats:
         return self._inner.ping()
 
 
-@pytest.mark.parametrize(
-    ("kind", "url"), [("redis", REDIS_URL), ("amqp", RABBITMQ_URL)]
-)
+@pytest.mark.parametrize("kind", ["redis", "amqp"])
 def test_i7_a_connection_that_goes_silent_after_stats_ends_the_attempt(
-    kind: str, url: str, monkeypatch: pytest.MonkeyPatch
+    kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The URL stays out of the test id: xdist workers get different Redis databases.
+    url = REDIS_URL if kind == "redis" else RABBITMQ_URL
     if not _reachable(url):
         pytest.skip(f"{kind} broker not available at {url}")
     parts = urlsplit(url)
