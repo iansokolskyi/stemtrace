@@ -97,6 +97,18 @@ export function spikeTasks(scenario: OverviewScenario): {
   const at = bucketStart(scenario, 8) + 2 * 60_000
   const root = createSuccessTask('tests.flow.step_1', { ok: true })
   const failed = createFailedTask('tests.flow.step_2', 'ValueError: bad input', 'Traceback: ...')
+  // Fixed IDs: the panel prints them, so snapshots must not depend on a random one
+  for (const [task, id] of [
+    [root, '5c0cf6cc-1d1e-4a0b-9a5e-0a1b2c3d4e5f'],
+    [failed, '7a560c1a-4b1f-41c8-b138-567ecc59e373'],
+  ] as const) {
+    task.task_id = id
+    task.root_id = root.task_id
+    for (const event of task.events) {
+      event.task_id = id
+      event.root_id = root.task_id
+    }
+  }
   root.children = [failed.task_id]
   root.last_updated = iso(at - 30_000)
   root.first_seen = iso(at - 40_000)
