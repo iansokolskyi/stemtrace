@@ -12,6 +12,8 @@ from stemtrace.core.anomalies import (
     SIMILAR_NAME_MIN_SCORE,
     AnomalyKind,
     RegistryFacts,
+    _live_by_module,
+    _similar_name,
 )
 from tests.unit.anomaly_pipeline import at
 from tests.unit.test_anomalies_unregistered import (
@@ -50,6 +52,9 @@ def test_minimum_score_is_the_spec_constant() -> None:
         ("app.sync_invoices_v2", ("app.sync_invoices_v10",), "app.sync_invoices_v10"),
         # Equal once stripped (score 1.0): the other version is the hint.
         ("app.sync_v2", ("app.sync_v1",), "app.sync_v1"),
+        # Short names score below 0.75 until the suffix is stripped.
+        ("app.run_v2", ("app.run",), "app.run"),
+        ("app.run", ("app.run_v10",), "app.run_v10"),
         # A rename that keeps most of the name.
         ("app.send_invoice", ("app.send_invoices",), "app.send_invoices"),
         # Accepted false positive: a different task with a near name still gets a hint.
@@ -135,3 +140,11 @@ def test_hint_candidates_are_the_registry_live_names() -> None:
     items, _, _ = run([pending("t1", OLD, "app.sync_invoices_v2")], facts)
 
     assert unregistered(items)[0].similar_name is None
+
+
+def test_builtin_names_are_never_candidates() -> None:
+    # Not reachable through classify_anomalies (an unregistered name is never
+    # celery.*, so no candidate shares its module); this guards the helper.
+    live = _live_by_module({"celery.sync_invoices", "app.other"})
+
+    assert _similar_name("celery.sync_invoices_v2", live) is None
