@@ -526,6 +526,10 @@ class _InspectRefresher:
     def _refreshed_recently(self) -> bool:
         return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
+    def refresh_blocking(self) -> bool:
+        """Stub."""
+        return True
+
     async def maybe_refresh(self) -> None:
         """Refresh the worker registry unless disabled, recent, or in progress."""
         worker_registry = self._worker_registry

@@ -509,6 +509,9 @@ class WorkerRegistry:
             live.superseded = False
             live.last_seen = now or datetime.now(timezone.utc)
 
+    def add_new_node_listener(self, listener: Callable[[], None]) -> None:
+        """Stub."""
+
     def event_generations(self) -> dict[str, int]:
         """Snapshot, per nodename, how many worker events were applied so far.
 
