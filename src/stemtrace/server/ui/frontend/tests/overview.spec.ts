@@ -693,12 +693,12 @@ test.describe('Overview anomalies', () => {
   test('the Overview reads the anomalies without asking the workers', async ({ page }) => {
     const urls: string[] = []
     page.on('request', (r) => {
-      if (/\/api\/anomalies/.test(r.url())) urls.push(r.url())
+      if (/\/api\/anomalies(\?|$)/.test(r.url())) urls.push(r.url())
     })
     await openOverview(page, '/', withAnomalies)
     await expect(page.getByTestId('overview-anomaly')).toHaveCount(3)
     expect(urls.length).toBeGreaterThan(0)
-    expect(urls.every((u) => u.includes('refresh=false'))).toBe(true)
+    expect(urls.filter((u) => !u.includes('refresh=false'))).toEqual([])
   })
 
   test('What is wrong lists the fleet item first, then the items, and counts them', async ({

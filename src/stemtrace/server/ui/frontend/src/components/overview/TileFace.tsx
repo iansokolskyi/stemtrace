@@ -54,7 +54,7 @@ export function TileFace({
       </span>
       <span
         className={clsx(
-          'flex min-h-4 items-center gap-1.5 text-xs',
+          'flex min-h-8 items-start gap-1.5 text-xs',
           grade === 'ok' ? 'text-muted' : 'font-bold text-ink',
         )}
       >
