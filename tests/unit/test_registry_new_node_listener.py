@@ -13,9 +13,9 @@ T = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 BOUND_S = 5.0
 
 
-def counting(registry: WorkerRegistry) -> list[int]:
-    calls: list[int] = []
-    registry.add_new_node_listener(lambda: calls.append(1))
+def counting(registry: WorkerRegistry) -> list[str]:
+    calls: list[str] = []
+    registry.add_new_node_listener(calls.append)
     return calls
 
 
@@ -25,7 +25,7 @@ def test_register_worker_for_an_unseen_nodename_notifies_once() -> None:
 
     registry.register_worker(NODE_A, 1, ["app.x"])
 
-    assert calls == [1]
+    assert calls == [NODE_A]
 
 
 def test_register_worker_for_a_known_nodename_does_not_notify() -> None:
@@ -54,7 +54,7 @@ def test_mark_seen_for_an_unseen_nodename_notifies() -> None:
 
     registry.mark_seen(NODE_A, T, now=T)
 
-    assert calls == [1]
+    assert calls == [NODE_A]
 
 
 def test_mark_seen_for_the_same_unseen_nodename_notifies_only_once() -> None:
@@ -64,7 +64,7 @@ def test_mark_seen_for_the_same_unseen_nodename_notifies_only_once() -> None:
     for _ in range(50):
         registry.mark_seen(NODE_A, T, now=T)
 
-    assert calls == [1]
+    assert calls == [NODE_A]
 
 
 def test_mark_seen_remembers_a_bounded_number_of_unseen_nodenames(
@@ -79,7 +79,7 @@ def test_mark_seen_remembers_a_bounded_number_of_unseen_nodenames(
     registry.mark_seen(NODE_A, T, now=T)
 
     # The third node pushed the first out of memory, so it announces again.
-    assert calls == [1, 1, 1, 1]
+    assert calls == [NODE_A, NODE_B, "celery@c", NODE_A]
 
 
 def test_mark_seen_for_a_known_nodename_does_not_notify() -> None:
@@ -101,7 +101,7 @@ def test_mark_seen_after_the_cleanup_removed_the_nodename_notifies_again() -> No
 
     registry.mark_seen(NODE_A, T, now=T)
 
-    assert calls == [1]
+    assert calls == [NODE_A]
 
 
 def test_stats_reply_naming_an_unseen_nodename_notifies_once_per_new_node() -> None:
@@ -112,7 +112,7 @@ def test_stats_reply_naming_an_unseen_nodename_notifies_once_per_new_node() -> N
     registry.apply_stats_reply({}, {NODE_A: (1, ["app.x"]), NODE_B: (2, ["app.x"])})
     registry.apply_stats_reply({}, {NODE_A: (1, ["app.x"]), NODE_B: (2, ["app.x"])})
 
-    assert calls == [1]
+    assert calls == [NODE_B]
 
 
 def test_ping_and_pidless_stats_reply_for_an_unseen_nodename_do_not_notify() -> None:
@@ -137,7 +137,7 @@ def test_mark_shutdown_for_an_unseen_nodename_does_not_notify() -> None:
 def test_a_listener_that_raises_does_not_break_registration() -> None:
     registry = WorkerRegistry()
 
-    def boom() -> None:
+    def boom(_nodename: str) -> None:
         raise RuntimeError("listener failed")
 
     registry.add_new_node_listener(boom)
@@ -151,7 +151,7 @@ def test_listener_is_called_without_the_registry_lock_held() -> None:
     registry = WorkerRegistry()
     other_thread_finished: list[bool] = []
 
-    def read_from_another_thread() -> None:
+    def read_from_another_thread(_nodename: str) -> None:
         worker = threading.Thread(target=registry.get_all_workers)
         worker.start()
         worker.join(timeout=BOUND_S)
@@ -166,14 +166,14 @@ def test_listener_is_called_without_the_registry_lock_held() -> None:
 
 def test_the_same_listener_added_twice_is_called_once() -> None:
     registry = WorkerRegistry()
-    calls: list[int] = []
+    calls: list[str] = []
 
-    def listener() -> None:
-        calls.append(1)
+    def listener(nodename: str) -> None:
+        calls.append(nodename)
 
     registry.add_new_node_listener(listener)
     registry.add_new_node_listener(listener)
 
     registry.register_worker(NODE_A, 1, [])
 
-    assert calls == [1]
+    assert calls == [NODE_A]

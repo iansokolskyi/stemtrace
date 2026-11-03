@@ -312,7 +312,7 @@ class WorkerRegistry:
         # ping-only replies; kept apart from the workers, so the cleanup that
         # deletes them leaves it.
         self._authority_at: datetime | None = None
-        self._new_node_listeners: list[Callable[[], None]] = []
+        self._new_node_listeners: list[Callable[[str], None]] = []
         self._announced_unregistered: dict[str, None] = {}
         self._lock = threading.RLock()
 
@@ -352,7 +352,7 @@ class WorkerRegistry:
             )
             self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
         if is_new:
-            self._notify_new_node()
+            self._notify_new_node([hostname])
 
     def _register(
         self,
@@ -470,7 +470,7 @@ class WorkerRegistry:
                     worker.status = WorkerStatus.ONLINE
             announce = worker is None and self._announce_unregistered(hostname)
         if announce:
-            self._notify_new_node()
+            self._notify_new_node([hostname])
 
     def mark_offline(self, hostname: str, pid: int) -> None:
         """Mark a worker offline because it stopped answering, not because it said so.
@@ -521,8 +521,8 @@ class WorkerRegistry:
             live.superseded = False
             live.last_seen = now or datetime.now(timezone.utc)
 
-    def add_new_node_listener(self, listener: Callable[[], None]) -> None:
-        """Call ``listener`` whenever the registry learns a nodename it didn't have.
+    def add_new_node_listener(self, listener: Callable[[str], None]) -> None:
+        """Call ``listener(nodename)`` whenever the registry learns a nodename it didn't have.
 
         It runs on the thread that applied the event or reply, after the
         registry lock is released, so it must return quickly. Adding the same
@@ -544,14 +544,15 @@ class WorkerRegistry:
                 ]
             return True
 
-    def _notify_new_node(self) -> None:
-        """Tell the listeners a new nodename was learned. Call without the lock."""
+    def _notify_new_node(self, nodenames: Iterable[str]) -> None:
+        """Tell the listeners which nodenames were learned. Call without the lock."""
         with self._lock:
             listeners = list(self._new_node_listeners)
-        for listener in listeners:
-            # A listener is a side channel; it must not break event handling.
-            with contextlib.suppress(Exception):
-                listener()
+        for nodename in nodenames:
+            for listener in listeners:
+                # A listener is a side channel; it must not break event handling.
+                with contextlib.suppress(Exception):
+                    listener(nodename)
 
     def event_generations(self) -> dict[str, int]:
         """Snapshot, per nodename, how many worker events were applied so far.
@@ -619,12 +620,12 @@ class WorkerRegistry:
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
                 self.mark_node_alive(nodename, pid, now=now)
-            learned = any(
-                nodename in self._newest_by_node and nodename not in known
+            learned = [
+                nodename
                 for nodename in replies
-            )
-        if learned:
-            self._notify_new_node()
+                if nodename in self._newest_by_node and nodename not in known
+            ]
+        self._notify_new_node(learned)
 
     def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
         """Copy what the anomaly classifier needs from the registry.

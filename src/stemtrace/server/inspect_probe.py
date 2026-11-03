@@ -2,7 +2,8 @@
 
 ``InspectProbe`` runs a refresh on its own thread when the server starts and
 when the registry learns a new nodename. Triggers that arrive while a refresh
-runs, or inside the minimum interval, coalesce into one follow-up.
+runs, or inside the minimum interval, coalesce into one follow-up. A new
+nodename stays pending until an inspect reply names it, with a bounded backoff.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +26,30 @@ INSPECT_REFRESH_MIN_INTERVAL_SECONDS = 2.0
 INSPECT_PROBE_STOP_TIMEOUT_SECONDS = 2.0
 
 _THREAD_NAME = "stemtrace-inspect-probe"
+
+# Seconds before each extra attempt for a nodename no inspect reply has named
+# yet (its worker may still be in its worker_ready receivers); then it is dropped.
+PENDING_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+PENDING_NODES_MAX = 1024
+
+
+class ProbeTarget(Protocol):
+    """What a probe drives: a refresher that shares its pacing with the probe."""
+
+    def refresh_blocking(self) -> frozenset[str] | None:
+        """Refresh now; the nodenames that answered, or None if one was in flight."""
+        ...
+
+    def ready_in(self) -> float:
+        """Seconds until a refresh by the page-load path is old enough to follow."""
+        ...
+
+
+class _Unbound:
+    """Stands in until a target is bound; never runs (``trigger`` checks ``_bound``)."""
+
+    refresh_blocking = staticmethod(lambda: frozenset[str]())
+    ready_in = staticmethod(lambda: 0.0)
 
 
 def _clock() -> float:
@@ -66,18 +91,25 @@ class InspectProbe:
         self._min_interval_s = min_interval_s
         self._clock = clock or _clock
         self._wait = wait or _wait
-        self._refresh: Callable[[], bool] = lambda: True
+        self._target: ProbeTarget = _Unbound()
         self._bound = False
+        # Nodename -> backoff steps already scheduled for it; insertion order is age.
+        self._pending: dict[str, int] = {}
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._next_allowed = float("-inf")
 
-    def bind(self, refresh: Callable[[], bool]) -> None:
-        """Set what a probe runs: a refresh that returns False if it found one in flight."""
-        self._refresh = refresh
+    def bind(self, target: ProbeTarget) -> None:
+        """Set what the probe drives."""
+        self._target = target
         self._bound = True
+
+    @property
+    def target(self) -> ProbeTarget | None:
+        """What the probe drives, or None before ``bind``."""
+        return self._target if self._bound else None
 
     def start(self) -> None:
         """Probe once now (the server just started). Safe to call again."""
@@ -88,11 +120,19 @@ class InspectProbe:
                 self._wake = threading.Event()
         self.trigger()
 
-    def trigger(self) -> None:
-        """Ask for a refresh; coalesces with one already owed. Never blocks."""
+    def trigger(self, nodename: str | None = None) -> None:
+        """Ask for a refresh; coalesces with one already owed. Never blocks.
+
+        A ``nodename`` stays pending, and keeps owing attempts, until an
+        inspect reply names it.
+        """
         with self._lock:
             if not self._bound or self._stop.is_set():
                 return
+            if nodename is not None and nodename not in self._pending:
+                self._pending[nodename] = 0
+                if len(self._pending) > PENDING_NODES_MAX:
+                    del self._pending[next(iter(self._pending))]
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(
                     target=self._run,
@@ -126,7 +166,7 @@ class InspectProbe:
             wake.wait()
             if stop.is_set():
                 return
-            delay = self._next_allowed - self._clock()
+            delay = max(self._next_allowed - self._clock(), self._target.ready_in())
             if delay > 0 and self._wait(stop, delay):
                 return
             # A trigger from here on is owed a refresh of its own, not dropped:
@@ -135,16 +175,44 @@ class InspectProbe:
             # queue but before the loop drains it, so an inspect sent for a
             # worker_ready can time out and the next one must still happen.
             wake.clear()
-            self._next_allowed = self._clock() + self._min_interval_s
-            if not self._attempt():
+            started = self._clock()
+            self._next_allowed = started + self._min_interval_s
+            with self._lock:
+                asked = set(self._pending)
+            answered = self._attempt()
+            if answered is None:
                 # Another refresh held the slot: owe one rather than drop it.
                 wake.set()
+                continue
+            backoff = self._settle(asked, answered)
+            if backoff is not None:
+                self._next_allowed = max(self._next_allowed, started + backoff)
+                wake.set()
 
-    def _attempt(self) -> bool:
+    def _settle(self, asked: set[str], answered: frozenset[str]) -> float | None:
+        """Update the pending nodenames after an attempt; the delay owed, if any.
+
+        Only nodenames pending before the attempt started count: a reply
+        can't name one that joined during it (its own trigger owes a refresh).
+        """
+        delays: list[float] = []
+        with self._lock:
+            for nodename in asked:
+                steps = self._pending.get(nodename)
+                if steps is None or nodename in answered:
+                    self._pending.pop(nodename, None)
+                elif steps >= len(PENDING_BACKOFF_SECONDS):
+                    del self._pending[nodename]
+                else:
+                    delays.append(PENDING_BACKOFF_SECONDS[steps])
+                    self._pending[nodename] = steps + 1
+        return min(delays) if delays else None
+
+    def _attempt(self) -> frozenset[str] | None:
         """Run the bound refresh once; failures are logged, never raised."""
         # Fire-and-forget boundary: a probe must never take the server down.
         try:
-            return self._refresh()
+            return self._target.refresh_blocking()
         except Exception:
             logger.debug("Inspect probe refresh failed", exc_info=True)
-            return True
+            return frozenset()

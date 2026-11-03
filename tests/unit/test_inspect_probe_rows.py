@@ -20,10 +20,10 @@ from fastapi.testclient import TestClient
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server import inspect_probe
 from stemtrace.server.api import routes
+from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
-from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
 REAL_INSPECT_PROBE = True
@@ -280,10 +280,15 @@ def test_p2_task_event_from_an_unseen_nodename_triggers_a_refresh(
 
     with TestClient(app):
         take(fleet.attempt_done)
+        fleet.nodes[NODE_C] = (33, ["app.c"])
         consumer._process_event(task_event(NODE_C))
         take(fleet.attempt_done)
+        # The reply names NODE_C, which the registry hadn't registered: that is
+        # one more follow-up (a stats reply naming a new node), and then none.
+        take(fleet.attempt_done)
+        assert not got(fleet.attempt_done, 0.5)
 
-    assert fleet.attempts == 2
+    assert fleet.attempts == 3
 
 
 def test_p2_stats_reply_naming_a_new_node_gives_one_follow_up_and_no_more(
@@ -315,10 +320,13 @@ def test_p3_one_thousand_joins_in_a_second_give_at_most_two_refreshes(
     with TestClient(app):
         take(fleet.attempt_started)
         for number in range(1000):
-            registry.register_worker(f"celery@n{number}", number + 1, ["app.x"])
+            node = f"celery@n{number}"
+            fleet.nodes[node] = (number + 1, ["app.x"])
+            registry.register_worker(node, number + 1, ["app.x"])
         fleet.first_attempt_gate.set()
         take(fleet.attempt_done)
         take(fleet.attempt_done)
+        assert not got(fleet.attempt_done, 0.5)
 
     assert fleet.attempts == 2
 
@@ -389,7 +397,7 @@ def test_p9_a_new_nodename_right_after_a_page_load_is_deferred_by_the_interval(
     with TestClient(app) as client:
         take(fleet.attempt_done)
         fleet.clock.wait(threading.Event(), 2.0)
-        client.get("/api/workers")
+        client.get("/stemtrace/api/workers?refresh=true").raise_for_status()
         take(fleet.attempt_done)
         page_load_at = fleet.stats_times[-1]
         registry.register_worker(NODE_B, 22, ["app.b"])
@@ -405,7 +413,7 @@ def test_p9_a_page_load_right_after_a_probe_refresh_does_not_inspect_again(
 
     with TestClient(app) as client:
         take(fleet.attempt_done)
-        client.get("/api/workers")
+        client.get("/stemtrace/api/workers?refresh=true").raise_for_status()
 
     assert fleet.attempts == 1
 
@@ -414,25 +422,39 @@ def test_p9_a_page_load_right_after_a_probe_refresh_does_not_inspect_again(
 
 
 @pytest.mark.parametrize("mode", ["raises", "silent"])
-def test_p4_broker_down_makes_one_bounded_attempt_per_trigger(
+def test_p4_broker_down_makes_one_bounded_attempt_for_the_startup_trigger(
     fleet: FakeFleet, mode: str
 ) -> None:
     fleet.mode = mode
-    extension, app = extension_app()
-    registry = extension.worker_registry
+    _, app = extension_app()
 
     with TestClient(app):
         take(fleet.attempt_done)
-        registry.register_worker(NODE_A, 1, ["app.a"])
-        take(fleet.attempt_done)
 
-    # Startup, then the join: two triggers, two attempts of one call each.
     assert (
         fleet.attempts,
         fleet.stats_calls,
         fleet.registered_calls,
         fleet.ping_calls,
-    ) == (2, 2, 2, 2)
+    ) == (1, 1, 1, 1)
+
+
+def test_p4_broker_down_bounds_a_joins_attempts_to_one_plus_five(
+    fleet: FakeFleet,
+) -> None:
+    fleet.mode = "raises"
+    extension, app = extension_app()
+    registry = extension.worker_registry
+
+    with TestClient(app):
+        take(fleet.attempt_done)
+        fleet.clock.wait(threading.Event(), 2.0)
+        registry.register_worker(NODE_A, 1, ["app.a"])
+        for _ in range(6):
+            take(fleet.attempt_done)
+        assert not got(fleet.attempt_done, 0.5)
+
+    assert fleet.attempts == 7
     assert registry.get_registered_tasks(NODE_A, 1) == ["app.a"]
 
 
@@ -499,17 +521,62 @@ def test_refresh_blocking_returns_false_while_another_refresh_is_in_flight(
     with refresher._lock:
         busy = refresher.refresh_blocking()
 
-    assert busy is False
+    assert busy is None
     assert fleet.attempts == 0
-    assert refresher.refresh_blocking() is True
+    assert refresher.refresh_blocking() == frozenset()
     assert fleet.attempts == 1
+
+
+def test_refresh_blocking_returns_the_nodenames_that_answered(
+    fleet: FakeFleet,
+) -> None:
+    fleet.nodes = {NODE_A: (11, ["app.a"]), NODE_B: (22, ["app.b"])}
+    refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
+
+    assert refresher.refresh_blocking() == frozenset({NODE_A, NODE_B})
+
+
+def test_refresh_blocking_returns_the_nodenames_a_ping_named(
+    fleet: FakeFleet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PingOnly:
+        def stats(self) -> object:
+            return None
+
+        def registered(self) -> object:
+            return None
+
+        def ping(self) -> object:
+            return {NODE_A: {"ok": "pong"}}
+
+    monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: PingOnly())
+    refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
+
+    assert refresher.refresh_blocking() == frozenset({NODE_A})
+
+
+def test_ready_in_is_zero_before_any_refresh_and_counts_down_after_one(
+    fleet: FakeFleet,
+) -> None:
+    refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
+    assert refresher.ready_in() == 0.0
+
+    refresher.refresh_blocking()
+    assert refresher.ready_in() == pytest.approx(2.0)
+
+    fleet.clock.wait(threading.Event(), 0.5)
+    assert refresher.ready_in() == pytest.approx(1.5)
+
+    fleet.clock.wait(threading.Event(), 5.0)
+    assert refresher.ready_in() == 0.0
 
 
 def test_refresh_blocking_without_a_registry_or_broker_does_nothing(
     fleet: FakeFleet,
 ) -> None:
-    assert routes._InspectRefresher(None, BROKER).refresh_blocking() is True
-    assert routes._InspectRefresher(WorkerRegistry(), None).refresh_blocking() is True
+    assert routes._InspectRefresher(None, BROKER).refresh_blocking() == frozenset()
+    registry_only = routes._InspectRefresher(WorkerRegistry(), None)
+    assert registry_only.refresh_blocking() == frozenset()
 
     assert fleet.attempts == 0
 
@@ -534,5 +601,29 @@ def test_refresh_blocking_that_fails_does_not_count_as_a_refresh(
     monkeypatch.setattr(routes, "_refresh_worker_registry_from_inspect", explode)
     refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
 
-    assert refresher.refresh_blocking() is True
+    assert refresher.refresh_blocking() == frozenset()
     assert refresher._last_refresh == 0.0
+
+
+# --- one refresher per extension --------------------------------------------------
+
+
+def test_extension_router_built_twice_shares_one_refresher_and_one_rate_limit(
+    fleet: FakeFleet,
+) -> None:
+    extension = StemtraceExtension(
+        broker_url=BROKER, embedded_consumer=False, serve_ui=False
+    )
+    _ = extension.router
+    first = extension._inspect_probe.target
+    app = FastAPI()
+    extension.init_app(app)
+
+    assert first is not None
+    assert extension._inspect_probe.target is first
+    with TestClient(app) as client:
+        take(fleet.attempt_done)
+        client.get("/stemtrace/api/workers?refresh=true").raise_for_status()
+
+    # The startup probe's refresh counts for the second router's page load.
+    assert fleet.attempts == 1

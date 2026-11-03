@@ -8,7 +8,7 @@ blocking wait here has a bound, so a regression fails instead of hanging.
 import inspect
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -16,6 +16,7 @@ from stemtrace.server import inspect_probe
 from stemtrace.server.consumer import EventConsumer
 from stemtrace.server.inspect_probe import (
     INSPECT_PROBE_STOP_TIMEOUT_SECONDS,
+    PENDING_BACKOFF_SECONDS,
     InspectProbe,
 )
 
@@ -57,8 +58,11 @@ class FakeRefresh:
         block_first: bool = False,
         results: list[bool] | None = None,
         raises_first: bool = False,
+        answers: Callable[[int], frozenset[str]] | None = None,
     ) -> None:
         self._clock = clock
+        self._answers = answers or (lambda _call: frozenset())
+        self.ready_in_s = 0.0
         self._results = results or []
         self._raises_first = raises_first
         self.gate = threading.Event()
@@ -69,7 +73,10 @@ class FakeRefresh:
         self.starts: list[float] = []
         self.thread_names: list[str] = []
 
-    def __call__(self) -> bool:
+    def ready_in(self) -> float:
+        return self.ready_in_s
+
+    def refresh_blocking(self) -> frozenset[str] | None:
         call = len(self.starts)
         self.starts.append(self._clock.now())
         self.thread_names.append(threading.current_thread().name)
@@ -79,7 +86,9 @@ class FakeRefresh:
         self.finished.release()
         if call == 0 and self._raises_first:
             raise RuntimeError("inspect exploded")
-        return self._results[call] if call < len(self._results) else True
+        if call < len(self._results) and not self._results[call]:
+            return None
+        return self._answers(call)
 
 
 @pytest.fixture
@@ -360,6 +369,95 @@ def test_default_clock_is_monotonic() -> None:
     first = inspect_probe._clock()
 
     assert inspect_probe._clock() >= first
+
+
+def test_trigger_with_a_nodename_no_reply_names_owes_attempts_on_the_backoff(
+    clock: FakeClock, probes: list[InspectProbe]
+) -> None:
+    refresh = FakeRefresh(clock)
+    probe = make_probe(probes, clock, refresh)
+
+    probe.trigger("celery@b")
+    for _ in range(6):
+        take(refresh.finished)
+    probe.stop(timeout=BOUND_S)
+
+    # The first attempt, then five more at 2, 4, 8, 16 and 30 s; then none.
+    assert len(refresh.starts) == 6
+    assert clock.waits == pytest.approx(list(PENDING_BACKOFF_SECONDS))
+
+
+def test_nodename_that_answers_on_the_third_attempt_stops_the_backoff(
+    clock: FakeClock, probes: list[InspectProbe]
+) -> None:
+    refresh = FakeRefresh(
+        clock,
+        answers=lambda call: frozenset({"celery@b"}) if call >= 2 else frozenset(),
+    )
+    probe = make_probe(probes, clock, refresh)
+
+    probe.trigger("celery@b")
+    for _ in range(3):
+        take(refresh.finished)
+    probe.stop(timeout=BOUND_S)
+
+    assert len(refresh.starts) == 3
+    assert clock.waits == pytest.approx([2.0, 4.0])
+
+
+def test_nodename_that_joined_during_an_attempt_is_not_charged_that_attempt(
+    clock: FakeClock, probes: list[InspectProbe]
+) -> None:
+    refresh = FakeRefresh(clock, block_first=True)
+    probe = make_probe(probes, clock, refresh)
+    probe.trigger("celery@a")
+    take(refresh.started)
+    probe.trigger("celery@late")
+    refresh.gate.set()
+    for _ in range(6):
+        take(refresh.finished)
+    probe.stop(timeout=BOUND_S)
+
+    # "celery@late" gets the same one-plus-five of its own after the first.
+    assert len(refresh.starts) == 7
+
+
+def test_pending_nodenames_are_bounded_and_the_oldest_is_dropped(
+    clock: FakeClock, probes: list[InspectProbe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(inspect_probe, "PENDING_NODES_MAX", 2)
+    refresh = FakeRefresh(clock, block_first=True)
+    probe = make_probe(probes, clock, refresh)
+    probe.trigger("celery@1")
+    take(refresh.started)
+    for name in ("celery@2", "celery@3"):
+        probe.trigger(name)
+
+    assert list(probe._pending) == ["celery@2", "celery@3"]
+    refresh.gate.set()
+
+
+def test_attempt_waits_for_the_target_to_be_ready(
+    clock: FakeClock, probes: list[InspectProbe]
+) -> None:
+    refresh = FakeRefresh(clock)
+    refresh.ready_in_s = 7.0
+    probe = make_probe(probes, clock, refresh)
+
+    probe.trigger()
+    take(refresh.finished)
+
+    assert clock.waits == pytest.approx([7.0])
+
+
+def test_target_is_none_until_bound(probes: list[InspectProbe]) -> None:
+    probe = InspectProbe(INTERVAL_S)
+    assert probe.target is None
+    refresh = FakeRefresh(FakeClock())
+
+    probe.bind(refresh)
+
+    assert probe.target is refresh
 
 
 def test_stop_timeout_is_below_the_consumers_stop_timeout() -> None:
