@@ -67,14 +67,21 @@ pages work even if the server missed `worker_ready` events.
 - The server also runs inspect in the background, without a page load: once when it starts
   (`stemtrace server` and `StemtraceExtension`), and when it learns a worker nodename it didn't
   have: a `worker_ready` event, the first task event from a nodename that never registered, or an
-  inspect reply that names a new node. It uses the same limits as a page load (at most one inspect
-  every 2 seconds, each call waiting 0.5 s for replies). A trigger that arrives while an inspect
-  runs, or within the 2 seconds, causes one more inspect when the interval ends, so a worker that
-  isn't answering yet when its `worker_ready` arrives is asked again. A storm of new nodenames
-  causes at most one inspect per interval. With a down broker each trigger makes one attempt and
-  doesn't retry; an attempt can take about 18 s (see
-  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)),
-  and stopping the server waits up to 2 s for it. It does nothing without a broker URL.
+  inspect reply that names a new node. A background inspect starts at least 2 seconds after the
+  last successful inspect, whether a page load or the background one, and a page load within 2
+  seconds of a successful background inspect doesn't inspect again. Each call waits 0.5 s for
+  replies. A trigger that arrives while an inspect runs, or inside the 2 seconds, causes one more
+  inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
+- A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
+  (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
+  inspect that the server sent for its `worker_ready` goes unanswered) is asked again after 2, 4,
+  8, 16 and 30 seconds, then dropped: a worker that never answers (remote control off) costs five
+  extra inspects, and the server doesn't ask again until the worker joins again. Until a reply
+  names a worker, the server may show it offline.
+- With a down broker, an attempt can take about 18 s (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
+  and a pending nodename gets the five extra attempts, not more. Stopping the server waits up to
+  2 s for a running attempt. The background inspect does nothing without a broker URL.
   Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
   an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
   task events arrive but that never registers triggers one inspect, not one per event.
