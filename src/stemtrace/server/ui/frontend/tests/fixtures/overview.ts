@@ -16,6 +16,9 @@ export interface Bucket {
 }
 
 export interface OverviewScenario {
+  /** Hold the runs-over-time answer this long (ms), or fail it with this HTTP status. */
+  seriesDelayMs?: number
+  seriesStatus?: number
   /** Start of the first bucket, ms. */
   start: number
   /** Five-minute buckets, oldest first. */
@@ -35,6 +38,9 @@ export interface OverviewScenario {
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
+
+/** The spelling the server uses for a bucket start: `…:00Z`, no milliseconds (pydantic). */
+const serverIso = (ms: number): string => iso(ms).replace('.000Z', 'Z')
 
 /** The start of the 5-minute bucket `index` of a scenario. */
 export const bucketStart = (scenario: OverviewScenario, index: number): number =>
@@ -175,10 +181,14 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
     })
   })
 
-  await page.route(/\/api\/stats\/timeseries(\?|$)/, (route) => {
+  await page.route(/\/api\/stats\/timeseries(\?|$)/, async (route) => {
     const { window } = geom()
     const url = new URL(route.request().url())
     requests.push(url)
+    if (!url.searchParams.has('group_by')) {
+      if (scenario.seriesDelayMs) await new Promise((r) => setTimeout(r, scenario.seriesDelayMs))
+      if (scenario.seriesStatus) return json(route, { detail: 'boom' }, scenario.seriesStatus)
+    }
     if (url.searchParams.has('group_by')) {
       // Each group's share of the buckets, so the health table's Trend column has a series
       const groups = [...new Set(scenario.tasks.map((t) => t.group))]
@@ -202,7 +212,7 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
     return json(route, {
       window,
       bucket_seconds: 300,
-      starts: scenario.buckets.map((_, i) => iso(scenario.start + i * FIVE_MINUTES)),
+      starts: scenario.buckets.map((_, i) => serverIso(scenario.start + i * FIVE_MINUTES)),
       counts: {
         SUCCESS: column((b) => b.success),
         FAILURE: column((b) => b.failure),

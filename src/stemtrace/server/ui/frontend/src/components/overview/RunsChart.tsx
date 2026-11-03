@@ -16,7 +16,7 @@ import {
   spanLabel,
 } from '@/components/triage/runsScope'
 import { formatCount, formatPercent } from '@/utils/format'
-import type { Bucket } from './model'
+import { type Bucket, sameInstant } from './model'
 
 /** A brushed span of the chart, as ISO times. */
 export interface Brush {
@@ -146,15 +146,17 @@ export function RunsChart({
   const active = panel.activeKey
   const activeScope = panel.stack[0]?.kind === 'runs' ? decodeScope(panel.stack[0].id) : undefined
   const selected =
-    activeScope?.kind === 'bar' ? buckets.findIndex((b) => b.start === activeScope.from) : -1
+    activeScope?.kind === 'bar'
+      ? buckets.findIndex((b) => sameInstant(b.start, activeScope.from ?? ''))
+      : -1
   const brushOpen =
     brush !== null && active === openerKey({ kind: 'runs', id: encodeScope(brushScope(brush)) })
 
   const brushIndexes = (() => {
     if (dragSpan) return dragSpan
     if (!brush || n === 0) return null
-    const a = buckets.findIndex((b) => b.end > brush.from)
-    const zIndex = buckets.map((b) => b.start < brush.to).lastIndexOf(true)
+    const a = buckets.findIndex((b) => Date.parse(b.end) > Date.parse(brush.from))
+    const zIndex = buckets.map((b) => Date.parse(b.start) < Date.parse(brush.to)).lastIndexOf(true)
     return a < 0 || zIndex < a ? null : ([a, zIndex] as [number, number])
   })()
 

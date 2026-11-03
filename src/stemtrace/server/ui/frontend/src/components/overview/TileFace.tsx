@@ -54,7 +54,7 @@ export function TileFace({
       </span>
       <span
         className={clsx(
-          'flex min-h-12 items-start gap-1.5 text-xs',
+          'flex h-12 items-start gap-1.5 overflow-hidden text-xs',
           grade === 'ok' ? 'text-muted' : 'font-bold text-ink',
         )}
       >
@@ -68,7 +68,9 @@ export function TileFace({
             <Icon name={noteIcon} size={12} className="[stroke-width:2.5]" />
           </span>
         )}
-        <span className="min-w-0">{note}</span>
+        <span title={note} className="line-clamp-3 min-w-0 [overflow-wrap:anywhere]">
+          {note}
+        </span>
       </span>
       <span className="flex min-h-4 min-w-0 items-center text-xs text-muted">
         <span title={sub} className="truncate">

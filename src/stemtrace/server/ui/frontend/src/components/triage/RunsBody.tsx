@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
+import { endsOpen } from '@/components/overview/model'
 import { formatCount, formatPercent } from '@/utils/format'
 import { useEntryState } from './PanelContext'
 import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
@@ -25,14 +26,24 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
 
   const span =
     scope.from && scope.to
-      ? data.buckets.filter((b) => b.start >= (scope.from ?? '') && b.start < (scope.to ?? ''))
+      ? data.buckets.filter(
+          (b) =>
+            Date.parse(b.start) >= Date.parse(scope.from ?? '') &&
+            Date.parse(b.start) < Date.parse(scope.to ?? ''),
+        )
       : []
   const success = span.reduce((sum, b) => sum + b.success, 0)
   const failure = span.reduce((sum, b) => sum + b.failure, 0)
   const retry = span.reduce((sum, b) => sum + b.retry, 0)
   const outcomes = span.reduce((sum, b) => sum + b.outcomes, 0)
 
-  const filters = scopeFilters(scope, data.buckets)
+  // A span's upper bound depends on which bucket is last, so it waits for the series; if the
+  // series fails it lists with no bound (a superset) and says so
+  const isSpan = scope.to !== undefined
+  const waiting = isSpan && data.seriesStatus === 'loading'
+  const chartFailed = isSpan && data.seriesStatus === 'failed'
+  const unbounded = chartFailed || (isSpan && endsOpen(data.buckets, scope.to ?? ''))
+  const filters = scopeFilters(scope, unbounded)
   // A tile fixes its state; the chips narrow a span or a name
   const chipsShown = !scope.state
   if (chosen.length) filters.state = chosen.join(',')
@@ -84,7 +95,12 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
             ))}
           </fieldset>
         )}
-        <RunRows filters={filters} />
+        {chartFailed && (
+          <p data-testid="chart-unavailable" className="mb-2 text-xs text-muted">
+            The chart is unavailable, so this list has no upper time limit.
+          </p>
+        )}
+        <RunRows filters={filters} enabled={!waiting} />
         {toExecutions && (
           <div className="mt-2.5">
             <Link to="/executions" search={toExecutions} className={BUTTON_QUIET}>

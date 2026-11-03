@@ -1,5 +1,4 @@
 import type { FetchExecutionsParams } from '@/api/client'
-import { type Bucket, endsOpen } from '@/components/overview/model'
 
 /**
  * Which runs a `runs` panel entry lists. It is the entry's id, so it reads the same wherever the
@@ -46,13 +45,12 @@ export function decodeScope(id: string): RunsScope | undefined {
 }
 
 /** The list filters for a scope. A span is `from_date` to `updated_before`: the runs one bucket counts. */
-export function scopeFilters(scope: RunsScope, buckets: Bucket[]): FetchExecutionsParams {
+export function scopeFilters(scope: RunsScope, unbounded: boolean): FetchExecutionsParams {
   return {
     from_date: scope.from,
-    // The chart's last bucket also holds runs stamped after its end (stats.py count_runs), so a
-    // span ending on it has no upper bound: decided now, from the current buckets, since a span
-    // is only the last bucket until the next one starts
-    updated_before: scope.to && endsOpen(buckets, scope.to) ? undefined : scope.to,
+    // `unbounded`: the span ends on the chart's last bucket, which also holds runs stamped after
+    // its end (stats.py count_runs), or the chart's buckets are unknown (a superset, never a miss)
+    updated_before: unbounded ? undefined : scope.to,
     within: scope.within,
     state: scope.state,
     name_exact: scope.name,

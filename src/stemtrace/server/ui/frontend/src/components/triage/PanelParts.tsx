@@ -9,6 +9,8 @@ import type { Range } from '@/routes/-search'
 /** What the Overview already loaded, which the panel's bodies read instead of asking again. */
 export interface PanelData {
   buckets: Bucket[]
+  /** Whether the chart's series has loaded, is loading or failed; a span list waits for it. */
+  seriesStatus: 'loading' | 'ready' | 'failed'
   failures: FailureListResponse | undefined
   stats: TaskStatsResponse | undefined
   hosts: Host[] | undefined

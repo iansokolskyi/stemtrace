@@ -66,6 +66,11 @@ function OverviewPage() {
 
   const data: PanelData = {
     buckets,
+    seriesStatus: series.isError
+      ? ('failed' as const)
+      : series.data
+        ? ('ready' as const)
+        : ('loading' as const),
     failures: failures.data,
     stats: stats.data,
     hosts,

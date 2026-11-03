@@ -54,6 +54,8 @@ interface RunRowsProps {
   filters: FetchExecutionsParams
   /** Rows to show at first. */
   initial?: number
+  /** False holds the request (a placeholder shows) until what the filters depend on is known. */
+  enabled?: boolean
 }
 
 /**
@@ -61,9 +63,9 @@ interface RunRowsProps {
  * state, the exception), the first rows and a "Show more" for the rest. A row opens the task in
  * the panel.
  */
-export function RunRows({ filters, initial = PAGE }: RunRowsProps): ReactElement {
+export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProps): ReactElement {
   const [limit, setLimit] = useEntryState('limit', initial)
-  const { data, isError } = usePanelRuns(filters, limit)
+  const { data, isError } = usePanelRuns(filters, limit, { enabled })
   if (isError) return <p className="m-0 py-3 text-xs text-failure-t">Failed to load runs</p>
   if (!data) return <div className="h-24" aria-hidden="true" />
   if (data.tasks.length === 0)

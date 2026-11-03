@@ -32,13 +32,14 @@ interface Opened {
   rootId: string
 }
 
-type Setup = Opened
+type Setup = Opened & { page: Page }
 
 /** `setup` shapes the scenario and the mock API before the page loads. */
 async function openOverview(
   page: Page,
-  path = '/',
-  setup?: (opened: Setup) => void,
+  path: string | ((opened: Setup) => string) = '/',
+  setup?: (opened: Setup) => void | Promise<void>,
+  { bars = true }: { bars?: boolean } = {},
 ): Promise<Opened> {
   const api = await setupMockApi(page)
   api.clearTasks()
@@ -53,11 +54,12 @@ async function openOverview(
     registered_at: new Date(Date.now() - 3_600_000).toISOString(),
     last_seen: new Date(Date.now() - 60_000).toISOString(),
   })
-  setup?.({ api, scenario, failedId, rootId })
+  const opened = { api, scenario, failedId, rootId, page }
+  await setup?.(opened)
   await mockOverview(page, scenario)
-  await page.goto(path)
+  await page.goto(typeof path === 'function' ? path(opened) : path)
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-  await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+  if (bars) await expect(page.getByTestId('chart-bar')).toHaveCount(12)
   return { api, scenario, failedId, rootId }
 }
 
@@ -940,5 +942,137 @@ test.describe('A span stays a span when the chart moves on', () => {
     expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(
       (tileBox?.y ?? 0) + (tileBox?.height ?? 0),
     )
+  })
+})
+
+test.describe('Tile notes stay inside their band', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const HOSTS = ['celery@ip-10-0-12-34.eu-west-1.compute.internal', `celery@${'x'.repeat(70)}`]
+
+  for (const width of [1280, 400]) {
+    for (const hostname of HOSTS) {
+      test(`a late workers answer with a long offline host moves nothing at ${width}px (${hostname.length} characters)`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 900 })
+        await openOverview(page, '/', async ({ api, page: p }) => {
+          // The workers answer arrives last, after everything else has been drawn
+          await p.route(/\/api\/workers(\?|$)/, async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 2500))
+            await route.fallback()
+          })
+          api.workers.push({
+            hostname,
+            pid: 9,
+            registered_tasks: [],
+            status: 'offline',
+            registered_at: new Date(Date.now() - 4 * 3_600_000).toISOString(),
+            last_seen: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+          })
+        })
+        const tiles = page.getByTestId('kpi-tiles').locator('> *')
+        const measure = async () => ({
+          tiles: await Promise.all([0, 1, 2, 3, 4].map((i) => tiles.nth(i).boundingBox())),
+          chart: (await page.getByTestId('runs-chart').boundingBox())?.y,
+        })
+        const before = await measure()
+        const workersTile = page.getByTestId('workers-tile')
+        await expect(workersTile).toContainText('offline')
+        expect(await measure()).toEqual(before)
+        // Nothing spills sideways: the text stays in the tile, its full text is the title
+        for (let i = 0; i < 5; i++) {
+          const fits = await tiles
+            .nth(i)
+            .evaluate((el) =>
+              [...el.querySelectorAll('*')].every((c) => c.scrollWidth <= el.clientWidth),
+            )
+          expect(fits).toBe(true)
+        }
+        await expect(workersTile.locator('[title*="offline"]')).toHaveAttribute(
+          'title',
+          /offline: /,
+        )
+      })
+    }
+  }
+})
+
+test.describe('A span waits for the chart', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const late = ({ api, scenario }: Setup) => {
+    scenario.buckets[11] = { success: 0, failure: 1, retry: 0 }
+    api.addTask(lateTask(scenario))
+  }
+  /** The panel value for the last bar: the span as a client writes it (`.000Z`). */
+  const lastBar = ({ scenario }: Setup): string => {
+    const last = bucketStart(scenario, 11)
+    const id = encodeScope({
+      kind: 'bar',
+      from: new Date(last).toISOString(),
+      to: new Date(last + 300_000).toISOString(),
+    })
+    return `/?panel=${encodeURIComponent(formatPanel([{ kind: 'runs', id }]) ?? '')}`
+  }
+  const tasksRequests = (page: Page): string[] => {
+    const urls: string[] = []
+    page.on('request', (r) => {
+      if (/\/api\/tasks\?/.test(r.url()) && r.url().includes('from_date')) urls.push(r.url())
+    })
+    return urls
+  }
+
+  test('a reload with a slow series asks once, unbounded, and never says no runs', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      ;(window as unknown as { __flash: boolean }).__flash = false
+      new MutationObserver(() => {
+        if (document.body?.textContent?.includes('No runs match.')) {
+          ;(window as unknown as { __flash: boolean }).__flash = true
+        }
+      }).observe(document, { subtree: true, childList: true, characterData: true })
+    })
+    const urls = tasksRequests(page)
+    await openOverview(page, lastBar, (setup) => {
+      late(setup)
+      setup.scenario.seriesDelayMs = 2500
+    })
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    expect(urls).toHaveLength(1)
+    expect(urls[0]).not.toContain('updated_before')
+    expect(await page.evaluate(() => (window as unknown as { __flash: boolean }).__flash)).toBe(
+      false,
+    )
+  })
+
+  test('when the series fails the span lists with no upper bound and says the chart is unavailable', async ({
+    page,
+  }) => {
+    const urls = tasksRequests(page)
+    await openOverview(
+      page,
+      lastBar,
+      (setup) => {
+        late(setup)
+        setup.scenario.seriesStatus = 500
+      },
+      { bars: false },
+    )
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    await expect(panelOf(page).getByTestId('chart-unavailable')).toBeVisible()
+    expect(urls.every((u) => !u.includes('updated_before'))).toBe(true)
+  })
+
+  test('a link written with .000Z lines up with the server’s …Z buckets: marked, counted and open', async ({
+    page,
+  }) => {
+    const urls = tasksRequests(page)
+    await openOverview(page, lastBar, late)
+    await expect(page.getByTestId('bar-selected')).toBeVisible()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    await expect(panelOf(page)).toContainText('Failure rate')
+    expect(urls.every((u) => !u.includes('updated_before'))).toBe(true)
   })
 })

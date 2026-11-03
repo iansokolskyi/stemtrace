@@ -20,7 +20,10 @@ export function bucketsOf(series: TimeseriesResponse): Bucket[] {
   const count = (state: string, i: number): number => series.counts[state]?.[i] ?? 0
   return series.starts.map((start, i) => {
     const next = series.starts[i + 1]
-    const end = next ?? new Date(Date.parse(start) + series.bucket_seconds * 1000).toISOString()
+    // The server writes `…:00Z`; the last end is built in that form too
+    const end =
+      next ??
+      new Date(Date.parse(start) + series.bucket_seconds * 1000).toISOString().replace('.000Z', 'Z')
     return {
       start,
       end,
@@ -74,5 +77,9 @@ export const formatRate = (perMinute: number): string =>
 /** Whether a span ending at `to` ends on the last bucket, which the server leaves open-ended (`stats.py` `count_runs`). */
 export const endsOpen = (buckets: Bucket[], to: string): boolean => {
   const last = buckets[buckets.length - 1]
-  return last !== undefined && to >= last.end
+  // Instants, not strings: the server writes `…:00Z` and a client-built link `…:00.000Z`
+  return last !== undefined && Date.parse(to) >= Date.parse(last.end)
 }
+
+/** Whether two ISO times are the same instant, whatever their spelling. */
+export const sameInstant = (a: string, b: string): boolean => Date.parse(a) === Date.parse(b)
