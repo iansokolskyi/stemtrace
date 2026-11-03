@@ -207,7 +207,7 @@ class World:
 
     # --- operations (each updates truth, registry and oracle) ---------------
 
-    def start(self, name: str) -> None:
+    def start(self, name: str, *, announce: bool | None = None) -> None:
         """A worker process starts; its ``worker_ready`` is seen unless it is the first start."""
         self.pid[name] += 1
         self.truth[name] = "alive"
@@ -215,8 +215,11 @@ class World:
         # A restart the server listed under another pid always sends worker_ready
         # (a shutdown for an unlisted pid would not stop the listed one).
         announced = (
-            node is not None and node.listed and not node.stopped
-        ) or self.rng.random() < 0.8
+            announce
+            if announce is not None
+            else (node is not None and node.listed and not node.stopped)
+            or self.rng.random() < 0.8
+        )
         if name in self.reported_stopped and not announced:
             self.clock.advance(1)  # its events are then stamped after the stop
         if announced:
@@ -293,6 +296,26 @@ class World:
         self.last_late_event = self.clock.now
         if name not in self.nodes and name not in self.stopped_at:
             self.nodes[name] = ONode(False, stamp, False)
+
+    def revive_run(self, name: str) -> None:
+        """A worker stops cleanly, restarts with its ``worker_ready`` missed, then runs busy for 35 minutes."""
+        if self.truth[name] not in ("alive", "busy"):
+            return
+        self.truth[name] = "alive"
+        self.stop(name)
+        if self.truth[name] != "stopped":
+            return
+        self.clock.advance(1)
+        self.start(name, announce=False)
+        for _ in range(35):
+            self.clock.advance(60)
+            self.task(name)
+            self.cleanup()
+            self.evaluate()
+        self.toggle_busy(name)  # too busy to answer the next broadcast
+        if self.broker:
+            self.refresh()
+        self.evaluate()
 
     def advance(self) -> None:
         """Move the clock, sometimes past the 30-minute cleanup."""
@@ -518,6 +541,7 @@ class World:
             "busy": self.toggle_busy,
             "task": self.task,
             "late": self.late_task,
+            "revive_run": self.revive_run,
         }
         if op in per_node:
             per_node[op](name)
@@ -546,6 +570,7 @@ class World:
             "cleanup",
             "refresh",
             "refresh",
+            "revive_run",
             "evaluate",
         ]
         for _ in range(steps):
