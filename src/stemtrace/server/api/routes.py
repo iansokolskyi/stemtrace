@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Annotated
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.routing import APIRoute
+from kombu.exceptions import OperationalError
 
 # Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
 # goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
@@ -392,6 +393,25 @@ def _node_to_graph_response(
     )
 
 
+# kombu 5.6.2, celery 5.6.3, amqp 5.3.1, redis 8.1.0. Inspect reads
+# ``Connection.default_channel``, whose ``_ensure_connection`` runs ``retry_over_time``
+# (kombu/utils/functional.py) with ``timeout=connect_timeout`` and ``max_retries=None``: the
+# deadline is checked only after an attempt fails, with a 2 s sleep between attempts, so a
+# refused port costs 3 attempts (about 6 s) per call. ``transport_options['max_retries']``
+# (read by ``_extract_failover_opts``) set to 0 makes the first failure raise. One attempt is
+# bounded by the socket connect timeout: amqp ``Transport._connect`` calls
+# ``sock.settimeout(connect_timeout)``; for Redis, kombu's ``socket_connect_timeout`` (default
+# None: the OS TCP timeout, about 2 minutes) goes to redis-py. Name resolution is unbounded.
+_INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
+_INSPECT_CONNECT_BOUNDS: dict[str, object] = {
+    "broker_connection_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
+    "broker_transport_options": {
+        "max_retries": 0,
+        "socket_connect_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
+    },
+}
+
+
 def _get_inspector(
     broker_url: str | None,
     *,
@@ -413,7 +433,7 @@ def _get_inspector(
     # accidentally treating this as `loader=...` (which can import stdlib
     # modules like `inspect` and crash during app finalization).
     try:
-        app = Celery("stemtrace", broker=broker_url)
+        app = Celery("stemtrace", broker=broker_url, changes=_INSPECT_CONNECT_BOUNDS)
         # Celery's Inspect signature differs by version. Newer versions accept
         # `timeout=...`, older versions raise TypeError.
         with contextlib.suppress(TypeError):
@@ -431,7 +451,7 @@ def _get_inspector(
 def _refresh_worker_registry_from_inspect(
     worker_registry: WorkerRegistry,
     inspector: Inspect,
-) -> frozenset[str]:
+) -> frozenset[str] | None:
     """Refresh worker registry from Celery inspect (best-effort).
 
     This supports "late join" scenarios where the server missed worker_ready
@@ -449,7 +469,8 @@ def _refresh_worker_registry_from_inspect(
         inspector: Celery inspector to query.
 
     Returns:
-        The nodenames that answered (stats, else ping).
+        The nodenames that answered (stats, else ping), or None when the broker
+        couldn't be reached (the caller backs off).
     """
     # The replies describe the workers as of now, but the consumer keeps
     # applying worker events while inspect waits (up to 0.5 s per call).
@@ -466,6 +487,12 @@ def _refresh_worker_registry_from_inspect(
         # 5.6.2 Mailbox._broadcast -> Connection.default_channel raises when the
         # broker is unreachable. So returning at all means the broadcast ran.
         stats_completed = True
+    except OperationalError:
+        # kombu 5.6.2 Connection._reraise_as_library_errors turns a failed connect
+        # into this: registered() and ping() would each run the whole connect
+        # again, so stop at the first failure.
+        logger.debug("inspect stats() could not reach the broker", exc_info=True)
+        return None
     except Exception:
         logger.debug("inspect stats() failed", exc_info=True)
 
@@ -479,7 +506,7 @@ def _refresh_worker_registry_from_inspect(
         with contextlib.suppress(Exception):
             active = inspector.ping()
         if not active and not stats_completed:
-            return frozenset()
+            return None
         # An empty stats() that completed still stamps the broadcast, after the
         # pings: nobody answered, which is evidence for silent workers.
         worker_registry.apply_ping_reply(active or (), stats_completed=stats_completed)
@@ -517,6 +544,8 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
 
 _INSPECT_REFRESH_MIN_INTERVAL_SECONDS = INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 _INSPECT_TIMEOUT_SECONDS = 0.5
+_INSPECT_BACKOFF_START_SECONDS = 2.0
+_INSPECT_BACKOFF_MAX_SECONDS = 60.0
 
 
 class _InspectRefresher:
@@ -524,9 +553,9 @@ class _InspectRefresher:
 
     Runs at most one refresh at a time and at most one per
     ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
-    in progress, or a recent one, returns at once instead of waiting. Failures
-    are swallowed (the refresh is best-effort) and don't count as a refresh,
-    so the next request retries. State is per router instance.
+    in progress, or one still paced out, returns at once instead of waiting.
+    A failed attempt counts too: the next waits 2, 4, 8 ... up to 60 s, and a
+    success resets that. The probe and every route read the same clock.
     """
 
     def __init__(
@@ -537,23 +566,36 @@ class _InspectRefresher:
         self._broker_url = broker_url
         self._lock = threading.Lock()
         self._last_refresh: float = 0.0
+        self._last_attempt: float = 0.0
+        self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+        self._failures = 0
 
-    def _refreshed_recently(self) -> bool:
-        return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    def _paced_out(self) -> bool:
+        return _monotonic() - self._last_attempt < self._wait_s
 
     def ready_in(self) -> float:
-        """Seconds until the last successful refresh is a full interval old."""
-        if self._last_refresh <= 0.0:
+        """Seconds until the next attempt is allowed (interval or failure backoff)."""
+        if self._last_attempt <= 0.0:
             return 0.0
-        return max(
-            0.0,
-            self._last_refresh + _INSPECT_REFRESH_MIN_INTERVAL_SECONDS - _monotonic(),
-        )
+        return max(0.0, self._last_attempt + self._wait_s - _monotonic())
+
+    def _record(self, *, succeeded: bool) -> None:
+        """Count an attempt toward pacing: an interval after a success, else a backoff."""
+        now = _monotonic()
+        if succeeded:
+            self._last_refresh = now
+            self._failures = 0
+            self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+        else:
+            backoff = _INSPECT_BACKOFF_START_SECONDS * 2**self._failures
+            self._failures += 1
+            self._wait_s = min(backoff, _INSPECT_BACKOFF_MAX_SECONDS)
+        self._last_attempt = now
 
     def _inspect_and_apply(
         self, worker_registry: WorkerRegistry, broker_url: str
     ) -> frozenset[str]:
-        """Ask Celery and apply the reply; a failure doesn't count as a refresh.
+        """Ask Celery and apply the reply; a failure backs the next attempt off.
 
         Returns:
             The nodenames that answered (empty on a failure).
@@ -561,11 +603,11 @@ class _InspectRefresher:
         inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
         if inspector is None:
             return frozenset()
-        answered: frozenset[str] = frozenset()
+        answered: frozenset[str] | None = None
         with contextlib.suppress(Exception):
             answered = _refresh_worker_registry_from_inspect(worker_registry, inspector)
-            self._last_refresh = _monotonic()
-        return answered
+        self._record(succeeded=answered is not None)
+        return answered or frozenset()
 
     def refresh_blocking(self) -> frozenset[str] | None:
         """Refresh on the calling thread; the probe paces it with ``ready_in``.
@@ -586,18 +628,18 @@ class _InspectRefresher:
             self._lock.release()
 
     async def maybe_refresh(self) -> None:
-        """Refresh the worker registry unless disabled, recent, or in progress."""
+        """Refresh the worker registry unless disabled, paced out, or in progress."""
         worker_registry = self._worker_registry
         broker_url = self._broker_url
         if worker_registry is None or broker_url is None:
             return
-        if self._refreshed_recently():
+        if self._paced_out():
             return
         # Don't block requests waiting for an in-progress refresh.
         if not self._lock.acquire(blocking=False):
             return
         try:
-            if self._refreshed_recently():
+            if self._paced_out():
                 return
             await run_in_threadpool(
                 self._inspect_and_apply, worker_registry, broker_url

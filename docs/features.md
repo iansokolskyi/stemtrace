@@ -81,10 +81,12 @@ pages work even if the server missed `worker_ready` events.
   within one interval, and the owed times of the first don't move. A nodename that never answers
   (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
   until the worker joins again. Until a reply names a worker, the server may show it offline.
-- With a down broker, an attempt can take about 18 s (see
-  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
-  and a pending nodename is owed one inspect plus at most five more. Stopping the server waits up to
-  2 s for a running attempt. The background inspect does nothing without a broker URL.
+- With a down broker, an attempt ends within about 1.5 s of connecting (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)).
+  A failed attempt counts toward pacing: the next one, from a request or the background inspect,
+  waits 2, 4, 8 and so on up to 60 s, and a success resets that. The owed times of a pending
+  nodename are served by whichever attempt the wait allows, so a down broker can serve several of
+  them with one attempt. Stopping the server waits up to 2 s for a running attempt. The background inspect does nothing without a broker URL.
   Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
   an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
   task events arrive but that never registers triggers one inspect, not one per event.
@@ -311,14 +313,16 @@ appears as time passes even when no event arrives. A task has at most one flag, 
 task's latest attempt counts. A task that has ended, and the GROUP and CHORD nodes of a graph,
 never has one.
 
-- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
+- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=&refresh=` lists the flagged items, oldest
   `since` first, then by task ID, then by name (an item without a task ID or a name comes
   last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`; any other value is
   a `422`. `hostname` and `name` match exactly, so an item without a hostname or
   name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
   for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
   `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
-  is the time the server judged at, and every `since` is in UTC.
+  is the time the server judged at, and every `since` is in UTC. `refresh` (default `true`)
+  asks the workers first, as `/api/workers` does; `refresh=false` judges on the registry as it
+  is, without contacting the broker.
 - Stuck and interrupted are one item per task. Unregistered is one item per task name, with
   `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
   name with 40 waiting tasks counts once. `no_workers_online` is at most one item for the whole
@@ -382,7 +386,7 @@ trusted when either of these holds:
 
 - The last `inspect` reply that listed the tasks of every worker that answered arrived at most
   `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
-  seconds. A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  seconds (unless `refresh=false`; after a failed ask the wait grows to 60 s). A reply with only a ping, an empty reply, a worker that answered `stats()` but not
   `registered()`, or a reply that a worker event overtook doesn't count.
 - No broker URL is configured, so the server has only worker events, and at least one live
   worker has registered tasks.

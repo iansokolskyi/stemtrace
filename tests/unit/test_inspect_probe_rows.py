@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from kombu.exceptions import OperationalError
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server import inspect_probe
@@ -80,7 +81,10 @@ class FakeInspect:
         if self._attempt == 1:
             fleet.first_attempt_gate.wait(BOUND_S)
         if fleet.mode == "raises":
-            raise ConnectionError("broker unreachable")
+            # The refresh stops at the first unreachable-broker error (kombu 5.6.2
+            # would run the whole connect again for registered() and ping()).
+            fleet.attempt_done.release()
+            raise OperationalError("broker unreachable")
         if fleet.mode == "silent":
             return None
         return {name: {"pid": pid} for name, (pid, _) in self._snapshot.items()}
@@ -435,15 +439,16 @@ def test_p4_broker_down_makes_one_bounded_attempt_for_the_startup_trigger(
     with TestClient(app):
         take(fleet.attempt_done)
 
+    calls_after_stats = 0 if mode == "raises" else 1
     assert (
         fleet.attempts,
         fleet.stats_calls,
         fleet.registered_calls,
         fleet.ping_calls,
-    ) == (1, 1, 1, 1)
+    ) == (1, 1, calls_after_stats, calls_after_stats)
 
 
-def test_p4_broker_down_bounds_a_joins_attempts_to_one_plus_five(
+def test_p4_broker_down_bounds_a_joins_attempts_by_the_shared_backoff(
     fleet: FakeFleet,
 ) -> None:
     fleet.mode = "raises"
@@ -454,11 +459,14 @@ def test_p4_broker_down_bounds_a_joins_attempts_to_one_plus_five(
         take(fleet.attempt_done)
         fleet.clock.wait(threading.Event(), 2.0)
         registry.register_worker(NODE_A, 1, ["app.a"])
-        for _ in range(6):
+        for _ in range(5):
             take(fleet.attempt_done)
         assert not got(fleet.attempt_done, 0.5)
 
-    assert fleet.attempts == 7
+    # The join's owed times (4, 8, 16, 32, 62 s) are served by attempts that the
+    # failure backoff (2, 4, 8, 16, 32 s) spaces out; the last serves two owed times.
+    started = fleet.stats_times[0]
+    assert [t - started for t in fleet.stats_times] == [0, 2, 6, 14, 30, 62]
     assert registry.get_registered_tasks(NODE_A, 1) == ["app.a"]
 
 
