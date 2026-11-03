@@ -139,11 +139,18 @@ async function openSidebarIfDrawer(page: Page, width: number): Promise<void> {
 test.describe('Sidebar', () => {
   test.skip(isRealMode, 'Mock-only test')
 
-  test('nav lists the five pages in order and marks the current one', async ({ page }) => {
+  test('nav lists the pages in order and marks the current one', async ({ page }) => {
     await setupMockApi(page)
     await page.goto('/executions')
     const links = sidebar(page).getByRole('navigation', { name: 'Sections' }).getByRole('link')
-    await expect(links).toHaveText([/^Overview/, /^Executions/, /^Flows/, /^Workers/, /^Registry/])
+    await expect(links).toHaveText([
+      /^Overview/,
+      /^Executions/,
+      /^Flows/,
+      /^Workers/,
+      /^Registry/,
+      /^Anomalies/,
+    ])
     await expect(links.nth(1)).toHaveAttribute('aria-current', 'page')
     await links.nth(2).click()
     await expect(page).toHaveURL(/\/flows$/)

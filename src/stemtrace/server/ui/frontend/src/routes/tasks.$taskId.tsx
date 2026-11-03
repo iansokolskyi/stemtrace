@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useTask } from '@/api/queries'
+import { AnomalyCallout } from '@/components/anomalies/AnomalyCallout'
 import { TaskOutput } from '@/components/TaskOutput'
 import { ChildTasks } from '@/components/task/ChildTasks'
 import { EventHistory } from '@/components/task/EventHistory'
@@ -45,6 +46,7 @@ function TaskDetailPage() {
   return (
     <div>
       <TaskHeader task={task} flowRootId={data.flow_root_id} childCount={children.length} />
+      {data.anomaly_detail && <AnomalyCallout anomaly={data.anomaly_detail} placement="task" />}
       <div className="grid items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="min-w-0">
           <TimingBar
