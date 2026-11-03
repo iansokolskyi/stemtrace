@@ -34,6 +34,8 @@ ROWS = (
     "28g",
     "28h",
     "28i",
+    "28j",
+    "28k",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -113,10 +115,13 @@ class Plan:
 class World:
     """Truth, registry, oracle and the reach counters for one seeded run."""
 
-    def __init__(self, seed: int, reached: Counter[str], *, broker: bool) -> None:
+    def __init__(
+        self, seed: int, reached: Counter[str], *, broker: bool, deaf: bool = False
+    ) -> None:
         self.rng = random.Random(seed)
         self.reached = reached
         self.broker = broker
+        self.deaf = deaf  # remote control off: no worker ever answers an inspect
         self.clock = Clock()
         self.registry = WorkerRegistry()
         self.truth: dict[str, str] = {}  # absent|alive|busy|killed|stopped
@@ -128,6 +133,8 @@ class World:
         self.ever_seen = False
         self.nodes: dict[str, ONode] = {}
         self.completed: datetime | None = None
+        self.channel_proven = False
+        self.rev_listed: set[str] = set()
         self.answered_last: frozenset[str] = frozenset()
         self.generation: dict[str, int] = dict.fromkeys(NODES, 0)
         # Truth-side logs for the two direction checks.
@@ -165,7 +172,8 @@ class World:
     def silent(self, name: str, node: ONode) -> bool:
         """Silent with evidence: a broadcast completed after the last sign, unanswered, past the window."""
         return (
-            self.completed is not None
+            self.channel_proven
+            and self.completed is not None
             and self.completed > node.last_seen
             and name not in self.answered_last
             and node.last_seen < self.clock.now - STALE
@@ -183,9 +191,11 @@ class World:
         if with_pid:
             self.nodes[name] = ONode(False, now, True)
             self.stopped_at.pop(name, None)
+            self.reported_stopped.discard(name)
+            self.rev_listed.discard(name)
             self.ever_seen = True
-        elif node is not None and node.listed:
-            if not node.stopped:
+        elif node is not None:
+            if not node.stopped:  # a ping never revives a stopped worker
                 node.last_seen = now
         elif (
             name not in self.stopped_at
@@ -203,16 +213,18 @@ class World:
         node = self.nodes.get(name)
         # A restart the server listed under another pid always sends worker_ready
         # (a shutdown for an unlisted pid would not stop the listed one).
-        if (
-            name in self.reported_stopped
-            or (node is not None and node.listed)
-            or self.rng.random() < 0.8
-        ):
+        announced = (
+            node is not None and node.listed and not node.stopped
+        ) or self.rng.random() < 0.8
+        if name in self.reported_stopped and not announced:
+            self.clock.advance(1)  # its events are then stamped after the stop
+        if announced:
             self.registry.register_worker(
                 name, self.pid[name], ["app.t"], event_timestamp=self.clock.now
             )
             self.generation[name] += 1
             self.reported_stopped.discard(name)
+            self.rev_listed.discard(name)
             self.stopped_at.pop(name, None)
             self.nodes[name] = ONode(False, self.clock.now, True)
             self.ever_seen = True
@@ -229,6 +241,7 @@ class World:
         self.stopped_at[name] = self.stop_ts[name] = self.clock.now
         self.generation[name] += 1
         self.reported_stopped.add(name)
+        self.rev_listed.discard(name)
         node = self.nodes.get(name)
         if node is not None and node.listed:
             node.stopped = True
@@ -260,7 +273,12 @@ class World:
         node = self.nodes.get(name)
         if node is None:
             self.nodes[name] = ONode(False, now, False)
-        elif not node.stopped:
+            self.reported_stopped.discard(name)
+        elif node.stopped:  # stamped after the stop: a restart whose ready was missed
+            self.nodes[name] = ONode(False, now, False)
+            self.reported_stopped.discard(name)
+            self.rev_listed.add(name)
+        else:
             node.last_seen = max(node.last_seen, now)
         self.last_stopped_unlisted = False
 
@@ -301,7 +319,7 @@ class World:
         """Decide what the next refresh asks and who answers it, as of now."""
         rng = self.rng
         up = rng.random() < 0.85
-        answering = [n for n in NODES if self.truth[n] in ("alive",)]
+        answering = [n for n in NODES if self.truth[n] == "alive" and not self.deaf]
         ops = ["evaluate", "task", "advance", "start", "stop", "kill", "cleanup"]
         meanwhile = {
             stage: [rng.choice(ops) for _ in range(rng.choice([0, 0, 1, 2]))]
@@ -338,6 +356,7 @@ class World:
         answered: set[str] = set()
         completed = not plan.stats_raises
         if plan.stats_answered:
+            self.channel_proven = True
             for name in plan.stats_answered:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
@@ -345,6 +364,7 @@ class World:
         else:  # empty or failed stats: the ping fallback
             for name in [] if plan.ping_raises else plan.ping_answers:
                 answered.add(name)
+                self.channel_proven = True
                 self._answer(name, with_pid=False)
         if completed:
             self.completed = now
@@ -363,7 +383,8 @@ class World:
         if self.answered_latest - self.reported_stopped:
             assert not got, "offline while a worker answered the latest broadcast"
         for name, at in self.last_event.items():
-            if name not in self.reported_stopped and at >= now - STALE:
+            stop = self.stop_ts.get(name)
+            if (stop is None or at > stop) and at >= now - STALE:
                 assert not got, "offline while a worker sent an event in the window"
         late = self.last_late_event
         recently_late = late is not None and late >= now - STALE
@@ -406,6 +427,8 @@ class World:
             rows.append("28a")
         if got and self.last_stopped_unlisted and not live:
             rows.append("28i")
+        if not got and any(n in live and not live[n].listed for n in self.rev_listed):
+            rows.append("28k")
         return rows
 
     def _rows_silent(self, got: bool, live: dict[str, ONode]) -> list[str]:
@@ -414,6 +437,13 @@ class World:
         now = self.clock.now
         if got and live and self.completed is not None:
             rows.append("28c")
+        unproven = not got and not self.channel_proven and self.completed is not None
+        if unproven and any(
+            self.completed > o.last_seen and o.last_seen < now - STALE
+            for n, o in live.items()
+            if n not in self.answered_last
+        ):
+            rows.append("28j")
         if not live or got or self.completed is None:
             return rows
         held = [

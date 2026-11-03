@@ -188,6 +188,10 @@ def test_e2e_a_silent_fleet_after_a_completed_inspect_gives_the_item(
     ]
 
     with fed(consumer, stream):
+        # Some worker answered an inspect earlier, so the server can hear workers.
+        registry = extension.worker_registry
+        registry.apply_stats_reply({}, {"celery@probe": (9, [])})
+        registry.mark_shutdown("celery@probe", 9)
         assert items_of(client) == [("no_workers_online", None, None, 1)]
 
 

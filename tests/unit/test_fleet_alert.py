@@ -27,6 +27,7 @@ from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.unit.anomaly_pipeline import SMALL, T0, task_event
 
 SOLO, OTHER = "celery@solo", "celery@other"
+PROBE = "celery@probe"
 MINUTE = timedelta(minutes=1)
 SETTINGS = replace(
     SMALL,
@@ -109,6 +110,12 @@ class FakeInspect:
 def refresh(registry: WorkerRegistry, inspect: FakeInspect) -> None:
     """Run the real refresh against ``inspect``."""
     _refresh_worker_registry_from_inspect(registry, inspect)  # type: ignore[arg-type]  # a fake of Celery's Inspect
+
+
+def prove_channel(registry: WorkerRegistry, at: datetime = T0) -> None:
+    """Let some worker answer an inspect (then stop), so later silence is evidence."""
+    registry.apply_stats_reply({}, {PROBE: (9, [])}, now=at)
+    registry.mark_shutdown(PROBE, 9)
 
 
 def answer_stats(*nodes: str, pid: int = 1) -> dict[str, object]:
@@ -269,6 +276,7 @@ def test_row28c_a_completed_inspect_nobody_answers_makes_the_silent_fleet_offlin
     silent_min: float, ping: object, stats: dict[str, object] | None
 ) -> None:
     registry = WorkerRegistry()
+    prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     now = T0 + silent_min * MINUTE
 
@@ -291,6 +299,7 @@ def refresh_at(registry: WorkerRegistry, now: datetime, inspect: FakeInspect) ->
 
 def test_row28c_the_silent_worker_still_keeps_its_names_so_no_per_name_item() -> None:
     registry = WorkerRegistry()
+    prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     now = T0 + 6 * MINUTE
     refresh_at(registry, now, FakeInspect(stats=None))
@@ -375,11 +384,134 @@ def test_row28c_a_worker_clock_far_behind_looks_silent_after_a_completed_inspect
     None
 ):
     registry = WorkerRegistry()
+    prove_channel(registry, T0 - MINUTE)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 10 * MINUTE)
 
     registry.apply_stats_reply({}, {}, now=T0)  # a worker that is up but didn't answer
 
     assert fleet_items(report_at(registry, T0)) == [(None, None, 1)]
+
+
+# --- Row 28j: workers we can't hear are not evidence (channel proven) ----------------
+
+
+@pytest.mark.parametrize("stats", [None, {}], ids=["stats-none", "stats-empty"])
+@pytest.mark.parametrize(
+    "ping",
+    [None, {}, OSError("down")],
+    ids=["ping-none", "ping-empty", "ping-raises"],
+)
+def test_row28j_an_idle_fleet_that_never_answers_an_inspect_gives_no_item(
+    stats: dict[str, object] | None, ping: object
+) -> None:
+    """Remote control off: every ``stats()`` and ``ping()`` returns None (round-1 PoC)."""
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    now = T0 + 9 * MINUTE
+    refresh_at(registry, now, FakeInspect(stats=stats, ping=ping))  # type: ignore[arg-type]  # parametrized values are typed loosely
+
+    assert fleet_items(report_at(registry, now + MINUTE)) == []
+
+
+@pytest.mark.parametrize("answer", ["stats", "ping"])
+def test_row28j_once_a_worker_answered_an_inspect_silence_is_evidence(
+    answer: str,
+) -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.register_worker(OTHER, 2, ["app.known"], event_timestamp=T0)
+    first = T0 + MINUTE
+    if answer == "stats":
+        inspect = FakeInspect(stats=answer_stats(OTHER, pid=2))
+    else:
+        inspect = FakeInspect(stats=None, ping={OTHER: {"ok": "pong"}})
+    refresh_at(registry, first, inspect)
+    registry.mark_shutdown(OTHER, 2)
+    later = T0 + 9 * MINUTE
+    refresh_at(registry, later, FakeInspect(stats=None))
+
+    assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
+
+
+def test_row28j_a_ping_answer_proves_the_channel_even_when_stats_raised() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.register_worker(OTHER, 2, ["app.known"], event_timestamp=T0)
+    registry.mark_shutdown(OTHER, 2)
+    refresh_at(
+        registry,
+        T0 + MINUTE,
+        FakeInspect(stats=OSError("x"), ping={OTHER: {"ok": "pong"}}),
+    )
+    later = T0 + 9 * MINUTE
+    refresh_at(registry, later, FakeInspect(stats=None))
+
+    assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
+
+
+def test_row28j_a_stopped_fleet_is_still_offline_with_the_channel_unproven() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.mark_shutdown(SOLO, 1)
+    refresh_at(registry, T0 + MINUTE, FakeInspect(stats=None))
+
+    assert fleet_items(report_at(registry, T0 + 2 * MINUTE)) == [(None, None, 1)]
+
+
+# --- Row 28k: an event stamped after a stop revives the nodename, listed or not ------
+
+
+@pytest.mark.parametrize("broker", [True, False], ids=["broker", "no-broker"])
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
+@pytest.mark.parametrize(
+    ("delta_s", "revives"),
+    [(-10, False), (0, False), (10, True)],
+    ids=["before", "at", "after"],
+)
+def test_row28k_an_event_after_a_reported_stop_revives_the_worker_only_when_stamped_after(
+    delta_s: int, revives: bool, listed: bool, broker: bool
+) -> None:
+    registry = WorkerRegistry()
+    stop = T0 - 4 * MINUTE
+    if listed:
+        registry.register_worker(
+            SOLO, 1, ["app.known"], event_timestamp=T0 - 5 * MINUTE
+        )
+    else:
+        registry.mark_seen(SOLO, T0 - 5 * MINUTE, now=T0 - 5 * MINUTE)
+    registry.mark_shutdown(SOLO, 1, stop)  # the restart's worker_ready is missed
+
+    registry.mark_seen(SOLO, stop + timedelta(seconds=delta_s), now=T0)
+
+    report = report_at(registry, T0, broker=broker)
+    assert fleet_items(report) == ([] if revives else [(None, None, 1)])
+
+
+def test_row28k_the_revived_worker_stays_online_until_it_stops_again() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 5 * MINUTE)
+    registry.mark_shutdown(SOLO, 1, T0 - 4 * MINUTE)
+    registry.mark_seen(SOLO, T0 - timedelta(seconds=10), now=T0)
+    assert fleet_items(report_at(registry, T0)) == []
+
+    registry.apply_ping_reply(
+        [SOLO], now=T0 + MINUTE
+    )  # a ping refreshes, never revives
+    registry.mark_shutdown(SOLO, 2, T0 + MINUTE)
+
+    assert fleet_items(report_at(registry, T0 + MINUTE)) == [(None, None, 1)]
+
+
+def test_row28k_a_stop_is_forgotten_by_the_server_clock_not_the_workers() -> None:
+    registry = WorkerRegistry()
+    stop = T0 - 2 * timedelta(hours=1)  # a worker clock two hours behind
+    registry.mark_shutdown(SOLO, 1, stop, now=T0)
+
+    registry.remove_stale_workers(now=T0 + MINUTE)  # the server saw the stop 1 min ago
+    registry.mark_seen(SOLO, stop - MINUTE, now=T0 + MINUTE)  # a late event
+
+    facts = registry.registry_facts(broker_configured=True, now=T0 + MINUTE)
+    assert facts.any_online is False
 
 
 # --- Row 28d / 28e: silence is not evidence without a completed inspect -------------
@@ -426,6 +558,7 @@ def test_row28e_the_cleanup_keeps_what_it_cannot_prove_and_later_evidence_closes
     None
 ):
     registry = WorkerRegistry()
+    prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     now = T0 + 45 * MINUTE
     registry.remove_stale_workers(now=now)
@@ -489,6 +622,7 @@ def test_row28g_a_concurrent_evaluation_sees_a_fleet_that_goes_silent_only_once_
 ) -> None:
     clock = Clock(monkeypatch, T0)
     registry = WorkerRegistry()
+    prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     clock.advance(5 * MINUTE)
     mid: list[list[tuple[str | None, str | None, int]]] = []
@@ -634,6 +768,7 @@ def test_worker_ready_and_a_stats_reply_make_an_unknown_nodename_a_listed_worker
 
 def test_the_cleanup_keeps_an_unknown_nodename_seen_recently() -> None:
     registry = WorkerRegistry()
+    prove_channel(registry, T0 - MINUTE)
     registry.mark_seen(SOLO, T0, now=T0)
     registry.mark_seen(OTHER, T0, now=T0)
     registry.apply_stats_reply({}, {}, now=T0 + MINUTE)  # completed: both unanswered

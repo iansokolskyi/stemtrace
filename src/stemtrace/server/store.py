@@ -333,11 +333,16 @@ class WorkerRegistry:
         # a task's last events, stamped before it and arriving after, don't
         # make an unlisted nodename live again. Cleared by a worker_ready or
         # stats reply naming a pid; bounded like ``_unlisted``.
-        self._stopped_at: dict[str, datetime] = {}
+        self._stopped_at: dict[str, tuple[datetime, datetime]] = {}
         # The latest inspect ``stats()`` broadcast that completed, stamped in
         # the locked step that applied its answers, and who answered it.
         self._inspect_completed_at: datetime | None = None
         self._answered_last: frozenset[str] = frozenset()
+        # Whether any worker has answered an inspect since the server started.
+        # Until then an unanswered broadcast may only mean the server can't hear
+        # workers (remote control off, an unshared control setting), not that
+        # they are gone.
+        self._channel_proven = False
         self._lock = threading.RLock()
 
     def register_worker(
@@ -437,7 +442,12 @@ class WorkerRegistry:
             return self._task_definitions_by_name.get(name)
 
     def mark_shutdown(
-        self, hostname: str, pid: int, timestamp: datetime | None = None
+        self,
+        hostname: str,
+        pid: int,
+        timestamp: datetime | None = None,
+        *,
+        now: datetime | None = None,
     ) -> None:
         """Record a worker_shutdown event: the process is gone for good.
 
@@ -449,6 +459,7 @@ class WorkerRegistry:
             hostname: Worker nodename.
             pid: Worker process ID.
             timestamp: The event's time (the worker's clock); defaults to now.
+            now: When the server received it (tests); defaults to now.
         """
         with self._lock:
             self._event_generation[hostname] = (
@@ -459,12 +470,16 @@ class WorkerRegistry:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
             self._unlisted.pop(hostname, None)
-            stopped = ensure_tz_aware(timestamp) if timestamp else _utcnow()
-            self._stopped_at[hostname] = max(
-                stopped, self._stopped_at.get(hostname, stopped)
-            )
+            received = now or _utcnow()
+            stopped = ensure_tz_aware(timestamp) if timestamp else received
+            previous = self._stopped_at.get(hostname)
+            if previous is not None:
+                stopped = max(stopped, previous[0])
+            self._stopped_at[hostname] = (stopped, received)
             if len(self._stopped_at) > self._max_unlisted:
-                oldest = min(self._stopped_at, key=lambda n: (self._stopped_at[n], n))
+                oldest = min(
+                    self._stopped_at, key=lambda n: (self._stopped_at[n][1], n)
+                )
                 del self._stopped_at[oldest]
 
     def mark_seen(
@@ -495,11 +510,16 @@ class WorkerRegistry:
             worker = self._workers.get(live_id) if live_id else None
             current = now or _utcnow()
             seen_at = min(ensure_tz_aware(timestamp), current)
+            stop = self._stopped_at.get(hostname)
+            after_stop = stop is not None and ensure_tz_aware(timestamp) > stop[0]
             if worker is None:
-                stopped = self._stopped_at.get(hostname)
-                if stopped is None or ensure_tz_aware(timestamp) > stopped:
+                if stop is None or after_stop:
                     self._see_unlisted(hostname, seen_at)
                 return
+            if worker.shutdown_reported and after_stop:
+                # A restart whose worker_ready was missed: the nodename runs
+                # tasks again, though its listed pid stays stopped.
+                self._see_unlisted(hostname, seen_at)
             if seen_at > worker.last_seen:
                 worker.last_seen = seen_at
             recent = seen_at >= current - timedelta(
@@ -552,11 +572,20 @@ class WorkerRegistry:
 
             if live is None:
                 unlisted = hostname not in self._newest_by_node
-                if pid is None and unlisted and hostname not in self._stopped_at:
+                known = hostname in self._unlisted
+                if (
+                    pid is None
+                    and unlisted
+                    and (known or hostname not in self._stopped_at)
+                ):
                     self._ever_seen = True
                     self._see_unlisted(hostname, now or _utcnow())
                 return
             if pid is None and live.shutdown_reported:
+                if (
+                    hostname in self._unlisted
+                ):  # revived by a task event: a ping refreshes it
+                    self._see_unlisted(hostname, now or _utcnow())
                 return
             live.status = WorkerStatus.ONLINE
             live.shutdown_reported = False
@@ -637,6 +666,7 @@ class WorkerRegistry:
         """Stamp a completed ``stats()`` broadcast and who answered it. Hold the lock."""
         self._inspect_completed_at = now
         self._answered_last = frozenset(answered)
+        self._channel_proven = self._channel_proven or bool(self._answered_last)
 
     def _see_unlisted(self, nodename: str, seen_at: datetime) -> None:
         """A task event or reply names a nodename with no worker: it is live, until stopped."""
@@ -658,7 +688,8 @@ class WorkerRegistry:
         """
         completed = self._inspect_completed_at
         return (
-            completed is not None
+            self._channel_proven
+            and completed is not None
             and completed > last_seen
             and nodename not in self._answered_last
             and last_seen < cutoff
@@ -730,6 +761,8 @@ class WorkerRegistry:
                 self.mark_node_alive(nodename, now=now)
             if stats_completed:
                 self._finish_inspect(now, answered)
+            elif answered:
+                self._channel_proven = True
 
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.
@@ -813,7 +846,7 @@ class WorkerRegistry:
             # Mark stale workers offline, remove very old offline workers
             self._drop_offline_unlisted(cleanup_cutoff, stale_cutoff)
             self._stopped_at = {
-                n: t for n, t in self._stopped_at.items() if t >= cleanup_cutoff
+                n: t for n, t in self._stopped_at.items() if t[1] >= cleanup_cutoff
             }
             to_remove: list[str] = []
             for worker_id, worker_info in self._workers.items():

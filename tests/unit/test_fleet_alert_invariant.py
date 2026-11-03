@@ -21,7 +21,8 @@ MIN_REACH = 3
 
 
 def run_seed(monkeypatch: pytest.MonkeyPatch, seed: int, reached: Counter[str]) -> None:
-    world = World(seed, reached, broker=seed % 4 != 0)
+    # A quarter of the seeds have no broker, a quarter have remote control off.
+    world = World(seed, reached, broker=seed % 4 != 0, deaf=seed % 4 == 1)
     patched_clock(monkeypatch, world)
     world.run(STEPS)
 
