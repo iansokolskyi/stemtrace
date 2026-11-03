@@ -399,7 +399,8 @@ test.describe('Triage panel behaviour', () => {
     await expect(panel).toContainText('14')
     await expect(panel).toContainText('Failure rate')
     expect(parsePanel(panelValue(page) ?? undefined)[0].id).toContain(
-      encodeURIComponent(new Date(bucketStart(scenario, 8)).toISOString()),
+      // The server's spelling of the bucket start (`…:00Z`)
+      encodeURIComponent(new Date(bucketStart(scenario, 8)).toISOString().replace('.000Z', 'Z')),
     )
     // Only the run last updated in this bucket is listed
     await expect(panel.getByTestId('panel-run')).toHaveCount(2)
@@ -989,10 +990,7 @@ test.describe('Tile notes stay inside their band', () => {
             )
           expect(fits).toBe(true)
         }
-        await expect(workersTile.locator('[title*="offline"]')).toHaveAttribute(
-          'title',
-          /offline: /,
-        )
+        await expect(workersTile.locator('span.line-clamp-3')).toHaveAttribute('title', /offline: /)
       })
     }
   }
