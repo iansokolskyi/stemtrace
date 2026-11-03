@@ -69,6 +69,19 @@ def _ensure_end_of_day(dt: datetime) -> datetime:
     return dt
 
 
+def _updated_between(
+    nodes: list[TaskNode], start: datetime | None, before: datetime | None
+) -> list[TaskNode]:
+    """Keep the nodes last updated at or after ``start`` and before ``before``."""
+    if start is not None:
+        start = ensure_tz_aware(start)
+        nodes = [n for n in nodes if n.last_updated and n.last_updated >= start]
+    if before is not None:
+        before = ensure_tz_aware(before)
+        nodes = [n for n in nodes if n.last_updated and n.last_updated < before]
+    return nodes
+
+
 class NodeWithChildren(NamedTuple):
     """A node snapshot, its direct children and the root of its graph."""
 
@@ -1073,6 +1086,7 @@ class GraphStore:
         name_exact: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        updated_before: datetime | None = None,
         hostname: str | None = None,
         queue: str | None = None,
         exception_type: str | None = None,
@@ -1093,6 +1107,9 @@ class GraphStore:
         ``task_names`` keeps the tasks with one of these names (the API's
         task group and tag filters resolve names to it beforehand, outside
         the lock); pass a set for O(1) lookups.
+        ``updated_before`` keeps the nodes whose ``last_updated`` is earlier
+        than it (exclusive): with ``from_date`` it selects the runs a time-series
+        bucket counts, which ``to_date`` (a start time) cannot.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -1122,13 +1139,7 @@ class GraphStore:
                 nodes = [n for n in nodes if n.exception_type == exception_type]
             if task_names is not None:
                 nodes = [n for n in nodes if n.name in task_names]
-            if from_date is not None:
-                from_dt = ensure_tz_aware(from_date)
-                nodes = [
-                    n
-                    for n in nodes
-                    if n.last_updated is not None and n.last_updated >= from_dt
-                ]
+            nodes = _updated_between(nodes, from_date, updated_before)
             if to_date is not None:
                 to_dt = _ensure_end_of_day(to_date)
                 nodes = [
