@@ -752,6 +752,14 @@ class WorkerRegistry:
             and last_seen < cutoff
         )
 
+    def has_live_worker(self) -> bool:
+        """Whether a worker is live: no stop reported since its last ``worker_ready``."""
+        with self._lock:
+            return any(
+                not (w.shutdown_reported or w.superseded)
+                for w in self._workers.values()
+            )
+
     def registry_facts(
         self, *, broker_configured: bool, now: datetime | None = None
     ) -> RegistryFacts:

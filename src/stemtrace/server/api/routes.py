@@ -11,7 +11,7 @@ import time
 
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
-from datetime import datetime  # noqa: TC003
+from datetime import datetime, timedelta  # noqa: TC003
 from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 from celery import Celery
@@ -59,6 +59,7 @@ from stemtrace.server.groups import GroupsInput, build_group_config, group_looku
 from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
+    Periodic,
 )
 from stemtrace.transports import broker_kind
 
@@ -686,21 +687,31 @@ def _wire_inspect_probe(
     router: APIRouter,
     probe: InspectProbe | None,
     refresher: _InspectRefresher,
-    worker_registry: WorkerRegistry | None,
-    broker_url: str | None,
+    worker_registry: WorkerRegistry,
+    authority_window: timedelta,
 ) -> None:
     """Point a probe at the refresher and the registry's new-node events.
 
-    Nothing to inspect (no registry or no broker URL) means no probe. A probe
+    The probe also refreshes every half ``authority_window`` while a worker is
+    live, so ``unregistered`` has fresh authority with nobody requesting.
+
+    The caller wires nothing without a registry and a broker URL. A probe
     the router makes itself has nobody else to start it, so it rides the app's
     startup and shutdown events (not run when the app has its own ``lifespan``;
     a worker joining still starts it).
     """
-    if worker_registry is None or broker_url is None:
-        return
     own = probe is None
     probe = probe or InspectProbe()
-    probe.bind(refresher)
+    probe.bind(
+        refresher,
+        Periodic(
+            max(
+                authority_window.total_seconds() / 2,
+                _INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
+            ),
+            worker_registry.has_live_worker,
+        ),
+    )
     # Before the probe's trigger: a join clears the backoff, then asks for its inspect.
     worker_registry.add_new_node_listener(refresher.note_new_node)
     worker_registry.add_new_node_listener(probe.trigger)
@@ -1389,7 +1400,14 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         if isinstance(shared, _InspectRefresher)
         else _InspectRefresher(worker_registry, broker_url)
     )
-    _wire_inspect_probe(router, inspect_probe, refresher, worker_registry, broker_url)
+    if worker_registry is not None and broker_url is not None:
+        _wire_inspect_probe(
+            router,
+            inspect_probe,
+            refresher,
+            worker_registry,
+            anomaly_settings.authority_window,
+        )
     evaluator = AnomalyEvaluator(
         store, worker_timeline, anomaly_settings, worker_registry, broker_url
     )

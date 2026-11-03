@@ -31,6 +31,7 @@ REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE_A, NODE_B, NODE_C = "celery@a", "celery@b", "celery@c"
 BOUND_S = 5.0
+PERIODIC_WAIT_S = 100.0
 T = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 
 
@@ -48,7 +49,9 @@ class FakeClock:
             return self._now
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
-        if seconds is None:
+        # A wait this long is the periodic refresh's (D7b): advancing the fake
+        # clock through it would run a periodic refresh every loop, forever.
+        if seconds is None or seconds >= PERIODIC_WAIT_S:
             return event.wait(BOUND_S)
         if event.is_set():
             return True

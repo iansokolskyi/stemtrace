@@ -4,6 +4,7 @@
 when the registry learns a new nodename. Triggers that arrive while a refresh
 runs, or inside the minimum interval, coalesce into one follow-up. A new
 nodename stays pending until an inspect reply names it, with a bounded backoff.
+With a ``Periodic`` bound, it also refreshes every period while a worker is live.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import itertools
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -46,6 +48,18 @@ class ProbeTarget(Protocol):
     def ready_in(self) -> float:
         """Seconds until a refresh by the page-load path is old enough to follow."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class Periodic:
+    """A refresh owed every ``period_s`` while ``has_live_worker()`` is true.
+
+    The probe still paces it by the target's ``ready_in`` (the shared interval
+    and the failure backoff), so a period can't beat either.
+    """
+
+    period_s: float
+    has_live_worker: Callable[[], bool]
 
 
 class _Unbound:
@@ -104,10 +118,14 @@ class InspectProbe:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._next_allowed = float("-inf")
+        self._periodic: Periodic | None = None
+        # When the next periodic refresh is owed; set by each attempt's start.
+        self._periodic_at: float | None = None
 
-    def bind(self, target: ProbeTarget) -> None:
-        """Set what the probe drives."""
+    def bind(self, target: ProbeTarget, periodic: Periodic | None = None) -> None:
+        """Set what the probe drives, and optionally a refresh owed every period."""
         self._target = target
+        self._periodic = periodic
         self._bound = True
 
     @property
@@ -122,6 +140,7 @@ class InspectProbe:
                 # Fresh events: an abandoned thread must stay stopped.
                 self._stop = threading.Event()
                 self._wake = threading.Event()
+                self._periodic_at = None
         self.trigger()
 
     def trigger(self, nodename: str | None = None) -> None:
@@ -171,7 +190,7 @@ class InspectProbe:
         # wait below is on or ends on.
         while not stop.is_set():
             owed = wake.is_set()
-            due = self._earliest_due()
+            due = self._next_due()
             if not owed and due is None:
                 self._wait(wake, None)
                 continue
@@ -190,6 +209,8 @@ class InspectProbe:
                     return
                 if woken:
                     continue
+            if not owed and self._skip_idle_period():
+                continue
             # A trigger from here on is owed a refresh of its own, not dropped:
             # celery 5.6.3 worker/loops.py asynloop() sends worker_ready (via
             # on_ready) after kombu pidbox Node.listen() bound the control
@@ -198,12 +219,39 @@ class InspectProbe:
             wake.clear()
             started = self._clock()
             self._next_allowed = started + self._min_interval_s
+            if self._periodic is not None:
+                self._periodic_at = started + self._periodic.period_s
             answered = self._attempt()
             if answered is None:
                 # Another refresh held the slot: owe one rather than drop it.
                 wake.set()
                 continue
             self._settle(started, answered)
+
+    def _next_due(self) -> float | None:
+        """The soonest owed time: a pending nodename's or the periodic refresh's."""
+        pending, periodic = self._earliest_due(), self._periodic_at
+        if pending is None or periodic is None:
+            return periodic if pending is None else pending
+        return min(pending, periodic)
+
+    def _skip_idle_period(self) -> bool:
+        """True when only the period is due and no worker is live: wait another period.
+
+        Nothing to refresh then. Checking again each period (instead of
+        sleeping forever) picks up a worker that revives without a new nodename.
+        """
+        periodic, at = self._periodic, self._periodic_at
+        now = self._clock()
+        if periodic is None or at is None or at > now:
+            return False
+        pending = self._earliest_due()
+        if pending is not None and pending <= now:
+            return False
+        if periodic.has_live_worker():
+            return False
+        self._periodic_at = now + periodic.period_s
+        return True
 
     def _earliest_due(self) -> float | None:
         """The soonest owed time of any pending nodename, if there is one."""
