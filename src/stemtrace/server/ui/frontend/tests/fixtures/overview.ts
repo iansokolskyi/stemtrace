@@ -126,6 +126,20 @@ export function spikeTasks(scenario: OverviewScenario): {
   return { tasks: [root, failed, quiet], failedId: failed.task_id, rootId: root.task_id }
 }
 
+/**
+ * A failed run stamped `minutes` after the end of the scenario's last bucket (a worker clock
+ * ahead). The server counts it in the last bucket, which has no upper edge.
+ */
+export function lateTask(scenario: OverviewScenario, minutes = 3): MockTask {
+  const end = scenario.start + scenario.buckets.length * FIVE_MINUTES
+  const late = createFailedTask('tests.flow.step_2', 'ValueError: late', 'Traceback: ...')
+  late.last_updated = iso(end + minutes * 60_000)
+  late.first_seen = iso(end - 60_000)
+  late.hostname = 'worker-1'
+  late.task_group = 'tests.flow'
+  return late
+}
+
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 
@@ -152,8 +166,27 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
 
   await page.route(/\/api\/stats\/timeseries(\?|$)/, (route) => {
     const url = new URL(route.request().url())
-    if (url.searchParams.has('group_by')) return route.fallback()
     requests.push(url)
+    if (url.searchParams.has('group_by')) {
+      // Each group's share of the buckets, so the health table's Trend column has a series
+      const groups = [...new Set(scenario.tasks.map((t) => t.group))]
+      const share = (n: number, i: number) => Math.round(n / (i + 2))
+      return json(route, {
+        window,
+        bucket_seconds: 300,
+        starts: scenario.buckets.map((_, i) => iso(scenario.start + i * FIVE_MINUTES)),
+        counts: {},
+        by_task_group: Object.fromEntries(
+          groups.map((name, i) => [
+            name,
+            {
+              SUCCESS: column((b) => share(b.success, i)),
+              FAILURE: column((b) => share(b.failure, i)),
+            },
+          ]),
+        ),
+      })
+    }
     return json(route, {
       window,
       bucket_seconds: 300,

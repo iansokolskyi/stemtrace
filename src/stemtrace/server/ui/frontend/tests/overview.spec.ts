@@ -5,8 +5,10 @@ import { formatPanel, type PanelEntry, parsePanel } from '../src/components/tria
 import { encodeScope } from '../src/components/triage/runsScope'
 import { flowNode } from './fixtures/flow'
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
+import { createAnomaly, createFailedTask } from './fixtures/mock-data'
 import {
   bucketStart,
+  lateTask,
   mockOverview,
   type OverviewScenario,
   spikeScenario,
@@ -29,7 +31,14 @@ interface Opened {
   rootId: string
 }
 
-async function openOverview(page: Page, path = '/'): Promise<Opened> {
+type Setup = Opened
+
+/** `setup` shapes the scenario and the mock API before the page loads. */
+async function openOverview(
+  page: Page,
+  path = '/',
+  setup?: (opened: Setup) => void,
+): Promise<Opened> {
   const api = await setupMockApi(page)
   api.clearTasks()
   const scenario = spikeScenario()
@@ -43,6 +52,7 @@ async function openOverview(page: Page, path = '/'): Promise<Opened> {
     registered_at: new Date(Date.now() - 3_600_000).toISOString(),
     last_seen: new Date(Date.now() - 60_000).toISOString(),
   })
+  setup?.({ api, scenario, failedId, rootId })
   await mockOverview(page, scenario)
   await page.goto(path)
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
@@ -116,7 +126,9 @@ test.describe('Overview', () => {
     scenario.buckets = scenario.buckets.map(() => ({ success: 10, failure: 0, retry: 0 }))
     await mockOverview(page, scenario)
     await page.goto('/')
-    await expect(page.getByText('All clear: no failures in the last 6h.')).toBeVisible()
+    await expect(
+      page.getByText('All clear: no failures or anomalies in the last 6h.'),
+    ).toBeVisible()
   })
 
   test('the range asks the endpoints for its window; All sends no window to the stats', async ({
@@ -533,16 +545,311 @@ test.describe('Overview acceptance', () => {
   })
 })
 
-test.describe('Overview slots', () => {
+test.describe('Open-ended last bucket', () => {
   test.skip(isRealMode, 'Mock-only test')
 
-  test('nothing about anomalies is drawn until the anomaly work fills its slots', async ({
+  /** A failed run stamped after the last bar's end, which the server counts in that bar. */
+  const late = ({ api, scenario }: Setup) => {
+    scenario.buckets[11] = { success: 0, failure: 1, retry: 0 }
+    api.addTask(lateTask(scenario))
+  }
+  const taskLists = (page: Page): string[] => {
+    const urls: string[] = []
+    page.on('request', (r) => {
+      if (/\/api\/tasks\?/.test(r.url())) urls.push(r.url())
+    })
+    return urls
+  }
+
+  test('the last bar lists a run stamped after its end, and asks for no upper bound', async ({
+    page,
+  }) => {
+    await openOverview(page, '/', late)
+    const urls = taskLists(page)
+    await clickBar(page, 11)
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    expect(
+      urls.filter((u) => u.includes('from_date')).every((u) => !u.includes('updated_before')),
+    ).toBe(true)
+  })
+
+  test('another bar still ends at its own edge', async ({ page }) => {
+    await openOverview(page, '/', late)
+    const urls = taskLists(page)
+    await clickBar(page, 8)
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(2)
+    expect(urls.some((u) => u.includes('updated_before'))).toBe(true)
+  })
+
+  test('a brush ending on the last bar has no upper bound either', async ({ page }) => {
+    await openOverview(page, '/', late)
+    const urls = taskLists(page)
+    const from = await barPoint(page, 10)
+    const to = await barPoint(page, 11)
+    await page.mouse.move(from.x, from.y)
+    await page.mouse.down()
+    await page.mouse.move(to.x, to.y, { steps: 3 })
+    await page.mouse.up()
+    await page.getByRole('button', { name: 'Open runs' }).click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    expect(
+      urls.filter((u) => u.includes('from_date')).every((u) => !u.includes('updated_before')),
+    ).toBe(true)
+  })
+
+  test('a brush that stops before the last bar keeps its upper bound', async ({ page }) => {
+    await openOverview(page, '/', late)
+    const urls = taskLists(page)
+    const from = await barPoint(page, 7)
+    const to = await barPoint(page, 9)
+    await page.mouse.move(from.x, from.y)
+    await page.mouse.down()
+    await page.mouse.move(to.x, to.y, { steps: 3 })
+    await page.mouse.up()
+    await page.getByRole('button', { name: 'Open runs' }).click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(2)
+    expect(urls.some((u) => u.includes('updated_before'))).toBe(true)
+  })
+})
+
+test.describe('Per-entry panel state', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const chip = (page: Page, name: string) =>
+    panelOf(page)
+      .getByRole('group', { name: 'Filter by state' })
+      .getByRole('button', { name, exact: true })
+
+  test('a state chip belongs to its entry: the next bar opens unfiltered', async ({ page }) => {
+    await openOverview(page)
+    await clickBar(page, 8)
+    await chip(page, 'Failure').click()
+    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+
+    await clickBar(page, 3)
+    await expect(chip(page, 'All')).toHaveAttribute('aria-pressed', 'true')
+    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  for (const way of ['Esc', 'browser Back'] as const) {
+    test(`the chip is still on after opening a run and going back (${way})`, async ({ page }) => {
+      await openOverview(page)
+      await clickBar(page, 8)
+      await chip(page, 'Failure').click()
+      await panelOf(page).getByTestId('panel-run').getByRole('button').click()
+      await expect(panelOf(page).getByRole('link', { name: 'Open task page' })).toBeVisible()
+
+      if (way === 'Esc') await page.keyboard.press('Escape')
+      else await page.goBack()
+      await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+      await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    })
+  }
+
+  test('Show more keeps its count when you come back from a run', async ({ page }) => {
+    await openOverview(page, '/', ({ api, scenario }) => {
+      for (let i = 0; i < 45; i++) {
+        const task = createFailedTask('tests.flow.step_2', 'ValueError: x', 'Traceback')
+        task.last_updated = new Date(bucketStart(scenario, 8) + 60_000 + i * 1000).toISOString()
+        api.addTask(task)
+      }
+    })
+    await clickBar(page, 8)
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(40)
+    await panelOf(page)
+      .getByRole('button', { name: /Show \d+ more/ })
+      .click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(47)
+    await panelOf(page).getByTestId('panel-run').first().getByRole('button').click()
+    await page.keyboard.press('Escape')
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(47)
+  })
+})
+
+test.describe('Overview anomalies', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const withAnomalies = ({ api, failedId }: Setup) =>
+    api.setAnomalies([
+      createAnomaly('stuck', {
+        task_id: failedId,
+        name: 'tests.flow.step_2',
+        hostname: 'worker-1',
+        elapsed_ms: 41 * 60_000,
+        threshold_ms: 22 * 60_000,
+      }),
+      createAnomaly('unregistered', { name: 'billing.tasks.sync_invoices', task_count: 6 }),
+      createAnomaly('no_workers_online', { task_count: 4 }),
+    ])
+
+  test('the tile counts the items by kind', async ({ page }) => {
+    await openOverview(page, '/', withAnomalies)
+    const tile = page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ })
+    await expect(tile).toContainText('3')
+    await expect(tile).toContainText('1 stuck, 1 unregistered, 1 no workers online')
+  })
+
+  test('the Overview reads the anomalies without asking the workers', async ({ page }) => {
+    const urls: string[] = []
+    page.on('request', (r) => {
+      if (/\/api\/anomalies/.test(r.url())) urls.push(r.url())
+    })
+    await openOverview(page, '/', withAnomalies)
+    await expect(page.getByTestId('overview-anomaly')).toHaveCount(3)
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.every((u) => u.includes('refresh=false'))).toBe(true)
+  })
+
+  test('What is wrong lists the fleet item first, then the items, and counts them', async ({
+    page,
+  }) => {
+    await openOverview(page, '/', withAnomalies)
+    const rows = page.getByTestId('overview-anomaly')
+    await expect(rows.nth(0)).toHaveAttribute('data-kind', 'no_workers_online')
+    await expect(rows.nth(1)).toHaveAttribute('data-kind', 'stuck')
+    await expect(rows.nth(2)).toHaveAttribute('data-kind', 'unregistered')
+    await expect(page.getByText('3 anomalies now.')).toBeVisible()
+  })
+
+  test('a stuck item opens its explanation and its task, and links onward', async ({ page }) => {
+    const { failedId } = await openOverview(page, '/', withAnomalies)
+    await page
+      .getByTestId('overview-anomaly')
+      .filter({ hasText: 'step_2' })
+      .getByRole('button')
+      .click()
+    const panel = panelOf(page)
+    await expect(panel.getByRole('heading', { level: 2 })).toHaveText('Stuck step_2')
+    await expect(panel.getByTestId('panel-anomaly')).toContainText(
+      'Stuck: running far longer than usual',
+    )
+    await expect(panel.getByTestId('panel-anomaly')).toContainText('41m')
+    await expect(panel.getByRole('link', { name: 'Open task page' })).toHaveAttribute(
+      'href',
+      new RegExp(failedId),
+    )
+    expect(parsePanel(panelValue(page) ?? undefined)).toEqual([
+      { kind: 'anomaly', id: `stuck:${failedId}` },
+    ])
+  })
+
+  test('an unregistered item opens with its name and the runs of that name', async ({ page }) => {
+    await openOverview(page, '/', withAnomalies)
+    await page
+      .getByTestId('overview-anomaly')
+      .filter({ hasText: 'sync_invoices' })
+      .getByRole('button')
+      .click()
+    await expect(panelOf(page).getByTestId('panel-anomaly')).toContainText('6 tasks PENDING')
+    await expect(panelOf(page).getByRole('heading', { name: 'Runs' })).toBeVisible()
+  })
+
+  test('the fleet item opens as an anomaly with no task below it', async ({ page }) => {
+    await openOverview(page, '/', withAnomalies)
+    await page.getByTestId('overview-anomaly').first().getByRole('button').click()
+    await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('No workers online')
+    await expect(panelOf(page).getByTestId('panel-anomaly')).toHaveAttribute(
+      'data-kind',
+      'no_workers_online',
+    )
+    expect(parsePanel(panelValue(page) ?? undefined)).toEqual([
+      { kind: 'anomaly', id: 'no_workers_online' },
+    ])
+  })
+
+  test('the tile opens the list of every item, and a row opens one on top of it', async ({
+    page,
+  }) => {
+    await openOverview(page, '/', withAnomalies)
+    await page
+      .getByTestId('kpi-tiles')
+      .getByRole('button', { name: /Anomalies/ })
+      .click()
+    await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('Anomalies')
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
+    await panelOf(page)
+      .getByRole('listitem')
+      .filter({ hasText: 'sync_invoices' })
+      .getByRole('button')
+      .click()
+    await expect(page.getByRole('navigation', { name: 'Triage path' })).toContainText('Anomalies')
+    await page.keyboard.press('Escape')
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
+  })
+
+  test('a link to an item that has cleared says so', async ({ page }) => {
+    await openOverview(page, '/?panel=anomaly%3Astuck%253Agone')
+    await expect(panelOf(page)).toContainText('This anomaly has cleared.')
+  })
+
+  test('with failures but no anomalies the tile says None and no anomalies block is drawn', async ({
     page,
   }) => {
     await openOverview(page)
     await expect(
       page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ }),
-    ).toHaveCount(0)
-    await expect(page.getByRole('heading', { name: 'Anomalies' })).toHaveCount(0)
+    ).toContainText('None')
+    await expect(page.getByTestId('overview-anomalies')).toHaveCount(0)
+    await expect(page.getByText('All clear')).toHaveCount(0)
+  })
+
+  test('with no failures and no anomalies it says all clear for both', async ({ page }) => {
+    await openOverview(page, '/', ({ scenario }) => {
+      scenario.failures = []
+    })
+    await expect(
+      page.getByText('All clear: no failures or anomalies in the last 6h.'),
+    ).toBeVisible()
+  })
+
+  test('with failures cleared but an anomaly present it does not say all clear', async ({
+    page,
+  }) => {
+    await openOverview(page, '/', (setup) => {
+      setup.scenario.failures = []
+      withAnomalies(setup)
+    })
+    await expect(page.getByText('No failures in the last 6h.')).toBeVisible()
+    await expect(page.getByText('All clear')).toHaveCount(0)
+    await expect(page.getByTestId('overview-anomaly')).toHaveCount(3)
+  })
+
+  test('when the server has no anomalies endpoint the tile says so and nothing claims all clear', async ({
+    page,
+  }) => {
+    await openOverview(page, '/', ({ api, scenario }) => {
+      api.setAnomalies(null)
+      scenario.failures = []
+    })
+    await expect(
+      page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ }),
+    ).toContainText('Unavailable')
+    await expect(page.getByText('All clear')).toHaveCount(0)
+    await expect(page.getByText('No failures in the last 6h.')).toBeVisible()
+  })
+
+  test('the five tiles keep their place when the anomalies arrive late', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await openOverview(page, '/', (setup) => {
+      setup.api.setAnomalyDelay(1500)
+      withAnomalies(setup)
+    })
+    const tiles = page.getByTestId('kpi-tiles').locator('> *')
+    await expect(tiles).toHaveCount(5)
+    const before = await tiles.nth(0).boundingBox()
+    await expect(
+      page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ }),
+    ).toContainText('3')
+    expect(await tiles.nth(0).boundingBox()).toEqual(before)
+  })
+})
+
+test.describe('Health table trend', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  test('a group with a series draws its trend', async ({ page }) => {
+    await openOverview(page)
+    await expect(page.getByTestId('health-group').first().locator('svg[width="84"]')).toHaveCount(1)
   })
 })

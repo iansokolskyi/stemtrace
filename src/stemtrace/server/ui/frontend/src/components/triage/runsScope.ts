@@ -10,6 +10,11 @@ export interface RunsScope {
   /** Start (inclusive) and end (exclusive) of a time span, as ISO times. */
   from?: string
   to?: string
+  /**
+   * Set (`1`) when the span ends on the chart's last bucket. The server's last bucket takes every
+   * run stamped after its end too (a worker clock ahead), so its list has no upper bound.
+   */
+  open?: string
   /** The Overview's window (`6h`) when the scope is the whole window; none for All. */
   within?: string
   /** A state or a comma-separated list. */
@@ -19,7 +24,7 @@ export interface RunsScope {
   label?: string
 }
 
-const KEYS = ['kind', 'from', 'to', 'within', 'state', 'name', 'label'] as const
+const KEYS = ['kind', 'from', 'to', 'open', 'within', 'state', 'name', 'label'] as const
 
 /** The entry id for a scope: query-string text with the keys in a fixed order. */
 export function encodeScope(scope: RunsScope): string {
@@ -48,7 +53,7 @@ export function decodeScope(id: string): RunsScope | undefined {
 export function scopeFilters(scope: RunsScope): FetchExecutionsParams {
   return {
     from_date: scope.from,
-    updated_before: scope.to,
+    updated_before: scope.open ? undefined : scope.to,
     within: scope.within,
     state: scope.state,
     name_exact: scope.name,

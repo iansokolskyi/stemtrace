@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
-import { type ReactElement, useState } from 'react'
+import type { ReactElement } from 'react'
 import { formatCount, formatPercent } from '@/utils/format'
+import { useEntryState } from './PanelContext'
 import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
 import { RunRows } from './RunRows'
 import { decodeScope, scopeFilters } from './runsScope'
@@ -18,7 +19,7 @@ interface RunsBodyProps {
  */
 export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
   const scope = decodeScope(id)
-  const [chosen, setChosen] = useState<string[]>([])
+  const [chosen, setChosen] = useEntryState<string[]>('states', [])
   if (!scope)
     return <p className="m-0 pt-4 text-xs text-muted">This link does not name any runs.</p>
 

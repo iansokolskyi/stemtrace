@@ -2,14 +2,16 @@ import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTask } from '@/api/queries'
+import { KIND_WORD } from '@/components/anomalies/anomalies'
 import { Icon } from '@/components/Icon'
 import { useMediaQuery } from '@/hooks/useMediaQuery'
 import { shortHost } from '@/utils/format'
-import { AnomalyBody } from './AnomalyBody'
+import { AnomalyBody, findAnomaly } from './AnomalyBody'
+import { ALL_ANOMALIES_ID } from './anomalyId'
 import { ExceptionBody } from './ExceptionBody'
 import { exceptionOfId } from './exceptionId'
 import { GroupBody } from './GroupBody'
-import { openerKey, usePanel } from './PanelContext'
+import { EntryScope, openerKey, usePanel } from './PanelContext'
 import type { PanelData } from './PanelParts'
 import type { PanelEntry } from './panelState'
 import { RunsBody } from './RunsBody'
@@ -18,7 +20,7 @@ import { TaskBody } from './TaskBody'
 import { WorkerBody } from './WorkerBody'
 
 /** The entry's title (its heading and its crumb) and the muted line under the heading. */
-function useEntryText(entry: PanelEntry): { title: string; sub?: string } {
+function useEntryText(entry: PanelEntry, panelData: PanelData): { title: string; sub?: string } {
   // The task page's own query, so a task row costs no request of its own
   const { data } = useTask(entry.kind === 'task' ? entry.id : '')
   switch (entry.kind) {
@@ -41,8 +43,16 @@ function useEntryText(entry: PanelEntry): { title: string; sub?: string } {
       const name = data?.task.name.split('.').pop()
       return { title: `${name ?? 'Task'} ${entry.id.slice(0, 8)}`, sub: data?.task.name }
     }
-    case 'anomaly':
-      return { title: 'Anomaly' }
+    case 'anomaly': {
+      if (entry.id === ALL_ANOMALIES_ID) return { title: 'Anomalies' }
+      const anomaly = findAnomaly(panelData, entry.id)
+      if (!anomaly) return { title: 'Anomaly' }
+      const name = anomaly.name?.split('.').pop()
+      return {
+        title: name ? `${KIND_WORD[anomaly.kind]} ${name}` : KIND_WORD[anomaly.kind],
+        sub: anomaly.name ?? undefined,
+      }
+    }
   }
 }
 
@@ -59,20 +69,22 @@ function Body({ entry, data }: { entry: PanelEntry; data: PanelData }): ReactEle
     case 'task':
       return <TaskBody id={entry.id} />
     case 'anomaly':
-      return <AnomalyBody id={entry.id} />
+      return <AnomalyBody id={entry.id} data={data} />
   }
 }
 
 function Crumb({
   entry,
+  data,
   current,
   onClick,
 }: {
   entry: PanelEntry
+  data: PanelData
   current: boolean
   onClick: () => void
 }): ReactElement {
-  const { title } = useEntryText(entry)
+  const { title } = useEntryText(entry, data)
   return current ? (
     <span
       aria-current="page"
@@ -115,8 +127,8 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
   const { stack } = panel
   const top = stack[stack.length - 1]
   const prev = stack[stack.length - 2]
-  const topText = useEntryText(top ?? { kind: 'runs', id: '' })
-  const prevText = useEntryText(prev ?? { kind: 'runs', id: '' })
+  const topText = useEntryText(top ?? { kind: 'runs', id: '' }, data)
+  const prevText = useEntryText(prev ?? { kind: 'runs', id: '' }, data)
   const open = stack.length > 0
   const topKey = top ? openerKey(top) : undefined
 
@@ -156,10 +168,8 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
   useEffect(() => {
     if (!open) return
     const page = document.querySelector<HTMLElement>('[data-frame-page]')
-    document.documentElement.dataset.tri = '1'
     if (isSheet) page?.setAttribute('inert', '')
     return () => {
-      delete document.documentElement.dataset.tri
       page?.removeAttribute('inert')
     }
   }, [open, isSheet])
@@ -204,6 +214,7 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
                 >
                   <Crumb
                     entry={entry}
+                    data={data}
                     current={i === stack.length - 1}
                     onClick={() => panel.popTo(i + 1)}
                   />
@@ -243,7 +254,9 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
         {topText.sub && (
           <div className="text-xs text-muted [overflow-wrap:anywhere]">{topText.sub}</div>
         )}
-        <Body entry={top} data={data} />
+        <EntryScope.Provider value={`${stack.length - 1}|${openerKey(top)}`}>
+          <Body key={`${stack.length - 1}|${openerKey(top)}`} entry={top} data={data} />
+        </EntryScope.Provider>
       </div>
     </aside>,
     document.body,

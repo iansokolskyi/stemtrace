@@ -11,6 +11,7 @@ import {
   useWindowTaskStats,
   useWorkersStrip,
 } from '@/api/overviewQueries'
+import { useOverviewAnomalies } from '@/components/overview/anomalyData'
 import { HealthTable } from '@/components/overview/HealthTable'
 import { KpiTiles } from '@/components/overview/KpiTiles'
 import { bucketsOf } from '@/components/overview/model'
@@ -53,6 +54,7 @@ function OverviewPage() {
   const stats = useWindowTaskStats(within)
   const groupSeries = useGroupSeries(within, !isAll)
   const workers = useWorkersStrip()
+  const { data: anomalies, failed: anomaliesFailed } = useOverviewAnomalies()
 
   const buckets = useMemo(() => (series.data ? bucketsOf(series.data) : []), [series.data])
   const hosts = useMemo(
@@ -67,6 +69,7 @@ function OverviewPage() {
     failures: failures.data,
     stats: stats.data,
     hosts,
+    anomalies,
     range: effective,
     within,
   }
@@ -82,14 +85,25 @@ function OverviewPage() {
             {isAll ? 'All runs held' : `${windowWords.replace('the last', 'Last')},${ending}`}
           </p>
         </div>
-        <KpiTiles overview={overview.data} buckets={buckets} hosts={hosts} within={within} />
+        <KpiTiles
+          overview={overview.data}
+          buckets={buckets}
+          hosts={hosts}
+          within={within}
+          anomalies={anomalies}
+          anomaliesFailed={anomaliesFailed}
+        />
         <RunsChart
           buckets={buckets}
           bucketSeconds={series.data?.bucket_seconds}
           brush={brush}
           onBrush={setBrush}
         />
-        <WhatsWrong groups={failures.data?.groups} windowWords={windowWords} />
+        <WhatsWrong
+          groups={failures.data?.groups}
+          windowWords={windowWords}
+          anomalies={anomalies}
+        />
         <WorkerStrip hosts={hosts} />
         <HealthTable
           stats={stats.data}

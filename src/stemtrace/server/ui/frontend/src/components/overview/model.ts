@@ -70,3 +70,9 @@ export function baselineNote(grade: Grade, value: number, baseline: number): str
 /** Runs per minute, `2.4`; `0` stays `0`. */
 export const formatRate = (perMinute: number): string =>
   perMinute === 0 ? '0' : perMinute < 10 ? perMinute.toFixed(1) : String(Math.round(perMinute))
+
+/** Whether a span ending at `to` ends on the last bucket, which the server leaves open-ended (`stats.py` `count_runs`). */
+export const endsOpen = (buckets: Bucket[], to: string): boolean => {
+  const last = buckets[buckets.length - 1]
+  return last !== undefined && to >= last.end
+}

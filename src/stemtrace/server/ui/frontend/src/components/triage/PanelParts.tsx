@@ -1,6 +1,7 @@
 import { clsx } from 'clsx'
 import type { ReactElement, ReactNode } from 'react'
 import type { FailureListResponse, TaskStatsResponse } from '@/api/client'
+import type { OverviewAnomalies } from '@/components/overview/anomalyData'
 import type { Bucket } from '@/components/overview/model'
 import type { Host } from '@/components/workers/workers'
 import type { Range } from '@/routes/-search'
@@ -11,6 +12,8 @@ export interface PanelData {
   failures: FailureListResponse | undefined
   stats: TaskStatsResponse | undefined
   hosts: Host[] | undefined
+  /** Undefined while loading and when the server has no anomalies endpoint. */
+  anomalies: OverviewAnomalies | undefined
   range: Range
   /** The window the Overview's numbers cover (`6h`); none for All. */
   within: string | undefined

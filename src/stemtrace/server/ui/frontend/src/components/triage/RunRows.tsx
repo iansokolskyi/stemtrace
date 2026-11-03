@@ -1,10 +1,10 @@
-import { type ReactElement, useState } from 'react'
+import type { ReactElement } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { usePanelRuns } from '@/api/overviewQueries'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { formatAgo, formatCount, formatSpan, shortHost } from '@/utils/format'
-import { usePanel } from './PanelContext'
+import { useEntryState, usePanel } from './PanelContext'
 
 /** Rows added by each "Show more". */
 const PAGE = 40
@@ -62,7 +62,7 @@ interface RunRowsProps {
  * the panel.
  */
 export function RunRows({ filters, initial = PAGE }: RunRowsProps): ReactElement {
-  const [limit, setLimit] = useState(initial)
+  const [limit, setLimit] = useEntryState('limit', initial)
   const { data, isError } = usePanelRuns(filters, limit)
   if (isError) return <p className="m-0 py-3 text-xs text-failure-t">Failed to load runs</p>
   if (!data) return <div className="h-24" aria-hidden="true" />

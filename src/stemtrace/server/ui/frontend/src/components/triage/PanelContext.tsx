@@ -1,5 +1,12 @@
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { createContext, type ReactElement, type ReactNode, useContext, useMemo } from 'react'
+import {
+  createContext,
+  type ReactElement,
+  type ReactNode,
+  useContext,
+  useMemo,
+  useState,
+} from 'react'
 import { formatPanel, type PanelEntry, parsePanel } from './panelState'
 
 /** The triage panel's stack and the moves on it. Every move is a history entry, so Back undoes it. */
@@ -37,6 +44,29 @@ export function openerProps(
   }
 }
 
+// What each stack entry remembers (the state chips, "Show more"), by entry position and key. It
+// outlives the entry's component, so a pop (Esc, Back) and a return from a task's page restore
+// it; opening from the page starts a new stack and forgets it.
+const entryStore = new Map<string, unknown>()
+
+/** Names the stack entry the component below is rendered for (`index|key`). */
+export const EntryScope = createContext('')
+
+/** State kept per stack entry: like `useState`, but it survives the entry being popped and shown again. */
+export function useEntryState<T>(slot: string, initial: T): [T, (value: T) => void] {
+  const key = `${useContext(EntryScope)}|${slot}`
+  const [value, setValue] = useState<T>(() =>
+    entryStore.has(key) ? (entryStore.get(key) as T) : initial,
+  )
+  return [
+    value,
+    (next) => {
+      entryStore.set(key, next)
+      setValue(next)
+    },
+  ]
+}
+
 const PanelContext = createContext<PanelApi | null>(null)
 
 /** Provides the panel's state, read from and written to the Overview's `panel` search param. */
@@ -51,7 +81,10 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
     return {
       stack,
       activeKey: stack[0] && openerKey(stack[0]),
-      open: (entry) => go([entry]),
+      open: (entry) => {
+        entryStore.clear()
+        go([entry])
+      },
       push: (entry) => {
         const top = stack[stack.length - 1]
         if (top && openerKey(top) === openerKey(entry)) return

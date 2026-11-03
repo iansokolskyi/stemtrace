@@ -1,82 +1,19 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
-import type { CSSProperties, ReactElement, ReactNode } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import type { OverviewResponse } from '@/api/client'
-import { Icon, type IconName } from '@/components/Icon'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
 import { encodeScope, type RunsScope } from '@/components/triage/runsScope'
 import type { Host } from '@/components/workers/workers'
 import { formatCount, formatPercent, formatSpan, shortHost } from '@/utils/format'
+import { AnomaliesTile } from './AnomaliesTile'
+import type { OverviewAnomalies } from './anomalyData'
 import { type Bucket, baselineNote, formatRate, type Grade, gradeOf } from './model'
 import { Sparkline } from './Sparkline'
-import { AnomaliesTileSlot } from './slots'
+import { TILE, TileFace } from './TileFace'
 
-/** How many tiles the row holds: 5 once the Anomalies tile fills its slot. */
-export const TILE_COUNT: number = 4
-
-const TILE =
-  'flex min-w-0 flex-col gap-[3px] rounded-lg bg-surface px-3.5 pt-3.5 pb-2.5 text-left text-ink hover:bg-[color-mix(in_srgb,var(--ink)_6%,var(--surface))] data-[on]:outline-2 data-[on]:-outline-offset-2 data-[on]:outline-ink'
-
-const VALUE_TONE: Record<Grade, string> = { ok: '', warn: 'text-retry-t', bad: 'text-failure-t' }
-const NOTE_BLOCK: Record<Exclude<Grade, 'ok'>, string> = {
-  warn: 'retry-hatch text-on-retry',
-  bad: 'bg-failure text-on-failure',
-}
-
-interface TileFaceProps {
-  label: string
-  value: ReactNode
-  grade: Grade
-  note: string
-  noteIcon: IconName
-  sub: string
-  spark?: ReactNode
-}
-
-/** What every tile shows: label, value, the note (loud only when off baseline), the earlier value, a graphic. */
-export function TileFace({
-  label,
-  value,
-  grade,
-  note,
-  noteIcon,
-  sub,
-  spark,
-}: TileFaceProps): ReactElement {
-  return (
-    <>
-      <span className="block text-xs font-semibold text-muted">{label}</span>
-      <span
-        className={clsx(
-          'block text-[26px] leading-[1.15] font-extrabold tracking-[-0.02em]',
-          VALUE_TONE[grade],
-        )}
-      >
-        {value}
-      </span>
-      <span
-        className={clsx(
-          'flex min-h-4 items-center gap-1.5 text-xs',
-          grade === 'ok' ? 'text-muted' : 'font-bold text-ink',
-        )}
-      >
-        {grade !== 'ok' && (
-          <span
-            className={clsx(
-              'inline-flex size-4 flex-none items-center justify-center rounded-[3px]',
-              NOTE_BLOCK[grade],
-            )}
-          >
-            <Icon name={noteIcon} size={12} className="[stroke-width:2.5]" />
-          </span>
-        )}
-        {note}
-      </span>
-      <span className="flex min-h-4 items-center text-xs text-muted">{sub}</span>
-      <span className="mt-1.5 block h-[26px]">{spark}</span>
-    </>
-  )
-}
+/** How many tiles the row holds; the grid is laid out for it before any data arrives. */
+const TILE_COUNT = 5
 
 interface KpiTilesProps {
   overview: OverviewResponse | undefined
@@ -84,6 +21,8 @@ interface KpiTilesProps {
   hosts: Host[] | undefined
   /** The Overview's window (`6h`); none for All. */
   within: string | undefined
+  anomalies: OverviewAnomalies | undefined
+  anomaliesFailed: boolean
 }
 
 /**
@@ -91,12 +30,19 @@ interface KpiTilesProps {
  * it, and a sparkline of the same series the chart draws. A run tile opens its runs in the
  * triage panel. Fixed height, so a tile never moves when its numbers arrive.
  */
-export function KpiTiles({ overview, buckets, hosts, within }: KpiTilesProps): ReactElement {
+export function KpiTiles({
+  overview,
+  buckets,
+  hosts,
+  within,
+  anomalies,
+  anomaliesFailed,
+}: KpiTilesProps): ReactElement {
   const panel = usePanel()
   const compare = within !== undefined
   const style = {
     '--tiles': TILE_COUNT,
-    '--tiles-md': TILE_COUNT === 5 ? 3 : TILE_COUNT,
+    '--tiles-md': 3,
   } as CSSProperties
 
   const runsTile = (() => {
@@ -184,7 +130,7 @@ export function KpiTiles({ overview, buckets, hosts, within }: KpiTilesProps): R
       {failuresTile}
       {rateTile}
       <WorkersTile hosts={hosts} overview={overview} />
-      <AnomaliesTileSlot className={TILE} />
+      <AnomaliesTile anomalies={anomalies} failed={anomaliesFailed} className={TILE} />
     </div>
   )
 }
