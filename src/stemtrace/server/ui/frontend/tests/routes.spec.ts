@@ -74,15 +74,21 @@ for (const base of ['', '/stemtrace']) {
         .toBe(true)
     })
 
-    test('bare / opens Executions', async ({ page }) => {
+    test('bare / opens the Overview', async ({ page }) => {
       await setupMockApi(page)
       await open(page, '/')
-      await expect(page).toHaveURL(`${base}/executions`)
+      await expect(page).toHaveURL(`${base}/`)
+      await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
       await expect(
-        page
-          .getByRole('navigation', { name: 'Sections' })
-          .getByRole('link', { name: /Executions/ }),
+        page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Overview/ }),
       ).toHaveAttribute('aria-current', 'page')
+    })
+
+    test('/ with only a range stays on the Overview', async ({ page }) => {
+      await setupMockApi(page)
+      await open(page, '/?range=1h')
+      await expect(page).toHaveURL(`${base}/?range=1h`)
+      await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     })
 
     test('task pages link back to Executions through the breadcrumb', async ({ page }) => {
