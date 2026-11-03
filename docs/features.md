@@ -64,6 +64,20 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 stemtrace uses **Celery inspect** on demand to populate workers and registered tasks, so those
 pages work even if the server missed `worker_ready` events.
 
+- The server also runs inspect in the background, without a page load: once when it starts
+  (`stemtrace server` and `StemtraceExtension`), and when it learns a worker nodename it didn't
+  have: a `worker_ready` event, the first task event from a nodename that never registered, or an
+  inspect reply that names a new node. It uses the same limits as a page load (at most one inspect
+  every 2 seconds, each call waiting 0.5 s for replies). A trigger that arrives while an inspect
+  runs, or within the 2 seconds, causes one more inspect when the interval ends, so a worker that
+  isn't answering yet when its `worker_ready` arrives is asked again. A storm of new nodenames
+  causes at most one inspect per interval. With a down broker each trigger makes one attempt and
+  doesn't retry; an attempt can take about 18 s (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)),
+  and stopping the server waits up to 2 s for it. It does nothing without a broker URL.
+  Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
+  an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
+  task events arrive but that never registers triggers one inspect, not one per event.
 - A Celery nodename (`name@host`) has at most one live process, so a worker is shown online
   only for its newest pid: when a node restarts, its older pids go offline, including one that
   was killed without a `worker_shutdown` event. A ping reply carries no pid, so it can only

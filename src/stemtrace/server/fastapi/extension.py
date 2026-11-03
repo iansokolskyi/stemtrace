@@ -16,6 +16,7 @@ from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.groups import build_group_config
+from stemtrace.server.inspect_probe import InspectProbe
 from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from stemtrace.server.ui.static import get_static_router
 from stemtrace.server.websocket import WebSocketManager
@@ -157,6 +158,7 @@ class StemtraceExtension:
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()
         self._worker_timeline = WorkerTimeline()
+        self._inspect_probe = InspectProbe()
         self._ws_manager = WebSocketManager()
         self._consumer: AsyncEventConsumer | None = None
 
@@ -242,6 +244,7 @@ class StemtraceExtension:
             auth_throttle=self._auth_throttle,
             worker_timeline=self._worker_timeline,
             anomaly_settings=self._anomaly_settings,
+            inspect_probe=self._inspect_probe,
         )
 
         if self._serve_ui:
@@ -288,10 +291,12 @@ class StemtraceExtension:
             await self._ws_manager.start_broadcast_loop()
             if self._consumer is not None:
                 self._consumer.start()
+            self._inspect_probe.start()
             try:
                 async with original(app) as state:
                     yield state
             finally:
+                self._inspect_probe.stop()
                 if self._consumer is not None:
                     self._consumer.stop()
                 await self._ws_manager.stop_broadcast_loop()

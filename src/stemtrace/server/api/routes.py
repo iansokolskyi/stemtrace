@@ -56,6 +56,10 @@ from stemtrace.server.api.schemas import (
 )
 from stemtrace.server.api.summary_routes import add_summary_routes
 from stemtrace.server.groups import GroupsInput, build_group_config, group_lookup
+from stemtrace.server.inspect_probe import (
+    INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
+    InspectProbe,
+)
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
@@ -498,9 +502,7 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
     return stopped_unexpectedly or consumer.is_connected is False
 
 
-# The UI requests workers and the registry in quick succession on page load;
-# one inspect round trip serves both.
-_INSPECT_REFRESH_MIN_INTERVAL_SECONDS = 2.0
+_INSPECT_REFRESH_MIN_INTERVAL_SECONDS = INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 _INSPECT_TIMEOUT_SECONDS = 0.5
 
 
@@ -526,8 +528,35 @@ class _InspectRefresher:
     def _refreshed_recently(self) -> bool:
         return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
+    def _inspect_and_apply(
+        self, worker_registry: WorkerRegistry, broker_url: str
+    ) -> None:
+        """Ask Celery and apply the reply; a failure doesn't count as a refresh."""
+        inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
+        if inspector is None:
+            return
+        with contextlib.suppress(Exception):
+            _refresh_worker_registry_from_inspect(worker_registry, inspector)
+            self._last_refresh = _monotonic()
+
     def refresh_blocking(self) -> bool:
-        """Stub."""
+        """Refresh on the calling thread, ignoring the request rate limit.
+
+        Meant for the inspect probe's own thread. The caller paces it.
+
+        Returns:
+            False if another refresh was in flight (nothing ran), else True.
+        """
+        worker_registry = self._worker_registry
+        broker_url = self._broker_url
+        if worker_registry is None or broker_url is None:
+            return True
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            self._inspect_and_apply(worker_registry, broker_url)
+        finally:
+            self._lock.release()
         return True
 
     async def maybe_refresh(self) -> None:
@@ -544,22 +573,36 @@ class _InspectRefresher:
         try:
             if self._refreshed_recently():
                 return
-            inspector = await run_in_threadpool(
-                _get_inspector,
-                broker_url,
-                timeout_seconds=_INSPECT_TIMEOUT_SECONDS,
+            await run_in_threadpool(
+                self._inspect_and_apply, worker_registry, broker_url
             )
-            if inspector is None:
-                return
-            with contextlib.suppress(Exception):
-                await run_in_threadpool(
-                    _refresh_worker_registry_from_inspect,
-                    worker_registry,
-                    inspector,
-                )
-                self._last_refresh = _monotonic()
         finally:
             self._lock.release()
+
+
+def _wire_inspect_probe(
+    router: APIRouter,
+    probe: InspectProbe | None,
+    refresher: _InspectRefresher,
+    worker_registry: WorkerRegistry | None,
+    broker_url: str | None,
+) -> None:
+    """Point a probe at the refresher and the registry's new-node events.
+
+    Nothing to inspect (no registry or no broker URL) means no probe. A probe
+    the router makes itself has nobody else to start it, so it rides the app's
+    startup and shutdown events (not run when the app has its own ``lifespan``;
+    a worker joining still starts it).
+    """
+    if worker_registry is None or broker_url is None:
+        return
+    own = probe is None
+    probe = probe or InspectProbe()
+    probe.bind(refresher.refresh_blocking)
+    worker_registry.add_new_node_listener(probe.trigger)
+    if own:
+        router.add_event_handler("startup", probe.start)
+        router.add_event_handler("shutdown", probe.stop)
 
 
 def _hostnames_by_registered_task(
@@ -1202,6 +1245,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     groups: GroupsInput = None,
     worker_timeline: WorkerTimeline | None = None,
     anomaly_settings: AnomalySettings = DEFAULT_SETTINGS,
+    inspect_probe: InspectProbe | None = None,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -1220,6 +1264,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
             a running one (see ``StemtraceExtension``); None means no task is
             ever reported interrupted.
         anomaly_settings: Thresholds for stuck tasks; see ``anomaly_settings()``.
+        inspect_probe: Probe that refreshes the registry without a request;
+            ``StemtraceExtension`` passes its own and starts it. None gives the
+            router its own, started by the app's startup event.
 
     Returns:
         Configured API router.
@@ -1231,6 +1278,7 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)
+    _wire_inspect_probe(router, inspect_probe, refresher, worker_registry, broker_url)
     evaluator = AnomalyEvaluator(
         store, worker_timeline, anomaly_settings, worker_registry, broker_url
     )

@@ -323,6 +323,8 @@ def test_stop_while_waiting_for_the_interval_does_not_wait_it_out(
 
 
 def test_stop_timeout_is_below_the_consumers_stop_timeout() -> None:
-    consumer_default = inspect.signature(EventConsumer.stop).parameters["timeout"].default
+    consumer_default = (
+        inspect.signature(EventConsumer.stop).parameters["timeout"].default
+    )
 
-    assert INSPECT_PROBE_STOP_TIMEOUT_SECONDS < consumer_default
+    assert consumer_default > INSPECT_PROBE_STOP_TIMEOUT_SECONDS

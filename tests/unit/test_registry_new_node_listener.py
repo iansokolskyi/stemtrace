@@ -3,6 +3,9 @@
 import threading
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from stemtrace.server import store
 from stemtrace.server.store import WorkerRegistry
 
 NODE_A, NODE_B = "celery@a", "celery@b"
@@ -52,6 +55,31 @@ def test_mark_seen_for_an_unseen_nodename_notifies() -> None:
     registry.mark_seen(NODE_A, T, now=T)
 
     assert calls == [1]
+
+
+def test_mark_seen_for_the_same_unseen_nodename_notifies_only_once() -> None:
+    registry = WorkerRegistry()
+    calls = counting(registry)
+
+    for _ in range(50):
+        registry.mark_seen(NODE_A, T, now=T)
+
+    assert calls == [1]
+
+
+def test_mark_seen_remembers_a_bounded_number_of_unseen_nodenames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(store, "UNREGISTERED_NODES_REMEMBERED", 2)
+    registry = WorkerRegistry()
+    calls = counting(registry)
+
+    for node in (NODE_A, NODE_B, "celery@c"):
+        registry.mark_seen(node, T, now=T)
+    registry.mark_seen(NODE_A, T, now=T)
+
+    # The third node pushed the first out of memory, so it announces again.
+    assert calls == [1, 1, 1, 1]
 
 
 def test_mark_seen_for_a_known_nodename_does_not_notify() -> None:

@@ -211,6 +211,10 @@ WORKER_STALE_TIMEOUT_MINUTES = 3
 WORKER_TIMELINE_EVENTS_PER_NODE = 32
 WORKER_TIMELINE_MAX_NODES = 1024
 
+# Nodenames that sent task events but never registered, remembered so each one
+# announces itself once instead of on every event.
+UNREGISTERED_NODES_REMEMBERED = 1024
+
 
 class WorkerTimelineEntry(NamedTuple):
     """One worker event of a nodename, as the worker's clock stamped it."""
@@ -308,6 +312,8 @@ class WorkerRegistry:
         # ping-only replies; kept apart from the workers, so the cleanup that
         # deletes them leaves it.
         self._authority_at: datetime | None = None
+        self._new_node_listeners: list[Callable[[], None]] = []
+        self._announced_unregistered: dict[str, None] = {}
         self._lock = threading.RLock()
 
     def register_worker(
@@ -339,11 +345,14 @@ class WorkerRegistry:
             return
 
         with self._lock:
+            is_new = hostname not in self._newest_by_node
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
             self._event_generation[hostname] = (
                 self._event_generation.get(hostname, 0) + 1
             )
             self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
+        if is_new:
+            self._notify_new_node()
 
     def _register(
         self,
@@ -383,6 +392,7 @@ class WorkerRegistry:
                     status=WorkerStatus.ONLINE,
                 )
             self._newest_by_node[hostname] = worker_id
+            self._announced_unregistered.pop(hostname, None)
 
     def _retire_other_pids(self, hostname: str, keep: str) -> None:
         """Mark every pid of the node except ``keep`` (a worker_id) offline and not live."""
@@ -448,17 +458,19 @@ class WorkerRegistry:
         with self._lock:
             live_id = self._newest_by_node.get(hostname)
             worker = self._workers.get(live_id) if live_id else None
-            if worker is None:
-                return
-            current = now or datetime.now(timezone.utc)
-            seen_at = min(ensure_tz_aware(timestamp), current)
-            if seen_at > worker.last_seen:
-                worker.last_seen = seen_at
-            recent = seen_at >= current - timedelta(
-                minutes=WORKER_STALE_TIMEOUT_MINUTES
-            )
-            if recent and not worker.shutdown_reported:
-                worker.status = WorkerStatus.ONLINE
+            if worker is not None:
+                current = now or datetime.now(timezone.utc)
+                seen_at = min(ensure_tz_aware(timestamp), current)
+                if seen_at > worker.last_seen:
+                    worker.last_seen = seen_at
+                recent = seen_at >= current - timedelta(
+                    minutes=WORKER_STALE_TIMEOUT_MINUTES
+                )
+                if recent and not worker.shutdown_reported:
+                    worker.status = WorkerStatus.ONLINE
+            announce = worker is None and self._announce_unregistered(hostname)
+        if announce:
+            self._notify_new_node()
 
     def mark_offline(self, hostname: str, pid: int) -> None:
         """Mark a worker offline because it stopped answering, not because it said so.
@@ -510,7 +522,36 @@ class WorkerRegistry:
             live.last_seen = now or datetime.now(timezone.utc)
 
     def add_new_node_listener(self, listener: Callable[[], None]) -> None:
-        """Stub."""
+        """Call ``listener`` whenever the registry learns a nodename it didn't have.
+
+        It runs on the thread that applied the event or reply, after the
+        registry lock is released, so it must return quickly. Adding the same
+        listener again is a no-op.
+        """
+        with self._lock:
+            if listener not in self._new_node_listeners:
+                self._new_node_listeners.append(listener)
+
+    def _announce_unregistered(self, hostname: str) -> bool:
+        """Whether a task event from an unregistered node is the first one seen."""
+        with self._lock:
+            if hostname in self._announced_unregistered:
+                return False
+            self._announced_unregistered[hostname] = None
+            if len(self._announced_unregistered) > UNREGISTERED_NODES_REMEMBERED:
+                del self._announced_unregistered[
+                    next(iter(self._announced_unregistered))
+                ]
+            return True
+
+    def _notify_new_node(self) -> None:
+        """Tell the listeners a new nodename was learned. Call without the lock."""
+        with self._lock:
+            listeners = list(self._new_node_listeners)
+        for listener in listeners:
+            # A listener is a side channel; it must not break event handling.
+            with contextlib.suppress(Exception):
+                listener()
 
     def event_generations(self) -> dict[str, int]:
         """Snapshot, per nodename, how many worker events were applied so far.
@@ -555,6 +596,7 @@ class WorkerRegistry:
             now: When the reply arrived (tests); defaults to now.
         """
         with self._lock:
+            known = set(self._newest_by_node)
             for worker in self._workers.values():
                 if worker.hostname not in replies and not self._is_stale(
                     worker.hostname, seen
@@ -577,6 +619,12 @@ class WorkerRegistry:
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
                 self.mark_node_alive(nodename, pid, now=now)
+            learned = any(
+                nodename in self._newest_by_node and nodename not in known
+                for nodename in replies
+            )
+        if learned:
+            self._notify_new_node()
 
     def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
         """Copy what the anomaly classifier needs from the registry.

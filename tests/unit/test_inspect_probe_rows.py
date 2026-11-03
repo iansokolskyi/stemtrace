@@ -25,6 +25,7 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
+REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE_A, NODE_B, NODE_C = "celery@a", "celery@b", "celery@c"
 BOUND_S = 5.0
@@ -180,9 +181,7 @@ def test_p1_create_router_with_a_consumer_passed_in_probes_when_a_worker_joins(
     consumer = AsyncEventConsumer("memory://", GraphStore(), worker_registry=registry)
     app = FastAPI()
     app.include_router(
-        create_router(
-            consumer=consumer, worker_registry=registry, broker_url=BROKER
-        )
+        create_router(consumer=consumer, worker_registry=registry, broker_url=BROKER)
     )
 
     with TestClient(app):
