@@ -13,7 +13,7 @@ import {
 import { fetchTask } from '@/api/client'
 import { registrySnapshot, useGraphs, workersSnapshot } from '@/api/queries'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
-import { type PaletteItem, paletteItems, TASK_ID_SHAPE } from './paletteItems'
+import { type PaletteItem, type PaletteKind, paletteItems, TASK_ID_SHAPE } from './paletteItems'
 
 /** How long the query rests before a task ID is looked up, so typing sends one request. */
 const LOOKUP_DELAY_MS = 250
@@ -130,16 +130,28 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
     }
   }
 
-  const groups: { heading: string; items: { item: PaletteItem; index: number }[] }[] = []
+  const groups: {
+    kind: PaletteKind
+    heading: string
+    items: { item: PaletteItem; index: number }[]
+  }[] = []
   items.forEach((item, index) => {
     const last = groups[groups.length - 1]
     if (last?.heading === item.group) last.items.push({ item, index })
-    else groups.push({ heading: item.group, items: [{ item, index }] })
+    else groups.push({ kind: item.kind, heading: item.group, items: [{ item, index }] })
   })
 
   const loading = names.isPending || workers.isPending || flows.isPending
+  const failed = [
+    names.isError && 'task names',
+    flows.isError && 'flows',
+    workers.isError && 'workers',
+  ].filter(Boolean)
   let emptyText = ''
-  if (items.length === 0) {
+  if (failed.length > 0) {
+    // Not "No results": the answer may be in a source that did not load
+    emptyText = `Couldn't load ${failed.join(' and ')}`
+  } else if (items.length === 0) {
     if (waitingForId || (loading && !text)) emptyText = 'Searching…'
     else emptyText = text ? `No results for “${text}”` : 'No flows or workers yet'
   }
@@ -194,9 +206,9 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
         >
           {groups.map((group) => (
             // biome-ignore lint/a11y/useSemanticElements: a listbox may only contain group and option, not a fieldset
-            <div key={group.heading} role="group" aria-labelledby={`${id}-${group.heading}`}>
+            <div key={group.kind} role="group" aria-labelledby={`${id}-group-${group.kind}`}>
               <div
-                id={`${id}-${group.heading}`}
+                id={`${id}-group-${group.kind}`}
                 className="px-2.5 pt-2 pb-1 text-xs font-bold text-muted"
               >
                 {group.heading}

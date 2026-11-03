@@ -16,10 +16,13 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const restoreFocus = useRef(false)
 
-  // ⌘K / Ctrl+K opens the search palette from anywhere
+  // ⌘K / Ctrl+K opens the search palette from anywhere. On a layout where the K key types
+  // another script (Ukrainian, Russian), `key` is not ASCII, so the physical key decides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey) && !e.altKey) {
+      const nonAscii = e.key.length === 1 && e.key.charCodeAt(0) > 0x7f
+      const isK = e.key.toLowerCase() === 'k' || (nonAscii && e.code === 'KeyK')
+      if (isK && (e.metaKey || e.ctrlKey) && !e.altKey) {
         e.preventDefault()
         setPaletteOpen(true)
       }
