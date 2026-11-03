@@ -59,7 +59,7 @@ export const ANOMALIES_TIMEOUT_MS = 10_000
 /** The request ran past `ANOMALIES_TIMEOUT_MS`. */
 export class AnomaliesTimeoutError extends Error {
   constructor() {
-    super('Anomalies are taking long to load')
+    super('Anomalies are taking a long time to load')
     this.name = 'AnomaliesTimeoutError'
   }
 }
@@ -124,7 +124,7 @@ export function useAnomalyBadge() {
   })
 }
 
-/** The fleet item alone, for when the capped list does not hold it (it sorts last). */
+/** The fleet item alone, for when the capped list does not hold it. */
 export function useFleetAnomaly(enabled: boolean, { refresh = true }: { refresh?: boolean } = {}) {
   return useQuery<AnomalyListResponse>({
     queryKey: ['anomalies', 'fleet', refresh],

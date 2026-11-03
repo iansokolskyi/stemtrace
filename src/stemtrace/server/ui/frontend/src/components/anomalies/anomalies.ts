@@ -9,12 +9,20 @@ export const KIND_WORD: Record<AnomalyKind, string> = {
   no_workers_online: 'No workers online',
 }
 
-/** The callout heading of each kind, as the prototype words them. */
-export const KIND_HEADING: Record<AnomalyKind, string> = {
+const KIND_HEADING: Record<AnomalyKind, string> = {
   stuck: 'Stuck: running far longer than usual',
   interrupted: 'Interrupted: the worker went away mid-task',
   unregistered: 'Unregistered: no worker knows this task',
   no_workers_online: 'No workers online: nothing can run the waiting tasks',
+}
+
+/**
+ * The callout heading of an anomaly, as the prototype words it. "Longer than usual" needs a
+ * usual: with no p95 (too few runs) the limit is a default, so the heading names the limit.
+ */
+export function kindHeading(anomaly: Anomaly): string {
+  if (anomaly.kind === 'stuck' && anomaly.p95_ms === null) return 'Stuck: running past its limit'
+  return KIND_HEADING[anomaly.kind]
 }
 
 const STOPPED: Record<AnomalyEvidence, string> = {

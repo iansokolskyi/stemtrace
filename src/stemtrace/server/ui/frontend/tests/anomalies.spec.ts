@@ -177,7 +177,7 @@ test.describe('Anomalies page', () => {
     api.setAnomalyDelay(14_000)
     await page.goto('/anomalies')
     await expect(page.getByTestId('anomalies-error')).toHaveText(
-      'Anomalies are taking long to load.',
+      'Anomalies are taking a long time to load.',
       { timeout: 20_000 },
     )
     await expect(page.getByTestId('anomalies-empty')).toHaveCount(0)
@@ -189,7 +189,7 @@ test.describe('Anomalies page', () => {
     const many = Array.from({ length: 501 }, (_, i) =>
       createAnomaly('unregistered', { name: `bulk.tasks.t${i}`, since: minutesAgo(600 - i) }),
     )
-    // The server sorts an item without a task ID or name last, so the fleet item is the cut one
+    // The server sorts by `since`, oldest first; the fleet item is the newest, so it is the cut one
     await open(page, [...many, fleet])
     await expect(page.getByTestId('anomalies-truncated')).toHaveText('Showing 500 of 502')
     await expect(items(page)).toHaveCount(500)

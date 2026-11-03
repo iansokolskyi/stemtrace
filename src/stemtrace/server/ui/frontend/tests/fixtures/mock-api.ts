@@ -461,7 +461,17 @@ export async function setupMockApi(
     // Like the API: filter by kind, then page; `counts` ignores the filter
     const kind = url.searchParams.get('kind')
     const limit = Number(url.searchParams.get('limit') ?? 100)
-    const matching = anomalies.filter((item) => !kind || item.kind === kind)
+    // Sorted like the server: oldest `since` first, then an item with a task ID, then the ID, name
+    const matching = anomalies
+      .filter((item) => !kind || item.kind === kind)
+      .sort(
+        (a, b) =>
+          a.since.localeCompare(b.since) ||
+          Number(a.task_id === null) - Number(b.task_id === null) ||
+          (a.task_id ?? '').localeCompare(b.task_id ?? '') ||
+          Number(a.name === null) - Number(b.name === null) ||
+          (a.name ?? '').localeCompare(b.name ?? ''),
+      )
     await route
       .fulfill({
         status: 200,
