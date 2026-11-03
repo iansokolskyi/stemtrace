@@ -130,7 +130,8 @@ function executionRuns(): MockTask[] {
       hostname: 'celery@worker-billing-2',
       queue: 'payments',
       queue_wait_ms: 90,
-      runtime_ms: 4200,
+      // The API reports no runtime until a run is terminal
+      runtime_ms: null,
     }),
     run(createSuccessTask('search.index.rebuild_product_index_for_catalog_import'), 5, {
       state: 'STARTED',
@@ -474,12 +475,12 @@ for (const theme of ['light', 'dark'] as const) {
 }
 
 // The Flows list: every kind of row (failed chord with a callback that did not run, success,
-// and running), against the fixed clock.
+// running, and a root the server has no summary for), against the fixed clock.
 for (const theme of ['light', 'dark'] as const) {
   test(`flows, ${theme}, 1280px`, async ({ page }) => {
     await page.routeWebSocket(/\/ws$/, () => {})
     const api = await setupMockApi(page, { useDefaults: false })
-    api.addTasks(flowListRoots().slice(0, 3))
+    api.addTasks(flowListRoots())
     await snapshot(page, `flows-${theme}-1280`, { theme, width: 1280, path: '/flows' })
   })
 }
