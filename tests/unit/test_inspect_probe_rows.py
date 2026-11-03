@@ -46,10 +46,14 @@ class FakeClock:
         with self._lock:
             return self._now
 
-    def wait(self, stop: threading.Event, seconds: float) -> bool:
+    def wait(self, event: threading.Event, seconds: float | None) -> bool:
+        if seconds is None:
+            return event.wait(BOUND_S)
+        if event.is_set():
+            return True
         with self._lock:
             self._now += seconds
-        return stop.is_set()
+        return False
 
 
 class FakeInspect:
