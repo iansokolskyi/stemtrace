@@ -516,9 +516,12 @@ class WorkerRegistry:
                 if stop is None or after_stop:
                     self._see_unlisted(hostname, seen_at)
                 return
-            if worker.shutdown_reported and after_stop:
+            if worker.shutdown_reported and (
+                after_stop or stop is None or hostname in self._unlisted
+            ):
                 # A restart whose worker_ready was missed: the nodename runs
-                # tasks again, though its listed pid stays stopped.
+                # tasks again, though its listed pid stays stopped. Once revived
+                # (or once the stop is forgotten) every event refreshes it.
                 self._see_unlisted(hostname, seen_at)
             if seen_at > worker.last_seen:
                 worker.last_seen = seen_at

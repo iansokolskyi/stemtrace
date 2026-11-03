@@ -115,7 +115,7 @@ def refresh(registry: WorkerRegistry, inspect: FakeInspect) -> None:
 def prove_channel(registry: WorkerRegistry, at: datetime = T0) -> None:
     """Let some worker answer an inspect (then stop), so later silence is evidence."""
     registry.apply_stats_reply({}, {PROBE: (9, [])}, now=at)
-    registry.mark_shutdown(PROBE, 9)
+    registry.mark_shutdown(PROBE, 9, now=at)
 
 
 def answer_stats(*nodes: str, pid: int = 1) -> dict[str, object]:
@@ -524,6 +524,38 @@ def test_row28k_a_ping_answer_keeps_the_revived_worker_online_after_it_misses_th
     refresh_at(registry, T0 + MINUTE, FakeInspect(stats=None))  # it misses this one
 
     assert fleet_items(report_at(registry, T0 + MINUTE)) == []
+
+
+@pytest.mark.parametrize("forgotten_by", ["cleanup", "eviction"])
+@pytest.mark.parametrize("minutes", [1, 29, 31, 60])
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
+def test_row28k_a_revived_worker_that_keeps_sending_events_stays_online_after_the_stop_is_forgotten(
+    listed: bool, minutes: int, forgotten_by: str
+) -> None:
+    """Round-2 PoC: the stop is forgotten (cleanup or eviction) while events keep coming."""
+    registry = WorkerRegistry(max_unlisted=2 if forgotten_by == "eviction" else 1024)
+    prove_channel(registry, T0 - MINUTE)
+    stop = T0 + MINUTE
+    if listed:
+        registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    else:
+        registry.mark_seen(SOLO, T0, now=T0)
+    registry.mark_shutdown(SOLO, 1, stop, now=stop)
+    registry.mark_seen(SOLO, stop + MINUTE, now=stop + MINUTE)  # revived
+    for minute in range(2, minutes + 1):
+        at = stop + minute * MINUTE
+        registry.mark_seen(SOLO, at, now=at)
+        if forgotten_by == "cleanup":
+            registry.remove_stale_workers(now=at)
+        elif minute == 2:
+            registry.mark_shutdown(
+                OTHER, 1, at, now=at
+            )  # with PROBE's, evicts SOLO's stop (bound 2)
+            registry.mark_shutdown("celery@c", 1, at, now=at)
+    end = stop + minutes * MINUTE + MINUTE / 2
+    refresh_at(registry, end, FakeInspect(stats=None))  # a busy worker misses it
+
+    assert fleet_items(report_at(registry, end)) == []
 
 
 def test_row28k_a_stop_is_forgotten_by_the_server_clock_not_the_workers() -> None:

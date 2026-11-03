@@ -36,6 +36,7 @@ ROWS = (
     "28i",
     "28j",
     "28k",
+    "28k_long",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -429,7 +430,19 @@ class World:
             rows.append("28i")
         if not got and any(n in live and not live[n].listed for n in self.rev_listed):
             rows.append("28k")
+        if not got and self._busy_revived_for_long(live):
+            rows.append("28k_long")
         return rows
+
+    def _busy_revived_for_long(self, live: dict[str, ONode]) -> bool:
+        """A revived worker still sending events more than 30 minutes after its stop."""
+        now = self.clock.now
+        return any(
+            n in live
+            and now - self.stop_ts[n] > timedelta(minutes=31)
+            and self.last_event.get(n, T0) >= now - STALE
+            for n in self.rev_listed
+        )
 
     def _rows_silent(self, got: bool, live: dict[str, ONode]) -> list[str]:
         """28b (a missed broadcast inside the window), 28c (silent with evidence), 28h."""
