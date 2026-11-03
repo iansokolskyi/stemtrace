@@ -157,6 +157,7 @@ def anomaly_response(anomaly: Anomaly) -> AnomalyResponse:
         p95_ms=anomaly.p95_ms,
         runtime_samples=anomaly.runtime_samples,
         evidence=_EVIDENCE_NAMES[anomaly.evidence] if anomaly.evidence else None,
+        similar_name=anomaly.similar_name,
     )
 
 

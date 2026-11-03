@@ -8,8 +8,10 @@ reference reads raw ``TaskEvent`` lists only (its own state rule, no
 """
 
 import random
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 
 import pytest
 
@@ -32,7 +34,29 @@ SETTINGS: AnomalySettings = replace(
 )
 SEEDS = (1, 2)
 REGISTRIES_PER_PREFIX = 2
-Expected = set[tuple[str, str | None, datetime, int]]
+Expected = set[tuple[str, str | None, datetime, int, str | None]]
+
+
+def reference_hint(name: str, live: frozenset[str]) -> str | None:
+    """The D5 rule written out from the spec, with plain loops over every live name."""
+    if "." not in name:
+        return None
+    module, last = name.rsplit(".", 1)
+    stem = re.sub(r"_v\d+$", "", last)
+    best, winners = -1.0, []
+    for other in sorted(live):
+        if "." not in other or other == name or other.startswith("celery."):
+            continue
+        other_module, other_last = other.rsplit(".", 1)
+        other_stem = re.sub(r"_v\d+$", "", other_last)
+        if other_module != module or not stem or not other_stem:
+            continue
+        score = SequenceMatcher(None, stem, other_stem).ratio()
+        if score > best:
+            best, winners = score, [other]
+        elif score == best:
+            winners.append(other)
+    return winners[0] if best >= 0.75 and len(winners) == 1 else None
 
 
 def reference(
@@ -68,13 +92,28 @@ def reference(
     items: Expected = set()
     for name in {w[1] for w in unknown}:
         group = [w for w in unknown if w[1] == name]
-        items.add(("unregistered", name, min(w[2] for w in group), len(group)))
+        items.add(
+            (
+                "unregistered",
+                name,
+                min(w[2] for w in group),
+                len(group),
+                reference_hint(name, registry.live_names),
+            )
+        )
     return items, {w[0] for w in unknown}
 
 
 def draw_registry(rng: random.Random, names: list[str], now: datetime) -> RegistryFacts:
-    """Registry facts: some of ``names`` online, authority just inside, just outside or never."""
+    """Registry facts: some of ``names`` (and twins of others) online, authority just inside, just outside or never."""
     registered = frozenset(n for n in names if rng.random() < 0.5)
+    # Renamed and near-miss twins of some names, so the D5 hint is reachable.
+    twins = {
+        rng.choice([re.sub(r"_v\d+$", "", n) + "_v2", n + "s", n + "_v2"])
+        for n in names
+        if rng.random() < 0.3
+    }
+    registered |= twins
     authority = rng.choice(
         [
             now - WINDOW,
@@ -118,7 +157,7 @@ def check(cell: Cell, rng: random.Random) -> list[str]:
         )
         kinds = (AnomalyKind.UNREGISTERED, AnomalyKind.NO_WORKERS_ONLINE)
         got: Expected = {
-            (a.kind.value, a.name, a.since, a.task_count)
+            (a.kind.value, a.name, a.since, a.task_count, a.similar_name)
             for a in report.items
             if a.kind in kinds
         }
@@ -166,7 +205,8 @@ def test_the_sample_reaches_every_outcome_of_the_rule() -> None:
             registry = draw_registry(rng, sorted(set(names.values())), now)
             items, _ = reference(task_events, names, registry, now)
             seen.update(kind for kind, *_ in items)
+            seen.update("hinted" if hinted else "unhinted" for *_, hinted in items)
             if not items and any(r.state == TaskState.PENDING for r in records):
                 seen.add("pending-but-quiet")
 
-    assert seen == {"unregistered", "pending-but-quiet"}
+    assert seen == {"unregistered", "pending-but-quiet", "hinted", "unhinted"}

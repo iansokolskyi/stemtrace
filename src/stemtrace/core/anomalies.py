@@ -10,10 +10,12 @@ Internal: not part of stemtrace's public API; names may change without notice.
 
 import bisect
 import itertools
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from enum import Enum
 from typing import Final, NamedTuple, Protocol
 
@@ -70,6 +72,8 @@ MAX_STUCK_THRESHOLD: Final[timedelta] = timedelta(days=3650)
 
 # Celery's built-ins get no p95 (they have no stats row), so they use the ceiling.
 _BUILTIN_PREFIX: Final[str] = "celery."
+SIMILAR_NAME_MIN_SCORE: Final[float] = 0.75
+_VERSION_SUFFIX: Final[re.Pattern[str]] = re.compile(r"_v\d+$")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -202,8 +206,9 @@ class Anomaly:
     """One flagged item: a task, or a task name (``task_id`` is then None).
 
     ``task_id`` is None for a per-name item. ``task_count`` is how many
-    PENDING tasks an unregistered item covers. The stuck fields are None for
-    the other kinds, and vice versa.
+    PENDING tasks an unregistered item covers; ``similar_name`` is the live
+    task it may have been renamed from. The stuck fields are None for the
+    other kinds, and vice versa.
     """
 
     kind: AnomalyKind
@@ -217,6 +222,7 @@ class Anomaly:
     p95_ms: int | None = None
     runtime_samples: int | None = None
     evidence: AnomalyEvidence | None = None
+    similar_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +376,7 @@ def _unregistered(
     for task in waiting:
         if task.name not in registry.live_names:
             by_name[task.name].append(task)
+    by_module = _live_by_module(registry.live_names)
     by_task: dict[str, Anomaly] = {}
     items: list[Anomaly] = []
     for name, group in by_name.items():
@@ -379,10 +386,58 @@ def _unregistered(
             name=name,
             since=_oldest(group),
             task_count=len(group),
+            similar_name=_similar_name(name, by_module),
         )
         items.append(item)
         by_task.update(dict.fromkeys((t.task_id for t in group), item))
     return by_task, items
+
+
+def _split(name: str) -> tuple[str, str]:
+    """Module and last segment of a dotted task name; a name with no dot has neither."""
+    module, dot, last = name.rpartition(".")
+    return (module, last) if dot else ("", "")
+
+
+def _live_by_module(live_names: Iterable[str]) -> dict[str, list[tuple[str, str]]]:
+    """Live names grouped by module as (name, version-stripped last segment).
+
+    Skips built-ins, names with no module and names whose segment is only a
+    version suffix.
+    """
+    grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for name in live_names:
+        module, last = _split(name)
+        stem = _VERSION_SUFFIX.sub("", last)
+        if module and stem and not name.startswith(_BUILTIN_PREFIX):
+            grouped[module].append((name, stem))
+    return grouped
+
+
+def _similar_name(
+    name: str, by_module: Mapping[str, Sequence[tuple[str, str]]]
+) -> str | None:
+    """The one live name in ``name``'s module close enough to suggest, else None.
+
+    Scores last segments (case-sensitive, ``_v<N>`` removed) with difflib and
+    needs the best score to reach ``SIMILAR_NAME_MIN_SCORE`` with no tie.
+    """
+    module, last = _split(name)
+    stem = _VERSION_SUFFIX.sub("", last)
+    if not module or not stem:
+        return None
+    scored = [
+        (SequenceMatcher(None, stem, other_stem).ratio(), other)
+        for other, other_stem in by_module.get(module, ())
+        if other != name
+    ]
+    if not scored:
+        return None
+    best = max(score for score, _ in scored)
+    winners = [other for score, other in scored if score == best]
+    if best < SIMILAR_NAME_MIN_SCORE or len(winners) != 1:
+        return None
+    return winners[0]
 
 
 def _timestamp(entry: TimelineEntry) -> datetime:

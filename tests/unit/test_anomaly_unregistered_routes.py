@@ -300,3 +300,45 @@ async def test_classification_runs_with_the_registry_lock_free(
 
     assert response.status_code == 200
     assert seen["free"] is True
+
+
+# --- similar_name (D5) --------------------------------------------------------
+
+
+def _renamed_app(registry: WorkerRegistry) -> FastAPI:
+    store = store_of(
+        pending("u1", 0, "app.sync_invoices_v2"), pending("u2", 0, "app.zzz")
+    )
+    return make_app(store, registry=registry, broker_url=BROKER)
+
+
+async def test_anomalies_and_task_detail_carry_similar_name_for_a_renamed_task() -> (
+    None
+):
+    app = _renamed_app(confirmed_registry(names=("app.sync_invoices",)))
+
+    body = await list_body(app)
+    detail = (await get(app, "/api/tasks/u1")).json()
+    item = (await list_body(app, "?name=app.sync_invoices_v2"))["anomalies"][0]
+
+    assert {a["name"]: a["similar_name"] for a in body["anomalies"]} == {
+        "app.sync_invoices_v2": "app.sync_invoices",
+        "app.zzz": None,
+    }
+    assert detail["anomaly_detail"]["similar_name"] == "app.sync_invoices"
+    assert detail["anomaly_detail"] == item
+
+
+async def test_similar_name_ignores_the_names_of_a_stopped_worker() -> None:
+    registry = WorkerRegistry()
+    registry.apply_stats_reply(
+        {},
+        {"w@a": (1, ["app.sync_invoices"]), "w@b": (2, [KNOWN])},
+        now=at(FRESH_S),
+    )
+    registry.mark_shutdown("w@a", 1)
+    app = _renamed_app(registry)
+
+    body = await list_body(app, "?name=app.sync_invoices_v2")
+
+    assert [a["similar_name"] for a in body["anomalies"]] == [None]
