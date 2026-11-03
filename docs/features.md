@@ -372,6 +372,14 @@ recent `inspect` reply. A worker killed without a shutdown event stays live and 
 until the 30-minute cleanup, and after the cleanup the registry is empty, so nothing fires
 until a worker answers. A live worker that registered no tasks still counts as live.
 
+An unregistered item can carry `similar_name`, a live task you might have renamed it from. It
+is the one live name in the same module whose last segment, with a trailing `_v<N>` removed
+from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio, and no
+other live name scores the same. Names that differ only in case are compared as written. It's
+`null` when no name qualifies, when two names tie, and for a name with no module (no dot).
+`celery.*` names and the names of stopped workers are never suggested. The hint is a guess:
+`send_email` gets `send_emails` even when they are different tasks.
+
 ### Settings
 
 | Setting | Env var | `stemtrace server` flag | `init_app` and `StemtraceExtension` argument | Default |
