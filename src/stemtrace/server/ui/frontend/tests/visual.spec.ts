@@ -13,6 +13,7 @@ import {
   type MockTask,
   type MockWorker,
 } from './fixtures/mock-data'
+import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
 
 /**
  * Visual snapshots of the Signal box frame. Runs only in the `visual` project (PW_VISUAL=1),
@@ -542,5 +543,61 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(page.getByRole('option')).not.toHaveCount(0)
       await expect(page).toHaveScreenshot(`palette-${theme}-${width}.png`)
     })
+  }
+}
+
+// The Overview, and its triage panel (the failing ValueError group, then one of its runs).
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    for (const panel of [false, true]) {
+      test(`overview${panel ? ' with the triage panel' : ''}, ${theme}, ${width}px`, async ({
+        page,
+      }) => {
+        await page.routeWebSocket(/\/ws$/, () => {})
+        const now = new Date('2026-10-17T12:00:00Z')
+        const api = await setupMockApi(page, { useDefaults: false })
+        const scenario = spikeScenario(now.getTime())
+        const { tasks, failedId } = spikeTasks(scenario)
+        api.addTasks(tasks)
+        api.setBroker('redis')
+        api.setWorkers([
+          {
+            hostname: 'celery@billing-1',
+            pid: 100,
+            registered_tasks: ['tests.flow.step_1', 'tests.flow.step_2'],
+            status: 'online',
+            registered_at: '2026-10-17T09:00:00Z',
+            last_seen: '2026-10-17T11:59:00Z',
+          },
+          {
+            hostname: 'celery@billing-2',
+            pid: 101,
+            registered_tasks: ['tests.flow.step_1'],
+            status: 'offline',
+            registered_at: '2026-10-17T08:00:00Z',
+            last_seen: '2026-10-17T10:55:00Z',
+          },
+        ])
+        await mockOverview(page, scenario)
+        await page.clock.setFixedTime(now)
+        await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto(panel ? '/?panel=exception%3AValueError' : '/')
+        await page.waitForLoadState('networkidle')
+        await page.evaluate(() => document.fonts.ready)
+        if (panel) {
+          await expect(page.getByTestId('panel-run')).toHaveCount(1)
+          await page.getByTestId('panel-run').getByRole('button').click()
+          await expect(page.getByRole('link', { name: 'Open flow' })).toBeVisible()
+          await expect(page.getByTestId('triage-panel')).toContainText(failedId)
+        } else {
+          await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+        }
+        await expect(page).toHaveScreenshot(
+          `overview${panel ? '-panel' : ''}-${theme}-${width}.png`,
+          { fullPage: !panel },
+        )
+      })
+    }
   }
 }

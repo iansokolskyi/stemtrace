@@ -111,21 +111,37 @@ export function flowsSearch(search: Record<string, unknown>): FlowsSearch {
 
 /**
  * Search params of the Overview (`/`): the range and the triage panel's stack (`panel`, see
- * `components/triage/panelState.ts`). Old task-list links (`/?state=FAILURE`) also land here;
- * `legacyExecutionsSearch` finds them.
+ * `components/triage/panelState.ts`).
  */
-export interface OverviewSearch extends ExecutionsSearch {
+export interface OverviewSearch {
+  range?: Range
   panel?: string
 }
 
 export function overviewSearch(search: Record<string, unknown>): OverviewSearch {
-  return { ...executionsSearch(search), panel: str(search.panel) }
+  return { ...rangeSearch(search), panel: str(search.panel) }
 }
 
-/** The Executions filters an old task-list link at `/` carried; undefined when it had none. */
-export function legacyExecutionsSearch(search: OverviewSearch): ExecutionsSearch | undefined {
-  const { panel: _panel, range, ...filters } = search
-  return Object.values(filters).some((value) => value !== undefined)
-    ? { ...filters, range }
-    : undefined
+// What the task list at `/` took before the Overview: the Executions filters and its view
+const LEGACY_KEYS = [
+  'state',
+  'name',
+  'name_exact',
+  'exception_type',
+  'hostname',
+  'queue',
+  'task_group',
+  'tag',
+  'from_date',
+  'to_date',
+  'view',
+] as const
+
+/**
+ * The Executions search for an old task-list link at `/` (`/?state=FAILURE`), read off the URL's
+ * own keys so a value the filters reject (`?from_date=abc`) still sends the link to Executions.
+ * Undefined when the URL has none of those keys: it is the Overview's.
+ */
+export function legacyExecutionsSearch(raw: Record<string, unknown>): ExecutionsSearch | undefined {
+  return LEGACY_KEYS.some((key) => raw[key] !== undefined) ? executionsSearch(raw) : undefined
 }

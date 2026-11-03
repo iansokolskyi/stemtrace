@@ -538,6 +538,15 @@ export async function setupMockApi(
       const wanted = new Set(state.toUpperCase().split(','))
       filtered = filtered.filter((t) => wanted.has(t.state))
     }
+    // The window of one chart bucket, as the API reads it off a task's last event: from_date up
+    // to updated_before (exclusive). Modelled only when updated_before is sent: the date and
+    // `within` filters of the other pages stay unmodelled, as before.
+    const fromDate = url.searchParams.get('from_date')
+    const updatedBefore = url.searchParams.get('updated_before')
+    if (updatedBefore) {
+      filtered = filtered.filter((t) => updatedAt(t) < Date.parse(updatedBefore))
+      if (fromDate) filtered = filtered.filter((t) => updatedAt(t) >= Date.parse(fromDate))
+    }
     if (hostname) filtered = filtered.filter((t) => t.hostname === hostname)
     if (queue) filtered = filtered.filter((t) => t.queue === queue)
     if (exceptionType) filtered = filtered.filter((t) => t.exception_type === exceptionType)

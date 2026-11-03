@@ -29,8 +29,8 @@ export const Route = createFileRoute('/')({
   validateSearch: overviewSearch,
   // An old task-list link (`/?state=FAILURE`) keeps its filters on Executions; the range and the
   // triage panel alone are the Overview's.
-  beforeLoad: ({ search }) => {
-    const legacy = legacyExecutionsSearch(search)
+  beforeLoad: ({ location }) => {
+    const legacy = legacyExecutionsSearch(location.search as Record<string, unknown>)
     if (legacy) throw redirect({ to: '/executions', search: legacy, replace: true })
   },
   component: OverviewPage,
