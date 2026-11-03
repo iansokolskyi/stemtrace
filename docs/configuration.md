@@ -186,8 +186,9 @@ If the argument is missing, the task name is shown. This is a **server** setting
 A STARTED task is flagged stuck when it runs for longer than `max(factor × p95, floor)`, or
 `max(ceiling, floor)` for a task name with fewer than `min_samples` finished runs. A PENDING
 task is flagged unregistered after it waits longer than `grace` for a name no live worker
-registers, when the server's worker registry is recent (`authority_window`). Six server settings
-control them:
+registers, when the server's worker registry is recent (`authority_window`). When tasks wait and
+no worker is online, the server reports one `no_workers_online` item instead. It uses `grace`, not
+`authority_window`. Six server settings control them:
 
 | Flag | Env var | `init_app` argument | Default |
 |---|---|---|---|

@@ -42,7 +42,7 @@ __all__ = [
 
 
 class AnomalyKind(str, Enum):
-    """What is wrong with a task. ``no_workers_online`` is never reported."""
+    """What is wrong with a task, or with the fleet it waits for."""
 
     STUCK = "stuck"
     INTERRUPTED = "interrupted"
@@ -168,16 +168,18 @@ class RuntimeStats:
 class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
-    ``live_names`` are the names of every live worker (no stop reported since
-    its last ``worker_ready``, not superseded), ``any_live`` whether there is
-    one. ``authority_at`` is when an inspect reply last listed every worker's
-    tasks, and ``broker_configured`` whether the server can inspect.
+    ``live_names``: names of workers not stopped or superseded (``any_live``: there is one).
+    ``authority_at``: when an inspect reply last listed every worker's tasks;
+    ``broker_configured``: the server can inspect. ``any_seen``: a worker was seen since
+    the server started; ``any_online``: one is not stopped, superseded or silent with evidence.
     """
 
     live_names: frozenset[str]
     any_live: bool
     authority_at: datetime | None
     broker_configured: bool
+    any_seen: bool = False
+    any_online: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,10 +205,10 @@ DEFAULT_SETTINGS: Final[AnomalySettings] = AnomalySettings()
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Anomaly:
-    """One flagged item: a task, or a task name (``task_id`` is then None).
+    """One flagged item: a task, a task name, or (``no_workers_online``) the fleet.
 
-    ``task_id`` is None for a per-name item. ``task_count`` is how many
-    PENDING tasks an unregistered item covers; ``similar_name`` is the live
+    ``task_id`` is None for a per-name item and ``name`` for the fleet item.
+    ``task_count`` is how many PENDING tasks an unregistered or fleet item covers; ``similar_name`` is the live
     task it may have been renamed from. The stuck fields are None for the
     other kinds, and vice versa.
     """
@@ -231,7 +233,7 @@ class AnomalyReport:
 
     ``anomalies`` maps a task ID to the item that covers it (an unregistered
     task maps to its name's item). ``items`` is the list: each stuck or
-    interrupted task, one item per unregistered name. ``counts`` tallies ``items`` and has every kind (0 included).
+    interrupted task, one item per unregistered name, at most one fleet item. ``counts`` tallies ``items`` and has every kind (0 included).
     """
 
     anomalies: Mapping[str, Anomaly]
@@ -359,10 +361,12 @@ def _unregistered(
     registry: RegistryFacts | None,
     settings: AnomalySettings,
 ) -> tuple[dict[str, Anomaly], list[Anomaly]]:
-    """The unregistered tasks by ID and their per-name items.
+    """The unregistered tasks by ID and their per-name items, or the one fleet item.
 
     A PENDING task waits past ``pending_grace`` for a name no live worker
-    registered, and the registry is trusted (see ``_authoritative``).
+    registered, and the registry is trusted (see ``_authoritative``). Once a
+    worker was seen and none is online, the waiting tasks make one
+    ``no_workers_online`` item instead; no gate applies and no task is flagged.
     """
     if registry is None:
         return {}, []
@@ -370,6 +374,16 @@ def _unregistered(
     waiting = [task for task in pending if _waiting(task, cutoff)]
     if not waiting:
         return {}, []
+    if registry.any_seen and not registry.any_online:
+        return {}, [
+            Anomaly(
+                kind=AnomalyKind.NO_WORKERS_ONLINE,
+                task_id=None,
+                name=None,
+                since=_oldest(waiting),
+                task_count=len(waiting),
+            )
+        ]
     if not _authoritative(registry, now, settings):
         return {}, []
     by_name: dict[str, list[PendingLike]] = defaultdict(list)

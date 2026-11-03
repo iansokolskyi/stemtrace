@@ -202,6 +202,11 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
 
 
+def _utcnow() -> datetime:
+    """The registry's clock (a seam for tests that replay a timeline)."""
+    return datetime.now(timezone.utc)
+
+
 # A worker not seen for this long is shown offline (see remove_stale_workers).
 # Seen means a worker_ready, a task event from its nodename, or an inspect reply.
 WORKER_STALE_TIMEOUT_MINUTES = 3
@@ -210,6 +215,8 @@ WORKER_STALE_TIMEOUT_MINUTES = 3
 # Bounds of the worker timeline: events kept per nodename, nodenames kept.
 WORKER_TIMELINE_EVENTS_PER_NODE = 32
 WORKER_TIMELINE_MAX_NODES = 1024
+# Nodenames kept that the registry doesn't list (see WorkerRegistry._unlisted).
+WORKER_UNLISTED_MAX_NODES = 1024
 
 # Nodenames that sent task events but never registered, remembered so each one
 # announces itself once instead of on every event.
@@ -294,8 +301,12 @@ class WorkerRegistry:
     worker_ready and worker_shutdown events.
     """
 
-    def __init__(self) -> None:
-        """Initialize empty worker registry."""
+    def __init__(self, max_unlisted: int = WORKER_UNLISTED_MAX_NODES) -> None:
+        """Initialize empty worker registry.
+
+        Args:
+            max_unlisted: Bound on the nodenames kept outside the worker list.
+        """
         self._workers: dict[str, WorkerInfo] = {}
         # Nodename -> worker_id registered last. Registration order is observed
         # by this server, so unlike event timestamps (the worker's clock) and
@@ -312,6 +323,30 @@ class WorkerRegistry:
         # ping-only replies; kept apart from the workers, so the cleanup that
         # deletes them leaves it.
         self._authority_at: datetime | None = None
+        # Fleet rule (no_workers_online) state. All of it is anomaly-only: the
+        # Workers page never shows it, and the cleanup that deletes workers
+        # leaves ``_ever_seen``.
+        self._ever_seen = False
+        # Live nodenames the Workers page doesn't list: named by a task event
+        # or a pid-less reply before worker_ready or a stats reply did, or
+        # removed by the cleanup with no evidence they stopped. Nodename ->
+        # last_seen. Bounded.
+        self._unlisted: dict[str, datetime] = {}
+        self._max_unlisted = max_unlisted
+        # Nodename -> time of its latest reported stop (the event's clock), so
+        # a task's last events, stamped before it and arriving after, don't
+        # make an unlisted nodename live again. Cleared by a worker_ready or
+        # stats reply naming a pid; bounded like ``_unlisted``.
+        self._stopped_at: dict[str, tuple[datetime, datetime]] = {}
+        # The latest inspect ``stats()`` broadcast that completed, stamped in
+        # the locked step that applied its answers, and who answered it.
+        self._inspect_completed_at: datetime | None = None
+        self._answered_last: frozenset[str] = frozenset()
+        # Whether any worker has answered an inspect since the server started.
+        # Until then an unanswered broadcast may only mean the server can't hear
+        # workers (remote control off, an unshared control setting), not that
+        # they are gone.
+        self._channel_proven = False
         self._new_node_listeners: list[Callable[[str], None]] = []
         self._announced_unregistered: dict[str, None] = {}
         self._lock = threading.RLock()
@@ -367,7 +402,7 @@ class WorkerRegistry:
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
-            timestamp = event_timestamp or datetime.now(timezone.utc)
+            timestamp = event_timestamp or _utcnow()
 
             # Update global task definitions map (best-effort, last-writer-wins).
             if task_definitions:
@@ -392,6 +427,9 @@ class WorkerRegistry:
                     status=WorkerStatus.ONLINE,
                 )
             self._newest_by_node[hostname] = worker_id
+            self._unlisted.pop(hostname, None)
+            self._stopped_at.pop(hostname, None)
+            self._ever_seen = True
             self._announced_unregistered.pop(hostname, None)
 
     def _retire_other_pids(self, hostname: str, keep: str) -> None:
@@ -413,7 +451,14 @@ class WorkerRegistry:
         with self._lock:
             return self._task_definitions_by_name.get(name)
 
-    def mark_shutdown(self, hostname: str, pid: int) -> None:
+    def mark_shutdown(
+        self,
+        hostname: str,
+        pid: int,
+        timestamp: datetime | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> None:
         """Record a worker_shutdown event: the process is gone for good.
 
         Unlike :meth:`mark_offline`, a later ping reply can't bring it back;
@@ -423,6 +468,8 @@ class WorkerRegistry:
         Args:
             hostname: Worker nodename.
             pid: Worker process ID.
+            timestamp: The event's time (the worker's clock); defaults to now.
+            now: When the server received it (tests); defaults to now.
         """
         with self._lock:
             self._event_generation[hostname] = (
@@ -432,6 +479,18 @@ class WorkerRegistry:
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
+            self._unlisted.pop(hostname, None)
+            received = now or _utcnow()
+            stopped = ensure_tz_aware(timestamp) if timestamp else received
+            previous = self._stopped_at.get(hostname)
+            if previous is not None:
+                stopped = max(stopped, previous[0])
+            self._stopped_at[hostname] = (stopped, received)
+            if len(self._stopped_at) > self._max_unlisted:
+                oldest = min(
+                    self._stopped_at, key=lambda n: (self._stopped_at[n][1], n)
+                )
+                del self._stopped_at[oldest]
 
     def mark_seen(
         self, hostname: str, timestamp: datetime, *, now: datetime | None = None
@@ -456,11 +515,26 @@ class WorkerRegistry:
             now: Current time (tests); defaults to now.
         """
         with self._lock:
+            self._ever_seen = True
             live_id = self._newest_by_node.get(hostname)
             worker = self._workers.get(live_id) if live_id else None
-            if worker is not None:
-                current = now or datetime.now(timezone.utc)
-                seen_at = min(ensure_tz_aware(timestamp), current)
+            current = now or _utcnow()
+            seen_at = min(ensure_tz_aware(timestamp), current)
+            stop = self._stopped_at.get(hostname)
+            after_stop = stop is not None and ensure_tz_aware(timestamp) > stop[0]
+            announce = False
+            if worker is None:
+                if stop is None or after_stop:
+                    self._see_unlisted(hostname, seen_at)
+                announce = self._announce_unregistered(hostname)
+            else:
+                if worker.shutdown_reported and (
+                    after_stop or stop is None or hostname in self._unlisted
+                ):
+                    # A restart whose worker_ready was missed: the nodename runs
+                    # tasks again, though its listed pid stays stopped. Once revived
+                    # (or once the stop is forgotten) every event refreshes it.
+                    self._see_unlisted(hostname, seen_at)
                 if seen_at > worker.last_seen:
                     worker.last_seen = seen_at
                 recent = seen_at >= current - timedelta(
@@ -468,7 +542,6 @@ class WorkerRegistry:
                 )
                 if recent and not worker.shutdown_reported:
                     worker.status = WorkerStatus.ONLINE
-            announce = worker is None and self._announce_unregistered(hostname)
         if announce:
             self._notify_new_node([hostname])
 
@@ -514,12 +587,27 @@ class WorkerRegistry:
             live = self._workers.get(live_id) if live_id else None
             self._retire_other_pids(hostname, keep=live_id or "")
 
-            if live is None or (pid is None and live.shutdown_reported):
+            if live is None:
+                unlisted = hostname not in self._newest_by_node
+                known = hostname in self._unlisted
+                if (
+                    pid is None
+                    and unlisted
+                    and (known or hostname not in self._stopped_at)
+                ):
+                    self._ever_seen = True
+                    self._see_unlisted(hostname, now or _utcnow())
+                return
+            if pid is None and live.shutdown_reported:
+                if (
+                    hostname in self._unlisted
+                ):  # revived by a task event: a ping refreshes it
+                    self._see_unlisted(hostname, now or _utcnow())
                 return
             live.status = WorkerStatus.ONLINE
             live.shutdown_reported = False
             live.superseded = False
-            live.last_seen = now or datetime.now(timezone.utc)
+            live.last_seen = now or _utcnow()
 
     def add_new_node_listener(self, listener: Callable[[str], None]) -> None:
         """Call ``listener(nodename)`` whenever the registry learns a nodename it didn't have.
@@ -604,7 +692,7 @@ class WorkerRegistry:
                 ):
                     worker.status = WorkerStatus.OFFLINE
 
-            now = now or datetime.now(timezone.utc)
+            now = now or _utcnow()
             # A node with no list (``registered()`` failed or missed it) keeps
             # its old one, which may be stale: the registry isn't authoritative.
             # Nodes skipped as stale were not applied, so they confirm nothing.
@@ -620,6 +708,10 @@ class WorkerRegistry:
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
                 self.mark_node_alive(nodename, pid, now=now)
+            # The broadcast completed: stamped here, after its answers are
+            # applied and in the same locked step, so no evaluation sees it
+            # completed while a worker that answered still looks silent.
+            self._finish_inspect(now, replies)
             learned = self._registered_since(known, replies)
         self._notify_new_node(learned)
 
@@ -627,15 +719,55 @@ class WorkerRegistry:
         """The nodenames now registered that were not in ``known``. Call with the lock."""
         return [n for n in nodenames if n in self._newest_by_node and n not in known]
 
-    def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
+    def _finish_inspect(self, now: datetime, answered: Iterable[str]) -> None:
+        """Stamp a completed ``stats()`` broadcast and who answered it. Hold the lock."""
+        self._inspect_completed_at = now
+        self._answered_last = frozenset(answered)
+        self._channel_proven = self._channel_proven or bool(self._answered_last)
+
+    def _see_unlisted(self, nodename: str, seen_at: datetime) -> None:
+        """A task event or reply names a nodename with no worker: it is live, until stopped."""
+        self._keep_unlisted(
+            nodename, max(seen_at, self._unlisted.get(nodename, seen_at))
+        )
+
+    def _keep_unlisted(self, nodename: str, last_seen: datetime) -> None:
+        """Store the nodename, evicting the oldest one when over the bound."""
+        self._unlisted[nodename] = last_seen
+        if len(self._unlisted) > self._max_unlisted:
+            oldest = min(self._unlisted, key=lambda n: (self._unlisted[n], n))
+            del self._unlisted[oldest]
+
+    def _is_silent(self, nodename: str, last_seen: datetime, cutoff: datetime) -> bool:
+        """Silent with evidence: an inspect completed after ``last_seen`` without an answer.
+
+        ``cutoff`` is now minus ``WORKER_STALE_TIMEOUT_MINUTES``.
+        """
+        completed = self._inspect_completed_at
+        return (
+            self._channel_proven
+            and completed is not None
+            and completed > last_seen
+            and nodename not in self._answered_last
+            and last_seen < cutoff
+        )
+
+    def registry_facts(
+        self, *, broker_configured: bool, now: datetime | None = None
+    ) -> RegistryFacts:
         """Copy what the anomaly classifier needs from the registry.
 
         Names count from every live worker (no stop reported since its last
         ``worker_ready``, not superseded), however long ago it answered.
 
+        The fleet is online while a worker is not stopped, superseded or silent
+        with evidence (see ``_is_silent``).
+
         Args:
             broker_configured: Whether the server can inspect a broker.
+            now: The time to judge the stale window at (tests); defaults to now.
         """
+        cutoff = (now or _utcnow()) - timedelta(minutes=WORKER_STALE_TIMEOUT_MINUTES)
         with self._lock:
             live = [
                 w
@@ -647,9 +779,23 @@ class WorkerRegistry:
                 any_live=bool(live),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
+                any_seen=self._ever_seen,
+                any_online=any(
+                    not self._is_silent(w.hostname, w.last_seen, cutoff) for w in live
+                )
+                or any(
+                    not self._is_silent(n, seen, cutoff)
+                    for n, seen in self._unlisted.items()
+                ),
             )
 
-    def apply_ping_reply(self, nodenames: Iterable[str]) -> None:
+    def apply_ping_reply(
+        self,
+        nodenames: Iterable[str],
+        *,
+        stats_completed: bool = False,
+        now: datetime | None = None,
+    ) -> None:
         """Apply an ``inspect.ping()`` reply.
 
         Unlike a stats reply, a ping can't undo a worker event that arrived
@@ -660,10 +806,20 @@ class WorkerRegistry:
 
         Args:
             nodenames: Nodenames that answered.
+            stats_completed: Whether the ``stats()`` call before it completed
+                with an empty reply: then the broadcast is stamped here, after
+                the pings are applied.
+            now: When the reply arrived (tests); defaults to now.
         """
         with self._lock:
-            for nodename in nodenames:
-                self.mark_node_alive(nodename)
+            answered = list(nodenames)
+            now = now or _utcnow()
+            for nodename in answered:
+                self.mark_node_alive(nodename, now=now)
+            if stats_completed:
+                self._finish_inspect(now, answered)
+            elif answered:
+                self._channel_proven = True
 
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.
@@ -740,11 +896,15 @@ class WorkerRegistry:
             now: Current time (tests); defaults to now.
         """
         with self._lock:
-            now = now or datetime.now(timezone.utc)
+            now = now or _utcnow()
             stale_cutoff = now - timedelta(minutes=stale_timeout_minutes)
             cleanup_cutoff = now - timedelta(minutes=cleanup_timeout_minutes)
 
             # Mark stale workers offline, remove very old offline workers
+            self._drop_offline_unlisted(cleanup_cutoff, stale_cutoff)
+            self._stopped_at = {
+                n: t for n, t in self._stopped_at.items() if t[1] >= cleanup_cutoff
+            }
             to_remove: list[str] = []
             for worker_id, worker_info in self._workers.items():
                 if worker_info.last_seen < stale_cutoff:
@@ -760,6 +920,32 @@ class WorkerRegistry:
                 worker = self._workers.pop(worker_id)
                 if self._newest_by_node.get(worker.hostname) == worker_id:
                     del self._newest_by_node[worker.hostname]
+                    self._keep_if_unproven(worker, stale_cutoff)
+
+    def _keep_if_unproven(self, worker: WorkerInfo, stale_cutoff: datetime) -> None:
+        """Remember a removed worker that no stop or silence evidence closed.
+
+        Without it, an idle fleet with no broker would turn "offline" when the
+        cleanup empties the registry, which is silence taken as evidence.
+        """
+        if worker.shutdown_reported or worker.superseded:
+            return
+        if self._is_silent(worker.hostname, worker.last_seen, stale_cutoff):
+            return
+        self._keep_unlisted(worker.hostname, worker.last_seen)
+
+    def _drop_offline_unlisted(
+        self, cleanup_cutoff: datetime, stale_cutoff: datetime
+    ) -> None:
+        """Forget unlisted nodenames not seen for the cleanup time and silent with evidence.
+
+        One with no evidence stays (silence alone isn't proof), until the bound evicts it.
+        """
+        self._unlisted = {
+            node: seen
+            for node, seen in self._unlisted.items()
+            if seen >= cleanup_cutoff or not self._is_silent(node, seen, stale_cutoff)
+        }
 
 
 class TaskRunSummary(NamedTuple):

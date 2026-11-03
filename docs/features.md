@@ -313,15 +313,16 @@ never has one.
 
 - `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
   `since` first, then by task ID, then by name (an item without a task ID or a name comes
-  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`, which the
-  server doesn't report, so its count is 0; any other value is a `422`. `hostname` and `name` match exactly, so an item without a hostname or
+  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`; any other value is
+  a `422`. `hostname` and `name` match exactly, so an item without a hostname or
   name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
   for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
   `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
   is the time the server judged at, and every `since` is in UTC.
 - Stuck and interrupted are one item per task. Unregistered is one item per task name, with
   `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
-  name with 40 waiting tasks counts once.
+  name with 40 waiting tasks counts once. `no_workers_online` is at most one item for the whole
+  fleet (see [No workers online](#no-workers-online)).
 - `anomaly` (`stuck`, `interrupted` or `unregistered`, else `null`) is on each task in
   `GET /api/tasks`, on the task and its children in `GET /api/tasks/{id}` and
   `GET /api/tasks/{id}/children`, and on each node in `GET /api/graphs` and
@@ -391,10 +392,87 @@ its workers (the registry is empty until a worker answers) and a server with a b
 whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
 never fires.** The registry is never trusted while no worker is live, that is, while every
 worker has reported a stop or been replaced, with or without a broker URL. So a fleet that
-is down raises no flag: after a clean stop of every worker nothing is reported, even with a
-recent `inspect` reply. A worker killed without a shutdown event stays live and keeps its names
+is down raises no per-name flag: after a clean stop of every worker no name is reported, even
+with a recent `inspect` reply. The fleet item takes over (see
+[No workers online](#no-workers-online)). A worker killed without a shutdown event stays live and keeps its names
 until the 30-minute cleanup, and after the cleanup the registry is empty, so nothing fires
 until a worker answers. A live worker that registered no tasks still counts as live.
+
+### No workers online
+
+When tasks are waiting and no worker is left to run them, every name is unregistered, so
+stemtrace reports one `no_workers_online` item for the whole fleet instead of one item per
+name. The item has `task_id` and `name` `null`, `task_count` (every waiting task that could be
+flagged as unregistered) and `since` (the oldest waiting task's PENDING time). No task gets an
+`anomaly` field from it, and `GET /api/anomalies?kind=no_workers_online` returns only it.
+
+The server reports it when all of these hold:
+
+- A worker has been seen since the server started. A worker is seen through its
+  `worker_ready`, an `inspect` reply, or a task event that names its nodename. The Workers page
+  lists the first two only.
+- At least one task is waiting past `grace` (PENDING, not `celery.*`). With none, the Workers
+  page already shows the fleet.
+- Every worker the server knows is offline.
+
+A worker is offline when it reported `worker_shutdown` or `worker_terminating`, a newer
+process of the same nodename replaced it, or it is silent with evidence. A worker is **silent
+with evidence** when all of these hold:
+
+1. Some worker has answered an `inspect` call since the server started, which shows that the
+   server can hear workers.
+2. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
+   it returned without a transport error; an empty reply counts.
+3. The worker didn't answer that call.
+4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
+   minutes old.
+
+A completed call counts only once the server has applied its answers, so a request that arrives
+while a refresh is running doesn't see a healthy fleet as silent. Without a broker URL, or while
+the broker can't be reached, no call completes, so silence is never evidence and only a
+reported stop makes a worker offline. The item doesn't use `authority_window`, and it doesn't
+need a trusted registry: it works with or without a broker URL.
+
+The item appears when a fleet stops cleanly, and for the whole outage: it stays after the
+30-minute cleanup removes the stopped workers, because the server remembers that it saw a
+worker. A worker the cleanup removes without proof that it stopped (it was silent, and no call
+completed since) is remembered until a completed call it doesn't answer proves it silent.
+
+### Limitations of no workers online
+
+- **A server restarted while the fleet is down reports nothing.** Until the server sees a
+  worker, it can't tell an empty fleet from one it hasn't heard from.
+- **A busy worker can look silent.** A worker that can't answer `inspect` (for example, a solo
+  pool running one task for more than 3 minutes, which sends no events) is silent with
+  evidence once a call completes. If it is the only worker, the item is a false alert until it
+  answers or sends an event.
+- **Without a broker URL, a lost worker can hide a later stop.** The 30-minute cleanup keeps a
+  worker it removed without proof that it stopped, because silence alone isn't evidence. Without
+  a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
+  SIGKILL, the item doesn't appear even when every other worker then stops cleanly. With a broker
+  URL, the next completed call that the lost worker doesn't answer clears it.
+- **Workers the server can't hear never count as silent.** If workers run with remote control
+  off, or with a control setting the server doesn't share (such as `global_keyprefix`), every
+  `inspect` call returns nothing, so no worker is silent with evidence. A SIGKILLed fleet then
+  gives no item, the same as with no broker URL. A clean stop still does.
+- **A fleet is found silent only after some inspect got an answer.** The server runs `inspect`
+  when it starts and when it learns a new nodename, so a fleet that dies before anyone opens the
+  UI is still found. If no `inspect` call ever got an answer since the server started (remote
+  control off, a control setting the server doesn't share, or a broker the server can't reach
+  while the workers are up), the server can't tell a dead fleet from one it can't hear, so a
+  SIGKILLed fleet gives no item. A clean stop still does.
+- **A killed fleet needs an inspect.** After a SIGKILL of every worker, with no broker URL or an
+  unreachable broker, the item doesn't appear, because silence isn't evidence. A clean stop of
+  every worker still does.
+- **A worker clock far behind the server can look silent.** A `worker_ready` or task event
+  keeps a worker online for 3 minutes from the event's time, so a worker whose clock is 3
+  minutes or more behind the server's can be silent with evidence right after it sends one.
+- **A task event after a stop revives the nodename.** An event stamped after the reported stop
+  (a restart whose `worker_ready` the server missed) makes the nodename online again, whether or
+  not the Workers page lists it. An event stamped at or before the stop, or a ping reply, doesn't.
+  The server forgets a reported stop 30 minutes after it received it, or earlier when more than 1,024 stops are kept; after that, any event revives the nodename.
+- **The server keeps at most 1,024 nodenames** that the Workers page doesn't list, and 1,024
+  reported stops of them. The oldest is dropped first.
 
 An unregistered item can carry `similar_name`, a live task you might have renamed it from. It
 is the one live name in the same module whose last segment, with a trailing `_v<N>` removed

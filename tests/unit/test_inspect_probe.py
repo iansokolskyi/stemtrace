@@ -282,12 +282,18 @@ def test_start_twice_gives_one_refresh_for_one_startup(
 
 def test_trigger_and_start_without_a_bound_refresh_do_nothing() -> None:
     probe = InspectProbe(INTERVAL_S)
+    before = set(threading.enumerate())
 
     probe.start()
     probe.trigger()
     probe.stop(timeout=BOUND_S)
 
-    assert not [t for t in threading.enumerate() if t.name == "stemtrace-inspect-probe"]
+    # Compare with the threads before: other tests' probes are not this probe's doing.
+    assert not [
+        t
+        for t in set(threading.enumerate()) - before
+        if t.name == "stemtrace-inspect-probe"
+    ]
 
 
 def test_trigger_after_stop_does_not_run_the_refresh(

@@ -86,6 +86,10 @@ def reference(
             waiting.append((task_id, name, state.timestamp))
     if not waiting:
         return set(), set()
+    if registry.any_seen and not registry.any_online:
+        # The fleet item: no gate, no per-name items, no task flagged.
+        oldest = min(w[2] for w in waiting)
+        return {("no_workers_online", None, oldest, len(waiting), None)}, set()
     if not trusted:
         return set(), set()
     unknown = [w for w in waiting if w[1] not in registry.live_names]
@@ -127,6 +131,8 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
         any_live=bool(registered) or rng.random() < 0.7,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
+        any_seen=rng.random() < 0.6,
+        any_online=rng.random() < 0.5,
     )
 
 
@@ -169,8 +175,9 @@ def check(cell: Cell, rng: random.Random) -> list[str]:
                 f"registry={registry}: fast={sorted(map(str, got))} "
                 f"ref={sorted(map(str, want))}"
             )
-        if report.counts[AnomalyKind.UNREGISTERED] != sum(
-            1 for i in want if i[0] == "unregistered"
+        if any(
+            report.counts[kind] != sum(1 for i in want if i[0] == kind.value)
+            for kind in kinds
         ):
             problems.append(f"{cell.name} now={now}: counts differ")
     return problems
@@ -209,4 +216,10 @@ def test_the_sample_reaches_every_outcome_of_the_rule() -> None:
             if not items and any(r.state == TaskState.PENDING for r in records):
                 seen.add("pending-but-quiet")
 
-    assert seen == {"unregistered", "pending-but-quiet", "hinted", "unhinted"}
+    assert seen == {
+        "unregistered",
+        "no_workers_online",
+        "pending-but-quiet",
+        "hinted",
+        "unhinted",
+    }

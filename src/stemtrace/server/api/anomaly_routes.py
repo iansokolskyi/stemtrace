@@ -121,7 +121,9 @@ class AnomalyEvaluator:
         records = self._store.run_records()
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}
         registry = (
-            self._registry.registry_facts(broker_configured=self._broker_configured)
+            self._registry.registry_facts(
+                broker_configured=self._broker_configured, now=now
+            )
             if self._registry is not None
             else None
         )
@@ -201,9 +203,10 @@ def add_anomaly_routes(
     ) -> AnomalyListResponse:
         """Tasks that are stuck, interrupted or unregistered, oldest ``since`` first.
 
-        An unregistered name is one item. ``counts`` has every kind (``no_workers_online``
-        is always 0) and ignores the filters; ``total`` counts the items that pass
-        them, before ``limit`` and ``offset``. Computed on every request.
+        An unregistered name is one item; ``no_workers_online`` is one item for every
+        task waiting while no worker is online. ``counts`` has every kind and
+        ignores the filters; ``total`` counts the items that pass them, before
+        ``limit`` and ``offset``. Computed on every request.
         """
         if kind is not None and kind not in _KINDS:
             raise HTTPException(
