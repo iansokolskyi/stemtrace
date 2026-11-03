@@ -1227,7 +1227,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
     refresher = _InspectRefresher(worker_registry, broker_url)
-    evaluator = AnomalyEvaluator(store, worker_timeline, anomaly_settings)
+    evaluator = AnomalyEvaluator(
+        store, worker_timeline, anomaly_settings, worker_registry, broker_url
+    )
 
     _add_health_routes(
         router,

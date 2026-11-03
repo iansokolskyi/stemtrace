@@ -7,5 +7,5 @@
   `STEMTRACE_ANOMALY_STUCK_FACTOR`, `_FLOOR`, `_CEILING` and `_MIN_SAMPLES` (also
   `--anomaly-stuck-*` and `init_app` arguments). `StemtraceExtension.worker_timeline` exposes
   the worker event history for a custom consumer. See
-  [Stuck and interrupted tasks](docs/features.md#stuck-and-interrupted-tasks) for the rules and
+  [Stuck, interrupted and unregistered tasks](docs/features.md#stuck-interrupted-and-unregistered-tasks) for the rules and
   limits.

@@ -39,12 +39,15 @@ def _group_config_option(groups: str | None) -> "GroupConfig":
 
 
 def _anomaly_settings_option(
+    *,
     factor: str | None,
     floor: str | None,
     ceiling: str | None,
     min_samples: str | None,
+    grace: str | None,
+    window: str | None,
 ) -> "AnomalySettings":
-    """Validate the ``--anomaly-stuck-*`` flags and their env vars as one set.
+    """Validate the ``--anomaly-*`` flags and their env vars as one set.
 
     Blank means unset, as for the node alias. A bad value is a usage error.
     """
@@ -52,7 +55,9 @@ def _anomaly_settings_option(
         CEILING_ENV_VAR,
         FACTOR_ENV_VAR,
         FLOOR_ENV_VAR,
+        GRACE_ENV_VAR,
         MIN_SAMPLES_ENV_VAR,
+        WINDOW_ENV_VAR,
         configured_anomaly_settings,
     )
 
@@ -62,15 +67,19 @@ def _anomaly_settings_option(
             stuck_floor=floor,
             stuck_ceiling=ceiling,
             stuck_min_samples=min_samples,
+            pending_grace=grace,
+            authority_window=window,
             argument_labels=(
                 f"--anomaly-stuck-factor ({FACTOR_ENV_VAR})",
                 f"--anomaly-stuck-floor ({FLOOR_ENV_VAR})",
                 f"--anomaly-stuck-ceiling ({CEILING_ENV_VAR})",
                 f"--anomaly-stuck-min-samples ({MIN_SAMPLES_ENV_VAR})",
+                f"--anomaly-pending-grace ({GRACE_ENV_VAR})",
+                f"--anomaly-registry-window ({WINDOW_ENV_VAR})",
             ),
         )
     except ConfigurationError as exc:
-        raise typer.BadParameter(str(exc), param_hint="'--anomaly-stuck-*'") from exc
+        raise typer.BadParameter(str(exc), param_hint="'--anomaly-*'") from exc
 
 
 def _api_key_option(api_key: str | None) -> str | None:
@@ -252,6 +261,30 @@ def server(
             help="Completed runs a task name needs before its p95 counts (default: 5).",
         ),
     ] = None,
+    anomaly_pending_grace: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-pending-grace",
+            envvar="STEMTRACE_ANOMALY_PENDING_GRACE",
+            show_default=False,
+            help=(
+                "A waiting task counts as unregistered after this long, for "
+                "example 90s, 5m or 1h (default: 5m)."
+            ),
+        ),
+    ] = None,
+    anomaly_registry_window: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-registry-window",
+            envvar="STEMTRACE_ANOMALY_REGISTRY_WINDOW",
+            show_default=False,
+            help=(
+                "Trust task names only if the last inspect reply is at most "
+                "this old, for example 10m or 1h (default: 10m)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
@@ -298,10 +331,12 @@ def server(
     group_config = _group_config_option(groups)
     effective_api_key = _api_key_option(api_key)
     stuck = _anomaly_settings_option(
-        anomaly_stuck_factor,
-        anomaly_stuck_floor,
-        anomaly_stuck_ceiling,
-        anomaly_stuck_min_samples,
+        factor=anomaly_stuck_factor,
+        floor=anomaly_stuck_floor,
+        ceiling=anomaly_stuck_ceiling,
+        min_samples=anomaly_stuck_min_samples,
+        grace=anomaly_pending_grace,
+        window=anomaly_registry_window,
     )
 
     form_auth_config: FormAuthConfig | None = None
@@ -335,6 +370,8 @@ def server(
         anomaly_stuck_floor=stuck.stuck_floor,
         anomaly_stuck_ceiling=stuck.stuck_ceiling,
         anomaly_stuck_min_samples=stuck.stuck_min_samples,
+        anomaly_pending_grace=stuck.pending_grace,
+        anomaly_registry_window=stuck.authority_window,
     )
     fastapi_app = FastAPI(
         title="stemtrace",

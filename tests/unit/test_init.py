@@ -235,6 +235,8 @@ class TestInit:
                 anomaly_stuck_floor: object = None,
                 anomaly_stuck_ceiling: object = None,
                 anomaly_stuck_min_samples: object = None,
+                anomaly_pending_grace: object = None,
+                anomaly_registry_window: object = None,
             ) -> None:
                 captured["broker_url"] = broker_url
                 captured["transport_url"] = transport_url
@@ -243,6 +245,8 @@ class TestInit:
                     anomaly_stuck_floor,
                     anomaly_stuck_ceiling,
                     anomaly_stuck_min_samples,
+                    anomaly_pending_grace,
+                    anomaly_registry_window,
                     embedded_consumer,
                     serve_ui,
                     prefix,

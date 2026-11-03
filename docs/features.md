@@ -279,7 +279,7 @@ Limitations:
   too short (0 at worst) or empty, and a hard time limit's FAILURE after missed events can make
   the runtime too long.
 
-## Stuck and interrupted tasks
+## Stuck, interrupted and unregistered tasks
 
 stemtrace flags a task that needs attention without you reading every row. A flag is computed
 on each request from the tasks and worker events the server holds, and is never stored, so one
@@ -287,20 +287,27 @@ appears as time passes even when no event arrives. A task has at most one flag, 
 task's latest attempt counts. A task that has ended, and the GROUP and CHORD nodes of a graph,
 never has one.
 
-- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged tasks, oldest
-  `since` first (ties by task ID). `kind` is `stuck` or `interrupted` (`unregistered` and
-  `no_workers_online` are accepted, and the server doesn't report them yet; any other value is
-  a `422`). `hostname` and `name` match exactly. `limit` is 1 to 500 (default 100). `counts`
-  has a number for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it
-  suits a badge; `total` counts the items that pass the filters, before `limit` and `offset`.
-  `evaluated_at` is the time the server judged at, and every `since` is in UTC.
-- `anomaly` (`stuck` or `interrupted`, else `null`) is on each task in `GET /api/tasks`, on the
-  task and its children in `GET /api/tasks/{id}` and `GET /api/tasks/{id}/children`, and on
-  each node in `GET /api/graphs` and `GET /api/graphs/{root_id}`. `anomaly_detail` on
-  `GET /api/tasks/{id}` has the same fields as a list item.
+- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
+  `since` first, then by task ID, then by name (an item without a task ID or a name comes
+  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`, which the
+  server doesn't report, so its count is 0; any other value is a `422`. `hostname` and `name` match exactly, so an item without a hostname or
+  name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
+  for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
+  `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
+  is the time the server judged at, and every `since` is in UTC.
+- Stuck and interrupted are one item per task. Unregistered is one item per task name, with
+  `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
+  name with 40 waiting tasks counts once.
+- `anomaly` (`stuck`, `interrupted` or `unregistered`, else `null`) is on each task in
+  `GET /api/tasks`, on the task and its children in `GET /api/tasks/{id}` and
+  `GET /api/tasks/{id}/children`, and on each node in `GET /api/graphs` and
+  `GET /api/graphs/{root_id}`. `anomaly_detail` on
+  `GET /api/tasks/{id}` has the same fields as a list item; for an unregistered task it is the
+  item of the task's name.
 - Each request judges all the tasks the server holds, in a worker thread, so it adds work to
-  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks on a 2-vCPU host, the p95 of `GET /api/tasks` went from 35 to
-  38 ms to 80 to 86 ms, and that of `GET /api/graphs` from 14 to 15 ms to 62 to 67 ms.
+  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks (3,000 of them PENDING) on a 2-vCPU host,
+  it added a median of 36 to 51 ms to the p95 of `GET /api/tasks` and `GET /api/graphs` (the
+  worst of 44 runs added 105 ms).
 
 ### Stuck
 
@@ -331,6 +338,40 @@ interrupted too, with `evidence` `cancelled_retry`, when its worker also shows e
 later event for the task (a redelivery's STARTED, or a result) clears the flag. A task that
 is both stuck and interrupted is reported as interrupted.
 
+### Unregistered
+
+A task is **unregistered** when its state is PENDING (the sender published it and no worker has
+reported receiving it), it has waited longer than `grace`, and no live worker has its name
+registered. A task a worker received is RECEIVED, so it never counts, and neither does a
+`celery.*` task. The wait is measured from the PENDING event's timestamp, which the sending
+process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
+or a newer `worker_ready` from the same nodename replaces it, and again after its own next
+`worker_ready`. A worker that missed one `inspect` call, or that has been silent for more than
+3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. A name that only a stopped worker registered is unregistered while another
+worker is live, and a new
+worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
+oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
+
+The server reports a name as unregistered only when it can trust its registry. The registry is
+trusted when either of these holds:
+
+- The last `inspect` reply that listed the tasks of every worker that answered arrived at most
+  `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
+  seconds. A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  `registered()`, or a reply that a worker event overtook doesn't count.
+- No broker URL is configured, so the server has only worker events, and at least one live
+  worker has registered tasks.
+
+When neither holds, no task is reported unregistered. That includes a server restarted after
+its workers (the registry is empty until a worker answers) and a server with a broker URL
+whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
+never fires.** The registry is never trusted while no worker is live, that is, while every
+worker has reported a stop or been replaced, with or without a broker URL. So a fleet that
+is down raises no flag: after a clean stop of every worker nothing is reported, even with a
+recent `inspect` reply. A worker killed without a shutdown event stays live and keeps its names
+until the 30-minute cleanup, and after the cleanup the registry is empty, so nothing fires
+until a worker answers. A live worker that registered no tasks still counts as live.
+
 ### Settings
 
 | Setting | Env var | `stemtrace server` flag | `init_app` and `StemtraceExtension` argument | Default |
@@ -339,6 +380,8 @@ is both stuck and interrupted is reported as interrupted.
 | `floor` | `STEMTRACE_ANOMALY_STUCK_FLOOR` | `--anomaly-stuck-floor` | `anomaly_stuck_floor` | `10m` |
 | `ceiling` | `STEMTRACE_ANOMALY_STUCK_CEILING` | `--anomaly-stuck-ceiling` | `anomaly_stuck_ceiling` | `1h` |
 | `min_samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `--anomaly-stuck-min-samples` | `anomaly_stuck_min_samples` | `5` |
+| `grace` | `STEMTRACE_ANOMALY_PENDING_GRACE` | `--anomaly-pending-grace` | `anomaly_pending_grace` | `5m` |
+| `authority_window` | `STEMTRACE_ANOMALY_REGISTRY_WINDOW` | `--anomaly-registry-window` | `anomaly_registry_window` | `10m` |
 
 Durations are a number and a unit (`90s`, `10m`, `1h`, `7d`; at most `3650d`), or a
 `timedelta` in Python. `factor` is a positive number of at most 100,000 and `min_samples` is a
@@ -373,6 +416,14 @@ and `stemtrace server` do.
 - **Redelivery to a host that is behind.** If an `acks_late` redelivery's STARTED is stamped earlier
   than the first start (the new host's clock is behind), the first start stays the latest
   event and the task stays interrupted.
+- **Skewed sender clocks move unregistered.** `grace` compares the server's clock with the
+  sending process's PENDING stamp, so a sender clock ahead delays the flag by the skew and one
+  behind brings it forward.
+- **A broker URL needs a working inspect.** The server reports no unregistered task while it
+  can't inspect the workers (see [Unregistered](#unregistered)). The same holds after a restart
+  until a worker answers.
+- **A killed worker's names count for up to 30 minutes.** After a SIGKILL there is no shutdown
+  event, so a name only that worker registered is reported unregistered up to 30 minutes late.
 - **Two machines, one nodename.** Workers that share a nodename can make the server flag a
   task as interrupted when the other machine restarts.
 - **The server's history is bounded.** The server keeps the newest 32 worker events for each

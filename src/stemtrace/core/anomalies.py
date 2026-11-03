@@ -1,9 +1,9 @@
-"""Anomaly classification: which tasks are stuck or interrupted (pure, clock injected).
+"""Anomaly classification: stuck, interrupted and unregistered tasks (pure, clock injected).
 
-Takes plain facts about each task node, per-name runtime stats and the workers'
-event timeline, and returns at most one anomaly per node. No I/O. The server
-adapts its run records and worker timeline into these facts; this module does
-not import them.
+Takes plain facts about each task node, per-name runtime stats, the workers'
+event timeline and what the worker registry knows, and returns at most one
+anomaly per node. No I/O. The server adapts its run records, worker timeline
+and registry into these facts; this module does not import them.
 
 Internal: not part of stemtrace's public API; names may change without notice.
 """
@@ -31,6 +31,8 @@ __all__ = [
     "LinkLike",
     "NodeFacts",
     "NodeLink",
+    "PendingLike",
+    "RegistryFacts",
     "RuntimeStats",
     "TimelineEntry",
     "classify_anomalies",
@@ -38,7 +40,7 @@ __all__ = [
 
 
 class AnomalyKind(str, Enum):
-    """What is wrong with a task. Only the first two are classified so far."""
+    """What is wrong with a task. ``no_workers_online`` is never reported."""
 
     STUCK = "stuck"
     INTERRUPTED = "interrupted"
@@ -116,6 +118,25 @@ class LinkLike(Protocol):
         ...
 
 
+class PendingLike(Protocol):
+    """What unregistered reads of a PENDING task (a ``NodeFacts`` or a run record works)."""
+
+    @property
+    def task_id(self) -> str:
+        """The task's ID."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """The task's name."""
+        ...
+
+    @property
+    def state_since(self) -> datetime | None:
+        """When the sender stamped the PENDING event."""
+        ...
+
+
 class NodeLink(NamedTuple):
     """A plain ``LinkLike``."""
 
@@ -140,13 +161,37 @@ class RuntimeStats:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistryFacts:
+    """What the worker registry knows, copied at one moment.
+
+    ``live_names`` are the names of every live worker (no stop reported since
+    its last ``worker_ready``, not superseded), ``any_live`` whether there is
+    one. ``authority_at`` is when an inspect reply last listed every worker's
+    tasks, and ``broker_configured`` whether the server can inspect.
+    """
+
+    live_names: frozenset[str]
+    any_live: bool
+    authority_at: datetime | None
+    broker_configured: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AnomalySettings:
-    """Stuck thresholds: ``max(factor x p95, floor)`` with ``min_samples`` samples, else the ceiling."""
+    """Stuck thresholds, the wait before a task is unregistered, and how fresh the registry must be.
+
+    A task is stuck after ``max(factor x p95, floor)`` with ``min_samples``
+    samples, else the ceiling. ``pending_grace`` is the wait before a PENDING
+    task counts as unregistered; ``authority_window`` is how old the last
+    inspect reply may be for the registry to be trusted.
+    """
 
     stuck_factor: float = 3
     stuck_floor: timedelta = timedelta(minutes=10)
     stuck_ceiling: timedelta = timedelta(hours=1)
     stuck_min_samples: int = 5
+    pending_grace: timedelta = timedelta(minutes=5)
+    authority_window: timedelta = timedelta(minutes=10)
 
 
 DEFAULT_SETTINGS: Final[AnomalySettings] = AnomalySettings()
@@ -154,13 +199,19 @@ DEFAULT_SETTINGS: Final[AnomalySettings] = AnomalySettings()
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Anomaly:
-    """One flagged task. The stuck fields are None for interrupted, and vice versa."""
+    """One flagged item: a task, or a task name (``task_id`` is then None).
+
+    ``task_id`` is None for a per-name item. ``task_count`` is how many
+    PENDING tasks an unregistered item covers. The stuck fields are None for
+    the other kinds, and vice versa.
+    """
 
     kind: AnomalyKind
-    task_id: str
-    name: str
+    task_id: str | None
+    name: str | None
     since: datetime
     hostname: str | None = None
+    task_count: int = 1
     elapsed_ms: int | None = None
     threshold_ms: int | None = None
     p95_ms: int | None = None
@@ -170,10 +221,16 @@ class Anomaly:
 
 @dataclass(frozen=True, slots=True)
 class AnomalyReport:
-    """The anomalies by task ID, and a count for every kind (0 included)."""
+    """What is flagged, by task for the node fields and as list items, and a count per kind.
+
+    ``anomalies`` maps a task ID to the item that covers it (an unregistered
+    task maps to its name's item). ``items`` is the list: each stuck or
+    interrupted task, one item per unregistered name. ``counts`` tallies ``items`` and has every kind (0 included).
+    """
 
     anomalies: Mapping[str, Anomaly]
     counts: Mapping[AnomalyKind, int] = field(default_factory=dict)
+    items: Sequence[Anomaly] = ()
 
 
 _MILLISECOND = timedelta(milliseconds=1)
@@ -188,12 +245,15 @@ def classify_anomalies(
     timeline: Mapping[str, Sequence[TimelineEntry]],
     settings: AnomalySettings = DEFAULT_SETTINGS,
     links: Iterable[LinkLike] = (),
+    pending: Iterable[PendingLike] = (),
+    registry: RegistryFacts | None = None,
 ) -> AnomalyReport:
-    """Flag the stuck and interrupted nodes; interrupted wins over stuck.
+    """Flag the stuck, interrupted and unregistered nodes; interrupted wins over stuck.
 
     ``nodes`` and ``links`` together must cover every TASK node (the subtree
-    rule walks them all); only ``nodes`` are classified. ``timeline`` maps a
-    nodename to its worker events, ascending by timestamp. Costs O(n log n).
+    rule walks them all); only ``nodes`` are judged for stuck and interrupted.
+    ``pending`` lists the PENDING tasks (also in one of those) for unregistered.
+    ``timeline`` maps a nodename to its worker events, ascending. O(n log n).
     """
     node_list = list(nodes)
     subtree = _subtree_progress(
@@ -207,10 +267,14 @@ def classify_anomalies(
         )
         if anomaly is not None:
             found[node.task_id] = anomaly
+    items = list(found.values())
+    by_task, listed = _unregistered(pending, now, registry, settings)
+    found.update(by_task)
+    items.extend(listed)
     counts = dict.fromkeys(AnomalyKind, 0)
-    for anomaly in found.values():
+    for anomaly in items:
         counts[anomaly.kind] += 1
-    return AnomalyReport(anomalies=found, counts=counts)
+    return AnomalyReport(anomalies=found, counts=counts, items=items)
 
 
 def _interrupted(
@@ -249,6 +313,76 @@ def _interrupted(
         hostname=host,
         evidence=evidence,
     )
+
+
+def _authoritative(
+    registry: RegistryFacts, now: datetime, settings: AnomalySettings
+) -> bool:
+    """Whether the registry can say a name is unknown, not just not heard of yet.
+
+    Never while no worker is live. Otherwise true after a recent inspect reply
+    that listed every replying worker's tasks, or, with no broker to inspect,
+    while a live worker has registered tasks (the events are then the only
+    source).
+    """
+    if not registry.any_live:
+        return False  # every worker is stopped: a fleet that is down raises no flag
+    confirmed = registry.authority_at
+    if confirmed is not None and now - confirmed <= settings.authority_window:
+        return True
+    return not registry.broker_configured and bool(registry.live_names)
+
+
+def _waiting(task: PendingLike, cutoff: datetime) -> bool:
+    """A PENDING task stamped before ``cutoff`` (now minus the grace) that isn't a built-in."""
+    since = task.state_since
+    return (
+        since is not None
+        and since < cutoff
+        and not task.name.startswith(_BUILTIN_PREFIX)
+    )
+
+
+def _oldest(tasks: Iterable[PendingLike]) -> datetime:
+    return min(since for t in tasks if (since := t.state_since) is not None)
+
+
+def _unregistered(
+    pending: Iterable[PendingLike],
+    now: datetime,
+    registry: RegistryFacts | None,
+    settings: AnomalySettings,
+) -> tuple[dict[str, Anomaly], list[Anomaly]]:
+    """The unregistered tasks by ID and their per-name items.
+
+    A PENDING task waits past ``pending_grace`` for a name no live worker
+    registered, and the registry is trusted (see ``_authoritative``).
+    """
+    if registry is None:
+        return {}, []
+    cutoff = now - settings.pending_grace
+    waiting = [task for task in pending if _waiting(task, cutoff)]
+    if not waiting:
+        return {}, []
+    if not _authoritative(registry, now, settings):
+        return {}, []
+    by_name: dict[str, list[PendingLike]] = defaultdict(list)
+    for task in waiting:
+        if task.name not in registry.live_names:
+            by_name[task.name].append(task)
+    by_task: dict[str, Anomaly] = {}
+    items: list[Anomaly] = []
+    for name, group in by_name.items():
+        item = Anomaly(
+            kind=AnomalyKind.UNREGISTERED,
+            task_id=None,
+            name=name,
+            since=_oldest(group),
+            task_count=len(group),
+        )
+        items.append(item)
+        by_task.update(dict.fromkeys((t.task_id for t in group), item))
+    return by_task, items
 
 
 def _timestamp(entry: TimelineEntry) -> datetime:

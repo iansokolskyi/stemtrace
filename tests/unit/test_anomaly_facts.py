@@ -130,3 +130,20 @@ def test_classifier_given_full_facts_for_an_ended_task_never_flags_it() -> None:
     )
 
     assert report.anomalies == {}
+
+
+def test_classifier_facts_list_each_pending_task_once_and_keep_it_as_a_link() -> None:
+    store = GraphStore()
+    for event in [
+        task_event("p1", TaskState.PENDING, 0, name="app.a"),
+        task_event("p2", TaskState.PENDING, 1, name="celery.chord_unlock"),
+        task_event("r1", TaskState.RECEIVED, 2, name="app.b"),
+        task_event("s1", TaskState.STARTED, 3, name="app.c", host="w@a"),
+    ]:
+        store.add_event(event)
+
+    facts = classifier_facts(store.run_records(), {}, at(100))
+
+    assert sorted(p.task_id for p in facts.pending) == ["p1", "p2"]
+    assert sorted(link.task_id for link in facts.links) == ["p1", "p2", "r1"]
+    assert [n.task_id for n in facts.nodes] == ["s1"]

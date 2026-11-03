@@ -87,6 +87,8 @@ class StemtraceExtension:
         anomaly_stuck_floor: timedelta | str | None = None,
         anomaly_stuck_ceiling: timedelta | str | None = None,
         anomaly_stuck_min_samples: int | str | None = None,
+        anomaly_pending_grace: timedelta | str | None = None,
+        anomaly_registry_window: timedelta | str | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -120,14 +122,20 @@ class StemtraceExtension:
             anomaly_stuck_ceiling: Stuck after this long when the name has too few
                 runs to have a p95 (default 1 hour).
             anomaly_stuck_min_samples: Completed runs a name needs before its p95
-                counts (default 5). The durations are a ``timedelta`` or a string
-                like ``90s``, ``10m`` or ``1h``. Unlike ``init_app()``, these
-                don't read the ``STEMTRACE_ANOMALY_STUCK_*`` env vars.
+                counts (default 5).
+            anomaly_pending_grace: How long a task may wait for a worker that
+                knows its name before it counts as unregistered (default 5
+                minutes).
+            anomaly_registry_window: How recent the last inspect reply must be
+                for task names to be trusted (default 10 minutes). The durations
+                are a ``timedelta`` or a string like ``90s``, ``10m`` or ``1h``.
+                Unlike ``init_app()``, the ``anomaly_*`` settings don't read
+                their ``STEMTRACE_ANOMALY_*`` env vars.
 
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be
                 loaded, ``api_key`` is too short or has invalid characters, or an
-                ``anomaly_stuck_*`` value isn't positive (the factor also
+                ``anomaly_*`` value isn't positive (the factor also
                 at most 100000).
                 A bad ``auth_dependency`` doesn't raise here, but in ``router``.
         """
@@ -143,6 +151,8 @@ class StemtraceExtension:
             stuck_floor=anomaly_stuck_floor,
             stuck_ceiling=anomaly_stuck_ceiling,
             stuck_min_samples=anomaly_stuck_min_samples,
+            pending_grace=anomaly_pending_grace,
+            authority_window=anomaly_registry_window,
         )
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()

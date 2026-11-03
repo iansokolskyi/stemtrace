@@ -1,5 +1,8 @@
 """Shared harness for the anomaly API tests: a seeded store, a timeline and an app."""
 
+import time
+from collections.abc import Iterator
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -8,7 +11,7 @@ from stemtrace.core.anomalies import AnomalySettings
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.store import GraphStore, WorkerTimeline
+from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from tests.unit.anomaly_pipeline import (
     READY,
     SHUTDOWN,
@@ -17,6 +20,26 @@ from tests.unit.anomaly_pipeline import (
     task_event,
     worker_event,
 )
+
+
+class ReplayTransport:
+    """Hands a consumer its events once, then waits until stopped."""
+
+    def __init__(self, events: list[TaskEvent | WorkerEvent]) -> None:
+        self._events = events
+        self.consumed = 0
+        self._stop = False
+
+    def consume(self) -> Iterator[TaskEvent | WorkerEvent]:
+        for event in self._events:
+            yield event
+            self.consumed += 1
+        while not self._stop:
+            time.sleep(0.01)
+
+    def stop(self) -> None:
+        self._stop = True
+
 
 # "Now" of every API test: 1000 s after T0, so a task STARTED at T0 has run for
 # 1000 s, well past SMALL's 300 s ceiling.
@@ -67,12 +90,16 @@ def make_app(
     store: GraphStore,
     timeline: WorkerTimeline | None = None,
     settings: AnomalySettings = SMALL,
+    registry: WorkerRegistry | None = None,
+    broker_url: str | None = None,
 ) -> FastAPI:
-    """An app serving the API over ``store``, ``timeline`` and ``settings``."""
+    """An app serving the API over ``store``, ``timeline``, ``registry`` and ``settings``."""
     app = FastAPI()
     app.include_router(
         create_api_router(
             store,
+            worker_registry=registry,
+            broker_url=broker_url,
             worker_timeline=timeline,
             anomaly_settings=settings,
         )
