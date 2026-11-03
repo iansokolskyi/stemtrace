@@ -23,6 +23,7 @@ from stemtrace.server.api import routes
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
+from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
 REAL_INSPECT_PROBE = True
@@ -62,7 +63,15 @@ class FakeInspect:
     def stats(self) -> object:
         fleet = self._fleet
         fleet.stats_calls += 1
-        self._snapshot = dict(fleet.nodes)
+        # A node whose control loop hasn't started yet (a worker still inside
+        # its worker_ready receivers) hasn't answered by "silent_until".
+        now = fleet.clock.now()
+        fleet.stats_times.append(now)
+        self._snapshot = {
+            name: node
+            for name, node in fleet.nodes.items()
+            if fleet.silent_until.get(name, 0.0) <= now
+        }
         fleet.attempt_started.release()
         if self._attempt == 1:
             fleet.first_attempt_gate.wait(BOUND_S)
@@ -97,6 +106,9 @@ class FakeFleet:
     def __init__(self) -> None:
         self.nodes: dict[str, tuple[int, list[str]]] = {}
         self.mode = "up"
+        self.clock = FakeClock()
+        self.silent_until: dict[str, float] = {}
+        self.stats_times: list[float] = []
         self.attempts = 0
         self.stats_calls = 0
         self.registered_calls = 0
@@ -117,8 +129,9 @@ class FakeFleet:
 @pytest.fixture
 def fleet(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeFleet]:
     fake = FakeFleet()
-    clock = FakeClock()
+    clock = fake.clock
     monkeypatch.setattr(routes, "_get_inspector", fake.inspector)
+    monkeypatch.setattr(routes, "_monotonic", clock.now)
     monkeypatch.setattr(inspect_probe, "_clock", clock.now)
     monkeypatch.setattr(inspect_probe, "_wait", clock.wait)
     yield fake
@@ -308,6 +321,93 @@ def test_p3_one_thousand_joins_in_a_second_give_at_most_two_refreshes(
         take(fleet.attempt_done)
 
     assert fleet.attempts == 2
+
+
+# --- P7, P8: a join is owed an answer ---------------------------------------
+
+
+def got(semaphore: threading.Semaphore, timeout: float = 1.0) -> bool:
+    return semaphore.acquire(timeout=timeout)
+
+
+# Attempts start 0, 2, 6, 14, 30 s after the join (the first plus the 2, 4, 8, 16 s
+# backoff steps; the 30 s step is the fifth extra attempt).
+@pytest.mark.parametrize(
+    ("answers_after_s", "attempts_needed"),
+    [(0.0, 1), (0.4, 2), (0.6, 2), (3.0, 3), (20.0, 5)],
+)
+def test_p7_a_worker_that_answers_later_than_its_ready_is_online_without_a_request(
+    fleet: FakeFleet, answers_after_s: float, attempts_needed: int
+) -> None:
+    extension, app = extension_app()
+    registry = extension.worker_registry
+
+    with TestClient(app):
+        take(fleet.attempt_done)
+        fleet.clock.wait(threading.Event(), 2.0)
+        now = fleet.clock.now()
+        fleet.nodes[NODE_B] = (22, ["app.b"])
+        fleet.silent_until[NODE_B] = now + answers_after_s
+        registry.register_worker(NODE_B, 22, ["app.b"])
+        for _ in range(attempts_needed):
+            take(fleet.attempt_done)
+
+    worker = registry.get_worker(NODE_B, 22)
+    assert worker is not None
+    assert worker.status == WorkerStatus.ONLINE
+
+
+def test_p8_a_worker_that_never_answers_gets_exactly_five_extra_attempts(
+    fleet: FakeFleet,
+) -> None:
+    extension, app = extension_app()
+    registry = extension.worker_registry
+
+    with TestClient(app):
+        take(fleet.attempt_done)
+        fleet.clock.wait(threading.Event(), 2.0)
+        before = fleet.attempts
+        fleet.nodes[NODE_B] = (22, ["app.b"])
+        fleet.silent_until[NODE_B] = float("inf")
+        registry.register_worker(NODE_B, 22, ["app.b"])
+        for _ in range(6):
+            take(fleet.attempt_done)
+        assert not got(fleet.attempt_done, 0.5)
+
+    assert fleet.attempts - before == 6
+
+
+# --- P9: one shared clock -------------------------------------------------------
+
+
+def test_p9_a_new_nodename_right_after_a_page_load_is_deferred_by_the_interval(
+    fleet: FakeFleet,
+) -> None:
+    extension, app = extension_app()
+    registry = extension.worker_registry
+
+    with TestClient(app) as client:
+        take(fleet.attempt_done)
+        fleet.clock.wait(threading.Event(), 2.0)
+        client.get("/api/workers")
+        take(fleet.attempt_done)
+        page_load_at = fleet.stats_times[-1]
+        registry.register_worker(NODE_B, 22, ["app.b"])
+        take(fleet.attempt_done)
+
+    assert fleet.stats_times[-1] - page_load_at >= 2.0
+
+
+def test_p9_a_page_load_right_after_a_probe_refresh_does_not_inspect_again(
+    fleet: FakeFleet,
+) -> None:
+    _, app = extension_app()
+
+    with TestClient(app) as client:
+        take(fleet.attempt_done)
+        client.get("/api/workers")
+
+    assert fleet.attempts == 1
 
 
 # --- P4: the broker is down ---------------------------------------------------
