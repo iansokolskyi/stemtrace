@@ -251,10 +251,19 @@ test.describe('Anomalies badge', () => {
 
 test.describe('Executions anomaly column', () => {
   test('shows the flag word on a flagged row and tints it', async ({ page }) => {
-    await open(page, [stuck], '/executions')
-    const row = page.getByRole('link', { name: /transcode_upload/ }).first()
+    const plain = createSuccessTask('billing.invoices.send_receipt')
+    const api = await open(page, [stuck], '/executions')
+    api.addTask(plain)
+    await page.reload()
     await expect(page.locator('[data-column-header="anomaly"]')).toBeVisible()
-    await expect(row.locator('[data-anomaly-flag="stuck"]')).toHaveText('Stuck')
+    const flagged = page
+      .getByRole('link')
+      .filter({ has: page.locator('[data-anomaly-flag="stuck"]') })
+    await expect(flagged).toHaveCount(1)
+    await expect(flagged.locator('[data-anomaly-flag]')).toHaveText('Stuck')
+    const unflagged = page.getByRole('link', { name: /send_receipt/ })
+    const tint = (row: Locator) => row.evaluate((el) => getComputedStyle(el).backgroundColor)
+    expect(await tint(flagged)).not.toBe(await tint(unflagged))
   })
 
   test('a row without an anomaly has an empty cell', async ({ page }) => {
