@@ -502,6 +502,21 @@ def test_row28k_the_revived_worker_stays_online_until_it_stops_again() -> None:
     assert fleet_items(report_at(registry, T0 + MINUTE)) == [(None, None, 1)]
 
 
+def test_row28k_a_ping_answer_keeps_the_revived_worker_online_after_it_misses_the_next_one() -> (
+    None
+):
+    registry = WorkerRegistry()
+    prove_channel(registry, T0 - 11 * MINUTE)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 12 * MINUTE)
+    registry.mark_shutdown(SOLO, 1, T0 - 10 * MINUTE)
+    registry.mark_seen(SOLO, T0 - 9 * MINUTE, now=T0 - 9 * MINUTE)  # revived
+    refresh_at(registry, T0, FakeInspect(stats=None, ping={SOLO: {"ok": "pong"}}))
+
+    refresh_at(registry, T0 + MINUTE, FakeInspect(stats=None))  # it misses this one
+
+    assert fleet_items(report_at(registry, T0 + MINUTE)) == []
+
+
 def test_row28k_a_stop_is_forgotten_by_the_server_clock_not_the_workers() -> None:
     registry = WorkerRegistry()
     stop = T0 - 2 * timedelta(hours=1)  # a worker clock two hours behind
