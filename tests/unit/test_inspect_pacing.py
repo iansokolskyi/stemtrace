@@ -424,6 +424,41 @@ def test_i10_a_new_nodename_clears_the_failure_backoff(
     assert target.ready_in() == 2.0  # the next failure starts the backoff again
 
 
+class EmptyStatsThenRegisteredFails:
+    """stats() completes empty; registered() raises; ping() would answer if asked."""
+
+    def __init__(self) -> None:
+        self.ping_calls = 0
+
+    def stats(self) -> object:
+        return None
+
+    def registered(self) -> object:
+        raise OperationalError("went away")
+
+    def ping(self) -> object:
+        self.ping_calls += 1
+        return {NODE: {"ok": "pong"}}
+
+
+def test_reading8_registered_failure_after_empty_stats_skips_ping_stamps_and_backs_off(
+    clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inspector = EmptyStatsThenRegisteredFails()
+    monkeypatch.setattr(routes, "_get_inspector", lambda _u, **_: inspector)
+    registry = WorkerRegistry()
+    target = routes._InspectRefresher(registry, BROKER)
+
+    target.refresh_blocking()
+
+    assert inspector.ping_calls == 0
+    assert (
+        registry._inspect_completed_at is not None
+    )  # the empty broadcast did complete
+    assert registry.get_all_workers() == []  # ping's answer was never applied
+    assert (target._failures, target.ready_in()) == (1, 2.0)
+
+
 def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
     broker: Broker, clock: Clock
 ) -> None:

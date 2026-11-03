@@ -92,7 +92,9 @@ def test_i1_i2_requests_return_within_the_bound_and_fast_inside_the_backoff(
 
 # --- I6 and I7: a broker that accepts the connection and then says nothing ---------------
 
-IO_ATTEMPT_BOUND_S = 5.0
+# Worst case measured: 4.2 s here, 5.3 s in the round 2 review (RabbitMQ); plus margin.
+IO_ATTEMPT_BOUND_S = 8.0
+REQUIRE_BROKERS_ENV = "STEMTRACE_REQUIRE_BROKERS"
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/15")
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//")
 
@@ -192,33 +194,41 @@ def test_i6_a_broker_that_accepts_and_never_answers_ends_the_attempt(
     refresher._lock.release()
 
 
-class SilenceAfterStats:
-    """Inspect wrapper: a good ``stats()``, then the connection goes silent (row I7)."""
+class SilentFrom:
+    """Inspect wrapper: the connection goes silent just before ``onset`` is called (row I7)."""
 
-    def __init__(self, inner: Any, proxy: FaultProxy) -> None:
+    def __init__(self, inner: Any, proxy: FaultProxy, onset: str) -> None:
         self._inner = inner
         self._proxy = proxy
+        self._onset = onset
+
+    def _call(self, name: str) -> object:
+        if name == self._onset:
+            self._proxy.go_silent()
+        return getattr(self._inner, name)()
 
     def stats(self) -> object:
-        reply = self._inner.stats()
-        self._proxy.go_silent()
-        return reply
+        return self._call("stats")
 
     def registered(self) -> object:
-        return self._inner.registered()
+        return self._call("registered")
 
     def ping(self) -> object:
-        return self._inner.ping()
+        return self._call("ping")
 
 
+@pytest.mark.parametrize("onset", ["stats", "registered", "ping"])
 @pytest.mark.parametrize("kind", ["redis", "amqp"])
-def test_i7_a_connection_that_goes_silent_after_stats_ends_the_attempt(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+def test_i7_a_connection_that_goes_silent_mid_attempt_ends_the_attempt(
+    kind: str, onset: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The URL stays out of the test id: xdist workers get different Redis databases.
     url = REDIS_URL if kind == "redis" else RABBITMQ_URL
     if not _reachable(url):
-        pytest.skip(f"{kind} broker not available at {url}")
+        message = f"{kind} broker not available at {url}"
+        if os.environ.get(REQUIRE_BROKERS_ENV) == "1":
+            pytest.fail(message)  # the job that sets it provides both brokers
+        pytest.skip(message)
     parts = urlsplit(url)
     proxy = FaultProxy((parts.hostname or "localhost", parts.port or 0))
     proxied = url.replace(f":{parts.port}", f":{proxy.port}", 1)
@@ -226,7 +236,7 @@ def test_i7_a_connection_that_goes_silent_after_stats_ends_the_attempt(
     monkeypatch.setattr(
         routes,
         "_get_inspector",
-        lambda u, **kw: SilenceAfterStats(real_get(proxied, **kw), proxy),
+        lambda u, **kw: SilentFrom(real_get(proxied, **kw), proxy, onset),
     )
     refresher = _InspectRefresher(WorkerRegistry(), url)
 

@@ -405,7 +405,9 @@ def _node_to_graph_response(
 # and ``_size`` reads with ``socket_timeout`` None, and amqp ``Transport._read`` blocks on a
 # socket set back to blocking mode (``_init_socket``), so a broker that goes quiet hangs the
 # attempt. ``socket_timeout`` (Redis) and ``read_timeout``/``write_timeout`` (amqp, passed by
-# kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait.
+# kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait. A call
+# that times out still costs about 2.5 s on Redis and 3 s on RabbitMQ (its connect, then
+# the read timeout, measured), so a whole attempt ends within about 5 s.
 _INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
 _INSPECT_IO_TIMEOUT_SECONDS = 1.0
 _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
@@ -613,7 +615,7 @@ class _InspectRefresher:
                 self._failures = 0
                 self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
             else:
-                # Doubling the wait (not 2**failures) can't overflow; the count stops at 1.
+                # Doubling the wait (not 2**failures) can't overflow; the count is capped too.
                 self._wait_s = (
                     _INSPECT_BACKOFF_START_SECONDS
                     if self._failures == 0
