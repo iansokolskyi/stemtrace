@@ -53,26 +53,84 @@ export interface AnomalyListResponse {
 /** The most one page holds. */
 const ANOMALIES_LIMIT = 500
 
-export async function fetchAnomalies(): Promise<AnomalyListResponse> {
-  return apiFetch(`${API_BASE}/anomalies?limit=${ANOMALIES_LIMIT}`, 'Failed to fetch anomalies')
+/** How long a request may take before the page says so (the server may be asking a dead broker). */
+export const ANOMALIES_TIMEOUT_MS = 10_000
+
+/** The request ran past `ANOMALIES_TIMEOUT_MS`. */
+export class AnomaliesTimeoutError extends Error {
+  constructor() {
+    super('Anomalies are taking long to load')
+    this.name = 'AnomaliesTimeoutError'
+  }
+}
+
+interface FetchAnomaliesOptions {
+  /** False asks the server not to inspect the workers first (it answers from what it knows). */
+  refresh?: boolean
+  /** Only this kind. */
+  kind?: AnomalyKind
+}
+
+export async function fetchAnomalies({
+  refresh = true,
+  kind,
+}: FetchAnomaliesOptions = {}): Promise<AnomalyListResponse> {
+  const params = new URLSearchParams({ limit: String(ANOMALIES_LIMIT) })
+  if (!refresh) params.set('refresh', 'false')
+  if (kind) params.set('kind', kind)
+  try {
+    return await apiFetch(
+      `${API_BASE}/anomalies?${params}`,
+      'Failed to fetch anomalies',
+      AbortSignal.timeout(ANOMALIES_TIMEOUT_MS),
+    )
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new AnomaliesTimeoutError()
+    }
+    throw error
+  }
 }
 
 // Anomalies are judged per request against the clock, so they are polled, never pushed.
 const ANOMALIES_POLL_MS = 30_000
 
-/**
- * The flagged items, oldest first, with a count per kind. The Anomalies page and the sidebar
- * badge share this one query. A 404 (a server without the endpoint) stops the polling; nothing
- * is retried.
- */
+// A 404 (a server without the endpoint) stops the polling; nothing is retried.
+function pollUnlessMissing(query: { state: { error: Error | null } }): number | false {
+  const error = query.state.error
+  return error instanceof HttpError && error.status === 404 ? false : ANOMALIES_POLL_MS
+}
+
+/** The Anomalies page's list: the server asks the workers first, so it is current. */
 export function useAnomalies() {
   return useQuery<AnomalyListResponse>({
     queryKey: ['anomalies'],
-    queryFn: fetchAnomalies,
-    refetchInterval: (query) => {
-      const error = query.state.error
-      return error instanceof HttpError && error.status === 404 ? false : ANOMALIES_POLL_MS
-    },
+    queryFn: () => fetchAnomalies(),
+    refetchInterval: pollUnlessMissing,
+    retry: false,
+  })
+}
+
+/**
+ * What the server already knows, for the sidebar badge on every page (`refresh=false`: asking
+ * the workers blocks while the broker is down).
+ */
+export function useAnomalyBadge() {
+  return useQuery<AnomalyListResponse>({
+    queryKey: ['anomalies', 'badge'],
+    queryFn: () => fetchAnomalies({ refresh: false }),
+    refetchInterval: pollUnlessMissing,
+    retry: false,
+  })
+}
+
+/** The fleet item alone, for when the capped list does not hold it (it sorts last). */
+export function useFleetAnomaly(enabled: boolean) {
+  return useQuery<AnomalyListResponse>({
+    queryKey: ['anomalies', 'fleet'],
+    queryFn: () => fetchAnomalies({ kind: 'no_workers_online' }),
+    enabled,
+    refetchInterval: pollUnlessMissing,
     retry: false,
   })
 }

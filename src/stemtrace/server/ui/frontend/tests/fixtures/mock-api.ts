@@ -88,6 +88,12 @@ export interface MockApiContext {
    */
   setAnomalies: (anomalies: MockAnomaly[] | null | 'error') => void
 
+  /** Make GET /anomalies answer only after this many milliseconds (0: at once). */
+  setAnomalyDelay: (ms: number) => void
+
+  /** The URLs requested from GET /anomalies, oldest first */
+  anomalyRequests: URL[]
+
   /** Replace all workers */
   setWorkers: (workers: MockWorker[]) => void
 
@@ -204,6 +210,8 @@ export async function setupMockApi(
   let groups: MockGroup[] | null | 'error' = []
   let broker: string | null = null
   let anomalies: MockAnomaly[] | null | 'error' = []
+  let anomalyDelayMs = 0
+  const anomalyRequests: URL[] = []
   let groupStats: Record<string, Record<string, number[]>> | null | 'error' = null
   const statsRequests: URL[] = []
   let taskStats: MockTaskStats[] | 'error' = []
@@ -264,6 +272,12 @@ export async function setupMockApi(
     setAnomalies(next) {
       anomalies = next
     },
+
+    setAnomalyDelay(ms) {
+      anomalyDelayMs = ms
+    },
+
+    anomalyRequests,
 
     setBroker(kind: string | null) {
       broker = kind
@@ -430,6 +444,9 @@ export async function setupMockApi(
       await route.continue()
       return
     }
+    const url = new URL(route.request().url())
+    anomalyRequests.push(url)
+    if (anomalyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, anomalyDelayMs))
     if (anomalies === null || anomalies === 'error') {
       const missing = anomalies === null
       await route.fulfill({
@@ -441,18 +458,25 @@ export async function setupMockApi(
     }
     const counts = { stuck: 0, interrupted: 0, unregistered: 0, no_workers_online: 0 }
     for (const item of anomalies) counts[item.kind] += 1
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        anomalies,
-        counts,
-        total: anomalies.length,
-        limit: 500,
-        offset: 0,
-        evaluated_at: new Date().toISOString(),
-      }),
-    })
+    // Like the API: filter by kind, then page; `counts` ignores the filter
+    const kind = url.searchParams.get('kind')
+    const limit = Number(url.searchParams.get('limit') ?? 100)
+    const matching = anomalies.filter((item) => !kind || item.kind === kind)
+    await route
+      .fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          anomalies: matching.slice(0, limit),
+          counts,
+          total: matching.length,
+          limit,
+          offset: 0,
+          evaluated_at: new Date().toISOString(),
+        }),
+      })
+      // The page gave up (client timeout) before this answer: nothing to deliver
+      .catch(() => {})
   })
 
   // Registry: GET /tasks/registry (more specific, register first)

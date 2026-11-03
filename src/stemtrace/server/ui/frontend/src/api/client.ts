@@ -121,8 +121,12 @@ async function readUnauthorizedReason(response: Response): Promise<string | null
  * GET a JSON API resource. On 401, explain a session signed by a different
  * secret, otherwise send the user to the login page.
  */
-export async function apiFetch<T>(url: string, errorMessage: string): Promise<T> {
-  const response = await fetch(url)
+export async function apiFetch<T>(
+  url: string,
+  errorMessage: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(url, { signal })
   if (response.status === 401) {
     if ((await readUnauthorizedReason(response)) === SESSION_SECRET_MISMATCH) {
       // Signing in again wouldn't help, so explain instead of redirecting.

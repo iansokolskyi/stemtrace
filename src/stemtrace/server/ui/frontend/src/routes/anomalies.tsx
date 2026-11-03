@@ -1,6 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
-import { type Anomaly, anomalyTotal, useAnomalies } from '@/api/anomalies'
+import {
+  AnomaliesTimeoutError,
+  type Anomaly,
+  anomalyTotal,
+  useAnomalies,
+  useFleetAnomaly,
+} from '@/api/anomalies'
 import { AnomalyActions } from '@/components/anomalies/AnomalyActions'
 import { AnomalyCallout } from '@/components/anomalies/AnomalyCallout'
 import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
@@ -16,7 +22,11 @@ export const Route = createFileRoute('/anomalies')({
 function AnomaliesPage(): ReactElement {
   const { data, isLoading, error } = useAnomalies()
   // The fleet item is one banner above the list, whatever its `since` sorts it to
-  const fleet = data?.anomalies.find((a) => a.kind === 'no_workers_online')
+  // The list is capped and sorts the fleet item last, so a full list may not hold it: `counts`
+  // says whether there is one, and a request of its own fetches it.
+  const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
+  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
+  const fleet = inList ?? fleetQuery.data?.anomalies[0]
   const items = data?.anomalies.filter((a) => a.kind !== 'no_workers_online') ?? []
   const total = data ? anomalyTotal(data.counts) : 0
 
@@ -29,7 +39,14 @@ function AnomaliesPage(): ReactElement {
         </p>
       </div>
 
-      {error && <p className="text-failure-t">Failed to load anomalies</p>}
+      {error && (
+        <p role="alert" data-testid="anomalies-error" className="text-failure-t">
+          {error instanceof AnomaliesTimeoutError
+            ? 'Anomalies are taking long to load'
+            : 'Failed to load anomalies'}
+          {data ? '; showing the last result.' : '.'}
+        </p>
+      )}
       {isLoading && <div aria-hidden="true" className="h-24 rounded-lg bg-surface" />}
 
       {data && total === 0 && (
@@ -44,6 +61,12 @@ function AnomaliesPage(): ReactElement {
       )}
 
       {fleet && <AnomalyCallout anomaly={fleet} placement="fleet" />}
+
+      {data && data.total > data.anomalies.length && (
+        <p data-testid="anomalies-truncated" className="text-xs text-muted">
+          Showing {data.anomalies.length} of {data.total}
+        </p>
+      )}
 
       {items.length > 0 && (
         <section aria-label="Anomalies" className="rounded-lg bg-surface">
@@ -68,7 +91,7 @@ function AnomalyItem({ anomaly }: { anomaly: Anomaly }): ReactElement {
     <li
       data-testid="anomaly-item"
       data-kind={anomaly.kind}
-      className="flex gap-3 border-t border-rule px-4 py-3 first:border-t-0"
+      className="flex min-w-0 gap-3 border-t border-rule px-4 py-3 first:border-t-0"
     >
       <AnomalyFlag kind={anomaly.kind} className="mt-0.5 self-start" />
       <div className="min-w-0 flex-1">
@@ -79,7 +102,7 @@ function AnomalyItem({ anomaly }: { anomaly: Anomaly }): ReactElement {
         >
           {explain(anomaly)}
         </p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
           <span className="text-xs text-muted">since {sinceText(anomaly.since)}</span>
           <AnomalyActions anomaly={anomaly} from="list" />
         </div>

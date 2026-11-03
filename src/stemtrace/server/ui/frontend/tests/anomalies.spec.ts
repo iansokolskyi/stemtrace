@@ -94,7 +94,7 @@ test.describe('Anomalies page', () => {
 
     await expect(item(page, 'interrupted').locator('[data-anomaly-flag]')).toHaveText('Interrupted')
     await expect(item(page, 'interrupted').getByTestId('anomaly-explanation')).toHaveText(
-      'media-gpu-1 shut down while this task was running; no result will arrive.',
+      'media-gpu-1 shut down while this task was running; no result seen since.',
     )
     await expect(item(page, 'unregistered').first().locator('[data-anomaly-flag]')).toHaveText(
       'Unregistered',
@@ -167,8 +167,39 @@ test.describe('Anomalies page', () => {
 
   test('a failing endpoint says so instead of showing all clear', async ({ page }) => {
     await open(page, 'error')
-    await expect(page.getByText('Failed to load anomalies')).toBeVisible()
+    await expect(page.getByTestId('anomalies-error')).toHaveText('Failed to load anomalies.')
     await expect(page.getByTestId('anomalies-empty')).toHaveCount(0)
+  })
+
+  test('a slow endpoint says so after 10 s instead of a skeleton forever', async ({ page }) => {
+    test.setTimeout(40_000)
+    const api = await open(page, [])
+    api.setAnomalyDelay(14_000)
+    await page.goto('/anomalies')
+    await expect(page.getByTestId('anomalies-error')).toHaveText(
+      'Anomalies are taking long to load.',
+      { timeout: 20_000 },
+    )
+    await expect(page.getByTestId('anomalies-empty')).toHaveCount(0)
+  })
+
+  test('a list cut at 500 says how many there are, and the fleet banner still shows', async ({
+    page,
+  }) => {
+    const many = Array.from({ length: 501 }, (_, i) =>
+      createAnomaly('unregistered', { name: `bulk.tasks.t${i}`, since: minutesAgo(600 - i) }),
+    )
+    // The server sorts an item without a task ID or name last, so the fleet item is the cut one
+    await open(page, [...many, fleet])
+    await expect(page.getByTestId('anomalies-truncated')).toHaveText('Showing 500 of 502')
+    await expect(items(page)).toHaveCount(500)
+    await expect(page.getByTestId('fleet-banner')).toContainText('14 tasks waiting')
+  })
+
+  test('a complete list has no truncation note', async ({ page }) => {
+    await open(page, [stuck])
+    await expect(items(page)).toHaveCount(1)
+    await expect(page.getByTestId('anomalies-truncated')).toHaveCount(0)
   })
 })
 
@@ -318,9 +349,10 @@ test.describe('Task page callout', () => {
     const pending = createSuccessTask('billing.tasks.sync_invoices_v2')
     pending.state = 'PENDING'
     pending.anomaly = 'unregistered'
+    pending.anomaly_detail = renamed
+    expect(renamed.task_id).toBeNull()
     const api = await open(page, [renamed], '/anomalies')
     api.addTask(pending)
-    api.setAnomalies([{ ...renamed, task_id: pending.task_id }])
     await page.goto(`/tasks/${pending.task_id}`)
     const callout = page.getByTestId('anomaly-callout')
     await expect(callout.getByRole('heading')).toHaveText('Unregistered: no worker knows this task')
@@ -338,4 +370,58 @@ test.describe('Task page callout', () => {
     await expect(page.getByTestId('anomaly-callout')).toHaveCount(0)
     await expect(page.locator('[data-anomaly-flag]')).toHaveCount(0)
   })
+})
+
+test.describe('Anomalies requests', () => {
+  const requests = (api: MockApiContext): URL[] => api.anomalyRequests
+
+  test('the sidebar badge asks without refresh, the page asks with it', async ({ page }) => {
+    const api = await open(page, [stuck], '/flows')
+    await expect(badge(page)).toHaveText('Anomalies1')
+    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual(['false'])
+    await page.goto('/anomalies')
+    await expect(items(page)).toHaveCount(1)
+    expect(requests(api).some((u) => !u.searchParams.has('refresh'))).toBe(true)
+  })
+
+  test('polling continues every 30 s', async ({ page }) => {
+    await page.clock.install()
+    const api = await open(page, [stuck], '/flows')
+    await expect(badge(page)).toHaveText('Anomalies1')
+    await page.clock.runFor(95_000)
+    await expect.poll(() => requests(api).length).toBeGreaterThanOrEqual(4)
+  })
+
+  test('a 404 stops the polling', async ({ page }) => {
+    await page.clock.install()
+    const api = await open(page, null, '/flows')
+    await expect.poll(() => requests(api).length).toBe(1)
+    await page.clock.runFor(95_000)
+    await page.waitForTimeout(500)
+    expect(requests(api)).toHaveLength(1)
+  })
+})
+
+const LONG_HOST = 'celery@ip-10-0-12-34.eu-central-1.compute.internal'
+
+test.describe('Anomalies at narrow widths', () => {
+  for (const width of [360, 400]) {
+    test(`a long hostname does not overflow the page at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 })
+      const longStuck = { ...stuck, hostname: LONG_HOST }
+      const longLost = { ...interrupted, hostname: LONG_HOST }
+      stuckTask.hostname = LONG_HOST
+      await open(page, [longStuck, longLost, fleet])
+      await expect(items(page)).toHaveCount(2)
+      await expect(item(page, 'stuck').getByRole('link', { name: /Worker/ })).toBeVisible()
+      const overflow = () =>
+        page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+      expect(await overflow()).toBeLessThanOrEqual(0)
+
+      await page.goto(`/tasks/${stuckTask.task_id}`)
+      await expect(page.getByTestId('anomaly-callout')).toBeVisible()
+      expect(await overflow()).toBeLessThanOrEqual(0)
+      stuckTask.hostname = GPU_2
+    })
+  }
 })

@@ -22,7 +22,7 @@ export function AnomalyActions({ anomaly, from }: AnomalyActionsProps): ReactEle
   const list = from === 'list'
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
       {list && taskId && (
         <Link to="/tasks/$taskId" params={{ taskId }} className={ACTION}>
           <Icon name="play" size={13} />

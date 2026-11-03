@@ -41,7 +41,7 @@ export function explain(anomaly: Anomaly): string {
     }
     case 'interrupted': {
       const verb = anomaly.evidence ? STOPPED[anomaly.evidence] : 'stopped'
-      return `${host ?? 'The worker'} ${verb} while this task was running; no result will arrive.`
+      return `${host ?? 'The worker'} ${verb} while this task was running; no result seen since.`
     }
     case 'unregistered': {
       const base = `${tasks(anomaly.task_count)} PENDING; no online worker registers this name`
@@ -60,4 +60,4 @@ export function sinceText(since: string): string {
 
 /** Shared look of the anomaly links, the same as the task page's quiet buttons. */
 export const ACTION =
-  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] bg-raised px-3 text-xs font-semibold whitespace-nowrap text-ink hover:bg-press'
+  'inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-[3px] bg-raised px-3 text-xs font-semibold whitespace-nowrap text-ink hover:bg-press'
