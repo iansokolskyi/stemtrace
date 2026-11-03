@@ -24,6 +24,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
 from stemtrace.core.graph import (
     ChordNotRunReason,
     NodeType,
@@ -31,7 +32,14 @@ from stemtrace.core.graph import (
 )
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
+from stemtrace.server.api.anomaly_routes import (
+    AnomalyEvaluator,
+    add_anomaly_routes,
+    anomaly_response,
+    kind_name,
+)
 from stemtrace.server.api.schemas import (
+    AnomalyKind,
     ErrorResponse,
     FlowSummaryResponse,
     GraphListResponse,
@@ -53,6 +61,10 @@ from stemtrace.server.api.schemas import (
 )
 from stemtrace.server.api.summary_routes import add_summary_routes
 from stemtrace.server.groups import GroupsInput, build_group_config, group_lookup
+from stemtrace.server.inspect_probe import (
+    INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
+    InspectProbe,
+)
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
@@ -61,10 +73,11 @@ if TYPE_CHECKING:
     from celery.app.control import Inspect
     from starlette.types import Receive, Scope, Send
 
+    from stemtrace.core.anomalies import Anomaly
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
-    from stemtrace.server.store import GraphStore, WorkerRegistry
+    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
     from stemtrace.server.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -184,12 +197,29 @@ def _group_task_names(
     return frozenset(filter(accepts, store.get_unique_task_names()))
 
 
+_NO_ANOMALIES: Mapping[str, Anomaly] = {}
+
+
+def _anomaly_of(node: TaskNode, anomalies: Mapping[str, Anomaly]) -> Anomaly | None:
+    """The node's anomaly; GROUP/CHORD nodes never have one."""
+    return anomalies.get(node.task_id) if node.node_type == NodeType.TASK else None
+
+
+def _anomaly_kind(
+    node: TaskNode, anomalies: Mapping[str, Anomaly]
+) -> AnomalyKind | None:
+    """The kind of the node's anomaly, for the ``anomaly`` field."""
+    anomaly = _anomaly_of(node, anomalies)
+    return kind_name(anomaly) if anomaly is not None else None
+
+
 def _node_to_response(
     node: TaskNode,
     *,
     include_output: bool = False,
     include_events: bool = True,
     group_of: Callable[[str], ResolvedGroup],
+    anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
 ) -> TaskNodeResponse:
     """Convert TaskNode to API response model.
 
@@ -201,6 +231,7 @@ def _node_to_response(
         include_events: Embed the events; off for ``compact=1`` lists, which
             then carry ``events: null``.
         group_of: Task group by task name (see ``group_lookup``).
+        anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
 
     Returns:
         TaskNodeResponse with timestamp and duration.
@@ -240,6 +271,7 @@ def _node_to_response(
         hostname=node.hostname,
         queue=node.queue,
         routing_key=node.routing_key,
+        anomaly=_anomaly_kind(node, anomalies),
     )
 
 
@@ -286,6 +318,7 @@ def _node_to_graph_response(
     group_of: Callable[[str], ResolvedGroup],
     not_run_reason: ChordNotRunReason | None = None,
     flow: FlowSummaryResponse | None = None,
+    anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -300,6 +333,7 @@ def _node_to_graph_response(
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
         flow: The flow summary of a root in the graph list.
+        anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -362,6 +396,7 @@ def _node_to_graph_response(
         routing_key=node.routing_key,
         not_run_reason=not_run_reason,
         flow=flow,
+        anomaly=_anomaly_kind(node, anomalies),
     )
 
 
@@ -404,7 +439,7 @@ def _get_inspector(
 def _refresh_worker_registry_from_inspect(
     worker_registry: WorkerRegistry,
     inspector: Inspect,
-) -> None:
+) -> frozenset[str]:
     """Refresh worker registry from Celery inspect (best-effort).
 
     This supports "late join" scenarios where the server missed worker_ready
@@ -420,6 +455,9 @@ def _refresh_worker_registry_from_inspect(
     Args:
         worker_registry: Worker registry to populate/update.
         inspector: Celery inspector to query.
+
+    Returns:
+        The nodenames that answered (stats, else ping).
     """
     # The replies describe the workers as of now, but the consumer keeps
     # applying worker events while inspect waits (up to 0.5 s per call).
@@ -429,8 +467,15 @@ def _refresh_worker_registry_from_inspect(
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
 
-    with contextlib.suppress(Exception):
+    stats_completed = False
+    try:
         stats = inspector.stats()
+        # Celery 5.6.3 Inspect._prepare returns None for an empty reply; kombu
+        # 5.6.2 Mailbox._broadcast -> Connection.default_channel raises when the
+        # broker is unreachable. So returning at all means the broadcast ran.
+        stats_completed = True
+    except Exception:
+        logger.debug("inspect stats() failed", exc_info=True)
 
     with contextlib.suppress(Exception):
         registered = inspector.registered()
@@ -441,10 +486,12 @@ def _refresh_worker_registry_from_inspect(
         active: dict[str, object] | None = None
         with contextlib.suppress(Exception):
             active = inspector.ping()
-        if not active:
-            return
-        worker_registry.apply_ping_reply(active)
-        return
+        if not active and not stats_completed:
+            return frozenset()
+        # An empty stats() that completed still stamps the broadcast, after the
+        # pings: nobody answered, which is evidence for silent workers.
+        worker_registry.apply_ping_reply(active or (), stats_completed=stats_completed)
+        return frozenset(active or ())
 
     # If we got a non-empty stats response, workers that didn't answer go
     # offline (an unanswered inspect doesn't prove the process closed, so a
@@ -458,6 +505,7 @@ def _refresh_worker_registry_from_inspect(
         tasks = _tasks_for_worker_key(registered, nodename) if pid else None
         replies[nodename] = (pid, tasks)
     worker_registry.apply_stats_reply(seen, replies)
+    return frozenset(replies)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
@@ -475,9 +523,7 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
     return stopped_unexpectedly or consumer.is_connected is False
 
 
-# The UI requests workers and the registry in quick succession on page load;
-# one inspect round trip serves both.
-_INSPECT_REFRESH_MIN_INTERVAL_SECONDS = 2.0
+_INSPECT_REFRESH_MIN_INTERVAL_SECONDS = INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 _INSPECT_TIMEOUT_SECONDS = 0.5
 
 
@@ -503,6 +549,50 @@ class _InspectRefresher:
     def _refreshed_recently(self) -> bool:
         return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
+    def ready_in(self) -> float:
+        """Seconds until the last successful refresh is a full interval old."""
+        if self._last_refresh <= 0.0:
+            return 0.0
+        return max(
+            0.0,
+            self._last_refresh + _INSPECT_REFRESH_MIN_INTERVAL_SECONDS - _monotonic(),
+        )
+
+    def _inspect_and_apply(
+        self, worker_registry: WorkerRegistry, broker_url: str
+    ) -> frozenset[str]:
+        """Ask Celery and apply the reply; a failure doesn't count as a refresh.
+
+        Returns:
+            The nodenames that answered (empty on a failure).
+        """
+        inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
+        if inspector is None:
+            return frozenset()
+        answered: frozenset[str] = frozenset()
+        with contextlib.suppress(Exception):
+            answered = _refresh_worker_registry_from_inspect(worker_registry, inspector)
+            self._last_refresh = _monotonic()
+        return answered
+
+    def refresh_blocking(self) -> frozenset[str] | None:
+        """Refresh on the calling thread; the probe paces it with ``ready_in``.
+
+        Returns:
+            The nodenames that answered, or None if another refresh was in
+            flight (nothing ran).
+        """
+        worker_registry = self._worker_registry
+        broker_url = self._broker_url
+        if worker_registry is None or broker_url is None:
+            return frozenset()
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            return self._inspect_and_apply(worker_registry, broker_url)
+        finally:
+            self._lock.release()
+
     async def maybe_refresh(self) -> None:
         """Refresh the worker registry unless disabled, recent, or in progress."""
         worker_registry = self._worker_registry
@@ -517,22 +607,36 @@ class _InspectRefresher:
         try:
             if self._refreshed_recently():
                 return
-            inspector = await run_in_threadpool(
-                _get_inspector,
-                broker_url,
-                timeout_seconds=_INSPECT_TIMEOUT_SECONDS,
+            await run_in_threadpool(
+                self._inspect_and_apply, worker_registry, broker_url
             )
-            if inspector is None:
-                return
-            with contextlib.suppress(Exception):
-                await run_in_threadpool(
-                    _refresh_worker_registry_from_inspect,
-                    worker_registry,
-                    inspector,
-                )
-                self._last_refresh = _monotonic()
         finally:
             self._lock.release()
+
+
+def _wire_inspect_probe(
+    router: APIRouter,
+    probe: InspectProbe | None,
+    refresher: _InspectRefresher,
+    worker_registry: WorkerRegistry | None,
+    broker_url: str | None,
+) -> None:
+    """Point a probe at the refresher and the registry's new-node events.
+
+    Nothing to inspect (no registry or no broker URL) means no probe. A probe
+    the router makes itself has nobody else to start it, so it rides the app's
+    startup and shutdown events (not run when the app has its own ``lifespan``;
+    a worker joining still starts it).
+    """
+    if worker_registry is None or broker_url is None:
+        return
+    own = probe is None
+    probe = probe or InspectProbe()
+    probe.bind(refresher)
+    worker_registry.add_new_node_listener(probe.trigger)
+    if own:
+        router.add_event_handler("startup", probe.start)
+        router.add_event_handler("shutdown", probe.stop)
 
 
 def _hostnames_by_registered_task(
@@ -706,6 +810,7 @@ def _add_task_routes(
     worker_registry: WorkerRegistry | None,
     refresher: _InspectRefresher,
     groups: GroupConfig,
+    evaluator: AnomalyEvaluator,
 ) -> None:
     """Register the task list, task registry, task detail and children routes.
 
@@ -791,6 +896,7 @@ def _add_task_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
+        anomalies = (await evaluator.evaluate()).anomalies
         nodes, total = store.get_nodes(
             limit=limit,
             offset=offset,
@@ -806,7 +912,12 @@ def _add_task_routes(
         )
         return TaskListResponse(
             tasks=[
-                _node_to_response(n, include_events=not compact, group_of=group_of)
+                _node_to_response(
+                    n,
+                    include_events=not compact,
+                    group_of=group_of,
+                    anomalies=anomalies,
+                )
                 for n in nodes
             ],
             total=total,
@@ -871,10 +982,18 @@ def _add_task_routes(
 
         node, children, flow_root_id = found
         group_of = group_lookup(groups)
+        anomalies = (await evaluator.evaluate()).anomalies
+        anomaly = _anomaly_of(node, anomalies)
         return TaskDetailResponse(
-            task=_node_to_response(node, include_output=True, group_of=group_of),
-            children=[_node_to_response(c, group_of=group_of) for c in children],
+            task=_node_to_response(
+                node, include_output=True, group_of=group_of, anomalies=anomalies
+            ),
+            children=[
+                _node_to_response(c, group_of=group_of, anomalies=anomalies)
+                for c in children
+            ],
             flow_root_id=flow_root_id,
+            anomaly_detail=anomaly_response(anomaly) if anomaly is not None else None,
         )
 
     @router.get(
@@ -895,8 +1014,11 @@ def _add_task_routes(
 
         children = found.children
         group_of = group_lookup(groups)
+        anomalies = (await evaluator.evaluate()).anomalies
         return [
-            _node_to_response(c, include_events=not compact, group_of=group_of)
+            _node_to_response(
+                c, include_events=not compact, group_of=group_of, anomalies=anomalies
+            )
             for c in children
         ]
 
@@ -907,6 +1029,7 @@ def _add_graph_routes(
     store: GraphStore,
     node_alias_key: str | None,
     groups: GroupConfig,
+    evaluator: AnomalyEvaluator,
 ) -> None:
     """Register the graph list and graph detail routes."""
 
@@ -943,6 +1066,7 @@ def _add_graph_routes(
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
+        anomalies = (await evaluator.evaluate()).anomalies
         # Roots, their children (for synthetic node timing) and each flow's
         # summary from one snapshot
         roots, all_nodes, summaries, total = store.get_root_flows(
@@ -962,6 +1086,7 @@ def _add_graph_routes(
                     flow=FlowSummaryResponse.model_validate(
                         summaries[r.task_id], from_attributes=True
                     ),
+                    anomalies=anomalies,
                 )
                 for r in roots
             ],
@@ -986,6 +1111,7 @@ def _add_graph_routes(
         # The whole graph is here, so every header that has run is known. A
         # pass over every node and event: off the event loop.
         not_run = await run_in_threadpool(chord_not_run_reasons, all_nodes)
+        anomalies = (await evaluator.evaluate()).anomalies
         return GraphResponse(
             root_id=root_id,
             nodes={
@@ -995,6 +1121,7 @@ def _add_graph_routes(
                     node_alias_key=node_alias_key,
                     group_of=group_of,
                     not_run_reason=not_run.get(tid),
+                    anomalies=anomalies,
                 )
                 for tid, n in graph.items()
             },
@@ -1155,6 +1282,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     broker_url: str | None = None,
     node_alias_from_arguments: str | None = None,
     groups: GroupsInput = None,
+    worker_timeline: WorkerTimeline | None = None,
+    anomaly_settings: AnomalySettings = DEFAULT_SETTINGS,
+    inspect_probe: InspectProbe | None = None,
 ) -> APIRouter:
     """Create REST API router with task and graph endpoints.
 
@@ -1169,6 +1299,13 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         groups: Code-defined task groups, as for ``StemtraceExtension``: a
             GroupConfig, a list of GroupRule or dicts, or a TOML file path.
             None gives automatic groups only.
+        worker_timeline: Worker event history that tells an interrupted task from
+            a running one (see ``StemtraceExtension``); None means no task is
+            ever reported interrupted.
+        anomaly_settings: Thresholds for stuck tasks; see ``anomaly_settings()``.
+        inspect_probe: Probe that refreshes the registry without a request;
+            ``StemtraceExtension`` passes its own and starts it. None gives the
+            router its own, started by the app's startup event.
 
     Returns:
         Configured API router.
@@ -1179,7 +1316,18 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     router = APIRouter(prefix="/api", tags=["stemtrace"], route_class=_ApiRoute)
     # One refresher for both /tasks/registry and /workers, so they share the
     # rate limit.
-    refresher = _InspectRefresher(worker_registry, broker_url)
+    # A probe that is already bound keeps its refresher, so routers built twice
+    # from one extension share one rate limit.
+    shared = inspect_probe.target if inspect_probe is not None else None
+    refresher = (
+        shared
+        if isinstance(shared, _InspectRefresher)
+        else _InspectRefresher(worker_registry, broker_url)
+    )
+    _wire_inspect_probe(router, inspect_probe, refresher, worker_registry, broker_url)
+    evaluator = AnomalyEvaluator(
+        store, worker_timeline, anomaly_settings, worker_registry, broker_url
+    )
 
     _add_health_routes(
         router,
@@ -1195,12 +1343,14 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         worker_registry=worker_registry,
         refresher=refresher,
         groups=group_config,
+        evaluator=evaluator,
     )
     _add_graph_routes(
         router,
         store=store,
         node_alias_key=node_alias_from_arguments,
         groups=group_config,
+        evaluator=evaluator,
     )
     _add_group_routes(
         router, store=store, worker_registry=worker_registry, groups=group_config
@@ -1209,5 +1359,6 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
     _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    add_anomaly_routes(router, evaluator=evaluator, refresher=refresher)
     _serve_head_on_get_routes(router)
     return router

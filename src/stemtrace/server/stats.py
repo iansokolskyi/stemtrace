@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Final
 
-from stemtrace.core.events import TaskState
+from stemtrace.core.events import CANCELLED_RETRY_REASON, TaskState
 from stemtrace.core.graph import TERMINAL_STATES, NodeType
 
 if TYPE_CHECKING:
@@ -69,17 +69,30 @@ class RunRecord:
     # Milliseconds of the last run of a terminal task; None before it ends or
     # when its STARTED is missing (see ``TaskNode.runtime_ms``).
     runtime_ms: int | None = None
+    # The state-deciding event's time and nodename (None for an eager task or
+    # an old worker), whether it is a cold-stop cancelled RETRY, and the parent
+    # the task's events reported.
+    state_since: datetime | None = None
+    state_host: str | None = None
+    cancelled: bool = False
+    reported_parent_id: str | None = None
+    # Latest STARTED with the state event's ``retries`` (None if there is none;
+    # a main-process terminal event has retries=0, so then it is attempt 0's),
+    # and when a ``replace()`` replacement was due (None if none was sent).
+    attempt_started: datetime | None = None
+    replaced_progress: datetime | None = None
 
     @classmethod
     def from_node(cls, node: TaskNode) -> RunRecord | None:
         """Build the record of a TASK node; None for GROUP/CHORD or an empty node."""
-        if node.node_type != NodeType.TASK or node.last_updated is None:
+        current, last_updated = node.state_event, node.last_updated
+        if node.node_type != NodeType.TASK or current is None or last_updated is None:
             return None
         return cls(
             task_id=node.task_id,
             name=node.name,
             state=node.state,
-            last_updated=node.last_updated,
+            last_updated=last_updated,
             # Only failure groups read it. Reading it scans all of the node's
             # events, and this runs under the store lock on every event, so a
             # task retrying thousands of times would make ingest quadratic.
@@ -90,6 +103,15 @@ class RunRecord:
             # terminal task reads it: no calls while it runs, then one per event
             # that arrives after the terminal one (usually none).
             runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
+            # The rest is O(1): the node keeps the state event and per-attempt
+            # and per-parent times as it ingests, so no event scan.
+            state_since=current.timestamp,
+            state_host=current.hostname,
+            cancelled=current.state == TaskState.RETRY
+            and current.exception == CANCELLED_RETRY_REASON,
+            reported_parent_id=node.reported_parent_id,
+            attempt_started=node.attempt_started,
+            replaced_progress=node.replaced_progress,
         )
 
 

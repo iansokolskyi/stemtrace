@@ -8,6 +8,7 @@ import typer
 from stemtrace.core.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
+    from stemtrace.core.anomalies import AnomalySettings
     from stemtrace.core.groups import GroupConfig
 
 app = typer.Typer(
@@ -35,6 +36,50 @@ def _group_config_option(groups: str | None) -> "GroupConfig":
     if group_config.rules:
         typer.echo(f"Task groups: {len(group_config.rules)} code-defined")
     return group_config
+
+
+def _anomaly_settings_option(
+    *,
+    factor: str | None,
+    floor: str | None,
+    ceiling: str | None,
+    min_samples: str | None,
+    grace: str | None,
+    window: str | None,
+) -> "AnomalySettings":
+    """Validate the ``--anomaly-*`` flags and their env vars as one set.
+
+    Blank means unset, as for the node alias. A bad value is a usage error.
+    """
+    from stemtrace.server.anomaly_settings import (
+        CEILING_ENV_VAR,
+        FACTOR_ENV_VAR,
+        FLOOR_ENV_VAR,
+        GRACE_ENV_VAR,
+        MIN_SAMPLES_ENV_VAR,
+        WINDOW_ENV_VAR,
+        configured_anomaly_settings,
+    )
+
+    try:
+        return configured_anomaly_settings(
+            stuck_factor=factor,
+            stuck_floor=floor,
+            stuck_ceiling=ceiling,
+            stuck_min_samples=min_samples,
+            pending_grace=grace,
+            authority_window=window,
+            argument_labels=(
+                f"--anomaly-stuck-factor ({FACTOR_ENV_VAR})",
+                f"--anomaly-stuck-floor ({FLOOR_ENV_VAR})",
+                f"--anomaly-stuck-ceiling ({CEILING_ENV_VAR})",
+                f"--anomaly-stuck-min-samples ({MIN_SAMPLES_ENV_VAR})",
+                f"--anomaly-pending-grace ({GRACE_ENV_VAR})",
+                f"--anomaly-registry-window ({WINDOW_ENV_VAR})",
+            ),
+        )
+    except ConfigurationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--anomaly-*'") from exc
 
 
 def _api_key_option(api_key: str | None) -> str | None:
@@ -174,6 +219,72 @@ def server(
             ),
         ),
     ] = None,
+    anomaly_stuck_factor: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-stuck-factor",
+            envvar="STEMTRACE_ANOMALY_STUCK_FACTOR",
+            show_default=False,
+            help=(
+                "A running task is stuck after this many times its name's p95 "
+                "runtime, up to 100000 (default: 3)."
+            ),
+        ),
+    ] = None,
+    anomaly_stuck_floor: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-stuck-floor",
+            envvar="STEMTRACE_ANOMALY_STUCK_FLOOR",
+            show_default=False,
+            help="Never stuck sooner than this, for example 90s, 10m or 1h (default: 10m).",
+        ),
+    ] = None,
+    anomaly_stuck_ceiling: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-stuck-ceiling",
+            envvar="STEMTRACE_ANOMALY_STUCK_CEILING",
+            show_default=False,
+            help=(
+                "Stuck after this long when the task name has too few runs for "
+                "a p95, for example 30m or 2h (default: 1h)."
+            ),
+        ),
+    ] = None,
+    anomaly_stuck_min_samples: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-stuck-min-samples",
+            envvar="STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES",
+            show_default=False,
+            help="Completed runs a task name needs before its p95 counts (default: 5).",
+        ),
+    ] = None,
+    anomaly_pending_grace: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-pending-grace",
+            envvar="STEMTRACE_ANOMALY_PENDING_GRACE",
+            show_default=False,
+            help=(
+                "A waiting task counts as unregistered after this long, for "
+                "example 90s, 5m or 1h (default: 5m)."
+            ),
+        ),
+    ] = None,
+    anomaly_registry_window: Annotated[
+        str | None,
+        typer.Option(
+            "--anomaly-registry-window",
+            envvar="STEMTRACE_ANOMALY_REGISTRY_WINDOW",
+            show_default=False,
+            help=(
+                "Trust task names only if the last inspect reply is at most "
+                "this old, for example 10m or 1h (default: 10m)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Start the stemtrace web server with embedded consumer."""
     import uvicorn
@@ -219,6 +330,14 @@ def server(
 
     group_config = _group_config_option(groups)
     effective_api_key = _api_key_option(api_key)
+    stuck = _anomaly_settings_option(
+        factor=anomaly_stuck_factor,
+        floor=anomaly_stuck_floor,
+        ceiling=anomaly_stuck_ceiling,
+        min_samples=anomaly_stuck_min_samples,
+        grace=anomaly_pending_grace,
+        window=anomaly_registry_window,
+    )
 
     form_auth_config: FormAuthConfig | None = None
     if (login_username is None) != (login_password is None):
@@ -247,6 +366,12 @@ def server(
         node_alias_from_arguments=node_alias,
         groups=group_config,
         api_key=effective_api_key,
+        anomaly_stuck_factor=stuck.stuck_factor,
+        anomaly_stuck_floor=stuck.stuck_floor,
+        anomaly_stuck_ceiling=stuck.stuck_ceiling,
+        anomaly_stuck_min_samples=stuck.stuck_min_samples,
+        anomaly_pending_grace=stuck.pending_grace,
+        anomaly_registry_window=stuck.authority_window,
     )
     fastapi_app = FastAPI(
         title="stemtrace",
