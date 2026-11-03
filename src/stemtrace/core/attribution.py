@@ -71,22 +71,23 @@ EventKey = tuple[int, int, datetime, int, bytes]
 
 
 def with_aware_timestamp(event: TaskEvent) -> TaskEvent:
-    """Return the event with a naive timestamp interpreted as UTC.
+    """Return the event with a naive timestamp or ETA interpreted as UTC.
 
-    A node's events are compared by timestamp, and comparing naive with aware
-    datetimes raises ``TypeError``.
+    A node's events are compared by timestamp (and ETA), and comparing naive
+    with aware datetimes raises ``TypeError``.
 
     Args:
         event: The event to normalize.
 
     Returns:
-        The event itself if its timestamp is aware, else a copy in UTC.
+        The event itself if its times are aware, else a copy in UTC.
     """
-    if event.timestamp.tzinfo is not None:
-        return event
-    return event.model_copy(
-        update={"timestamp": event.timestamp.replace(tzinfo=timezone.utc)}
-    )
+    update: dict[str, datetime] = {}
+    if event.timestamp.tzinfo is None:
+        update["timestamp"] = event.timestamp.replace(tzinfo=timezone.utc)
+    if event.eta is not None and event.eta.tzinfo is None:
+        update["eta"] = event.eta.replace(tzinfo=timezone.utc)
+    return event.model_copy(update=update) if update else event
 
 
 _PRE_START = (TaskState.PENDING, TaskState.RECEIVED)

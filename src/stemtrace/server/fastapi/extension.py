@@ -9,18 +9,21 @@ from typing import TYPE_CHECKING, Any, overload
 from fastapi import Request  # noqa: TC002
 from fastapi.responses import RedirectResponse
 
+from stemtrace.server.anomaly_settings import anomaly_settings
 from stemtrace.server.consumer import AsyncEventConsumer
 from stemtrace.server.fastapi.api_key import normalize_api_key
 from stemtrace.server.fastapi.login_throttle import LoginThrottle
 from stemtrace.server.fastapi.paths import browser_path
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.groups import build_group_config
-from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.server.inspect_probe import InspectProbe
+from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from stemtrace.server.ui.static import get_static_router
 from stemtrace.server.websocket import WebSocketManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
+    from datetime import timedelta
 
     from fastapi import APIRouter, FastAPI
 
@@ -81,6 +84,12 @@ class StemtraceExtension:
         node_alias_from_arguments: str | None = None,
         groups: GroupsInput = None,
         api_key: str | None = None,
+        anomaly_stuck_factor: float | str | None = None,
+        anomaly_stuck_floor: timedelta | str | None = None,
+        anomaly_stuck_ceiling: timedelta | str | None = None,
+        anomaly_stuck_min_samples: int | str | None = None,
+        anomaly_pending_grace: timedelta | str | None = None,
+        anomaly_registry_window: timedelta | str | None = None,
     ) -> None:
         """Initialize extension with broker and transport configuration.
 
@@ -108,10 +117,27 @@ class StemtraceExtension:
                 which the dependency doesn't cover, needs the key). At least 16
                 visible ASCII characters. Unlike
                 ``init_app()``, doesn't read ``STEMTRACE_API_KEY``.
+            anomaly_stuck_factor: A running task is stuck after this many times
+                its name's p95 runtime (default 3, at most 100000).
+            anomaly_stuck_floor: Never stuck sooner than this (default 10 minutes).
+            anomaly_stuck_ceiling: Stuck after this long when the name has too few
+                runs to have a p95 (default 1 hour).
+            anomaly_stuck_min_samples: Completed runs a name needs before its p95
+                counts (default 5).
+            anomaly_pending_grace: How long a task may wait for a worker that
+                knows its name before it counts as unregistered (default 5
+                minutes).
+            anomaly_registry_window: How recent the last inspect reply must be
+                for task names to be trusted (default 10 minutes). The durations
+                are a ``timedelta`` or a string like ``90s``, ``10m`` or ``1h``.
+                Unlike ``init_app()``, the ``anomaly_*`` settings don't read
+                their ``STEMTRACE_ANOMALY_*`` env vars.
 
         Raises:
             ConfigurationError: If ``groups`` is invalid or its file can't be
-                loaded, or ``api_key`` is too short or has invalid characters.
+                loaded, ``api_key`` is too short or has invalid characters, or an
+                ``anomaly_*`` value isn't positive (the factor also
+                at most 100000).
                 A bad ``auth_dependency`` doesn't raise here, but in ``router``.
         """
         self._broker_url = broker_url
@@ -121,8 +147,18 @@ class StemtraceExtension:
         self._auth_dependency = auth_dependency
         self._form_auth_config = form_auth_config
 
+        self._anomaly_settings = anomaly_settings(
+            stuck_factor=anomaly_stuck_factor,
+            stuck_floor=anomaly_stuck_floor,
+            stuck_ceiling=anomaly_stuck_ceiling,
+            stuck_min_samples=anomaly_stuck_min_samples,
+            pending_grace=anomaly_pending_grace,
+            authority_window=anomaly_registry_window,
+        )
         self._store = GraphStore(max_nodes=max_nodes)
         self._worker_registry = WorkerRegistry()
+        self._worker_timeline = WorkerTimeline()
+        self._inspect_probe = InspectProbe()
         self._ws_manager = WebSocketManager()
         self._consumer: AsyncEventConsumer | None = None
 
@@ -133,6 +169,7 @@ class StemtraceExtension:
                 prefix=self._prefix,
                 ttl=ttl,
                 worker_registry=self._worker_registry,
+                worker_timeline=self._worker_timeline,
             )
 
         self._node_alias_from_arguments = node_alias_from_arguments
@@ -180,6 +217,11 @@ class StemtraceExtension:
         return self._worker_registry
 
     @property
+    def worker_timeline(self) -> WorkerTimeline:
+        """The worker event history that tells an interrupted task from a running one."""
+        return self._worker_timeline
+
+    @property
     def router(self) -> APIRouter:
         """Pre-configured router. Mount with app.include_router().
 
@@ -200,6 +242,9 @@ class StemtraceExtension:
             groups=self._groups,
             api_key=self._api_key,
             auth_throttle=self._auth_throttle,
+            worker_timeline=self._worker_timeline,
+            anomaly_settings=self._anomaly_settings,
+            inspect_probe=self._inspect_probe,
         )
 
         if self._serve_ui:
@@ -246,10 +291,12 @@ class StemtraceExtension:
             await self._ws_manager.start_broadcast_loop()
             if self._consumer is not None:
                 self._consumer.start()
+            self._inspect_probe.start()
             try:
                 async with original(app) as state:
                     yield state
             finally:
+                self._inspect_probe.stop()
                 if self._consumer is not None:
                     self._consumer.stop()
                 await self._ws_manager.stop_broadcast_loop()

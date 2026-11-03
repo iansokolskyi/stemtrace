@@ -64,6 +64,30 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 stemtrace uses **Celery inspect** on demand to populate workers and registered tasks, so those
 pages work even if the server missed `worker_ready` events.
 
+- The server also runs inspect in the background, without a page load: once when it starts
+  (`stemtrace server` and `StemtraceExtension`), and when it learns a worker nodename it didn't
+  have: a `worker_ready` event, the first task event from a nodename that never registered, or an
+  inspect reply that names a new node. A background inspect starts at least 2 seconds after the
+  last successful inspect, whether a page load or the background one, and a page load within 2
+  seconds of a successful background inspect doesn't inspect again. Each call waits 0.5 s for
+  replies. A trigger that arrives while an inspect runs, or inside the 2 seconds, causes one more
+  inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
+- A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
+  (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
+  inspect that the server sent for its `worker_ready` goes unanswered) is owed an inspect at 2, 6,
+  14, 30 and 60 seconds after it joined, then dropped. These are owed times, measured from the
+  join and subject to the shared 2-second interval, so the real gaps run longer by the inspect's
+  own duration. A new nodename that joins while another waits for its owed time is inspected
+  within one interval, and the owed times of the first don't move. A nodename that never answers
+  (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
+  until the worker joins again. Until a reply names a worker, the server may show it offline.
+- With a down broker, an attempt can take about 18 s (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
+  and a pending nodename is owed one inspect plus at most five more. Stopping the server waits up to
+  2 s for a running attempt. The background inspect does nothing without a broker URL.
+  Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
+  an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
+  task events arrive but that never registers triggers one inspect, not one per event.
 - A Celery nodename (`name@host`) has at most one live process, so a worker is shown online
   only for its newest pid: when a node restarts, its older pids go offline, including one that
   was killed without a `worker_shutdown` event. A ping reply carries no pid, so it can only
@@ -278,6 +302,245 @@ Limitations:
   come from two workers' clocks: with the second worker's clock behind, runtimes can come out
   too short (0 at worst) or empty, and a hard time limit's FAILURE after missed events can make
   the runtime too long.
+
+## Stuck, interrupted and unregistered tasks
+
+stemtrace flags a task that needs attention without you reading every row. A flag is computed
+on each request from the tasks and worker events the server holds, and is never stored, so one
+appears as time passes even when no event arrives. A task has at most one flag, and only the
+task's latest attempt counts. A task that has ended, and the GROUP and CHORD nodes of a graph,
+never has one.
+
+- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
+  `since` first, then by task ID, then by name (an item without a task ID or a name comes
+  last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`; any other value is
+  a `422`. `hostname` and `name` match exactly, so an item without a hostname or
+  name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
+  for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
+  `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
+  is the time the server judged at, and every `since` is in UTC.
+- Stuck and interrupted are one item per task. Unregistered is one item per task name, with
+  `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
+  name with 40 waiting tasks counts once. `no_workers_online` is at most one item for the whole
+  fleet (see [No workers online](#no-workers-online)).
+- `anomaly` (`stuck`, `interrupted` or `unregistered`, else `null`) is on each task in
+  `GET /api/tasks`, on the task and its children in `GET /api/tasks/{id}` and
+  `GET /api/tasks/{id}/children`, and on each node in `GET /api/graphs` and
+  `GET /api/graphs/{root_id}`. `anomaly_detail` on
+  `GET /api/tasks/{id}` has the same fields as a list item; for an unregistered task it is the
+  item of the task's name.
+- Each request judges all the tasks the server holds, in a worker thread, so it adds work to
+  `/api/tasks` and `/api/graphs`. Measured with 10,000 tasks (3,000 of them PENDING) on a 2-vCPU host,
+  it added a median of 36 to 51 ms to the p95 of `GET /api/tasks` and `GET /api/graphs` (the
+  worst of 44 runs added 105 ms).
+
+### Stuck
+
+A task is **stuck** when its state is STARTED and no result or progress has been seen for
+longer than a threshold. The threshold is `max(factor × p95, floor)`, where `p95` is the 95th
+percentile of the runtimes of the finished runs of the same task name (the same numbers as
+`GET /api/stats/tasks`). A name with fewer than `min_samples` such runs has no usable p95, so
+its threshold is `max(ceiling, floor)`. `celery.*` tasks never have a p95. The task is stuck once
+the time without progress is strictly longer than the threshold.
+
+Without progress means since the start, or since a later sign of progress:
+
+- the time a `replace()` replacement was due to run, or
+- the newest update of any task it started, at any depth (a chain or a group below it).
+
+The server can't tell a task that lost its result from one that still runs, so the wording is
+"no result seen". A STARTED task whose terminal event was lost is stuck until its worker's
+next restart, and then **interrupted**.
+
+### Interrupted
+
+A task is **interrupted** when its worker stopped or restarted while it ran. The server must
+have a worker event from the same nodename (`name@host`) stamped after the task's start:
+`worker_shutdown`, `worker_terminating` or a new `worker_ready`. `since` is the earliest such
+event, and `evidence` says which one (`worker_restarted` for a `worker_ready`). A task that
+Celery cancelled in a cold stop (a RETRY with the exception `cancelled by Celery`) is
+interrupted too, with `evidence` `cancelled_retry`, when its worker also shows evidence. A
+later event for the task (a redelivery's STARTED, or a result) clears the flag. A task that
+is both stuck and interrupted is reported as interrupted.
+
+### Unregistered
+
+A task is **unregistered** when its state is PENDING (the sender published it and no worker has
+reported receiving it), it has waited longer than `grace`, and no live worker has its name
+registered. A task a worker received is RECEIVED, so it never counts, and neither does a
+`celery.*` task. The wait is measured from the PENDING event's timestamp, which the sending
+process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
+or a newer `worker_ready` from the same nodename replaces it, and again after its own next
+`worker_ready`. A worker that missed one `inspect` call, or that has been silent for more than
+3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. A name that only a stopped worker registered is unregistered while another
+worker is live, and a new
+worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
+oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
+
+The server reports a name as unregistered only when it can trust its registry. The registry is
+trusted when either of these holds:
+
+- The last `inspect` reply that listed the tasks of every worker that answered arrived at most
+  `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
+  seconds. A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  `registered()`, or a reply that a worker event overtook doesn't count.
+- No broker URL is configured, so the server has only worker events, and at least one live
+  worker has registered tasks.
+
+When neither holds, no task is reported unregistered. That includes a server restarted after
+its workers (the registry is empty until a worker answers) and a server with a broker URL
+whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
+never fires.** The registry is never trusted while no worker is live, that is, while every
+worker has reported a stop or been replaced, with or without a broker URL. So a fleet that
+is down raises no per-name flag: after a clean stop of every worker no name is reported, even
+with a recent `inspect` reply. The fleet item takes over (see
+[No workers online](#no-workers-online)). A worker killed without a shutdown event stays live and keeps its names
+until the 30-minute cleanup, and after the cleanup the registry is empty, so nothing fires
+until a worker answers. A live worker that registered no tasks still counts as live.
+
+### No workers online
+
+When tasks are waiting and no worker is left to run them, every name is unregistered, so
+stemtrace reports one `no_workers_online` item for the whole fleet instead of one item per
+name. The item has `task_id` and `name` `null`, `task_count` (every waiting task that could be
+flagged as unregistered) and `since` (the oldest waiting task's PENDING time). No task gets an
+`anomaly` field from it, and `GET /api/anomalies?kind=no_workers_online` returns only it.
+
+The server reports it when all of these hold:
+
+- A worker has been seen since the server started. A worker is seen through its
+  `worker_ready`, an `inspect` reply, or a task event that names its nodename. The Workers page
+  lists the first two only.
+- At least one task is waiting past `grace` (PENDING, not `celery.*`). With none, the Workers
+  page already shows the fleet.
+- Every worker the server knows is offline.
+
+A worker is offline when it reported `worker_shutdown` or `worker_terminating`, a newer
+process of the same nodename replaced it, or it is silent with evidence. A worker is **silent
+with evidence** when all of these hold:
+
+1. Some worker has answered an `inspect` call since the server started, which shows that the
+   server can hear workers.
+2. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
+   it returned without a transport error; an empty reply counts.
+3. The worker didn't answer that call.
+4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
+   minutes old.
+
+A completed call counts only once the server has applied its answers, so a request that arrives
+while a refresh is running doesn't see a healthy fleet as silent. Without a broker URL, or while
+the broker can't be reached, no call completes, so silence is never evidence and only a
+reported stop makes a worker offline. The item doesn't use `authority_window`, and it doesn't
+need a trusted registry: it works with or without a broker URL.
+
+The item appears when a fleet stops cleanly, and for the whole outage: it stays after the
+30-minute cleanup removes the stopped workers, because the server remembers that it saw a
+worker. A worker the cleanup removes without proof that it stopped (it was silent, and no call
+completed since) is remembered until a completed call it doesn't answer proves it silent.
+
+### Limitations of no workers online
+
+- **A server restarted while the fleet is down reports nothing.** Until the server sees a
+  worker, it can't tell an empty fleet from one it hasn't heard from.
+- **A busy worker can look silent.** A worker that can't answer `inspect` (for example, a solo
+  pool running one task for more than 3 minutes, which sends no events) is silent with
+  evidence once a call completes. If it is the only worker, the item is a false alert until it
+  answers or sends an event.
+- **Without a broker URL, a lost worker can hide a later stop.** The 30-minute cleanup keeps a
+  worker it removed without proof that it stopped, because silence alone isn't evidence. Without
+  a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
+  SIGKILL, the item doesn't appear even when every other worker then stops cleanly. With a broker
+  URL, the next completed call that the lost worker doesn't answer clears it.
+- **Workers the server can't hear never count as silent.** If workers run with remote control
+  off, or with a control setting the server doesn't share (such as `global_keyprefix`), every
+  `inspect` call returns nothing, so no worker is silent with evidence. A SIGKILLed fleet then
+  gives no item, the same as with no broker URL. A clean stop still does.
+- **A fleet is found silent only after some inspect got an answer.** The server runs `inspect`
+  when it starts and when it learns a new nodename, so a fleet that dies before anyone opens the
+  UI is still found. If no `inspect` call ever got an answer since the server started (remote
+  control off, a control setting the server doesn't share, or a broker the server can't reach
+  while the workers are up), the server can't tell a dead fleet from one it can't hear, so a
+  SIGKILLed fleet gives no item. A clean stop still does.
+- **A killed fleet needs an inspect.** After a SIGKILL of every worker, with no broker URL or an
+  unreachable broker, the item doesn't appear, because silence isn't evidence. A clean stop of
+  every worker still does.
+- **A worker clock far behind the server can look silent.** A `worker_ready` or task event
+  keeps a worker online for 3 minutes from the event's time, so a worker whose clock is 3
+  minutes or more behind the server's can be silent with evidence right after it sends one.
+- **A task event after a stop revives the nodename.** An event stamped after the reported stop
+  (a restart whose `worker_ready` the server missed) makes the nodename online again, whether or
+  not the Workers page lists it. An event stamped at or before the stop, or a ping reply, doesn't.
+  The server forgets a reported stop 30 minutes after it received it, or earlier when more than 1,024 stops are kept; after that, any event revives the nodename.
+- **The server keeps at most 1,024 nodenames** that the Workers page doesn't list, and 1,024
+  reported stops of them. The oldest is dropped first.
+
+An unregistered item can carry `similar_name`, a live task you might have renamed it from. It
+is the one live name in the same module whose last segment, with a trailing `_v<N>` removed
+from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio, and no
+other live name scores the same. Names that differ only in case are compared as written. It's
+`null` when no name qualifies, when two names tie, and for a name with no module (no dot).
+`celery.*` names and the names of stopped workers are never suggested. The hint is a guess:
+`send_email` gets `send_emails` even when they are different tasks.
+
+### Settings
+
+| Setting | Env var | `stemtrace server` flag | `init_app` and `StemtraceExtension` argument | Default |
+|---|---|---|---|---|
+| `factor` | `STEMTRACE_ANOMALY_STUCK_FACTOR` | `--anomaly-stuck-factor` | `anomaly_stuck_factor` | `3` |
+| `floor` | `STEMTRACE_ANOMALY_STUCK_FLOOR` | `--anomaly-stuck-floor` | `anomaly_stuck_floor` | `10m` |
+| `ceiling` | `STEMTRACE_ANOMALY_STUCK_CEILING` | `--anomaly-stuck-ceiling` | `anomaly_stuck_ceiling` | `1h` |
+| `min_samples` | `STEMTRACE_ANOMALY_STUCK_MIN_SAMPLES` | `--anomaly-stuck-min-samples` | `anomaly_stuck_min_samples` | `5` |
+| `grace` | `STEMTRACE_ANOMALY_PENDING_GRACE` | `--anomaly-pending-grace` | `anomaly_pending_grace` | `5m` |
+| `authority_window` | `STEMTRACE_ANOMALY_REGISTRY_WINDOW` | `--anomaly-registry-window` | `anomaly_registry_window` | `10m` |
+
+Durations are a number and a unit (`90s`, `10m`, `1h`, `7d`; at most `3650d`), or a
+`timedelta` in Python. `factor` is a positive number of at most 100,000 and `min_samples` is a
+whole number of at least 1. A bad value raises `ConfigurationError` at startup (the CLI exits
+with a usage error). The floor can be above the ceiling: a name with too few runs then uses the
+floor. A `factor × p95` threshold never exceeds 3,650 days, the longest duration the server accepts. An argument wins over the env var,
+and a blank env var counts as unset. `StemtraceExtension` doesn't read the env vars; `init_app`
+and `stemtrace server` do.
+
+### Limitations
+
+- **No hostname, no interrupted.** A task without a `hostname` (an eager `apply()`, or a worker
+  up to 0.4.0) is never interrupted, because the server can't tell which worker ran it.
+- **Skewed clocks move stuck.** Stuck compares the server's clock with the worker's start time,
+  so a worker clock 1 hour ahead delays the flag by up to 1 hour, and one behind brings it
+  forward. A retry's RECEIVED from another host whose clock is ahead delays it by the skew too.
+  Interrupted compares two events from the same worker clock, so skew doesn't change it.
+- **A task a worker never started isn't flagged.** A task in RECEIVED whose worker died, and a
+  RETRY whose ETA passed with no next start, never become stuck.
+- **A killed worker is found at its next start.** After a SIGKILL, the task is stuck once
+  the threshold passes and interrupted only when the same nodename sends `worker_ready` again. With no
+  restart it stays stuck. Workers before 0.4.2 don't send `worker_terminating`, so their cold
+  stops are also found only at the restart.
+- **Older workers.** Workers before 0.4.2 don't send IGNORED or REJECTED, so such a task stays
+  STARTED and can be flagged stuck.
+- **A cancelled RETRY needs evidence.** Celery sends the same `cancelled by Celery` RETRY when
+  the broker connection drops, and the task can still run, so without a worker event the server
+  doesn't flag it.
+- **A busy child hides a stuck parent.** A task that started children is judged by the
+  newest update below it, so a parent that is stuck while a child keeps running isn't flagged
+  until the subtree goes quiet.
+- **Redelivery to a host that is behind.** If an `acks_late` redelivery's STARTED is stamped earlier
+  than the first start (the new host's clock is behind), the first start stays the latest
+  event and the task stays interrupted.
+- **Skewed sender clocks move unregistered.** `grace` compares the server's clock with the
+  sending process's PENDING stamp, so a sender clock ahead delays the flag by the skew and one
+  behind brings it forward.
+- **A broker URL needs a working inspect.** The server reports no unregistered task while it
+  can't inspect the workers (see [Unregistered](#unregistered)). The same holds after a restart
+  until a worker answers.
+- **A killed worker's names count for up to 30 minutes.** After a SIGKILL there is no shutdown
+  event, so a name only that worker registered is reported unregistered up to 30 minutes late.
+- **Two machines, one nodename.** Workers that share a nodename can make the server flag a
+  task as interrupted when the other machine restarts.
+- **The server's history is bounded.** The server keeps the newest 32 worker events for each
+  nodename and 1,024 nodenames, and `max_nodes` tasks. A task evicted from the store has no flag,
+  its runtimes leave the p95, and an evicted nodename loses its evidence.
+- **No worker timeline, no interrupted.** `create_router` and `create_api_router` report nothing as
+  interrupted unless you pass the `worker_timeline` that your consumer feeds (`StemtraceExtension.worker_timeline`).
 
 ## Summary endpoints
 

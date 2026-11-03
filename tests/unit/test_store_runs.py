@@ -2,6 +2,8 @@
 
 import json
 import random
+import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,7 @@ from typing import Any
 import pytest
 
 from stemtrace.core import attribution
-from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.events import CANCELLED_RETRY_REASON, TaskEvent, TaskState
 from stemtrace.core.graph import TERMINAL_STATES, NodeType, TaskGraph, TaskNode
 from stemtrace.server.stats import RunRecord
 from stemtrace.server.store import GraphStore
@@ -50,7 +52,12 @@ def test_run_record_follows_the_task_through_its_states() -> None:
     )
 
     assert started == RunRecord(
-        task_id="t1", name="app.work", state=TaskState.STARTED, last_updated=T0
+        task_id="t1",
+        name="app.work",
+        state=TaskState.STARTED,
+        last_updated=T0,
+        state_since=T0,
+        attempt_started=T0,
     )
     assert _records(store)["t1"] == RunRecord(
         task_id="t1",
@@ -59,6 +66,8 @@ def test_run_record_follows_the_task_through_its_states() -> None:
         last_updated=T0 + timedelta(seconds=5),
         exception_type="myapp.PartnerError",
         runtime_ms=5000,
+        state_since=T0 + timedelta(seconds=5),
+        attempt_started=T0,
     )
 
 
@@ -137,6 +146,36 @@ def _assert_index_matches_graph(store: GraphStore) -> None:
         assert node is not None
         want = node.runtime_ms if node.state in TERMINAL_STATES else None
         assert record.runtime_ms == want, task_id
+        _assert_state_evidence(record, node)
+
+
+def _assert_state_evidence(record: RunRecord, node: TaskNode) -> None:
+    """The state-event fields equal a reference that scans every raw event."""
+    assert node.events
+    state = max(
+        node.events, key=lambda e: (attribution.precedence(e), attribution.event_key(e))
+    )
+    started = [
+        e.timestamp
+        for e in node.events
+        if e.state == TaskState.STARTED and e.retries == state.retries
+    ]
+    due = [
+        max(e.timestamp, e.eta or e.timestamp)
+        for e in node.events
+        if e.state in (TaskState.PENDING, TaskState.RECEIVED)
+        and e.parent_id is not None
+        and e.parent_id != node.reported_parent_id
+    ]
+    assert node.state_event == state, record.task_id
+    assert record.state_since == state.timestamp, record.task_id
+    assert record.state_host == state.hostname, record.task_id
+    assert record.cancelled == (
+        state.state == TaskState.RETRY and state.exception == CANCELLED_RETRY_REASON
+    ), record.task_id
+    assert record.reported_parent_id == node.reported_parent_id, record.task_id
+    assert record.attempt_started == (max(started) if started else None), record.task_id
+    assert record.replaced_progress == (max(due) if due else None), record.task_id
 
 
 def _shuffled(flow: str, seed: int) -> list[TaskEvent]:
@@ -365,3 +404,340 @@ def test_non_terminal_events_never_compute_run_times(
 
     assert len(calls) == 1
     assert _records(store)["t"].runtime_ms == 7000
+
+
+def _run_event(
+    state: TaskState,
+    seconds: float,
+    *,
+    retries: int = 0,
+    hostname: str | None = None,
+    exception: str | None = None,
+    parent_id: str | None = None,
+    eta_seconds: float | None = None,
+) -> TaskEvent:
+    return TaskEvent(
+        task_id="t",
+        name="app.work",
+        state=state,
+        retries=retries,
+        timestamp=T0 + timedelta(seconds=seconds),
+        hostname=hostname,
+        exception=exception,
+        parent_id=parent_id,
+        eta=None if eta_seconds is None else T0 + timedelta(seconds=eta_seconds),
+    )
+
+
+def _record_of(*events: TaskEvent) -> RunRecord:
+    store = GraphStore()
+    for event in events:
+        store.add_event(event)
+    _assert_index_matches_graph(store)
+    return _records(store)["t"]
+
+
+def test_record_state_host_and_time_come_from_the_state_event() -> None:
+    """The RETRY has no host: the STARTED's must not leak into the record."""
+    record = _record_of(
+        _run_event(TaskState.STARTED, 0, hostname="w1@a"),
+        _run_event(TaskState.RETRY, 5, exception="boom"),
+    )
+
+    assert record.state == TaskState.RETRY
+    assert record.state_since == T0 + timedelta(seconds=5)
+    assert record.state_host is None
+    assert record.cancelled is False
+
+
+def test_record_marks_a_cold_stop_cancelled_retry_with_its_attempts_start() -> None:
+    record = _record_of(
+        _run_event(TaskState.STARTED, 0, hostname="w1@a"),
+        _run_event(TaskState.STARTED, 20, retries=1, hostname="w1@a"),
+        _run_event(
+            TaskState.RETRY,
+            25,
+            retries=1,
+            hostname="w1@a",
+            exception=CANCELLED_RETRY_REASON,
+        ),
+    )
+
+    assert record.cancelled is True
+    assert record.state_host == "w1@a"
+    assert record.state_since == T0 + timedelta(seconds=25)
+    assert record.attempt_started == T0 + timedelta(seconds=20)
+
+
+def test_record_cancelled_retry_without_its_started_has_no_attempt_start() -> None:
+    record = _record_of(
+        _run_event(TaskState.STARTED, 0, retries=0, hostname="w1@a"),
+        _run_event(
+            TaskState.RETRY,
+            25,
+            retries=1,
+            hostname="w1@a",
+            exception=CANCELLED_RETRY_REASON,
+        ),
+    )
+
+    assert record.cancelled is True
+    assert record.attempt_started is None
+
+
+def test_record_cancelled_is_false_for_other_retries_and_states() -> None:
+    other_reason = _record_of(
+        _run_event(TaskState.RETRY, 5, exception="Cancelled by Celery!")
+    )
+    started = _record_of(_run_event(TaskState.STARTED, 5, exception="x"))
+
+    assert (other_reason.cancelled, started.cancelled) == (False, False)
+
+
+def test_record_redelivered_started_moves_the_attempt_and_host() -> None:
+    """``acks_late``: a second STARTED of the same attempt on another host."""
+    record = _record_of(
+        _run_event(TaskState.STARTED, 0, hostname="w1@a"),
+        _run_event(TaskState.STARTED, 90, hostname="w2@b"),
+    )
+
+    assert record.state_host == "w2@b"
+    assert record.state_since == T0 + timedelta(seconds=90)
+    assert record.attempt_started == T0 + timedelta(seconds=90)
+
+
+def test_record_replacement_pending_sets_progress_to_its_eta() -> None:
+    """Fact 12: the replacement's PENDING sorts after STARTED but ``last_updated`` stays."""
+    sender = _run_event(TaskState.PENDING, 0, parent_id="p")
+    started = _run_event(TaskState.STARTED, 10, parent_id="p")
+    store = GraphStore()
+    for event in (sender, started):
+        store.add_event(event)
+    before = _records(store)["t"]
+    store.add_event(
+        _run_event(TaskState.PENDING, 10.5, parent_id="t", eta_seconds=11.5)
+    )
+    after = _records(store)["t"]
+    _assert_index_matches_graph(store)
+
+    assert before.replaced_progress is None
+    assert after.reported_parent_id == "p"
+    assert after.replaced_progress == T0 + timedelta(seconds=11.5)
+    assert after.last_updated == T0 + timedelta(seconds=10)
+    assert after.state_since == T0 + timedelta(seconds=10)
+
+
+def test_record_sender_pending_with_a_future_eta_is_not_progress() -> None:
+    """The original parent's PENDING (a sender clock ahead) must not hide stuck."""
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p", eta_seconds=7200),
+        _run_event(TaskState.STARTED, 10, parent_id="p"),
+    )
+
+    assert record.replaced_progress is None
+
+
+def test_record_replacement_progress_is_the_latest_across_replacements() -> None:
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p"),
+        _run_event(TaskState.STARTED, 10, parent_id="p"),
+        _run_event(TaskState.PENDING, 11, parent_id="t", eta_seconds=40),
+        _run_event(TaskState.RECEIVED, 50, parent_id="q"),
+    )
+
+    assert record.replaced_progress == T0 + timedelta(seconds=50)
+
+
+def test_state_event_is_none_for_a_node_without_events() -> None:
+    assert TaskNode(task_id="x", name="n", state=TaskState.PENDING).state_event is None
+    assert (
+        TaskNode(task_id="x", name="n", state=TaskState.PENDING).attempt_started is None
+    )
+
+
+@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+def test_snapshot_and_index_rebuild_give_the_same_state_event(flow: str) -> None:
+    for seed in range(3):
+        store = GraphStore()
+        for event in _shuffled(flow, seed):
+            store.add_event(event)
+        with store._lock:
+            nodes = [
+                n for n in store._graph.nodes.values() if n.node_type == NodeType.TASK
+            ]
+            for node in nodes:
+                live = (
+                    node.state_event,
+                    node.attempt_started,
+                    node.replaced_progress,
+                )
+                copy = node.snapshot()
+                rebuilt = (
+                    copy.state_event,
+                    copy.attempt_started,
+                    copy.replaced_progress,
+                )
+                assert rebuilt == live, node.task_id
+
+
+def test_hostname_in_captures_is_absent_so_hand_built_cells_are_needed() -> None:
+    """Fact 14: why the tests above build hostnames and cancelled RETRYs by hand."""
+    events = [e for flow in _CAPTURES.values() for e in flow]
+    assert not any(e.get("hostname") for e in events)
+    assert not any(e.get("exception") == CANCELLED_RETRY_REASON for e in events)
+
+
+def test_ingesting_events_never_rescans_a_nodes_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state event is compared with the new event only: O(1) calls per event."""
+    calls: list[str] = []
+    real_precedence, real_latest = attribution.precedence, attribution.latest
+
+    def counting_precedence(event: TaskEvent) -> Any:
+        calls.append("precedence")
+        return real_precedence(event)
+
+    def counting_latest(events: list[TaskEvent], value: Any) -> Any:
+        calls.append("latest")
+        return real_latest(events, value)
+
+    monkeypatch.setattr(attribution, "precedence", counting_precedence)
+    monkeypatch.setattr(attribution, "latest", counting_latest)
+    store = GraphStore()
+    count = 400
+    for i in range(count):
+        state = TaskState.STARTED if i % 2 == 0 else TaskState.RETRY
+        store.add_event(
+            TaskEvent(
+                task_id="t",
+                name="app.poll",
+                state=state,
+                retries=i // 2,
+                timestamp=T0 + timedelta(seconds=i),
+                hostname="w@h",
+                parent_id="t" if i else "p",
+            )
+        )
+
+    assert "latest" not in calls
+    assert calls.count("precedence") <= 2 * count
+    assert _records(store)["t"].state_host == "w@h"
+
+
+def test_record_state_since_is_the_state_events_not_the_last_events() -> None:
+    """IGNORED loses to FAILURE yet sorts last: ``last_updated`` is its time."""
+    record = _record_of(
+        _run_event(TaskState.FAILURE, 5, hostname="w1@a"),
+        _run_event(TaskState.IGNORED, 10, hostname="w2@b"),
+    )
+
+    assert record.last_updated == T0 + timedelta(seconds=10)
+    assert record.state_since == T0 + timedelta(seconds=5)
+    assert record.state_host == "w1@a"
+
+
+def test_captures_include_runs_with_replacement_progress() -> None:
+    """The differential is not vacuous for rule (a): some capture has a replacement."""
+    found = 0
+    for flow in _CAPTURES:
+        store = GraphStore()
+        for event in _shuffled(flow, seed=0):
+            store.add_event(event)
+        found += sum(r.replaced_progress is not None for r in store.run_records())
+    assert found > 0
+
+
+def _lines_run(call: Callable[[], object]) -> int:
+    """Source lines the call executes in stemtrace's own modules (not timing)."""
+    count = 0
+
+    def local(frame: Any, event: str, arg: Any) -> Any:
+        nonlocal count
+        if event == "line":
+            count += 1
+        return local
+
+    def tracer(frame: Any, event: str, arg: Any) -> Any:
+        return local if "stemtrace" in frame.f_code.co_filename else None
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        call()
+    finally:
+        sys.settrace(previous)
+    return count
+
+
+def _record_work_after_replacements(pages: int) -> int:
+    """Lines run building the record of a task that was replaced ``pages`` times."""
+    store = GraphStore()
+    store.add_event(_run_event(TaskState.PENDING, 0, parent_id="p"))
+    store.add_event(_run_event(TaskState.STARTED, 1, parent_id="p"))
+    for page in range(pages):
+        store.add_event(
+            _run_event(TaskState.PENDING, 2 + page, parent_id=f"page{page}")
+        )
+    with store._lock:
+        node = store._graph.nodes["t"]
+        return _lines_run(lambda: RunRecord.from_node(node))
+
+
+def test_record_work_does_not_grow_with_distinct_replacement_parents() -> None:
+    """``paginate_to`` replaces with a new parent per page: per-event work stays constant."""
+    assert _record_work_after_replacements(5) == _record_work_after_replacements(300)
+
+
+def test_replaced_progress_skips_the_reported_parent_among_many() -> None:
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p", eta_seconds=900),
+        _run_event(TaskState.PENDING, 5, parent_id="a", eta_seconds=60),
+        _run_event(TaskState.PENDING, 6, parent_id="b", eta_seconds=30),
+        _run_event(TaskState.PENDING, 7, parent_id="c", eta_seconds=40),
+        _run_event(TaskState.PENDING, 8, parent_id="a", eta_seconds=10),
+        _run_event(TaskState.STARTED, 9, parent_id="p"),
+    )
+
+    assert record.reported_parent_id == "p"
+    assert record.replaced_progress == T0 + timedelta(seconds=60)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_state_event_on_an_exact_tie_does_not_depend_on_arrival_order(
+    reverse: bool,
+) -> None:
+    """Same state, attempt and time on two hosts: one answer, the snapshot's."""
+    events = [
+        _run_event(TaskState.STARTED, 10, hostname="w1@a"),
+        _run_event(TaskState.STARTED, 10, hostname="w2@b"),
+    ]
+    store = GraphStore()
+    for event in reversed(events) if reverse else events:
+        store.add_event(event)
+    other = GraphStore()
+    for event in events if reverse else reversed(events):
+        other.add_event(event)
+
+    node = store.get_node("t")
+    assert node is not None
+    assert node.state_event is not None
+    assert _records(store)["t"].state_host == node.state_event.hostname
+    assert _records(store)["t"] == _records(other)["t"]
+
+
+def test_naive_eta_is_read_as_utc_like_the_timestamp() -> None:
+    record = _record_of(
+        _run_event(TaskState.PENDING, 0, parent_id="p"),
+        _run_event(TaskState.STARTED, 1, parent_id="p"),
+        TaskEvent(
+            task_id="t",
+            name="app.work",
+            state=TaskState.PENDING,
+            timestamp=T0 + timedelta(seconds=2),
+            parent_id="t",
+            eta=datetime(2026, 10, 18, 12, 0, 30),
+        ),
+    )
+
+    assert record.replaced_progress == T0 + timedelta(seconds=30)
