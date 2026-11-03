@@ -413,21 +413,24 @@ def test_nodename_that_answers_on_the_third_attempt_stops_the_backoff(
     assert clock.waits == pytest.approx([2.0, 4.0])
 
 
-def test_nodename_that_joined_during_an_attempt_is_not_charged_that_attempt(
+def test_nodename_that_joined_during_an_attempt_keeps_a_schedule_of_its_own(
     clock: FakeClock, probes: list[InspectProbe]
 ) -> None:
     refresh = FakeRefresh(clock, block_first=True)
     probe = make_probe(probes, clock, refresh)
     probe.trigger("celery@a")
     take(refresh.started)
+    clock.advance(1.0)
     probe.trigger("celery@late")
     refresh.gate.set()
-    for _ in range(6):
+    # a is owed 102, 106, 114, 130 and 160; late (joined at 101) 103, 107, 115,
+    # 131 and 161; the shared 2 s interval makes the starts 100, 102, 104, 106,
+    # 108, 114, 116, 130, 132, 160 and 162.
+    for _ in range(11):
         take(refresh.finished)
     probe.stop(timeout=BOUND_S)
 
-    # "celery@late" gets the same one-plus-five of its own after the first.
-    assert len(refresh.starts) == 7
+    assert refresh.starts[-1] == pytest.approx(162.0)
 
 
 def test_pending_nodenames_are_bounded_and_the_oldest_is_dropped(

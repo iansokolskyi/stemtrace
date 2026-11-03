@@ -120,7 +120,7 @@ def assert_asked_at_each_due(
 ) -> None:
     """Some attempt began at or after each owed time (within one interval)."""
     for due in DUES:
-        if joined + due > after:
+        if due > after:
             assert any(0 <= s - (joined + due) <= INTERVAL_S for s in starts), due
 
 

@@ -8,6 +8,7 @@ nodename stays pending until an inspect reply names it, with a bounded backoff.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import threading
 import time
@@ -27,9 +28,11 @@ INSPECT_PROBE_STOP_TIMEOUT_SECONDS = 2.0
 
 _THREAD_NAME = "stemtrace-inspect-probe"
 
-# Seconds before each extra attempt for a nodename no inspect reply has named
-# yet (its worker may still be in its worker_ready receivers); then it is dropped.
+# A nodename no inspect reply has named yet (its worker may still be in its
+# worker_ready receivers) is owed an attempt at join + 2, 6, 14, 30 and 60 s
+# (the cumulative sums of these gaps); then it is dropped.
 PENDING_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+_SCHEDULE = tuple(itertools.accumulate(PENDING_BACKOFF_SECONDS))
 PENDING_NODES_MAX = 1024
 
 
@@ -57,9 +60,9 @@ def _clock() -> float:
     return time.monotonic()
 
 
-def _wait(stop: threading.Event, seconds: float) -> bool:
-    """Sleep up to ``seconds``, waking early when ``stop`` is set; True if it is set."""
-    return stop.wait(seconds)
+def _wait(event: threading.Event, seconds: float | None) -> bool:
+    """Block up to ``seconds`` (forever if None) until ``event`` is set; True if it is."""
+    return event.wait(seconds)
 
 
 class InspectProbe:
@@ -79,22 +82,23 @@ class InspectProbe:
         min_interval_s: float = INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
         *,
         clock: Callable[[], float] | None = None,
-        wait: Callable[[threading.Event, float], bool] | None = None,
+        wait: Callable[[threading.Event, float | None], bool] | None = None,
     ) -> None:
         """Create a probe that starts attempts at least ``min_interval_s`` apart.
 
         Args:
             min_interval_s: Minimum seconds between two attempt starts.
             clock: Monotonic clock (tests); defaults to ``time.monotonic``.
-            wait: Stop-aware sleep (tests); defaults to ``Event.wait``.
+            wait: Blocking wait on an event (tests); defaults to ``Event.wait``.
         """
         self._min_interval_s = min_interval_s
         self._clock = clock or _clock
         self._wait = wait or _wait
         self._target: ProbeTarget = _Unbound()
         self._bound = False
-        # Nodename -> backoff steps already scheduled for it; insertion order is age.
-        self._pending: dict[str, int] = {}
+        # Nodename -> its owed attempt times not yet served, fixed at its join;
+        # insertion order is age.
+        self._pending: dict[str, list[float]] = {}
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -130,9 +134,12 @@ class InspectProbe:
             if not self._bound or self._stop.is_set():
                 return
             if nodename is not None and nodename not in self._pending:
-                self._pending[nodename] = 0
+                joined = self._clock()
+                self._pending[nodename] = [joined + gap for gap in _SCHEDULE]
                 if len(self._pending) > PENDING_NODES_MAX:
                     del self._pending[next(iter(self._pending))]
+            # Set before the thread starts, so its first look sees the trigger.
+            self._wake.set()
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(
                     target=self._run,
@@ -141,7 +148,6 @@ class InspectProbe:
                     daemon=True,
                 )
                 self._thread.start()
-            self._wake.set()
 
     def stop(self, timeout: float | None = None) -> None:
         """Stop the probe thread, waiting up to ``timeout`` for a running refresh.
@@ -160,15 +166,30 @@ class InspectProbe:
                 logger.warning("Inspect probe did not stop within %.1fs", limit)
 
     def _run(self, stop: threading.Event, wake: threading.Event) -> None:
-        """Probe loop: wait for a trigger, honor the interval, refresh, repeat."""
-        # Ends when stop() sets the event; every wait below wakes on it.
+        """Probe loop: sleep until a trigger or an owed time, then refresh."""
+        # Ends when stop() sets the event; stop() also sets ``wake``, which every
+        # wait below is on or ends on.
         while not stop.is_set():
-            wake.wait()
-            if stop.is_set():
-                return
-            delay = max(self._next_allowed - self._clock(), self._target.ready_in())
-            if delay > 0 and self._wait(stop, delay):
-                return
+            owed = wake.is_set()
+            due = self._earliest_due()
+            if not owed and due is None:
+                self._wait(wake, None)
+                continue
+            now = self._clock()
+            at = max(self._next_allowed, now + self._target.ready_in())
+            if not owed and due is not None:
+                at = max(at, due)
+            delay = at - now
+            if delay > 0:
+                # A trigger already owed refreshes when the interval ends, and
+                # only stop() cuts that short. Otherwise the sleep is for a node's
+                # owed time and a new trigger wakes it: its refresh is due at
+                # the end of the shared interval, not at another node's time.
+                woken = self._wait(stop if owed else wake, delay)
+                if stop.is_set():
+                    return
+                if woken:
+                    continue
             # A trigger from here on is owed a refresh of its own, not dropped:
             # celery 5.6.3 worker/loops.py asynloop() sends worker_ready (via
             # on_ready) after kombu pidbox Node.listen() bound the control
@@ -177,36 +198,31 @@ class InspectProbe:
             wake.clear()
             started = self._clock()
             self._next_allowed = started + self._min_interval_s
-            with self._lock:
-                asked = set(self._pending)
             answered = self._attempt()
             if answered is None:
                 # Another refresh held the slot: owe one rather than drop it.
                 wake.set()
                 continue
-            backoff = self._settle(asked, answered)
-            if backoff is not None:
-                self._next_allowed = max(self._next_allowed, started + backoff)
-                wake.set()
+            self._settle(started, answered)
 
-    def _settle(self, asked: set[str], answered: frozenset[str]) -> float | None:
-        """Update the pending nodenames after an attempt; the delay owed, if any.
-
-        Only nodenames pending before the attempt started count: a reply
-        can't name one that joined during it (its own trigger owes a refresh).
-        """
-        delays: list[float] = []
+    def _earliest_due(self) -> float | None:
+        """The soonest owed time of any pending nodename, if there is one."""
         with self._lock:
-            for nodename in asked:
-                steps = self._pending.get(nodename)
-                if steps is None or nodename in answered:
-                    self._pending.pop(nodename, None)
-                elif steps >= len(PENDING_BACKOFF_SECONDS):
+            return min((dues[0] for dues in self._pending.values()), default=None)
+
+    def _settle(self, started: float, answered: frozenset[str]) -> None:
+        """After an attempt: drop the nodenames it named and the owed times it served.
+
+        An attempt serves every owed time at or before its start, whichever
+        trigger caused it. A nodename with none left is dropped unanswered.
+        """
+        with self._lock:
+            for nodename, dues in list(self._pending.items()):
+                remaining = [due for due in dues if due > started]
+                if nodename in answered or not remaining:
                     del self._pending[nodename]
                 else:
-                    delays.append(PENDING_BACKOFF_SECONDS[steps])
-                    self._pending[nodename] = steps + 1
-        return min(delays) if delays else None
+                    self._pending[nodename] = remaining
 
     def _attempt(self) -> frozenset[str] | None:
         """Run the bound refresh once; failures are logged, never raised."""
