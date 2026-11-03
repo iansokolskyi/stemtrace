@@ -385,8 +385,11 @@ class World:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
                     self._answer(name, with_pid=plan.pids)
-        else:  # empty or failed stats: the ping fallback
-            for name in [] if plan.ping_raises else plan.ping_answers:
+        else:
+            # Empty stats: the ping fallback. D7a: a failed stats() ends the attempt, and
+            # so does a failed registered() on empty stats (ping() would wait out another timeout).
+            ping_runs = not plan.stats_raises and not plan.registered_raises
+            for name in [] if plan.ping_raises or not ping_runs else plan.ping_answers:
                 answered.add(name)
                 self.channel_proven = True
                 self._answer(name, with_pid=False)

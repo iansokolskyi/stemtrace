@@ -512,7 +512,9 @@ def _refresh_worker_registry_from_inspect(
     except Exception:  # noqa: BLE001  best-effort: a failed call applies what stats() gave
         complete = False
         if not stats:
-            # A broken connection: ping() would only wait out another timeout.
+            # A broken connection: ping() would only wait out another timeout. The empty
+            # stats() still stamps the broadcast, as when no one answers a ping.
+            worker_registry.apply_ping_reply((), stats_completed=True)
             return _InspectOutcome(frozenset(), complete)
 
     # Fallback: if stats is unavailable, at least refresh online status via ping().
