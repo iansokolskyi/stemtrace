@@ -12,6 +12,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from stemtrace.server import inspect_probe
 from stemtrace.server.consumer import EventConsumer
 from stemtrace.server.inspect_probe import (
     INSPECT_PROBE_STOP_TIMEOUT_SECONDS,
@@ -305,21 +306,60 @@ def test_stop_during_a_blocked_refresh_returns_within_its_timeout(
 
 
 def test_stop_while_waiting_for_the_interval_does_not_wait_it_out(
-    probes: list[InspectProbe],
+    clock: FakeClock, probes: list[InspectProbe]
 ) -> None:
-    refresh = FakeRefresh(FakeClock())
-    probe = InspectProbe(3600.0)
+    refresh = FakeRefresh(clock)
+    waiting = threading.Semaphore(0)
+
+    def wait_for_stop(stop: threading.Event, seconds: float) -> bool:
+        waiting.release()
+        return stop.wait(seconds)
+
+    probe = InspectProbe(3600.0, clock=clock.now, wait=wait_for_stop)
     probe.bind(refresh)
     probes.append(probe)
     probe.trigger()
     take(refresh.finished)
     probe.trigger()
+    take(waiting)
 
     began = time.monotonic()
     probe.stop(timeout=BOUND_S)
 
     assert time.monotonic() - began < 2.0
     assert len(refresh.starts) == 1
+
+
+def test_start_after_stop_runs_the_refresh_again(
+    clock: FakeClock, probes: list[InspectProbe]
+) -> None:
+    refresh = FakeRefresh(clock)
+    probe = make_probe(probes, clock, refresh)
+    probe.start()
+    take(refresh.finished)
+    probe.stop(timeout=BOUND_S)
+
+    probe.start()
+    take(refresh.finished)
+    probe.stop(timeout=BOUND_S)
+
+    assert len(refresh.starts) == 2
+
+
+def test_default_wait_returns_true_at_once_when_stopped_and_false_after_the_wait() -> (
+    None
+):
+    stopped = threading.Event()
+    stopped.set()
+
+    assert inspect_probe._wait(stopped, 3600.0) is True
+    assert inspect_probe._wait(threading.Event(), 0.0) is False
+
+
+def test_default_clock_is_monotonic() -> None:
+    first = inspect_probe._clock()
+
+    assert inspect_probe._clock() >= first
 
 
 def test_stop_timeout_is_below_the_consumers_stop_timeout() -> None:

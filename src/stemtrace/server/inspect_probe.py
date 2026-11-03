@@ -66,7 +66,8 @@ class InspectProbe:
         self._min_interval_s = min_interval_s
         self._clock = clock or _clock
         self._wait = wait or _wait
-        self._refresh: Callable[[], bool] | None = None
+        self._refresh: Callable[[], bool] = lambda: True
+        self._bound = False
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -76,6 +77,7 @@ class InspectProbe:
     def bind(self, refresh: Callable[[], bool]) -> None:
         """Set what a probe runs: a refresh that returns False if it found one in flight."""
         self._refresh = refresh
+        self._bound = True
 
     def start(self) -> None:
         """Probe once now (the server just started). Safe to call again."""
@@ -89,7 +91,7 @@ class InspectProbe:
     def trigger(self) -> None:
         """Ask for a refresh; coalesces with one already owed. Never blocks."""
         with self._lock:
-            if self._refresh is None or self._stop.is_set():
+            if not self._bound or self._stop.is_set():
                 return
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(
@@ -140,12 +142,9 @@ class InspectProbe:
 
     def _attempt(self) -> bool:
         """Run the bound refresh once; failures are logged, never raised."""
-        refresh = self._refresh
-        if refresh is None:
-            return True
         # Fire-and-forget boundary: a probe must never take the server down.
         try:
-            return refresh()
+            return self._refresh()
         except Exception:
             logger.debug("Inspect probe refresh failed", exc_info=True)
             return True
