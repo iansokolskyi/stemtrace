@@ -1,0 +1,1 @@
+- The UI has a search palette: press `Ctrl+K` (`⌘K` on macOS) or select **Search** in the top strip, then type a task ID, a task name, a flow or a worker. Use the arrow keys and `Enter` to open a result; `Esc` closes the palette. It reads the registry and workers without asking Celery (`refresh=false`).

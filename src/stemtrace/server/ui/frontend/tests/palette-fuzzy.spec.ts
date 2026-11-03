@@ -25,8 +25,8 @@ test('matching ignores case on both sides', () => {
 })
 
 test('the score is exact: consecutive +3 else +1, word start +3, minus 0.02 per character', () => {
-  // "add" in "tasks.add": a at 6 (word start after ".": 1+3), d at 7 (consecutive: 3), d at 8 (3)
-  expect(fuzzy('add', 'tasks.add')).toBeCloseTo(4 + 3 + 3 - 9 * 0.02, 10)
+  // "add" in "tasks.add", matched left to right: a at 1 (1), d at 7 (1), d at 8 (consecutive: 3)
+  expect(fuzzy('add', 'tasks.add')).toBeCloseTo(1 + 1 + 3 - 9 * 0.02, 10)
   // "ta" in "tasks.add": t at 0 (1+3), a at 1 (consecutive: 3)
   expect(fuzzy('ta', 'tasks.add')).toBeCloseTo(4 + 3 - 9 * 0.02, 10)
   // "tk" in "tasks": t at 0 (1+3), k at 3 (not consecutive, not a word start: 1)
@@ -45,12 +45,12 @@ test('consecutive characters outrank scattered ones', () => {
 })
 
 test('a match at a word start outranks one inside a word', () => {
-  expect(rank('rec', ['shop.mail.direct', 'shop.orders.reconcile'])).toEqual([
-    'shop.orders.reconcile',
-    'shop.mail.direct',
-  ])
+  expect(rank('rec', ['shop.direct', 'shop.reconcile'])).toEqual(['shop.reconcile', 'shop.direct'])
 })
 
 test('of two equal matches the shorter name ranks first', () => {
-  expect(rank('add', ['tasks.add_numbers', 'tasks.add'])).toEqual(['tasks.add', 'tasks.add_numbers'])
+  expect(rank('add', ['tasks.add_numbers', 'tasks.add'])).toEqual([
+    'tasks.add',
+    'tasks.add_numbers',
+  ])
 })

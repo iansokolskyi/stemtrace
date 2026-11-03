@@ -125,10 +125,11 @@ test.describe('opening and closing', () => {
   test('the search button has an accessible name at 1280 and at 400 px', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 })
     await loadPage(page)
-    await expect(searchButton(page)).toContainText('Search tasks, flows, workers')
+    const label = searchButton(page).getByText('Search tasks, flows, workers')
+    await expect(label).toBeVisible()
     await page.setViewportSize({ width: 400, height: 800 })
     await expect(searchButton(page)).toBeVisible()
-    await expect(searchButton(page)).not.toContainText('Search tasks')
+    await expect(label).toBeHidden()
     await searchButton(page).click()
     await expect(box(page)).toBeFocused()
   })

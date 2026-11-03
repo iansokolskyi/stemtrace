@@ -113,10 +113,14 @@ export function useTask(taskId: string) {
   })
 }
 
-export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) {
+export function useGraphs(
+  params?: Omit<FetchGraphsParams, 'limit' | 'offset'>,
+  options: { enabled?: boolean } = {},
+) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<GraphListResponse>({
+    enabled: options.enabled,
     queryKey: ['graphs', params],
     queryFn: () => fetchGraphs({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
@@ -277,4 +281,14 @@ export function useRegisteredTask(name: string | undefined) {
     enabled: name !== undefined,
     retry: false,
   })
+}
+
+/**
+ * What the server already knows of the workers, read without asking Celery (`refresh=false`:
+ * the inspect call blocks while the broker is slow). The sidebar badge and the command palette
+ * share it, so it is one request.
+ */
+export const workersSnapshot = {
+  queryKey: ['badges', 'workers'],
+  queryFn: () => fetchWorkers({ refresh: false }),
 }

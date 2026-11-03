@@ -1,5 +1,6 @@
 import { useRouterState } from '@tanstack/react-router'
 import { type ReactElement, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { CommandPalette } from '@/components/palette/CommandPalette'
 import { useMediaQuery } from '@/hooks/useMediaQuery'
 import { Sidebar } from './Sidebar'
 import { TopStrip } from './TopStrip'
@@ -12,7 +13,20 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   const sidebarRef = useRef<HTMLElement>(null)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const restoreFocus = useRef(false)
+
+  // ⌘K / Ctrl+K opens the search palette from anywhere
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey) && !e.altKey) {
+        e.preventDefault()
+        setPaletteOpen(true)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
 
   const closeDrawer = useCallback((refocus: boolean) => {
     restoreFocus.current = refocus
@@ -41,32 +55,36 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   }, [drawerOpen, closeDrawer])
 
   return (
-    <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] min-[900px]:grid-cols-[244px_minmax(0,1fr)]">
-      <Sidebar
-        ref={sidebarRef}
-        isDrawer={isDrawer}
-        open={drawerOpen}
-        onNavigate={() => closeDrawer(false)}
-      />
-      {isDrawer && drawerOpen && (
-        <div
-          aria-hidden="true"
-          className="fixed inset-0 z-35 bg-scrim"
-          onClick={() => closeDrawer(true)}
-        />
-      )}
-      {/* While the drawer is open the page behind it is out of reach (focus and clicks). */}
-      <div className="min-w-0" data-frame-page inert={isDrawer && drawerOpen}>
-        <TopStrip
+    <>
+      <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] min-[900px]:grid-cols-[244px_minmax(0,1fr)]">
+        <Sidebar
+          ref={sidebarRef}
           isDrawer={isDrawer}
-          drawerOpen={drawerOpen}
-          onOpenMenu={() => setDrawerOpen(true)}
-          menuButtonRef={menuButtonRef}
+          open={drawerOpen}
+          onNavigate={() => closeDrawer(false)}
         />
-        <main id="main" className="max-w-[1500px] px-4 pt-5 pb-14 xl:px-6">
-          {children}
-        </main>
+        {isDrawer && drawerOpen && (
+          <div
+            aria-hidden="true"
+            className="fixed inset-0 z-35 bg-scrim"
+            onClick={() => closeDrawer(true)}
+          />
+        )}
+        {/* While the drawer is open the page behind it is out of reach (focus and clicks). */}
+        <div className="min-w-0" data-frame-page inert={isDrawer && drawerOpen}>
+          <TopStrip
+            isDrawer={isDrawer}
+            drawerOpen={drawerOpen}
+            onOpenMenu={() => setDrawerOpen(true)}
+            menuButtonRef={menuButtonRef}
+            onOpenSearch={() => setPaletteOpen(true)}
+          />
+          <main id="main" className="max-w-[1500px] px-4 pt-5 pb-14 xl:px-6">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+    </>
   )
 }
