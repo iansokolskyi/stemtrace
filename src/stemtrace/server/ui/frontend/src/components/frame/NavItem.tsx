@@ -4,7 +4,7 @@ import { Icon, type IconName } from '@/components/Icon'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
 
 interface NavItemProps {
-  to: '/executions' | '/flows' | '/workers' | '/registry' | '/anomalies'
+  to: '/' | '/executions' | '/flows' | '/workers' | '/registry' | '/anomalies'
   label: string
   icon: IconName
   /** A problem badge ("1 offline"); omitted when there is nothing wrong or the count is unknown. */
@@ -37,6 +37,19 @@ export function NavItem({ to, label, icon, badge, onNavigate }: NavItemProps): R
   )
   // Only Executions has a range; the other pages' search types have no such key, so each branch
   // is typed against its own route and a rename of `range` fails the build here.
+  if (to === '/') {
+    return (
+      <Link
+        to={to}
+        search={carried}
+        onClick={onNavigate}
+        activeOptions={{ includeSearch: false, exact: true }}
+        className={className}
+      >
+        {content}
+      </Link>
+    )
+  }
   if (to === '/executions') {
     return (
       <Link

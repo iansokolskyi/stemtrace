@@ -125,10 +125,10 @@ export function useAnomalyBadge() {
 }
 
 /** The fleet item alone, for when the capped list does not hold it (it sorts last). */
-export function useFleetAnomaly(enabled: boolean) {
+export function useFleetAnomaly(enabled: boolean, { refresh = true }: { refresh?: boolean } = {}) {
   return useQuery<AnomalyListResponse>({
-    queryKey: ['anomalies', 'fleet'],
-    queryFn: () => fetchAnomalies({ kind: 'no_workers_online' }),
+    queryKey: ['anomalies', 'fleet', refresh],
+    queryFn: () => fetchAnomalies({ kind: 'no_workers_online', refresh }),
     enabled,
     refetchInterval: pollUnlessMissing,
     retry: false,

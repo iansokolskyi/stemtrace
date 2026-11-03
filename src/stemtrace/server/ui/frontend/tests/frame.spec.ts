@@ -143,12 +143,19 @@ test.describe('Sidebar', () => {
     await setupMockApi(page)
     await page.goto('/executions')
     const links = sidebar(page).getByRole('navigation', { name: 'Sections' }).getByRole('link')
-    await expect(links).toHaveText([/^Executions/, /^Flows/, /^Workers/, /^Registry/, /^Anomalies/])
-    await expect(links.nth(0)).toHaveAttribute('aria-current', 'page')
-    await links.nth(1).click()
-    await expect(page).toHaveURL(/\/flows$/)
+    await expect(links).toHaveText([
+      /^Overview/,
+      /^Executions/,
+      /^Flows/,
+      /^Workers/,
+      /^Registry/,
+      /^Anomalies/,
+    ])
     await expect(links.nth(1)).toHaveAttribute('aria-current', 'page')
-    await expect(links.nth(0)).not.toHaveAttribute('aria-current', 'page')
+    await links.nth(2).click()
+    await expect(page).toHaveURL(/\/flows$/)
+    await expect(links.nth(2)).toHaveAttribute('aria-current', 'page')
+    await expect(links.nth(1)).not.toHaveAttribute('aria-current', 'page')
   })
 
   test('badges count offline workers and unregistered tasks without inspect', async ({ page }) => {
