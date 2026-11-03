@@ -32,7 +32,7 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
   const retry = span.reduce((sum, b) => sum + b.retry, 0)
   const outcomes = span.reduce((sum, b) => sum + b.outcomes, 0)
 
-  const filters = scopeFilters(scope)
+  const filters = scopeFilters(scope, data.buckets)
   // A tile fixes its state; the chips narrow a span or a name
   const chipsShown = !scope.state
   if (chosen.length) filters.state = chosen.join(',')

@@ -16,7 +16,7 @@ import {
   spanLabel,
 } from '@/components/triage/runsScope'
 import { formatCount, formatPercent } from '@/utils/format'
-import { type Bucket, endsOpen } from './model'
+import type { Bucket } from './model'
 
 /** A brushed span of the chart, as ISO times. */
 export interface Brush {
@@ -49,17 +49,15 @@ function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   return [ref, width]
 }
 
-const barScope = (b: Bucket, buckets: Bucket[]): RunsScope => ({
+const barScope = (b: Bucket): RunsScope => ({
   kind: 'bar',
   from: b.start,
   to: b.end,
-  open: endsOpen(buckets, b.end) ? '1' : undefined,
 })
-const brushScope = (brush: Brush, buckets: Bucket[]): RunsScope => ({
+const brushScope = (brush: Brush): RunsScope => ({
   kind: 'brush',
   from: brush.from,
   to: brush.to,
-  open: endsOpen(buckets, brush.to) ? '1' : undefined,
 })
 
 interface RunsChartProps {
@@ -123,7 +121,7 @@ export function RunsChart({
     if (!start || n === 0) return
     const index = indexAt(event)
     if (Math.abs(event.clientX - start.x) <= DRAG_PX) {
-      panel.open({ kind: 'runs', id: encodeScope(barScope(buckets[index], buckets)) })
+      panel.open({ kind: 'runs', id: encodeScope(barScope(buckets[index])) })
       return
     }
     const [a, z] = [Math.min(index, start.index), Math.max(index, start.index)]
@@ -140,7 +138,7 @@ export function RunsChart({
       setHover(next)
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      panel.open({ kind: 'runs', id: encodeScope(barScope(buckets[current], buckets)) })
+      panel.open({ kind: 'runs', id: encodeScope(barScope(buckets[current])) })
     }
   }
 
@@ -150,8 +148,7 @@ export function RunsChart({
   const selected =
     activeScope?.kind === 'bar' ? buckets.findIndex((b) => b.start === activeScope.from) : -1
   const brushOpen =
-    brush !== null &&
-    active === openerKey({ kind: 'runs', id: encodeScope(brushScope(brush, buckets)) })
+    brush !== null && active === openerKey({ kind: 'runs', id: encodeScope(brushScope(brush)) })
 
   const brushIndexes = (() => {
     if (dragSpan) return dragSpan
@@ -212,7 +209,7 @@ export function RunsChart({
             </span>
             <button
               type="button"
-              {...openerProps(panel, { kind: 'runs', id: encodeScope(brushScope(brush, buckets)) })}
+              {...openerProps(panel, { kind: 'runs', id: encodeScope(brushScope(brush)) })}
               className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press data-[on]:bg-ink data-[on]:text-on-ink"
             >
               Open runs
@@ -511,7 +508,7 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
               <td className="px-2.5 py-1">
                 <button
                   type="button"
-                  {...openerProps(panel, { kind: 'runs', id: encodeScope(barScope(b, buckets)) })}
+                  {...openerProps(panel, { kind: 'runs', id: encodeScope(barScope(b)) })}
                   className="font-semibold hover:underline data-[on]:underline"
                 >
                   {spanLabel(b.start, b.end)}

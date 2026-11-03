@@ -140,17 +140,28 @@ export function lateTask(scenario: OverviewScenario, minutes = 3): MockTask {
   return late
 }
 
+/** The next `count` buckets begin: the chart's last bucket is no longer the one it was. */
+export function advanceScenario(scenario: OverviewScenario, count = 1): void {
+  scenario.start += count * FIVE_MINUTES
+  const quiet = Array.from({ length: count }, () => ({ success: 40, failure: 0, retry: 0 }))
+  scenario.buckets = [...scenario.buckets.slice(count), ...quiet]
+}
+
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 
 /** Serve the Overview's endpoints from `scenario`; everything else falls through to the mock API. */
 export async function mockOverview(page: Page, scenario: OverviewScenario): Promise<URL[]> {
   const requests: URL[] = []
-  const end = scenario.start + scenario.buckets.length * FIVE_MINUTES
-  const window = { start: iso(scenario.start), end: iso(end) }
+  // Read per request, so a test can move the series on (`advanceScenario`) under an open page
+  const geom = () => {
+    const end = scenario.start + scenario.buckets.length * FIVE_MINUTES
+    return { end, window: { start: iso(scenario.start), end: iso(end) } }
+  }
   const column = (pick: (b: Bucket) => number): number[] => scenario.buckets.map(pick)
 
   await page.route(/\/api\/overview(\?|$)/, (route) => {
+    const { window } = geom()
     requests.push(new URL(route.request().url()))
     const { runs_per_minute: rpm, failures, failure_rate: rate } = scenario.overview
     return json(route, {
@@ -165,6 +176,7 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
   })
 
   await page.route(/\/api\/stats\/timeseries(\?|$)/, (route) => {
+    const { window } = geom()
     const url = new URL(route.request().url())
     requests.push(url)
     if (url.searchParams.has('group_by')) {
@@ -200,6 +212,7 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
   })
 
   await page.route(/\/api\/failures(\?|$)/, (route) => {
+    const { end, window } = geom()
     requests.push(new URL(route.request().url()))
     return json(route, {
       window,
@@ -215,6 +228,7 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
   })
 
   await page.route(/\/api\/stats\/tasks(\?|$)/, (route) => {
+    const { end, window } = geom()
     requests.push(new URL(route.request().url()))
     const row = (t: OverviewScenario['tasks'][number]) => ({
       name: t.name,

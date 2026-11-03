@@ -27,7 +27,9 @@ export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; f
   const data = list.data
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   // The list is capped and sorts the fleet item last, so a full one may not hold it
-  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
+  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList, {
+    refresh: false,
+  })
   if (!data) return { data: undefined, failed: list.isError }
   return {
     data: {

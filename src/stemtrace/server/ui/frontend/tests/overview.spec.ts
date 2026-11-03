@@ -7,6 +7,7 @@ import { flowNode } from './fixtures/flow'
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import { createAnomaly, createFailedTask } from './fixtures/mock-data'
 import {
+  advanceScenario,
   bucketStart,
   lateTask,
   mockOverview,
@@ -852,5 +853,92 @@ test.describe('Health table trend', () => {
   test('a group with a series draws its trend', async ({ page }) => {
     await openOverview(page)
     await expect(page.getByTestId('health-group').first().locator('svg[width="84"]')).toHaveCount(1)
+  })
+})
+
+test.describe('A span stays a span when the chart moves on', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const late = ({ api, scenario }: Setup) => {
+    scenario.buckets[11] = { success: 0, failure: 1, retry: 0 }
+    api.addTask(lateTask(scenario))
+  }
+
+  for (const kind of ['bar', 'brush'] as const) {
+    for (const how of ['a live refetch', 'a reload'] as const) {
+      test(`a ${kind} entry on the last bucket lists with an upper bound once the next bucket starts (${how})`, async ({
+        page,
+      }) => {
+        await page.clock.install()
+        const { scenario } = await openOverview(page, '/', late)
+        const urls: string[] = []
+        page.on('request', (r) => {
+          if (/\/api\/tasks\?/.test(r.url()) && r.url().includes('from_date')) urls.push(r.url())
+        })
+        if (kind === 'bar') {
+          await clickBar(page, 11)
+        } else {
+          const from = await barPoint(page, 10)
+          const to = await barPoint(page, 11)
+          await page.mouse.move(from.x, from.y)
+          await page.mouse.down()
+          await page.mouse.move(to.x, to.y, { steps: 3 })
+          await page.mouse.up()
+          await page.getByRole('button', { name: 'Open runs' }).click()
+        }
+        // While it is the last bucket, the late run is in it
+        await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+        expect(urls.at(-1)).not.toContain('updated_before')
+
+        // The next bucket starts: the run stamped after the old end now belongs to the new bar
+        advanceScenario(scenario)
+        urls.length = 0
+        if (how === 'a reload') await page.reload()
+        else await page.clock.runFor(16_000)
+
+        await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(0)
+        await expect(panelOf(page)).toContainText('No runs match.')
+        expect(urls.at(-1)).toContain('updated_before')
+        if (kind === 'brush' && how === 'a live refetch') {
+          // The brush is the same span, so its button still marks it
+          await expect(page.getByTestId('brush')).toHaveAttribute('data-on', '')
+        }
+      })
+    }
+  }
+
+  test('Back across a page-level open restores the earlier entry state', async ({ page }) => {
+    await openOverview(page)
+    const chip = panelOf(page)
+      .getByRole('group', { name: 'Filter by state' })
+      .getByRole('button', { name: 'Failure', exact: true })
+    await clickBar(page, 8)
+    await chip.click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    await clickBar(page, 3)
+    await expect(chip).toHaveAttribute('aria-pressed', 'false')
+    await page.goBack()
+    await expect(chip).toHaveAttribute('aria-pressed', 'true')
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+  })
+
+  test('a wrapped Anomalies note shows every kind at 1280px', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await openOverview(page, '/', ({ api }) =>
+      api.setAnomalies([
+        createAnomaly('stuck', { task_id: 's', name: 'a.b' }),
+        createAnomaly('interrupted', { task_id: 'i', name: 'a.c' }),
+        createAnomaly('unregistered', { name: 'a.d' }),
+        createAnomaly('no_workers_online'),
+      ]),
+    )
+    const tile = page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ })
+    const text = '1 stuck, 1 interrupted, 1 unregistered, 1 no workers online'
+    await expect(tile).toContainText(text)
+    const box = await tile.getByText(text).boundingBox()
+    const tileBox = await tile.boundingBox()
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(
+      (tileBox?.y ?? 0) + (tileBox?.height ?? 0),
+    )
   })
 })

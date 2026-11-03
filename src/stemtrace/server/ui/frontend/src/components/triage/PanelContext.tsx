@@ -45,8 +45,9 @@ export function openerProps(
 }
 
 // What each stack entry remembers (the state chips, "Show more"), by entry position and key. It
-// outlives the entry's component, so a pop (Esc, Back) and a return from a task's page restore
-// it; opening from the page starts a new stack and forgets it.
+// outlives the entry's component, so a pop (Esc, Back), a return from a task's page and a Back
+// across a new open from the page all restore it.
+const ENTRY_STORE_LIMIT = 200
 const entryStore = new Map<string, unknown>()
 
 /** Names the stack entry the component below is rendered for (`index|key`). */
@@ -61,7 +62,13 @@ export function useEntryState<T>(slot: string, initial: T): [T, (value: T) => vo
   return [
     value,
     (next) => {
+      entryStore.delete(key)
       entryStore.set(key, next)
+      // Bounded: the oldest entries go first
+      for (const old of entryStore.keys()) {
+        if (entryStore.size <= ENTRY_STORE_LIMIT) break
+        entryStore.delete(old)
+      }
       setValue(next)
     },
   ]
@@ -81,10 +88,7 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
     return {
       stack,
       activeKey: stack[0] && openerKey(stack[0]),
-      open: (entry) => {
-        entryStore.clear()
-        go([entry])
-      },
+      open: (entry) => go([entry]),
       push: (entry) => {
         const top = stack[stack.length - 1]
         if (top && openerKey(top) === openerKey(entry)) return

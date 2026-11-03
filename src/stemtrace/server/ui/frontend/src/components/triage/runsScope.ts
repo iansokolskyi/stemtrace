@@ -1,4 +1,5 @@
 import type { FetchExecutionsParams } from '@/api/client'
+import { type Bucket, endsOpen } from '@/components/overview/model'
 
 /**
  * Which runs a `runs` panel entry lists. It is the entry's id, so it reads the same wherever the
@@ -10,11 +11,6 @@ export interface RunsScope {
   /** Start (inclusive) and end (exclusive) of a time span, as ISO times. */
   from?: string
   to?: string
-  /**
-   * Set (`1`) when the span ends on the chart's last bucket. The server's last bucket takes every
-   * run stamped after its end too (a worker clock ahead), so its list has no upper bound.
-   */
-  open?: string
   /** The Overview's window (`6h`) when the scope is the whole window; none for All. */
   within?: string
   /** A state or a comma-separated list. */
@@ -24,7 +20,7 @@ export interface RunsScope {
   label?: string
 }
 
-const KEYS = ['kind', 'from', 'to', 'open', 'within', 'state', 'name', 'label'] as const
+const KEYS = ['kind', 'from', 'to', 'within', 'state', 'name', 'label'] as const
 
 /** The entry id for a scope: query-string text with the keys in a fixed order. */
 export function encodeScope(scope: RunsScope): string {
@@ -50,10 +46,13 @@ export function decodeScope(id: string): RunsScope | undefined {
 }
 
 /** The list filters for a scope. A span is `from_date` to `updated_before`: the runs one bucket counts. */
-export function scopeFilters(scope: RunsScope): FetchExecutionsParams {
+export function scopeFilters(scope: RunsScope, buckets: Bucket[]): FetchExecutionsParams {
   return {
     from_date: scope.from,
-    updated_before: scope.open ? undefined : scope.to,
+    // The chart's last bucket also holds runs stamped after its end (stats.py count_runs), so a
+    // span ending on it has no upper bound: decided now, from the current buckets, since a span
+    // is only the last bucket until the next one starts
+    updated_before: scope.to && endsOpen(buckets, scope.to) ? undefined : scope.to,
     within: scope.within,
     state: scope.state,
     name_exact: scope.name,
