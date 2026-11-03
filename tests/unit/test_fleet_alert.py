@@ -558,6 +558,19 @@ def test_row28k_a_revived_worker_that_keeps_sending_events_stays_online_after_th
     assert fleet_items(report_at(registry, end)) == []
 
 
+def test_row28k_an_event_after_the_stop_was_forgotten_revives_a_listed_worker() -> None:
+    registry = WorkerRegistry(max_unlisted=1)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.mark_shutdown(SOLO, 1, T0 + MINUTE, now=T0 + MINUTE)
+    registry.mark_shutdown(
+        OTHER, 2, T0 + 2 * MINUTE, now=T0 + 2 * MINUTE
+    )  # evicts SOLO's
+
+    registry.mark_seen(SOLO, T0 + 3 * MINUTE, now=T0 + 3 * MINUTE)
+
+    assert fleet_items(report_at(registry, T0 + 3 * MINUTE)) == []
+
+
 def test_row28k_a_stop_is_forgotten_by_the_server_clock_not_the_workers() -> None:
     registry = WorkerRegistry()
     stop = T0 - 2 * timedelta(hours=1)  # a worker clock two hours behind

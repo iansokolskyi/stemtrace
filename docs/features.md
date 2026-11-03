@@ -440,7 +440,7 @@ completed since) is remembered until a completed call it doesn't answer proves i
 - **A task event after a stop revives the nodename.** An event stamped after the reported stop
   (a restart whose `worker_ready` the server missed) makes the nodename online again, whether or
   not the Workers page lists it. An event stamped at or before the stop, or a ping reply, doesn't.
-  The server forgets a reported stop 30 minutes after it received it.
+  The server forgets a reported stop 30 minutes after it received it, or earlier when more than 1,024 stops are kept; after that, any event revives the nodename.
 - **The server keeps at most 1,024 nodenames** that the Workers page doesn't list, and 1,024
   reported stops of them. The oldest is dropped first.
 
