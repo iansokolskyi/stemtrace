@@ -87,22 +87,17 @@ async def test_anomalies_returns_one_item_per_unregistered_name_with_the_contrac
     assert body["counts"]["unregistered"] == 1
 
 
-async def test_anomalies_with_every_worker_stopped_flag_each_unknown_name_and_no_fleet_item() -> (
-    None
-):
+async def test_anomalies_with_every_worker_stopped_flag_nothing() -> None:
     store = store_of(pending("a", 5, "app.a"), pending("b", 9, "app.b"))
     app = make_app(store, registry=confirmed_registry(online=False), broker_url=BROKER)
 
     body = await list_body(app)
 
-    assert [(a["kind"], a["name"]) for a in body["anomalies"]] == [
-        ("unregistered", "app.a"),
-        ("unregistered", "app.b"),
-    ]
+    assert body["anomalies"] == []
     assert body["counts"] == {
         "stuck": 0,
         "interrupted": 0,
-        "unregistered": 2,
+        "unregistered": 0,
         "no_workers_online": 0,
     }
 

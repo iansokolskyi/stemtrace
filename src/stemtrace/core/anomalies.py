@@ -40,7 +40,7 @@ __all__ = [
 
 
 class AnomalyKind(str, Enum):
-    """What is wrong with a task, or with the fleet it waits for."""
+    """What is wrong with a task. ``no_workers_online`` is never reported."""
 
     STUCK = "stuck"
     INTERRUPTED = "interrupted"
@@ -165,12 +165,13 @@ class RegistryFacts:
     """What the worker registry knows, copied at one moment.
 
     ``live_names`` are the names of every live worker (no stop reported since
-    its last ``worker_ready``, not superseded). ``authority_at`` is when an
-    inspect reply last listed every answering worker's tasks, and
-    ``broker_configured`` whether the server can inspect.
+    its last ``worker_ready``, not superseded), ``any_live`` whether there is
+    one. ``authority_at`` is when an inspect reply last listed every worker's
+    tasks, and ``broker_configured`` whether the server can inspect.
     """
 
     live_names: frozenset[str]
+    any_live: bool
     authority_at: datetime | None
     broker_configured: bool
 
@@ -200,9 +201,9 @@ DEFAULT_SETTINGS: Final[AnomalySettings] = AnomalySettings()
 class Anomaly:
     """One flagged item: a task, or a task name (``task_id`` is then None).
 
-    ``task_id`` is None for a per-name item and ``name`` for the fleet item.
-    ``task_count`` is how many PENDING tasks an unregistered or fleet item
-    covers. The stuck fields are None for the other kinds, and vice versa.
+    ``task_id`` is None for a per-name item. ``task_count`` is how many
+    PENDING tasks an unregistered item covers. The stuck fields are None for
+    the other kinds, and vice versa.
     """
 
     kind: AnomalyKind
@@ -224,8 +225,7 @@ class AnomalyReport:
 
     ``anomalies`` maps a task ID to the item that covers it (an unregistered
     task maps to its name's item). ``items`` is the list: each stuck or
-    interrupted task, one item per unregistered name, at most one fleet
-    item. ``counts`` tallies ``items`` and has every kind (0 included).
+    interrupted task, one item per unregistered name. ``counts`` tallies ``items`` and has every kind (0 included).
     """
 
     anomalies: Mapping[str, Anomaly]
@@ -320,10 +320,13 @@ def _authoritative(
 ) -> bool:
     """Whether the registry can say a name is unknown, not just not heard of yet.
 
-    True after a recent inspect reply that listed every replying worker's
-    tasks, or, with no broker to inspect, while a live worker has
-    registered tasks (the events are then the only source).
+    Never while no worker is live. Otherwise true after a recent inspect reply
+    that listed every replying worker's tasks, or, with no broker to inspect,
+    while a live worker has registered tasks (the events are then the only
+    source).
     """
+    if not registry.any_live:
+        return False  # every worker is stopped: a fleet that is down raises no flag
     confirmed = registry.authority_at
     if confirmed is not None and now - confirmed <= settings.authority_window:
         return True

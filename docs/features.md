@@ -347,8 +347,8 @@ registered. A task a worker received is RECEIVED, so it never counts, and neithe
 process stamps. A worker is *live* until it reports `worker_shutdown` or `worker_terminating`,
 or a newer `worker_ready` from the same nodename replaces it, and again after its own next
 `worker_ready`. A worker that missed one `inspect` call, or that has been silent for more than
-3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. 
-A name that only a stopped worker registered is unregistered, and a new
+3 minutes without a shutdown, keeps its names until the 30-minute cleanup removes it. A name that only a stopped worker registered is unregistered while another
+worker is live, and a new
 worker that registers the name within `grace` of a rolling deploy clears it. `since` is the
 oldest waiting task's PENDING time and `task_count` the number of waiting tasks of the name.
 
@@ -365,9 +365,12 @@ trusted when either of these holds:
 When neither holds, no task is reported unregistered. That includes a server restarted after
 its workers (the registry is empty until a worker answers) and a server with a broker URL
 whose workers can't be inspected: **with a broker URL but inspect unreachable, unregistered
-never fires.** While every worker is stopped, the same rules apply: a worker killed without a
-shutdown event keeps its names until the 30-minute cleanup, and after the cleanup the registry
-is empty, so nothing fires until a worker answers.
+never fires.** The registry is never trusted while no worker is live, that is, while every
+worker has reported a stop or been replaced, with or without a broker URL. So a fleet that
+is down raises no flag: after a clean stop of every worker nothing is reported, even with a
+recent `inspect` reply. A worker killed without a shutdown event stays live and keeps its names
+until the 30-minute cleanup, and after the cleanup the registry is empty, so nothing fires
+until a worker answers. A live worker that registered no tasks still counts as live.
 
 ### Settings
 

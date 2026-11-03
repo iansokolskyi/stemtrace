@@ -174,7 +174,7 @@ def test_route_flags_nothing_with_a_broker_and_no_complete_inspect_reply(
     assert _run_extension(monkeypatch, inspector) == []
 
 
-def test_route_with_the_worker_stopped_flags_its_names_and_no_fleet_item(
+def test_route_with_every_worker_stopped_flags_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     answered = _Inspect(
@@ -193,9 +193,7 @@ def test_route_with_the_worker_stopped_flags_its_names_and_no_fleet_item(
             routes, "_get_inspector", lambda _url, **_: _Inspect(None, None, None)
         )
 
-        assert _items(_extension_client(extension)) == [
-            ("unregistered", "app.known", 1)
-        ]
+        assert _items(_extension_client(extension)) == []
 
 
 def test_route_without_a_broker_trusts_worker_ready_events() -> None:

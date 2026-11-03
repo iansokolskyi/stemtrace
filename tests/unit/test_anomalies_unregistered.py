@@ -42,10 +42,15 @@ def registry(
     *,
     authority: float | None = FRESH,
     broker: bool = True,
+    live: bool = True,
 ) -> RegistryFacts:
-    """Registry facts; ``authority`` is seconds after T0 (None: never confirmed)."""
+    """Registry facts; ``authority`` is seconds after T0 (None: never confirmed).
+
+    ``live`` is whether any worker is live (not stopped or superseded).
+    """
     return RegistryFacts(
         live_names=frozenset(names),
+        any_live=live,
         authority_at=None if authority is None else at(authority),
         broker_configured=broker,
     )
@@ -400,15 +405,29 @@ def test_row28_after_the_cleanup_the_gate_is_closed_and_nothing_fires() -> None:
     assert run([pending("t1", OLD)], with_broker)[:2] == ([], {})
 
 
-def test_row28_with_every_worker_stopped_and_a_fresh_reply_names_are_unregistered() -> (
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize("authority", [FRESH, NOW - WINDOW - 1])
+def test_row28_with_every_worker_stopped_nothing_fires(
+    authority: float, broker: bool
+) -> None:
+    # Owner gap 3: a fleet that is down raises no per-name flag. A clean stop
+    # of every worker empties the names but a recent reply keeps the gate open,
+    # so the gate is closed while no worker is live.
+    facts = registry((), authority=authority, broker=broker, live=False)
+
+    items, nodes, counts = run([pending("t1", OLD, "app.known")], facts)
+
+    assert (items, nodes) == ([], {})
+    assert all(n == 0 for n in counts.values())
+
+
+def test_a_live_worker_with_no_registered_tasks_still_opens_the_gate_with_a_broker() -> (
     None
 ):
-    # A clean stop of every worker, an inspect reply seconds old: no names left.
-    items, _, _ = run([pending("t1", OLD, "app.known")], registry(()))
+    # Conservative edge: "live" means a worker exists, not that it has names.
+    items, _, _ = run([pending("t1", OLD, "app.new")], registry(()))
 
-    assert [(a.kind, a.name) for a in items] == [
-        (AnomalyKind.UNREGISTERED, "app.known")
-    ]
+    assert [a.kind for a in items] == [AnomalyKind.UNREGISTERED]
 
 
 @pytest.mark.parametrize("broker", [True, False])

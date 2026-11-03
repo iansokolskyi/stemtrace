@@ -12,8 +12,10 @@ from datetime import datetime, timedelta
 import pytest
 
 from stemtrace.core.anomalies import (
+    DEFAULT_SETTINGS,
     AnomalyKind,
     AnomalyReport,
+    AnomalySettings,
     RegistryFacts,
     classify_anomalies,
 )
@@ -40,11 +42,14 @@ def facts(
 
 
 def classify(
-    store: GraphStore, registry_facts: RegistryFacts, now: datetime
+    store: GraphStore,
+    registry_facts: RegistryFacts,
+    now: datetime,
+    settings: AnomalySettings = SMALL_GRACE,
 ) -> AnomalyReport:
     f = classifier_facts(store.run_records(), {}, now)
     return classify_anomalies(
-        **f._asdict(), now=now, settings=SMALL_GRACE, registry=registry_facts
+        **f._asdict(), now=now, settings=settings, registry=registry_facts
     )
 
 
@@ -236,3 +241,50 @@ def test_a_superseded_pid_does_not_keep_names_after_the_new_one_stops() -> None:
     got = facts(registry, D + MINUTE)
 
     assert got.live_names == frozenset()
+
+
+# --- A fleet that is down raises no per-name flag (owner gap 3) -----------------
+
+
+@pytest.mark.parametrize("minutes", [6, 9])
+def test_the_reviewer_poc_two_workers_stop_cleanly_after_a_complete_reply(
+    minutes: int,
+) -> None:
+    registry = WorkerRegistry()
+    names = ["app.a", "app.b", "app.c"]
+    registry.apply_stats_reply({}, {SOLO: (1, names), OTHER: (2, names)}, now=D)
+    registry.mark_shutdown(SOLO, 1)
+    registry.mark_shutdown(OTHER, 2)
+    store = GraphStore()
+    for i, name in enumerate(names):
+        store.add_event(task_event(f"t{i}", TaskState.PENDING, 10, name=name))
+    now = D + minutes * MINUTE  # past the 5-minute grace, inside the 10-minute window
+
+    report = classify(store, facts(registry, now), now, DEFAULT_SETTINGS)
+
+    assert list(report.items) == []
+
+
+@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize("authority_age_s", [30, 3600], ids=["fresh", "stale"])
+@pytest.mark.parametrize("stopped", [2, 1], ids=["all", "all-but-one"])
+def test_gate_closes_while_every_worker_is_stopped(
+    stopped: int, authority_age_s: int, broker: bool
+) -> None:
+    now = D + 2 * MINUTE
+    registry = WorkerRegistry()
+    both = {SOLO: (1, ["app.solo"]), OTHER: (2, ["app.other"])}
+    registry.apply_stats_reply({}, both, now=now - timedelta(seconds=authority_age_s))
+    registry.mark_shutdown(SOLO, 1)
+    if stopped == 2:
+        registry.mark_shutdown(OTHER, 2)
+    store = GraphStore()
+    store.add_event(task_event("t1", TaskState.PENDING, 0, name="app.solo"))
+
+    report = classify(store, facts(registry, now, broker=broker), now)
+
+    # A name only the stopped worker registered is flagged only while some worker
+    # is live and the registry is trusted (a recent reply, or no broker URL).
+    trusted = authority_age_s <= 120 or not broker
+    flagged = stopped == 1 and trusted
+    assert [a.name for a in report.items] == (["app.solo"] if flagged else [])

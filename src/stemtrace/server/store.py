@@ -592,6 +592,7 @@ class WorkerRegistry:
             ]
             return RegistryFacts(
                 live_names=frozenset(t for w in live for t in w.registered_tasks),
+                any_live=bool(live),
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
             )

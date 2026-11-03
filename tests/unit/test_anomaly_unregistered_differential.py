@@ -43,8 +43,9 @@ def reference(
 ) -> tuple[Expected, set[str]]:
     """Items as (kind, name, since, count) and the flagged task IDs, from raw events."""
     confirmed = registry.authority_at
-    trusted = (confirmed is not None and (now - confirmed) <= WINDOW) or (
-        not registry.broker_configured and len(registry.live_names) > 0
+    trusted = registry.any_live and (
+        (confirmed is not None and (now - confirmed) <= WINDOW)
+        or (not registry.broker_configured and len(registry.live_names) > 0)
     )
     by_task: dict[str, list[TaskEvent]] = {}
     for event in task_events:
@@ -84,6 +85,7 @@ def draw_registry(rng: random.Random, names: list[str], now: datetime) -> Regist
     )
     return RegistryFacts(
         live_names=registered,
+        any_live=bool(registered) or rng.random() < 0.7,
         authority_at=authority,
         broker_configured=rng.random() < 0.6,
     )
