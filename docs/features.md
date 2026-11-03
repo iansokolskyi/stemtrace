@@ -395,10 +395,12 @@ A worker is offline when it reported `worker_shutdown` or `worker_terminating`, 
 process of the same nodename replaced it, or it is silent with evidence. A worker is **silent
 with evidence** when all of these hold:
 
-1. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
+1. Some worker has answered an `inspect` call since the server started, which shows that the
+   server can hear workers.
+2. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
    it returned without a transport error; an empty reply counts.
-2. The worker didn't answer that call.
-3. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
+3. The worker didn't answer that call.
+4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
    minutes old.
 
 A completed call counts only once the server has applied its answers, so a request that arrives
@@ -425,15 +427,20 @@ completed since) is remembered until a completed call it doesn't answer proves i
   a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
   SIGKILL, the item doesn't appear even when every other worker then stops cleanly. With a broker
   URL, the next completed call that the lost worker doesn't answer clears it.
+- **Workers the server can't hear never count as silent.** If workers run with remote control
+  off, or with a control setting the server doesn't share (such as `global_keyprefix`), every
+  `inspect` call returns nothing, so no worker is silent with evidence. A SIGKILLed fleet then
+  gives no item, the same as with no broker URL. A clean stop still does.
 - **A killed fleet needs an inspect.** After a SIGKILL of every worker, with no broker URL or an
   unreachable broker, the item doesn't appear, because silence isn't evidence. A clean stop of
   every worker still does.
 - **A worker clock far behind the server can look silent.** A `worker_ready` or task event
   keeps a worker online for 3 minutes from the event's time, so a worker whose clock is 3
   minutes or more behind the server's can be silent with evidence right after it sends one.
-- **A task event after a stop revives a nodename the Workers page doesn't list.** An event
-  stamped after the reported stop makes the nodename live again. An event stamped before it
-  doesn't.
+- **A task event after a stop revives the nodename.** An event stamped after the reported stop
+  (a restart whose `worker_ready` the server missed) makes the nodename online again, whether or
+  not the Workers page lists it. An event stamped at or before the stop, or a ping reply, doesn't.
+  The server forgets a reported stop 30 minutes after it received it.
 - **The server keeps at most 1,024 nodenames** that the Workers page doesn't list, and 1,024
   reported stops of them. The oldest is dropped first.
 
