@@ -449,6 +449,15 @@ def test_row28j_a_ping_answer_proves_the_channel_even_when_stats_raised() -> Non
     assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
 
 
+def test_row28j_an_empty_ping_reply_does_not_prove_the_channel() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.apply_ping_reply([], now=T0 + MINUTE)  # stats() raised, nobody pinged back
+    registry.apply_stats_reply({}, {}, now=T0 + 9 * MINUTE)  # a completed, empty call
+
+    assert fleet_items(report_at(registry, T0 + 9 * MINUTE)) == []
+
+
 def test_row28j_a_stopped_fleet_is_still_offline_with_the_channel_unproven() -> None:
     registry = WorkerRegistry()
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
