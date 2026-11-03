@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.fastapi.form_auth import FormAuthConfig
     from stemtrace.server.groups import GroupsInput
+    from stemtrace.server.inspect_probe import InspectProbe
 
 
 def check_auth_dependency(auth_dependency: Any) -> None:
@@ -60,6 +61,7 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
     auth_throttle: LoginThrottle | None = None,
     worker_timeline: WorkerTimeline | None = None,
     anomaly_settings: AnomalySettings = DEFAULT_SETTINGS,
+    inspect_probe: InspectProbe | None = None,
 ) -> APIRouter:
     """Create API router. For embedded consumer, use StemtraceExtension.
 
@@ -91,6 +93,11 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
             reported interrupted.
         anomaly_settings: Thresholds for stuck tasks; build them with
             ``stemtrace.server.anomaly_settings.anomaly_settings()``.
+        inspect_probe: Refreshes the worker registry without a request, when the
+            server starts and when a new worker appears. ``StemtraceExtension``
+            passes its own. Without one, the router makes its own, started by the
+            app's startup event (not run when the app has its own ``lifespan``;
+            a new worker still starts it). Needs ``broker_url``.
 
     Raises:
         ConfigurationError: Here, not on the first request, if ``groups`` is
@@ -121,6 +128,7 @@ def create_router(  # noqa: PLR0917  public API (stemtrace.create_router): posit
         groups=groups,
         worker_timeline=worker_timeline,
         anomaly_settings=anomaly_settings,
+        inspect_probe=inspect_probe,
     )
     ws_router = create_websocket_router(
         ws_manager, form_auth_config=form_auth_config, api_key_guard=guard

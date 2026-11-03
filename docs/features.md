@@ -64,6 +64,30 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 stemtrace uses **Celery inspect** on demand to populate workers and registered tasks, so those
 pages work even if the server missed `worker_ready` events.
 
+- The server also runs inspect in the background, without a page load: once when it starts
+  (`stemtrace server` and `StemtraceExtension`), and when it learns a worker nodename it didn't
+  have: a `worker_ready` event, the first task event from a nodename that never registered, or an
+  inspect reply that names a new node. A background inspect starts at least 2 seconds after the
+  last successful inspect, whether a page load or the background one, and a page load within 2
+  seconds of a successful background inspect doesn't inspect again. Each call waits 0.5 s for
+  replies. A trigger that arrives while an inspect runs, or inside the 2 seconds, causes one more
+  inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
+- A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
+  (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
+  inspect that the server sent for its `worker_ready` goes unanswered) is owed an inspect at 2, 6,
+  14, 30 and 60 seconds after it joined, then dropped. These are owed times, measured from the
+  join and subject to the shared 2-second interval, so the real gaps run longer by the inspect's
+  own duration. A new nodename that joins while another waits for its owed time is inspected
+  within one interval, and the owed times of the first don't move. A nodename that never answers
+  (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
+  until the worker joins again. Until a reply names a worker, the server may show it offline.
+- With a down broker, an attempt can take about 18 s (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
+  and a pending nodename is owed one inspect plus at most five more. Stopping the server waits up to
+  2 s for a running attempt. The background inspect does nothing without a broker URL.
+  Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
+  an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
+  task events arrive but that never registers triggers one inspect, not one per event.
 - A Celery nodename (`name@host`) has at most one live process, so a worker is shown online
   only for its newest pid: when a node restarts, its older pids go offline, including one that
   was killed without a `worker_shutdown` event. A ping reply carries no pid, so it can only
