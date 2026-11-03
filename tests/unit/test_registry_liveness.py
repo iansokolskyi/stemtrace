@@ -37,8 +37,7 @@ MINUTE = timedelta(minutes=1)
 def facts(
     registry: WorkerRegistry, now: datetime | None = None, *, broker: bool = True
 ) -> RegistryFacts:
-    del now  # the facts don't depend on the clock
-    return registry.registry_facts(broker_configured=broker)
+    return registry.registry_facts(broker_configured=broker, now=now)
 
 
 def classify(
@@ -151,14 +150,14 @@ def test_a_reply_with_one_fresh_node_stamps() -> None:
     assert facts(registry, D).authority_at == D
 
 
-# --- Row 28: the fleet item holds for the whole outage ----------------------------
+# --- Row 28: the fleet item follows a reported stop, never bare silence --------------
 
 
 @pytest.mark.parametrize("stopped", [True, False])
 @pytest.mark.parametrize("minutes", [2, 6, 12, 29, 45, 120])
 @pytest.mark.parametrize("age_s", [0, 300, 660])
 @pytest.mark.parametrize("broker", [True, False])
-def test_row28_no_workers_online_is_never_emitted_for_the_whole_outage(
+def test_row28_the_fleet_item_is_emitted_for_the_whole_outage_only_after_a_reported_stop(
     broker: bool, age_s: int, minutes: int, stopped: bool
 ) -> None:
     """The fleet's last sign of life is ``age_s`` before ``D``; then nothing arrives."""
@@ -177,8 +176,11 @@ def test_row28_no_workers_online_is_never_emitted_for_the_whole_outage(
 
     report = classify(store, facts(registry, now, broker=broker), now)
 
-    assert AnomalyKind.NO_WORKERS_ONLINE not in {a.kind for a in report.items}
-    assert report.counts[AnomalyKind.NO_WORKERS_ONLINE] == 0
+    # No inspect completed after the last sign, so silence alone is no evidence.
+    assert report.counts[AnomalyKind.NO_WORKERS_ONLINE] == int(stopped)
+    assert [a.kind for a in report.items] == (
+        [AnomalyKind.NO_WORKERS_ONLINE] if stopped else []
+    )
 
 
 @pytest.mark.parametrize("minutes", [2, 6, 29])
@@ -262,7 +264,11 @@ def test_the_reviewer_poc_two_workers_stop_cleanly_after_a_complete_reply(
 
     report = classify(store, facts(registry, now), now, DEFAULT_SETTINGS)
 
-    assert list(report.items) == []
+    # Owner gap 3: no per-name item; the fleet item says it once.
+    assert [(a.kind, a.name) for a in report.items] == [
+        (AnomalyKind.NO_WORKERS_ONLINE, None)
+    ]
+    assert report.anomalies == {}
 
 
 @pytest.mark.parametrize("broker", [True, False])
@@ -287,4 +293,7 @@ def test_gate_closes_while_every_worker_is_stopped(
     # is live and the registry is trusted (a recent reply, or no broker URL).
     trusted = authority_age_s <= 120 or not broker
     flagged = stopped == 1 and trusted
-    assert [a.name for a in report.items] == (["app.solo"] if flagged else [])
+    if stopped == 2:
+        assert [a.kind for a in report.items] == [AnomalyKind.NO_WORKERS_ONLINE]
+    else:
+        assert [a.name for a in report.items] == (["app.solo"] if flagged else [])

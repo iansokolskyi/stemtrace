@@ -262,7 +262,9 @@ class EventConsumer:
             # WORKER_SHUTDOWN, or WORKER_TERMINATING (a cold stop, which sends
             # no worker_shutdown): the process ended. A new event type must
             # get its own branch (test_worker_event_types_are_all_handled).
-            self._worker_registry.mark_shutdown(event.hostname, event.pid)
+            self._worker_registry.mark_shutdown(
+                event.hostname, event.pid, event.timestamp
+            )
             logger.info(
                 "Worker %s: %s:%d", event.event_type.value, event.hostname, event.pid
             )

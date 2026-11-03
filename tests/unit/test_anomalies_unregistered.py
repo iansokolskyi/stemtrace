@@ -433,7 +433,7 @@ def test_a_live_worker_with_no_registered_tasks_still_opens_the_gate_with_a_brok
 @pytest.mark.parametrize("broker", [True, False])
 @pytest.mark.parametrize("authority", [None, FRESH, NOW - WINDOW - 1, NOW - 7200])
 @pytest.mark.parametrize("names", [(), ("app.known",)])
-def test_no_workers_online_is_never_emitted(
+def test_no_workers_online_is_not_emitted_unless_a_worker_was_seen_and_none_is_online(
     names: tuple[str, ...], authority: float | None, broker: bool
 ) -> None:
     events = [pending("t1", OLD, "app.new"), pending("t2", OLD, "app.known")]

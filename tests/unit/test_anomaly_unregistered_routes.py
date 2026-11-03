@@ -87,18 +87,22 @@ async def test_anomalies_returns_one_item_per_unregistered_name_with_the_contrac
     assert body["counts"]["unregistered"] == 1
 
 
-async def test_anomalies_with_every_worker_stopped_flag_nothing() -> None:
+async def test_anomalies_with_every_worker_stopped_give_the_fleet_item_and_no_names() -> (
+    None
+):
     store = store_of(pending("a", 5, "app.a"), pending("b", 9, "app.b"))
     app = make_app(store, registry=confirmed_registry(online=False), broker_url=BROKER)
 
     body = await list_body(app)
 
-    assert body["anomalies"] == []
+    assert [
+        (a["kind"], a["task_id"], a["name"], a["task_count"]) for a in body["anomalies"]
+    ] == [("no_workers_online", None, None, 2)]
     assert body["counts"] == {
         "stuck": 0,
         "interrupted": 0,
         "unregistered": 0,
-        "no_workers_online": 0,
+        "no_workers_online": 1,
     }
 
 
@@ -152,10 +156,12 @@ async def test_anomalies_filters_apply_to_unregistered_items(
     }
 
 
-async def test_anomalies_kind_no_workers_online_is_accepted_and_empty() -> None:
+async def test_anomalies_kind_no_workers_online_is_accepted_and_empty_while_a_worker_is_online() -> (
+    None
+):
     app = make_app(
         store_of(pending("a", 5)),
-        registry=confirmed_registry(online=False),
+        registry=confirmed_registry(),
         broker_url=BROKER,
     )
 

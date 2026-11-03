@@ -452,8 +452,15 @@ def _refresh_worker_registry_from_inspect(
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
 
-    with contextlib.suppress(Exception):
+    stats_completed = False
+    try:
         stats = inspector.stats()
+        # Celery 5.6.3 Inspect._prepare returns None for an empty reply; kombu
+        # 5.6.2 Mailbox._broadcast -> Connection.default_channel raises when the
+        # broker is unreachable. So returning at all means the broadcast ran.
+        stats_completed = True
+    except Exception:
+        logger.debug("inspect stats() failed", exc_info=True)
 
     with contextlib.suppress(Exception):
         registered = inspector.registered()
@@ -464,9 +471,11 @@ def _refresh_worker_registry_from_inspect(
         active: dict[str, object] | None = None
         with contextlib.suppress(Exception):
             active = inspector.ping()
-        if not active:
+        if not active and not stats_completed:
             return
-        worker_registry.apply_ping_reply(active)
+        # An empty stats() that completed still stamps the broadcast, after the
+        # pings: nobody answered, which is evidence for silent workers.
+        worker_registry.apply_ping_reply(active or (), stats_completed=stats_completed)
         return
 
     # If we got a non-empty stats response, workers that didn't answer go
