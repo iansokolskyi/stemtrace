@@ -205,9 +205,7 @@ def test_the_sample_reaches_every_outcome_of_the_rule() -> None:
             registry = draw_registry(rng, sorted(set(names.values())), now)
             items, _ = reference(task_events, names, registry, now)
             seen.update(kind for kind, *_ in items)
-            seen.update(
-                "hinted" if hinted else "unhinted" for *_, hinted in items
-            )
+            seen.update("hinted" if hinted else "unhinted" for *_, hinted in items)
             if not items and any(r.state == TaskState.PENDING for r in records):
                 seen.add("pending-but-quiet")
 
