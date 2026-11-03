@@ -17,7 +17,7 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   const restoreFocus = useRef(false)
 
   // ⌘K / Ctrl+K opens the search palette from anywhere. On a layout where the K key types
-  // another script (Ukrainian, Russian), `key` is not ASCII, so the physical key decides.
+  // another script (non-Latin layouts such as Ukrainian), `key` is not ASCII, so the physical key decides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const nonAscii = e.key.length === 1 && e.key.charCodeAt(0) > 0x7f
