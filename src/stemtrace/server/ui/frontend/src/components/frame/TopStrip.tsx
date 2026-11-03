@@ -58,7 +58,7 @@ export function TopStrip({
       <button
         type="button"
         onClick={onOpenSearch}
-        aria-label="Search (Ctrl or Command K)"
+        aria-label="Search tasks, flows, workers (Ctrl or Command K)"
         className="inline-flex h-8 min-w-0 flex-none items-center gap-2 rounded-[3px] bg-raised px-[9px] text-muted hover:bg-press hover:text-ink min-[900px]:min-w-[230px] min-[900px]:pr-2 min-[900px]:pl-2.5"
       >
         <Icon name="search" size={14} />

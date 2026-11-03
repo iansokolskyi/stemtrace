@@ -299,6 +299,118 @@ test.describe('keyboard-only paths', () => {
   })
 })
 
+test.describe('lookups and failures', () => {
+  test('Enter pressed before the task-ID lookup lands opens the task when it arrives', async ({
+    page,
+  }) => {
+    await page.route(new RegExp(`/api/tasks/${receipt.task_id}$`), async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await route.fallback()
+    })
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type(receipt.task_id)
+    await page.keyboard.press('Enter')
+    await expect(dialog(page)).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`/tasks/${receipt.task_id}$`))
+  })
+
+  test('an Enter typed for an ID that turns out unknown does nothing', async ({ page }) => {
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('deadbeef-0000')
+    await page.keyboard.press('Enter')
+    await expect(dialog(page).getByRole('status')).toHaveText('No results for “deadbeef-0000”')
+    await expect(page).toHaveURL(/\/executions/)
+  })
+
+  test('an upper-case task ID finds the task', async ({ page }) => {
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type(receipt.task_id.toUpperCase())
+    await expect(options(page).filter({ hasText: receipt.task_id })).toContainText('Failure')
+  })
+
+  test('a flows source that fails is named at once, without waiting out the retries', async ({
+    page,
+  }) => {
+    await page.route(/\/api\/graphs/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await page.goto('/executions')
+    await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
+    await openPalette(page)
+    await page.keyboard.type('zzzqqq')
+    await expect(dialog(page).getByRole('status')).toHaveText("Couldn't load flows", {
+      timeout: 2_000,
+    })
+  })
+
+  test('two failed sources read "a and b"', async ({ page }) => {
+    const boom = { status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }
+    await page.route(/\/api\/graphs/, (route) => route.fulfill(boom))
+    await page.route(/\/api\/tasks\/registry/, (route) => route.fulfill(boom))
+    await page.goto('/executions')
+    await openPalette(page)
+    await page.keyboard.type('zzzqqq')
+    await expect(dialog(page).getByRole('status')).toHaveText(
+      "Couldn't load task names and flows",
+      {
+        timeout: 2_000,
+      },
+    )
+  })
+
+  test('a task-ID lookup that fails with a server error says so, not "No results"', async ({
+    page,
+  }) => {
+    await page.route(/\/api\/tasks\/deadbeef-0000$/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('deadbeef-0000')
+    await expect(dialog(page).getByRole('status')).toHaveText("Couldn't load that task ID")
+  })
+})
+
+test.describe('events and names', () => {
+  test('the search button is named by its visible text', async ({ page }) => {
+    await loadPage(page)
+    await expect(page.getByRole('button', { name: 'Search tasks, flows, workers' })).toBeVisible()
+  })
+
+  test('a keydown without a key (browser autofill) does not throw', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    await loadPage(page)
+    await page.evaluate(() => {
+      const event = new KeyboardEvent('keydown', { ctrlKey: true, bubbles: true })
+      Object.defineProperty(event, 'key', { value: undefined })
+      document.dispatchEvent(event)
+    })
+    await page.keyboard.press('Control+k')
+    await expect(box(page)).toBeFocused()
+    expect(errors).toEqual([])
+  })
+
+  test('an Enter that commits an IME composition is left to the IME', async ({ page }) => {
+    await loadPage(page)
+    await openPalette(page)
+    const prevented = await box(page).evaluate((input) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    expect(prevented).toBe(false)
+  })
+})
+
 test.describe('requests', () => {
   test('opening and typing never asks Celery to inspect', async ({ page }) => {
     await loadPage(page)

@@ -113,7 +113,10 @@ export function useTask(taskId: string) {
   })
 }
 
-export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) {
+export function useGraphs(
+  params?: Omit<FetchGraphsParams, 'limit' | 'offset'>,
+  options?: { retry?: boolean },
+) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<GraphListResponse>({
@@ -121,6 +124,7 @@ export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) 
     queryFn: () => fetchGraphs({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
     refetchInterval: isConnected ? false : POLL_INTERVAL,
+    ...options,
   })
 }
 
