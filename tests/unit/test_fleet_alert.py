@@ -357,6 +357,31 @@ def test_row28c_a_task_event_after_the_broadcast_keeps_the_worker_online() -> No
     assert fleet_items(report_at(registry, now + MINUTE)) == []
 
 
+def test_row28c_a_reply_a_worker_event_overtook_still_counts_as_the_worker_answering() -> (
+    None
+):
+    registry = WorkerRegistry()
+    seen = registry.event_generations()
+    # The worker's clock is 10 minutes behind: its worker_ready is stamped long ago.
+    registry.register_worker(SOLO, 2, ["app.known"], event_timestamp=T0 - 10 * MINUTE)
+
+    # The reply was produced before that event, so it is skipped as stale, yet SOLO answered.
+    registry.apply_stats_reply(seen, answer_pairs(SOLO), now=T0)
+
+    assert fleet_items(report_at(registry, T0)) == []
+
+
+def test_row28c_a_worker_clock_far_behind_looks_silent_after_a_completed_inspect() -> (
+    None
+):
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 10 * MINUTE)
+
+    registry.apply_stats_reply({}, {}, now=T0)  # a worker that is up but didn't answer
+
+    assert fleet_items(report_at(registry, T0)) == [(None, None, 1)]
+
+
 # --- Row 28d / 28e: silence is not evidence without a completed inspect -------------
 
 
