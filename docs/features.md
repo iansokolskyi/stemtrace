@@ -420,6 +420,11 @@ completed since) is remembered until a completed call it doesn't answer proves i
   pool running one task for more than 3 minutes, which sends no events) is silent with
   evidence once a call completes. If it is the only worker, the item is a false alert until it
   answers or sends an event.
+- **Without a broker URL, a lost worker can hide a later stop.** The 30-minute cleanup keeps a
+  worker it removed without proof that it stopped, because silence alone isn't evidence. Without
+  a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
+  SIGKILL, the item doesn't appear even when every other worker then stops cleanly. With a broker
+  URL, the next completed call that the lost worker doesn't answer clears it.
 - **A killed fleet needs an inspect.** After a SIGKILL of every worker, with no broker URL or an
   unreachable broker, the item doesn't appear, because silence isn't evidence. A clean stop of
   every worker still does.

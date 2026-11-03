@@ -519,6 +519,23 @@ def test_row28h_no_refresh_after_an_answered_one_keeps_the_fleet_online(
     assert fleet_items(report_at(registry, T0 + minutes * MINUTE)) == []
 
 
+@pytest.mark.parametrize("via", ["stats", "ping-fallback"])
+@pytest.mark.parametrize("minutes", [3.5, 5, 9.9])
+def test_row28h_through_the_real_refresh_nothing_for_minutes_keeps_the_fleet_online(
+    via: str, minutes: float
+) -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 20 * MINUTE)
+    inspect = (
+        FakeInspect(stats=answer_stats(SOLO), registered={SOLO: ["app.known"]})
+        if via == "stats"
+        else FakeInspect(stats=None, ping={SOLO: {"ok": "pong"}})
+    )
+    refresh_at(registry, T0, inspect)
+
+    assert fleet_items(report_at(registry, T0 + minutes * MINUTE)) == []
+
+
 def test_row28h_the_next_unanswered_broadcast_then_makes_it_offline() -> None:
     registry = WorkerRegistry()
     registry.apply_stats_reply({}, answer_pairs(SOLO), now=T0)
