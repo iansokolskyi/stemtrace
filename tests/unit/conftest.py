@@ -18,5 +18,5 @@ def _no_real_inspect_from_the_probe(
     if getattr(request.module, "REAL_INSPECT_PROBE", False):
         return
     monkeypatch.setattr(
-        routes._InspectRefresher, "refresh_blocking", lambda _self: True
+        routes._InspectRefresher, "refresh_blocking", lambda _self: frozenset()
     )
