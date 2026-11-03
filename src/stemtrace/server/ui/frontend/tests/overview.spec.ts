@@ -751,9 +751,7 @@ test.describe('Overview anomalies', () => {
       .click()
     const panel = panelOf(page)
     await expect(panel.getByRole('heading', { level: 2 })).toHaveText('Stuck step_2')
-    await expect(panel.getByTestId('panel-anomaly')).toContainText(
-      'Stuck: running past its limit',
-    )
+    await expect(panel.getByTestId('panel-anomaly')).toContainText('Stuck: running past its limit')
     await expect(panel.getByTestId('panel-anomaly')).toContainText('41m')
     await expect(panel.getByRole('link', { name: 'Open task page' })).toHaveAttribute(
       'href',

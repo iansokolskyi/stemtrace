@@ -196,6 +196,44 @@ test.describe('Anomalies page', () => {
     await expect(page.getByTestId('fleet-banner')).toContainText('14 tasks waiting')
   })
 
+  test('the list is ordered like the server orders it: oldest first', async ({ page }) => {
+    await open(page, [plainUnregistered, stuck, renamed])
+    await expect(items(page)).toHaveCount(3)
+    await expect(items(page).nth(0)).toContainText('sync_invoices_v2')
+    await expect(items(page).nth(1)).toContainText('transcode_upload')
+    await expect(items(page).nth(2)).toContainText('send_digest')
+  })
+
+  test('the fleet item missing from a cut list is fetched without asking the workers again', async ({
+    page,
+  }) => {
+    const many = Array.from({ length: 501 }, (_, i) =>
+      createAnomaly('unregistered', { name: `bulk.tasks.t${i}`, since: minutesAgo(600 - i) }),
+    )
+    const api = await open(page, [...many, fleet])
+    await expect(page.getByTestId('fleet-banner')).toContainText('14 tasks waiting')
+    const asked = (kind: string | null) =>
+      api.anomalyRequests
+        .filter((u) => u.searchParams.get('kind') === kind)
+        .map((u) => u.searchParams.get('refresh'))
+    expect(asked(null)).toEqual([null])
+    expect(asked('no_workers_online')).toEqual(['false'])
+  })
+
+  test('a failed fleet request is said, not left as a missing banner', async ({ page }) => {
+    const many = Array.from({ length: 501 }, (_, i) =>
+      createAnomaly('unregistered', { name: `bulk.tasks.t${i}`, since: minutesAgo(600 - i) }),
+    )
+    await page.route(/\/api\/anomalies\?.*kind=no_workers_online/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await open(page, [...many, fleet])
+    await expect(page.getByTestId('anomalies-fleet-error')).toHaveText(
+      "Couldn't load the notice that no workers are online.",
+    )
+    await expect(page.getByTestId('fleet-banner')).toHaveCount(0)
+  })
+
   test('a complete list has no truncation note', async ({ page }) => {
     await open(page, [stuck])
     await expect(items(page)).toHaveCount(1)
@@ -319,6 +357,17 @@ test.describe('Executions anomaly column', () => {
 })
 
 test.describe('Task page callout', () => {
+  test('a stuck task with no p95 is not "longer than usual"', async ({ page }) => {
+    await open(
+      page,
+      [{ ...stuck, p95_ms: null, runtime_samples: null }],
+      `/tasks/${stuckTask.task_id}`,
+    )
+    await expect(page.getByTestId('anomaly-callout').getByRole('heading')).toHaveText(
+      'Stuck: running past its limit',
+    )
+  })
+
   test('a stuck task shows the callout, the flag in the header and a worker link', async ({
     page,
   }) => {
@@ -410,18 +459,22 @@ test.describe('Anomalies at narrow widths', () => {
       await page.setViewportSize({ width, height: 900 })
       const longStuck = { ...stuck, hostname: LONG_HOST }
       const longLost = { ...interrupted, hostname: LONG_HOST }
+      // The task is shared by every test in this worker: put its host back, pass or fail
       stuckTask.hostname = LONG_HOST
-      await open(page, [longStuck, longLost, fleet])
-      await expect(items(page)).toHaveCount(2)
-      await expect(item(page, 'stuck').getByRole('link', { name: /Worker/ })).toBeVisible()
-      const overflow = () =>
-        page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-      expect(await overflow()).toBeLessThanOrEqual(0)
+      try {
+        await open(page, [longStuck, longLost, fleet])
+        await expect(items(page)).toHaveCount(2)
+        await expect(item(page, 'stuck').getByRole('link', { name: /Worker/ })).toBeVisible()
+        const overflow = () =>
+          page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+        expect(await overflow()).toBeLessThanOrEqual(0)
 
-      await page.goto(`/tasks/${stuckTask.task_id}`)
-      await expect(page.getByTestId('anomaly-callout')).toBeVisible()
-      expect(await overflow()).toBeLessThanOrEqual(0)
-      stuckTask.hostname = GPU_2
+        await page.goto(`/tasks/${stuckTask.task_id}`)
+        await expect(page.getByTestId('anomaly-callout')).toBeVisible()
+        expect(await overflow()).toBeLessThanOrEqual(0)
+      } finally {
+        stuckTask.hostname = GPU_2
+      }
     })
   }
 })

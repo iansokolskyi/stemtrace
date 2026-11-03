@@ -83,7 +83,7 @@ export interface MockApiContext {
   setRegistry: (registry: MockRegisteredTask[]) => void
 
   /**
-   * Replace what GET /anomalies lists (oldest first, as the API sorts them); `counts` is derived,
+   * Replace what GET /anomalies lists (the mock sorts them as the API does: oldest `since` first); `counts` is derived,
    * a count per kind, 0 included. 'error' answers 500, null 404 (an older server). Starts empty.
    */
   setAnomalies: (anomalies: MockAnomaly[] | null | 'error') => void
