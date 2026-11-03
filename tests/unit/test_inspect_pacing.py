@@ -299,3 +299,34 @@ def test_i5_one_failure_on_anomalies_holds_back_workers_and_registry(
     client.get("/api/tasks/registry")
 
     assert broker.stats_calls == 1
+
+
+# --- I2: the connect is bounded by what the app is built with ----------------------------
+
+
+def test_i2_inspector_app_gets_one_bounded_connect_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: dict[str, object] = {}
+
+    class StubControl:
+        def inspect(self, **_: object) -> object:
+            return object()
+
+    class StubCelery:
+        control = StubControl()
+
+        def __init__(self, *_: object, **kwargs: object) -> None:
+            built.update(kwargs)
+
+    monkeypatch.setattr(routes, "Celery", StubCelery)
+
+    routes._get_inspector(BROKER)
+
+    changes = built["changes"]
+    assert isinstance(changes, dict)
+    assert changes["broker_connection_timeout"] == 1.5
+    assert changes["broker_transport_options"] == {
+        "max_retries": 0,
+        "socket_connect_timeout": 1.5,
+    }
