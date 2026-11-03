@@ -637,6 +637,7 @@ test.describe('Per-entry panel state', () => {
       await openOverview(page)
       await clickBar(page, 8)
       await chip(page, 'Failure').click()
+      await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
       await panelOf(page).getByTestId('panel-run').getByRole('button').click()
       await expect(panelOf(page).getByRole('link', { name: 'Open task page' })).toBeVisible()
 

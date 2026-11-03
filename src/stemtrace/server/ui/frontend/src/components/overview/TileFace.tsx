@@ -68,9 +68,15 @@ export function TileFace({
             <Icon name={noteIcon} size={12} className="[stroke-width:2.5]" />
           </span>
         )}
-        {note}
+        <span title={note} className="line-clamp-2 min-w-0">
+          {note}
+        </span>
       </span>
-      <span className="flex min-h-4 items-center text-xs text-muted">{sub}</span>
+      <span className="flex min-h-4 min-w-0 items-center text-xs text-muted">
+        <span title={sub} className="truncate">
+          {sub}
+        </span>
+      </span>
       <span className="mt-1.5 block h-[26px]">{spark}</span>
     </>
   )
