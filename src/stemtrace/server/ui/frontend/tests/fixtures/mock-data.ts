@@ -30,6 +30,10 @@ export interface MockTask {
   total_runtime_ms?: number | null
   routing_key?: string | null
   eta?: string | null
+  /** The `anomaly` the API puts on the task (never on GROUP/CHORD nodes); left out: null */
+  anomaly?: MockAnomalyKind | null
+  /** What the detail's `anomaly_detail` says; left out: the store's anomaly with this task ID */
+  anomaly_detail?: MockAnomaly | null
   /** What the detail's `flow_root_id` says; left out, the mock walks the parents as the server does */
   flow_root_id?: string | null
   /** What the graphs list says about this root's flow; null models a server with no summary */
@@ -598,5 +602,50 @@ export function createTaskStats(
     failure_rate: runs === 0 ? null : failures / runs,
     p50_ms: rank(0.5),
     p95_ms: rank(0.95),
+  }
+}
+
+export type MockAnomalyKind = 'stuck' | 'interrupted' | 'unregistered' | 'no_workers_online'
+
+/** One item of GET /anomalies (the server's AnomalyResponse). */
+export interface MockAnomaly {
+  kind: MockAnomalyKind
+  task_id: string | null
+  name: string | null
+  since: string
+  hostname: string | null
+  queue: string | null
+  task_count: number
+  elapsed_ms: number | null
+  threshold_ms: number | null
+  p95_ms: number | null
+  runtime_samples: number | null
+  evidence: 'worker_shutdown' | 'worker_terminating' | 'worker_restarted' | 'cancelled_retry' | null
+  similar_name: string | null
+}
+
+/**
+ * An anomaly item with the API's shape: every field present, null where the kind has none (an
+ * unregistered or fleet item has no task ID, a fleet item no name).
+ */
+export function createAnomaly(
+  kind: MockAnomalyKind,
+  overrides: Partial<MockAnomaly> = {},
+): MockAnomaly {
+  return {
+    kind,
+    task_id: null,
+    name: null,
+    since: new Date(Date.now() - 38 * 60_000).toISOString(),
+    hostname: null,
+    queue: null,
+    task_count: 1,
+    elapsed_ms: null,
+    threshold_ms: null,
+    p95_ms: null,
+    runtime_samples: null,
+    evidence: null,
+    similar_name: null,
+    ...overrides,
   }
 }

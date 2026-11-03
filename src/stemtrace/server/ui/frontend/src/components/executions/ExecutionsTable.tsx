@@ -6,6 +6,7 @@ import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { useExecutions, useRegisteredTask } from '@/api/queries'
 import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
+import { AnomalyFlag } from '../anomalies/AnomalyFlag'
 import { StatusChip } from '../StatusChip'
 import { TaskName } from '../TaskName'
 import { type Column, columnsFor } from './columns'
@@ -276,6 +277,7 @@ function TableBox({
                   className={clsx(
                     'absolute left-0 grid w-full items-center border-b border-rule text-xs text-ink hover:bg-hover',
                     departed && 'opacity-55',
+                    row.anomaly && ANOMALY_ROW,
                   )}
                   style={{
                     gridTemplateColumns: template,
@@ -296,6 +298,10 @@ function TableBox({
     </div>
   )
 }
+
+// An anomaly row is tinted like the prototype's: anomaly at 9%, 15% under the pointer.
+const ANOMALY_ROW =
+  'bg-[color-mix(in_srgb,var(--anomaly)_9%,var(--surface))] hover:bg-[color-mix(in_srgb,var(--anomaly)_15%,var(--surface))]'
 
 function cellClass(column: Column, index: number): string {
   return clsx(
@@ -326,6 +332,12 @@ function Cell({
       return (
         <div className={className}>
           <TaskName name={row.name} />
+        </div>
+      )
+    case 'anomaly':
+      return (
+        <div data-cell="anomaly" className={className}>
+          {row.anomaly && <AnomalyFlag kind={row.anomaly} />}
         </div>
       )
     default: {

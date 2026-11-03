@@ -10,6 +10,7 @@ export type ColumnId =
   | 'queue_wait'
   | 'runtime'
   | 'started'
+  | 'anomaly'
 
 export interface Column {
   id: ColumnId
@@ -81,6 +82,13 @@ export const COLUMNS: Column[] = [
     min: 88,
     align: 'right',
     text: (row) => formatAgo(row.first_seen),
+  },
+  {
+    id: 'anomaly',
+    label: 'Anomaly',
+    track: '148px',
+    min: 148,
+    has: (row) => present(row.anomaly),
   },
 ]
 

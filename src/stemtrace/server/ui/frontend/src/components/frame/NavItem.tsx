@@ -4,7 +4,7 @@ import { Icon, type IconName } from '@/components/Icon'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
 
 interface NavItemProps {
-  to: '/executions' | '/flows' | '/workers' | '/registry'
+  to: '/executions' | '/flows' | '/workers' | '/registry' | '/anomalies'
   label: string
   icon: IconName
   /** A problem badge ("1 offline"); omitted when there is nothing wrong or the count is unknown. */
