@@ -433,7 +433,9 @@ def test_row28j_once_a_worker_answered_an_inspect_silence_is_evidence(
     assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
 
 
-def test_row28j_a_ping_answer_proves_the_channel_even_when_stats_raised() -> None:
+def test_row28j_a_stats_error_ends_the_attempt_so_a_ping_answer_proves_nothing() -> (
+    None
+):
     registry = WorkerRegistry()
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     registry.register_worker(OTHER, 2, ["app.known"], event_timestamp=T0)
@@ -446,7 +448,9 @@ def test_row28j_a_ping_answer_proves_the_channel_even_when_stats_raised() -> Non
     later = T0 + 9 * MINUTE
     refresh_at(registry, later, FakeInspect(stats=None))
 
-    assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
+    # D7a reading 4: any exception from stats() ends the attempt (ping() would
+    # reconnect), so the ping answer is never asked for.
+    assert fleet_items(report_at(registry, later)) == []
 
 
 def test_row28j_an_empty_ping_reply_does_not_prove_the_channel() -> None:

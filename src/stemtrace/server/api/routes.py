@@ -12,12 +12,11 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.routing import APIRoute
-from kombu.exceptions import OperationalError
 
 # Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
 # goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
@@ -402,12 +401,21 @@ def _node_to_graph_response(
 # bounded by the socket connect timeout: amqp ``Transport._connect`` calls
 # ``sock.settimeout(connect_timeout)``; for Redis, kombu's ``socket_connect_timeout`` (default
 # None: the OS TCP timeout, about 2 minutes) goes to redis-py. Name resolution is unbounded.
+# After the connect, nothing bounds a read by default: kombu's Redis ``Channel.__init__`` pings
+# and ``_size`` reads with ``socket_timeout`` None, and amqp ``Transport._read`` blocks on a
+# socket set back to blocking mode (``_init_socket``), so a broker that goes quiet hangs the
+# attempt. ``socket_timeout`` (Redis) and ``read_timeout``/``write_timeout`` (amqp, passed by
+# kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait.
 _INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
+_INSPECT_IO_TIMEOUT_SECONDS = 1.0
 _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
     "broker_connection_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
     "broker_transport_options": {
         "max_retries": 0,
         "socket_connect_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
+        "socket_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
+        "read_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
+        "write_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
     },
 }
 
@@ -448,10 +456,17 @@ def _get_inspector(
         return None
 
 
+class _InspectOutcome(NamedTuple):
+    """What one refresh learned: who answered, and whether every call finished."""
+
+    answered: frozenset[str]
+    complete: bool
+
+
 def _refresh_worker_registry_from_inspect(
     worker_registry: WorkerRegistry,
     inspector: Inspect,
-) -> frozenset[str] | None:
+) -> _InspectOutcome | None:
     """Refresh worker registry from Celery inspect (best-effort).
 
     This supports "late join" scenarios where the server missed worker_ready
@@ -469,8 +484,8 @@ def _refresh_worker_registry_from_inspect(
         inspector: Celery inspector to query.
 
     Returns:
-        The nodenames that answered (stats, else ping), or None when the broker
-        couldn't be reached (the caller backs off).
+        The nodenames that answered (stats, else ping) and whether every call
+        completed, or None when ``stats()`` failed (the caller backs off).
     """
     # The replies describe the workers as of now, but the consumer keeps
     # applying worker events while inspect waits (up to 0.5 s per call).
@@ -480,37 +495,38 @@ def _refresh_worker_registry_from_inspect(
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
 
-    stats_completed = False
     try:
         stats = inspector.stats()
         # Celery 5.6.3 Inspect._prepare returns None for an empty reply; kombu
         # 5.6.2 Mailbox._broadcast -> Connection.default_channel raises when the
         # broker is unreachable. So returning at all means the broadcast ran.
-        stats_completed = True
-    except OperationalError:
-        # kombu 5.6.2 Connection._reraise_as_library_errors turns a failed connect
-        # into this: registered() and ping() would each run the whole connect
-        # again, so stop at the first failure.
-        logger.debug("inspect stats() could not reach the broker", exc_info=True)
-        return None
     except Exception:
+        # Whatever the class: registered() and ping() would each run the whole
+        # connect (or wait out a read timeout) again, so stop at the first failure.
         logger.debug("inspect stats() failed", exc_info=True)
+        return None
 
-    with contextlib.suppress(Exception):
+    complete = True
+    try:
         registered = inspector.registered()
+    except Exception:  # noqa: BLE001  best-effort: a failed call applies what stats() gave
+        complete = False
+        if not stats:
+            # A broken connection: ping() would only wait out another timeout.
+            return _InspectOutcome(frozenset(), complete)
 
     # Fallback: if stats is unavailable, at least refresh online status via ping().
     # This keeps the Workers tab responsive even for minimal Celery setups.
     if not stats:
         active: dict[str, object] | None = None
-        with contextlib.suppress(Exception):
+        try:
             active = inspector.ping()
-        if not active and not stats_completed:
-            return None
+        except Exception:  # noqa: BLE001  best-effort: same as registered()
+            complete = False
         # An empty stats() that completed still stamps the broadcast, after the
         # pings: nobody answered, which is evidence for silent workers.
-        worker_registry.apply_ping_reply(active or (), stats_completed=stats_completed)
-        return frozenset(active or ())
+        worker_registry.apply_ping_reply(active or (), stats_completed=True)
+        return _InspectOutcome(frozenset(active or ()), complete)
 
     # If we got a non-empty stats response, workers that didn't answer go
     # offline (an unanswered inspect doesn't prove the process closed, so a
@@ -524,7 +540,7 @@ def _refresh_worker_registry_from_inspect(
         tasks = _tasks_for_worker_key(registered, nodename) if pid else None
         replies[nodename] = (pid, tasks)
     worker_registry.apply_stats_reply(seen, replies)
-    return frozenset(replies)
+    return _InspectOutcome(frozenset(replies), complete)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
@@ -546,6 +562,7 @@ _INSPECT_REFRESH_MIN_INTERVAL_SECONDS = INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 _INSPECT_TIMEOUT_SECONDS = 0.5
 _INSPECT_BACKOFF_START_SECONDS = 2.0
 _INSPECT_BACKOFF_MAX_SECONDS = 60.0
+_INSPECT_FAILURES_MAX = 64
 
 
 class _InspectRefresher:
@@ -565,32 +582,43 @@ class _InspectRefresher:
         self._worker_registry = worker_registry
         self._broker_url = broker_url
         self._lock = threading.Lock()
-        self._last_refresh: float = 0.0
+        self._pace_lock = threading.Lock()
         self._last_attempt: float = 0.0
         self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
         self._failures = 0
 
     def _paced_out(self) -> bool:
-        return _monotonic() - self._last_attempt < self._wait_s
+        with self._pace_lock:
+            return _monotonic() - self._last_attempt < self._wait_s
 
     def ready_in(self) -> float:
         """Seconds until the next attempt is allowed (interval or failure backoff)."""
-        if self._last_attempt <= 0.0:
-            return 0.0
-        return max(0.0, self._last_attempt + self._wait_s - _monotonic())
+        with self._pace_lock:
+            if self._last_attempt <= 0.0:
+                return 0.0
+            return max(0.0, self._last_attempt + self._wait_s - _monotonic())
+
+    def note_new_node(self, _nodename: str) -> None:
+        """Drop the failure backoff: a nodename we just learned proves the broker delivers."""
+        with self._pace_lock:
+            self._failures = 0
+            self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
     def _record(self, *, succeeded: bool) -> None:
         """Count an attempt toward pacing: an interval after a success, else a backoff."""
-        now = _monotonic()
-        if succeeded:
-            self._last_refresh = now
-            self._failures = 0
-            self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
-        else:
-            backoff = _INSPECT_BACKOFF_START_SECONDS * 2**self._failures
-            self._failures += 1
-            self._wait_s = min(backoff, _INSPECT_BACKOFF_MAX_SECONDS)
-        self._last_attempt = now
+        with self._pace_lock:
+            if succeeded:
+                self._failures = 0
+                self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+            else:
+                # Doubling the wait (not 2**failures) can't overflow; the count stops at 1.
+                self._wait_s = (
+                    _INSPECT_BACKOFF_START_SECONDS
+                    if self._failures == 0
+                    else min(self._wait_s * 2, _INSPECT_BACKOFF_MAX_SECONDS)
+                )
+                self._failures = min(self._failures + 1, _INSPECT_FAILURES_MAX)
+            self._last_attempt = _monotonic()
 
     def _inspect_and_apply(
         self, worker_registry: WorkerRegistry, broker_url: str
@@ -603,11 +631,13 @@ class _InspectRefresher:
         inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
         if inspector is None:
             return frozenset()
-        answered: frozenset[str] | None = None
+        outcome: _InspectOutcome | None = None
         with contextlib.suppress(Exception):
-            answered = _refresh_worker_registry_from_inspect(worker_registry, inspector)
-        self._record(succeeded=answered is not None)
-        return answered or frozenset()
+            outcome = _refresh_worker_registry_from_inspect(worker_registry, inspector)
+        # A half-finished refresh (stats() answered, registered() or ping() didn't)
+        # applied what it got but still backs off: the broker is struggling.
+        self._record(succeeded=outcome is not None and outcome.complete)
+        return outcome.answered if outcome else frozenset()
 
     def refresh_blocking(self) -> frozenset[str] | None:
         """Refresh on the calling thread; the probe paces it with ``ready_in``.
@@ -667,6 +697,8 @@ def _wire_inspect_probe(
     own = probe is None
     probe = probe or InspectProbe()
     probe.bind(refresher)
+    # Before the probe's trigger: a join clears the backoff, then asks for its inspect.
+    worker_registry.add_new_node_listener(refresher.note_new_node)
     worker_registry.add_new_node_listener(probe.trigger)
     if own:
         router.add_event_handler("startup", probe.start)

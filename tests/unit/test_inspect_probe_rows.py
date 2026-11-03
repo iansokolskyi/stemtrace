@@ -459,14 +459,14 @@ def test_p4_broker_down_bounds_a_joins_attempts_by_the_shared_backoff(
         take(fleet.attempt_done)
         fleet.clock.wait(threading.Event(), 2.0)
         registry.register_worker(NODE_A, 1, ["app.a"])
-        for _ in range(5):
-            take(fleet.attempt_done)
-        assert not got(fleet.attempt_done, 0.5)
+        for _ in range(10):
+            if not got(fleet.attempt_done, 1.0):
+                break
 
-    # The join's owed times (4, 8, 16, 32, 62 s) are served by attempts that the
-    # failure backoff (2, 4, 8, 16, 32 s) spaces out; the last serves two owed times.
+    # The join clears the backoff (attempt at 2 s), then each owed time (4, 8, 16, 32
+    # and 62 s) gets one attempt, spaced by the failure backoff (2, 4, 8, 16, 32 s).
     started = fleet.stats_times[0]
-    assert [t - started for t in fleet.stats_times] == [0, 2, 6, 14, 30, 62]
+    assert [t - started for t in fleet.stats_times] == [0, 2, 4, 8, 16, 32, 64]
     assert registry.get_registered_tasks(NODE_A, 1) == ["app.a"]
 
 
@@ -614,7 +614,7 @@ def test_refresh_blocking_that_fails_does_not_count_as_a_refresh(
     refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
 
     assert refresher.refresh_blocking() == frozenset()
-    assert refresher._last_refresh == 0.0
+    assert refresher._failures == 1
 
 
 # --- one refresher per extension --------------------------------------------------
@@ -639,3 +639,31 @@ def test_extension_router_built_twice_shares_one_refresher_and_one_rate_limit(
 
     # The startup probe's refresh counts for the second router's page load.
     assert fleet.attempts == 1
+
+
+def test_i10_a_join_after_an_outage_is_inspected_within_one_interval(
+    fleet: FakeFleet,
+) -> None:
+    fleet.mode = "raises"
+    extension, app = extension_app()
+    registry = extension.worker_registry
+
+    with TestClient(app):
+        take(fleet.attempt_done)
+        shared = extension._inspect_probe.target
+        assert shared is not None
+        for _ in range(5):  # the outage drives the backoff up to its 60 s cap
+            fleet.clock.wait(threading.Event(), shared.ready_in())
+            shared.refresh_blocking()
+        assert shared.ready_in() == 60.0
+        fleet.mode = "up"
+        fleet.nodes = {NODE_B: (22, ["app.b"])}
+        joined_at = fleet.clock.now()
+
+        registry.register_worker(NODE_B, 22, ["app.b"])
+        take(fleet.attempt_done)
+
+    assert (
+        fleet.stats_times[-1] - joined_at
+        <= inspect_probe.INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    )

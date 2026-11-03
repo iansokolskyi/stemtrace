@@ -124,7 +124,7 @@ def test_i1_failed_inspect_stops_after_stats_without_reconnecting(
     assert (broker.stats_calls, broker.other_calls) == (1, 0)
 
 
-def test_i1_a_raw_socket_error_from_every_call_still_counts_as_a_failure(
+def test_i1_a_raw_socket_error_from_stats_ends_the_attempt_and_backs_off(
     clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = Broker(ConnectionResetError("reset"))
@@ -133,8 +133,7 @@ def test_i1_a_raw_socket_error_from_every_call_still_counts_as_a_failure(
 
     target.refresh_blocking()
 
-    # stats() died mid-call: ping() gets its chance, and its failure backs off too.
-    assert (fake.stats_calls, fake.other_calls) == (1, 2)
+    assert (fake.stats_calls, fake.other_calls) == (1, 0)
     assert target.ready_in() == 2.0
 
 
@@ -158,7 +157,7 @@ def test_i1_failure_counts_without_counting_as_a_successful_refresh(
 
     target.refresh_blocking()
 
-    assert target._last_refresh == 0.0
+    assert target._failures == 1
     assert target.ready_in() == 2.0
 
 
@@ -204,7 +203,7 @@ def test_i3_success_resets_the_backoff_to_the_regular_interval(
 
     target.refresh_blocking()
 
-    assert target._last_refresh == clock.now()
+    assert target._failures == 0
     assert target.ready_in() == routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
 
@@ -326,7 +325,129 @@ def test_i2_inspector_app_gets_one_bounded_connect_attempt(
     changes = built["changes"]
     assert isinstance(changes, dict)
     assert changes["broker_connection_timeout"] == 1.5
+    # Connect and every later read are bounded, above the 0.5 s reply wait.
     assert changes["broker_transport_options"] == {
         "max_retries": 0,
         "socket_connect_timeout": 1.5,
+        "socket_timeout": 1.0,
+        "read_timeout": 1.0,
+        "write_timeout": 1.0,
     }
+
+
+# --- I9: the backoff cannot overflow -----------------------------------------------------
+
+
+def test_i9_ten_thousand_failures_stay_paced_at_sixty_seconds(
+    broker: Broker, clock: Clock, client: TestClient
+) -> None:
+    target = refresher()
+    for _ in range(10_000):
+        target.refresh_blocking()
+        clock.t += target.ready_in()
+
+    assert target.ready_in() == 0.0
+    target.refresh_blocking()
+    assert target.ready_in() == 60.0
+    assert client.get("/api/anomalies").status_code == 200
+
+
+# --- reading 4 and 5: any stats() error ends the attempt; partial success backs off -----
+
+
+def test_any_exception_from_stats_ends_the_attempt_and_backs_off(
+    clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = Broker(RuntimeError("odd"))
+    monkeypatch.setattr(routes, "_get_inspector", fake.inspector)
+    target = refresher()
+
+    target.refresh_blocking()
+
+    assert (fake.stats_calls, fake.other_calls) == (1, 0)
+    assert target.ready_in() == 2.0
+
+
+class PartialInspect:
+    """A good stats() reply, then registered() (or ping()) fails."""
+
+    def __init__(self, *, stats: object) -> None:
+        self._stats = stats
+
+    def stats(self) -> object:
+        return self._stats
+
+    def registered(self) -> object:
+        raise OperationalError("went away")
+
+    def ping(self) -> object:
+        raise OperationalError("went away")
+
+
+@pytest.mark.parametrize("stats", [{NODE: {"pid": 11}}, {}])
+def test_partial_success_applies_what_it_got_and_backs_off(
+    stats: object, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        routes, "_get_inspector", lambda _u, **_: PartialInspect(stats=stats)
+    )
+    registry = WorkerRegistry()
+    target = routes._InspectRefresher(registry, BROKER)
+
+    target.refresh_blocking()
+    clock.t += target.ready_in()
+    target.refresh_blocking()
+
+    assert (target._failures, target.ready_in()) == (2, 4.0)
+    assert (NODE in {w.hostname for w in registry.get_all_workers()}) == bool(stats)
+
+
+# --- I10: a newly learned nodename clears the backoff --------------------------------------
+
+
+def test_i10_a_new_nodename_clears_the_failure_backoff(
+    broker: Broker, clock: Clock
+) -> None:
+    registry = WorkerRegistry()
+    target = routes._InspectRefresher(registry, BROKER)
+    registry.add_new_node_listener(target.note_new_node)
+    for _ in range(5):
+        target.refresh_blocking()
+        clock.t += target.ready_in()
+    target.refresh_blocking()
+    assert target.ready_in() == 60.0
+
+    registry.register_worker("w9@host", 9, ["app.t"])
+
+    assert target.ready_in() == routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    target.refresh_blocking()
+    assert target.ready_in() == 2.0  # the next failure starts the backoff again
+
+
+def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
+    broker: Broker, clock: Clock
+) -> None:
+    probe = InspectProbe(clock=clock.now, wait=lambda _e, _s: False)
+    registry = WorkerRegistry()
+    app = FastAPI()
+    app.include_router(
+        create_api_router(
+            GraphStore(),
+            worker_registry=registry,
+            broker_url=BROKER,
+            inspect_probe=probe,
+        )
+    )
+    shared = probe.target
+    assert shared is not None
+    for _ in range(6):
+        shared.refresh_blocking()
+        clock.t += shared.ready_in()
+    assert shared.ready_in() == 0.0
+    shared.refresh_blocking()
+    assert shared.ready_in() == 60.0
+
+    registry.register_worker("w9@host", 9, ["app.t"])
+    probe.stop()
+
+    assert shared.ready_in() == routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS

@@ -81,12 +81,13 @@ pages work even if the server missed `worker_ready` events.
   within one interval, and the owed times of the first don't move. A nodename that never answers
   (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
   until the worker joins again. Until a reply names a worker, the server may show it offline.
-- With a down broker, an attempt ends within about 1.5 s of connecting (see
+- With a down or silent broker, an attempt ends within about 5 s (see
   [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)).
-  A failed attempt counts toward pacing: the next one, from a request or the background inspect,
-  waits 2, 4, 8 and so on up to 60 s, and a success resets that. The owed times of a pending
-  nodename are served by whichever attempt the wait allows, so a down broker can serve several of
-  them with one attempt. Stopping the server waits up to 2 s for a running attempt. The background inspect does nothing without a broker URL.
+  A failed attempt counts toward pacing: the next one, from a request or the background
+  inspect, waits 2, 4, 8 and so on up to 60 s, and a success resets that. A worker nodename
+  the server learns for the first time clears the wait, so its first inspect runs within one
+  2-second interval. Stopping the server waits up to 2 s for a running attempt. The background
+  inspect does nothing without a broker URL.
   Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
   an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
   task events arrive but that never registers triggers one inspect, not one per event.
