@@ -340,6 +340,8 @@ export interface ExecutionFilters {
 export interface TimedFilters extends ExecutionFilters {
   /** Updated within this long (`1h`, `6h`); sent instead of `from_date`. */
   within?: string
+  /** Only runs last updated before this time (ISO, exclusive): the end of a chart bucket. */
+  updated_before?: string
 }
 
 export interface FetchTasksParams extends TimedFilters {
@@ -352,6 +354,7 @@ export type FetchExecutionsParams = TimedFilters
 
 const FILTER_KEYS = [
   'within',
+  'updated_before',
   'state',
   'name',
   'name_exact',
@@ -491,6 +494,8 @@ export interface TaskStats {
   /** Null with no runtime samples in the window. */
   p50_ms: number | null
   p95_ms: number | null
+  /** Newest event of any run of the name, whatever the window; absent from older servers. */
+  last_run?: string | null
 }
 
 /** One task group's rollup in `GET /api/stats/tasks`. */
@@ -511,8 +516,9 @@ export interface TaskStatsResponse {
 }
 
 /** Per-name run stats over `within` (`6h`); a name with any record has a row, with zero runs if none are in the window. */
-export async function fetchTaskStats(within: string): Promise<TaskStatsResponse> {
-  const searchParams = new URLSearchParams({ within })
+export async function fetchTaskStats(within?: string): Promise<TaskStatsResponse> {
+  const searchParams = new URLSearchParams()
+  if (within) searchParams.set('within', within)
   return apiFetch(`${API_BASE}/stats/tasks?${searchParams}`, 'Failed to fetch task stats')
 }
 
@@ -569,10 +575,11 @@ export interface TimeseriesResponse {
 
 /** Runs per bucket over `within`; `bucket` (`5m`) fixes the bucket size, else the server picks one. */
 export async function fetchTimeseries(
-  within: string,
+  within: string | undefined,
   bucket?: string,
 ): Promise<TimeseriesResponse> {
-  const searchParams = new URLSearchParams({ within })
+  const searchParams = new URLSearchParams()
+  if (within) searchParams.set('within', within)
   if (bucket) searchParams.set('bucket', bucket)
   return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch runs over time')
 }
@@ -593,8 +600,9 @@ export interface FailureListResponse {
   groups: FailureGroup[]
 }
 
-/** Failures over `within` grouped by exception class. */
-export async function fetchFailures(within: string): Promise<FailureListResponse> {
-  const searchParams = new URLSearchParams({ group_by: 'exception', within })
+/** Failures over `within` (none: from the oldest run held) grouped by exception class. */
+export async function fetchFailures(within: string | undefined): Promise<FailureListResponse> {
+  const searchParams = new URLSearchParams({ group_by: 'exception' })
+  if (within) searchParams.set('within', within)
   return apiFetch(`${API_BASE}/failures?${searchParams}`, 'Failed to fetch failures')
 }

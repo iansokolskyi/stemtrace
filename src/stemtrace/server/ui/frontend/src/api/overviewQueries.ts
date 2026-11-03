@@ -18,12 +18,13 @@ import {
 } from './client'
 import { workersSnapshot } from './queries'
 
-/** The longest window the summary endpoints take; the Overview's "All". */
-const WIDEST_WINDOW = '3650d'
+/** `/api/overview` needs a window: All is the longest one it takes (3650 days). */
+export const overviewWithin = (range: '1h' | '6h' | 'all'): string =>
+  range === 'all' ? '3650d' : range
 
-/** The `within` the summary endpoints get for a range: All asks for the widest window they allow. */
-export const overviewWindow = (range: '1h' | '6h' | 'all'): string =>
-  range === 'all' ? WIDEST_WINDOW : range
+/** The other summary endpoints start at the oldest run held when no `within` is sent (All). */
+export const statsWithin = (range: '1h' | '6h' | 'all'): string | undefined =>
+  range === 'all' ? undefined : range
 
 // The Overview's numbers are aggregates, which events do not invalidate: they refresh on this
 // interval with the socket up or down.
@@ -42,7 +43,7 @@ export function useOverview(within: string) {
 export const CHART_BUCKET = '5m'
 
 /** Runs per bucket by state, behind the chart and the tiles' sparklines (one request). */
-export function useRunsSeries(within: string, bucket: string | undefined) {
+export function useRunsSeries(within: string | undefined, bucket: string | undefined) {
   return useQuery<TimeseriesResponse>({
     queryKey: ['overview', 'series', within, bucket],
     queryFn: () => fetchTimeseries(within, bucket),
@@ -51,7 +52,7 @@ export function useRunsSeries(within: string, bucket: string | undefined) {
 }
 
 /** Failures over the window, grouped by exception class. */
-export function useFailures(within: string) {
+export function useFailures(within: string | undefined) {
   return useQuery<FailureListResponse>({
     queryKey: ['overview', 'failures', within],
     queryFn: () => fetchFailures(within),
@@ -60,7 +61,7 @@ export function useFailures(within: string) {
 }
 
 /** Per-name stats and per-group rollups over the window. */
-export function useWindowTaskStats(within: string) {
+export function useWindowTaskStats(within: string | undefined) {
   return useQuery<TaskStatsResponse>({
     queryKey: ['overview', 'task-stats', within],
     queryFn: () => fetchTaskStats(within),
@@ -69,8 +70,9 @@ export function useWindowTaskStats(within: string) {
 }
 
 /** Runs per task group and state over the window (the health table's sparklines). */
-export function useGroupSeries(within: string) {
+export function useGroupSeries(within: string | undefined, enabled: boolean) {
   return useQuery<GroupTimeseriesResponse>({
+    enabled,
     queryKey: ['overview', 'group-series', within],
     queryFn: () => fetchGroupTimeseries(within),
     refetchInterval: OVERVIEW_POLL_MS,

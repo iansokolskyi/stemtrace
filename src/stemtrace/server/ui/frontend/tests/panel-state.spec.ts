@@ -9,7 +9,17 @@ import {
 
 /** The triage panel's URL value. No browser: both functions are pure. */
 
-const TRICKY_IDS = ['plain', 'a/b', 'a:b', '100%', 'a/b:c%d', '%2F', 'x y&z=1', 'celery@host-1', 'é']
+const TRICKY_IDS = [
+  'plain',
+  'a/b',
+  'a:b',
+  '100%',
+  'a/b:c%d',
+  '%2F',
+  'x y&z=1',
+  'celery@host-1',
+  'é',
+]
 
 test.describe('panel URL state', () => {
   for (const kind of PANEL_KINDS) {

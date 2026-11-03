@@ -9,7 +9,8 @@ export interface PanelEntry {
   id: string
 }
 
-const isKind = (text: string): text is PanelKind => (PANEL_KINDS as readonly string[]).includes(text)
+const isKind = (text: string): text is PanelKind =>
+  (PANEL_KINDS as readonly string[]).includes(text)
 
 /**
  * The stack from the `panel` URL value: `kind:id` entries joined by `/`, each id passed through

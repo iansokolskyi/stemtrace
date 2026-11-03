@@ -108,3 +108,24 @@ export function flowsSearch(search: Record<string, unknown>): FlowsSearch {
     to_date: dateSearchParam(search.to_date),
   }
 }
+
+/**
+ * Search params of the Overview (`/`): the range and the triage panel's stack (`panel`, see
+ * `components/triage/panelState.ts`). Old task-list links (`/?state=FAILURE`) also land here;
+ * `legacyExecutionsSearch` finds them.
+ */
+export interface OverviewSearch extends ExecutionsSearch {
+  panel?: string
+}
+
+export function overviewSearch(search: Record<string, unknown>): OverviewSearch {
+  return { ...executionsSearch(search), panel: str(search.panel) }
+}
+
+/** The Executions filters an old task-list link at `/` carried; undefined when it had none. */
+export function legacyExecutionsSearch(search: OverviewSearch): ExecutionsSearch | undefined {
+  const { panel: _panel, range, ...filters } = search
+  return Object.values(filters).some((value) => value !== undefined)
+    ? { ...filters, range }
+    : undefined
+}
