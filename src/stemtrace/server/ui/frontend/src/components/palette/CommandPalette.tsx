@@ -214,7 +214,6 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
                 {group.heading}
               </div>
               {group.items.map(({ item, index }) => (
-                // biome-ignore lint/a11y/useKeyWithClickEvents: the combobox input owns the keys (arrows, Enter); options are chosen by pointer here
                 <div
                   key={item.key}
                   id={optionId(index)}
@@ -225,6 +224,13 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
                   // Keep focus in the search box when a row is pressed
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => choose(item)}
+                  // Focus stays in the search box, which owns the keys; this covers a row that gets it
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    choose(item)
+                  }}
                   className="flex w-full cursor-pointer items-center gap-2.5 rounded-[3px] px-2.5 py-2 hover:bg-hover aria-selected:bg-raised aria-selected:outline-2 aria-selected:-outline-offset-2 aria-selected:outline-ink"
                 >
                   <span
