@@ -181,7 +181,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
             setQuery(event.target.value)
             setSelectedKey(null)
           }}
-          className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-sm text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none"
+          className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-sm text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none!"
         />
         <div
           id={`${id}-list`}
