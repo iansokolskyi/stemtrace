@@ -1,0 +1,1 @@
+- `GET /api/tasks` takes `updated_before` (ISO time, exclusive): only tasks whose last event is earlier. With `from_date` it lists the runs one bucket of `GET /api/stats/timeseries` counts; `to_date` cannot, because it compares the task's first event.
