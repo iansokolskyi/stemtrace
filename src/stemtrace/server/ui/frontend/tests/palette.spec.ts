@@ -195,6 +195,68 @@ test.describe('roles and keys', () => {
   })
 })
 
+test.describe('groups, drawer, errors and layouts', () => {
+  test('every group is named by its heading, including headings of two words', async ({ page }) => {
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('reconcile')
+    await expect(dialog(page).getByRole('group', { name: 'Task names' })).toBeVisible()
+    await expect(dialog(page).getByRole('group', { name: 'Flows' })).toBeVisible()
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type(reconcile.task_id)
+    await expect(dialog(page).getByRole('group', { name: 'Task IDs' })).toBeVisible()
+  })
+
+  test('escape closes the palette and leaves the open drawer open', async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 })
+    await loadPage(page)
+    const menu = page.getByRole('button', { name: 'Open navigation' })
+    await menu.click()
+    await expect(menu).toHaveAttribute('aria-expanded', 'true')
+    await page.keyboard.press('Control+k')
+    await expect(box(page)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(dialog(page)).toBeHidden()
+    await expect(menu).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible()
+  })
+
+  test('a source that fails to load is named, not reported as "No results"', async ({ page }) => {
+    await page.route(/\/api\/tasks\/registry/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await page.goto('/executions')
+    await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
+    await openPalette(page)
+    await page.keyboard.type('zzzqqq')
+    await expect(dialog(page).getByRole('status')).toHaveText("Couldn't load task names")
+  })
+
+  test('the shortcut works on a layout whose key for K is not a Latin letter', async ({ page }) => {
+    await loadPage(page)
+    // Ukrainian layout: the physical K key types "л"
+    await page.evaluate(() =>
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'л', code: 'KeyK', ctrlKey: true, bubbles: true }),
+      ),
+    )
+    await expect(box(page)).toBeFocused()
+  })
+
+  test('the shortcut does not fire for another Latin letter on the physical K key', async ({
+    page,
+  }) => {
+    await loadPage(page)
+    // Dvorak: the physical K key types "v"
+    await page.evaluate(() =>
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'v', code: 'KeyK', ctrlKey: true, bubbles: true }),
+      ),
+    )
+    await expect(dialog(page)).toBeHidden()
+  })
+})
+
 test.describe('keyboard-only paths', () => {
   test('a task ID opens that task', async ({ page }) => {
     await loadPage(page)
