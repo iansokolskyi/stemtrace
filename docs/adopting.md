@@ -90,9 +90,12 @@ You can start the server first, before any worker runs `init_worker`:
 - **Workers** and **Registry** pages: when the UI requests their data, the server asks the
   workers on its broker URL with Celery inspect, at most once every 2 seconds per server process.
   It sends `stats` and `registered` one after the other (`ping` too when `stats` gets no reply),
-  each waiting until 0.5 s pass without a reply, and the page waits for them: at least 1 s,
-  about 18 s when the broker refuses connections or its name doesn't resolve, and several
-  minutes when connecting times out (e.g. a firewalled host). Every
+  each waiting until 0.5 s pass without a reply, and the page waits for them: at least 1 s.
+  Every connect and read is bounded: a refused port ends an attempt at once, and a host
+  that never answers or a broker that goes quiet ends it within about 5 s. The next attempt
+  waits 2 s, then 4, 8 and so on up to 60 s, so requests inside that wait return without
+  asking. Resolving the broker's host name isn't bounded, so a slow DNS server still delays
+  an attempt. Every
   worker that answers is listed, instrumented or not, with the tasks it has registered. Those
   tasks show **Never Run** until stemtrace receives an event for one of them.
 - **Tasks** and **graphs** stay empty until instrumented processes publish events.

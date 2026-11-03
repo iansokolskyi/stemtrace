@@ -136,6 +136,8 @@ class World:
         self.completed: datetime | None = None
         self.channel_proven = False
         self.rev_listed: set[str] = set()
+        # Names restarted without a worker_ready since their last announced start.
+        self.unannounced: set[str] = set()
         self.answered_last: frozenset[str] = frozenset()
         self.generation: dict[str, int] = dict.fromkeys(NODES, 0)
         # Truth-side logs for the two direction checks.
@@ -220,6 +222,10 @@ class World:
             else (node is not None and node.listed and not node.stopped)
             or self.rng.random() < 0.8
         )
+        if announced:
+            self.unannounced.discard(name)
+        else:
+            self.unannounced.add(name)
         if name in self.reported_stopped and not announced:
             self.clock.advance(1)  # its events are then stamped after the stop
         if announced:
@@ -349,12 +355,20 @@ class World:
             stage: [rng.choice(ops) for _ in range(rng.choice([0, 0, 1, 2]))]
             for stage in ("stats", "registered", "ping")
         }
+        # stats() completes empty although workers are alive (a slow link): the ping
+        # fallback may still answer, and registered() may still fail (D7a readings 4, 5, 8).
+        # Not while a name was restarted unannounced: a later worker_shutdown for its new
+        # pid leaves the old pid live in the registry but removes it from this oracle (a
+        # pre-existing model gap, parked: it is not an inspect rule).
+        stats_silent = up and not self.unannounced and rng.random() < 0.2
         return Plan(
             stats_raises=not up or rng.random() < 0.05,
             registered_raises=rng.random() < 0.1,
             ping_raises=not up or rng.random() < 0.3,
             pids=rng.random() < 0.9,
-            answers={n: self.pid[n] for n in answering} if up else {},
+            answers={n: self.pid[n] for n in answering}
+            if up and not stats_silent
+            else {},
             ping_answers=[n for n in answering if rng.random() < 0.9] if up else [],
             meanwhile=meanwhile,
             seen_generation=dict(self.generation),
@@ -385,8 +399,12 @@ class World:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
                     self._answer(name, with_pid=plan.pids)
-        else:  # empty or failed stats: the ping fallback
-            for name in [] if plan.ping_raises else plan.ping_answers:
+        else:
+            # Written from the D7a spec: a stats() error ends the attempt (reading 4); empty
+            # stats whose registered() fails ends it too, broadcast stamped (readings 5, 8);
+            # otherwise empty stats falls back to ping().
+            ping_runs = not plan.stats_raises and not plan.registered_raises
+            for name in [] if plan.ping_raises or not ping_runs else plan.ping_answers:
                 answered.add(name)
                 self.channel_proven = True
                 self._answer(name, with_pid=False)
