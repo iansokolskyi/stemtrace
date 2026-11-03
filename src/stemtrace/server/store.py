@@ -620,12 +620,12 @@ class WorkerRegistry:
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
                 self.mark_node_alive(nodename, pid, now=now)
-            learned = [
-                nodename
-                for nodename in replies
-                if nodename in self._newest_by_node and nodename not in known
-            ]
+            learned = self._registered_since(known, replies)
         self._notify_new_node(learned)
+
+    def _registered_since(self, known: set[str], nodenames: Iterable[str]) -> list[str]:
+        """The nodenames now registered that were not in ``known``. Call with the lock."""
+        return [n for n in nodenames if n in self._newest_by_node and n not in known]
 
     def registry_facts(self, *, broker_configured: bool) -> RegistryFacts:
         """Copy what the anomaly classifier needs from the registry.

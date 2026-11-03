@@ -534,7 +534,7 @@ class _InspectRefresher:
 
     def ready_in(self) -> float:
         """Seconds until the last successful refresh is a full interval old."""
-        if self._last_refresh == 0.0:
+        if self._last_refresh <= 0.0:
             return 0.0
         return max(
             0.0,
