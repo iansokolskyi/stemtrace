@@ -74,13 +74,16 @@ pages work even if the server missed `worker_ready` events.
   inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
 - A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
   (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
-  inspect that the server sent for its `worker_ready` goes unanswered) is asked again after 2, 4,
-  8, 16 and 30 seconds, then dropped: a worker that never answers (remote control off) costs five
-  extra inspects, and the server doesn't ask again until the worker joins again. Until a reply
-  names a worker, the server may show it offline.
+  inspect that the server sent for its `worker_ready` goes unanswered) is owed an inspect at 2, 6,
+  14, 30 and 60 seconds after it joined, then dropped. These are owed times, measured from the
+  join and subject to the shared 2-second interval, so the real gaps run longer by the inspect's
+  own duration. A new nodename that joins while another waits for its owed time is inspected
+  within one interval, and the owed times of the first don't move. A nodename that never answers
+  (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
+  until the worker joins again. Until a reply names a worker, the server may show it offline.
 - With a down broker, an attempt can take about 18 s (see
   [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
-  and a pending nodename gets the five extra attempts, not more. Stopping the server waits up to
+  and a pending nodename is owed one inspect plus at most five more. Stopping the server waits up to
   2 s for a running attempt. The background inspect does nothing without a broker URL.
   Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
   an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
