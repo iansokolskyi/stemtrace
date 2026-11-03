@@ -6,6 +6,7 @@ import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
   createFailedTask,
   createMockEvent,
+  createRegistryEntry,
   createSuccessTask,
   createTaskStats,
   type MockRegisteredTask,
@@ -503,4 +504,43 @@ for (const theme of ['light', 'dark'] as const) {
       path: `/flows/${flow.root_id}`,
     })
   })
+}
+
+// The command palette, open over Executions with a query that matches a name, a flow and a worker.
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    test(`command palette, ${theme}, ${width}px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.addTasks([
+        createSuccessTask('shop.orders.reconcile', 1),
+        createFailedTask('shop.mail.send_receipt', 'SmtpError: refused', 'Traceback'),
+      ])
+      api.setRegistry([
+        createRegistryEntry('shop.orders.reconcile', 4),
+        createRegistryEntry('shop.mail.send_receipt', 2),
+        { ...createRegistryEntry('shop.legacy.purge', 0), status: 'not_registered' },
+      ])
+      api.setWorkers([
+        {
+          hostname: 'celery@receipts-1',
+          pid: 100,
+          registered_tasks: ['shop.mail.send_receipt'],
+          status: 'online',
+          registered_at: '2026-10-17T10:00:00Z',
+          last_seen: '2026-10-17T11:59:00Z',
+        },
+      ])
+      await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await page.setViewportSize({ width, height: 700 })
+      await page.goto('/executions')
+      await page.waitForLoadState('networkidle')
+      await page.evaluate(() => document.fonts.ready)
+      await page.keyboard.press('Control+k')
+      await page.keyboard.type('rec')
+      await expect(page.getByRole('option')).not.toHaveCount(0)
+      await expect(page).toHaveScreenshot(`palette-${theme}-${width}.png`)
+    })
+  }
 }

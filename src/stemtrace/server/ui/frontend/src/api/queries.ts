@@ -278,3 +278,13 @@ export function useRegisteredTask(name: string | undefined) {
     retry: false,
   })
 }
+
+/**
+ * What the server already knows of the workers, read without asking Celery (`refresh=false`:
+ * the inspect call blocks while the broker is slow). The sidebar badge and the command palette
+ * share it, so it is one request.
+ */
+export const workersSnapshot = {
+  queryKey: ['badges', 'workers'],
+  queryFn: () => fetchWorkers({ refresh: false }),
+}

@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchWorkers } from '@/api/client'
-import { registrySnapshot } from '@/api/queries'
+import { registrySnapshot, workersSnapshot } from '@/api/queries'
 import { offlineHostCount } from '@/components/workers/workers'
 
 // Badges never trigger Celery inspect (refresh=false): an inspect blocks the request for a
@@ -14,8 +13,7 @@ export function useProblemCounts(): {
   notRegistered: number | null
 } {
   const workers = useQuery({
-    queryKey: ['badges', 'workers'],
-    queryFn: () => fetchWorkers({ refresh: false }),
+    ...workersSnapshot,
     refetchInterval: BADGE_POLL_MS,
     retry: false,
   })
