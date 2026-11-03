@@ -6,6 +6,7 @@ refresher; only the Celery ``Inspect`` and the transport are fakes (Celery 5.6.3
 broker is unreachable).
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -74,11 +75,24 @@ def task_from(task_id: str, name: str = "app.known") -> TaskEvent:
     )
 
 
+_EXTENSIONS: list[StemtraceExtension] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_probes() -> Iterator[None]:
+    # The client never enters the extension's lifespan, so stop each probe thread a
+    # worker_ready started; a leftover thread breaks later tests in the same process.
+    yield
+    while _EXTENSIONS:
+        _EXTENSIONS.pop()._inspect_probe.stop()
+
+
 def extension_client(
     monkeypatch: pytest.MonkeyPatch, inspector: _Inspect | None
 ) -> tuple[StemtraceExtension, TestClient]:
     monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: inspector)
     extension = StemtraceExtension(broker_url=BROKER, serve_ui=False)
+    _EXTENSIONS.append(extension)
     app = FastAPI()
     app.include_router(extension.router)
     return extension, TestClient(app)
