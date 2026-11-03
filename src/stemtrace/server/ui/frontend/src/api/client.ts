@@ -482,6 +482,8 @@ export async function fetchGroups(): Promise<TaskGroupListResponse> {
 /** One task name's numbers from `GET /api/stats/tasks` (the fields the Registry reads). */
 export interface TaskStats {
   name: string
+  /** The task's group; null or absent when it has none. */
+  task_group?: string | null
   runs: number
   failures: number
   /** Null with no runs in the window. */
@@ -491,8 +493,21 @@ export interface TaskStats {
   p95_ms: number | null
 }
 
+/** One task group's rollup in `GET /api/stats/tasks`. */
+export interface GroupStats {
+  name: string
+  task_count: number
+  runs: number
+  failures: number
+  failure_rate: number | null
+  p95_ms: number | null
+  last_run: string | null
+}
+
 export interface TaskStatsResponse {
   tasks: TaskStats[]
+  /** Per-group rollups; absent from a server that predates them. */
+  groups?: GroupStats[]
 }
 
 /** Per-name run stats over `within` (`6h`); a name with any record has a row, with zero runs if none are in the window. */
@@ -515,4 +530,71 @@ export async function fetchGroupTimeseries(within?: string): Promise<GroupTimese
   // Whole retention: one coarse bucket (the longest the endpoint takes) instead of up to 1440
   if (!within) searchParams.set('bucket', '3650d')
   return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch group stats')
+}
+
+/** A KPI with the same number for the window of equal length before it. */
+export interface Kpi {
+  value: number
+  baseline: number
+}
+
+/** `GET /api/overview`: the KPIs over `within`, each with the window before it. */
+export interface OverviewResponse {
+  window: { start: string; end: string }
+  baseline_window: { start: string; end: string }
+  runs: Kpi
+  failures: Kpi
+  runs_per_minute: Kpi
+  failure_rate: Kpi
+  workers: { online: number; total: number }
+}
+
+/** `GET /api/overview?within=`. The API takes no start date here; All is the longest window it allows. */
+export async function fetchOverview(within: string): Promise<OverviewResponse> {
+  return apiFetch(
+    `${API_BASE}/overview?${new URLSearchParams({ within })}`,
+    'Failed to fetch overview',
+  )
+}
+
+/** `GET /api/stats/timeseries` without a split: runs per bucket by state. */
+export interface TimeseriesResponse {
+  window: { start: string; end: string }
+  bucket_seconds: number
+  /** Start of each bucket. */
+  starts: string[]
+  /** State name -> runs per bucket (aligned with `starts`); states with no run are absent. */
+  counts: Record<string, number[]>
+}
+
+/** Runs per bucket over `within`; `bucket` (`5m`) fixes the bucket size, else the server picks one. */
+export async function fetchTimeseries(
+  within: string,
+  bucket?: string,
+): Promise<TimeseriesResponse> {
+  const searchParams = new URLSearchParams({ within })
+  if (bucket) searchParams.set('bucket', bucket)
+  return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch runs over time')
+}
+
+/** One exception class's failures in `GET /api/failures`. */
+export interface FailureGroup {
+  /** Null for failures that carry no exception class. */
+  exception_type: string | null
+  count: number
+  first_seen: string
+  last_seen: string
+  task_names: string[]
+  sample_task_ids: string[]
+}
+
+export interface FailureListResponse {
+  total: number
+  groups: FailureGroup[]
+}
+
+/** Failures over `within` grouped by exception class. */
+export async function fetchFailures(within: string): Promise<FailureListResponse> {
+  const searchParams = new URLSearchParams({ group_by: 'exception', within })
+  return apiFetch(`${API_BASE}/failures?${searchParams}`, 'Failed to fetch failures')
 }
