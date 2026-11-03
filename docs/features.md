@@ -455,11 +455,12 @@ completed since) is remembered until a completed call it doesn't answer proves i
   off, or with a control setting the server doesn't share (such as `global_keyprefix`), every
   `inspect` call returns nothing, so no worker is silent with evidence. A SIGKILLed fleet then
   gives no item, the same as with no broker URL. A clean stop still does.
-- **A fleet that died before any worker answered an `inspect` isn't found.** Silence counts only
-  after some worker has answered an `inspect` call since the server started. If the server
-  starts, or learns a worker, and the fleet is SIGKILLed before any worker answers, the item
-  doesn't appear, because the server can't tell a dead fleet from one it can't hear. A clean stop
-  still does.
+- **A fleet is found silent only after some inspect got an answer.** The server runs `inspect`
+  when it starts and when it learns a new nodename, so a fleet that dies before anyone opens the
+  UI is still found. If no `inspect` call ever got an answer since the server started (remote
+  control off, a control setting the server doesn't share, or a broker the server can't reach
+  while the workers are up), the server can't tell a dead fleet from one it can't hear, so a
+  SIGKILLed fleet gives no item. A clean stop still does.
 - **A killed fleet needs an inspect.** After a SIGKILL of every worker, with no broker URL or an
   unreachable broker, the item doesn't appear, because silence isn't evidence. A clean stop of
   every worker still does.

@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,8 +20,9 @@ import redis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from stemtrace.core.events import WorkerEvent, WorkerEventType
-from stemtrace.server.api import routes
+from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.server import store as store_module
+from stemtrace.server.api import params, routes
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.transports import get_transport
@@ -233,3 +234,61 @@ def test_p10_real_worker_joining_during_a_dead_nodenames_backoff_is_named_prompt
     assert named[0] - joined <= 2.0 + 3 * 0.5 + 2.0, (
         f"attempts relative to the join: {timeline}"
     )
+
+
+def test_p6_real_fleet_killed_before_any_request_gives_the_item_hours_later(
+    tmp_path: Path,
+    worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real worker joins and answers the probe; SIGKILL; one request 7 hours later."""
+    prefix, nodename, procs = worker_process
+    answered_names: list[object] = []
+    real_refresh = routes._InspectRefresher.refresh_blocking
+
+    def recording(self: routes._InspectRefresher) -> frozenset[str] | None:
+        answered = real_refresh(self)
+        answered_names.append(answered)
+        return answered
+
+    monkeypatch.setattr(routes._InspectRefresher, "refresh_blocking", recording)
+    extension = StemtraceExtension(
+        broker_url=REDIS_URL,
+        transport_url=REDIS_URL,
+        prefix=f"/{prefix}",
+        serve_ui=False,
+    )
+    extension.store.add_event(
+        TaskEvent(
+            task_id="t1",
+            name="app.known",
+            state=TaskState.PENDING,
+            timestamp=datetime.now(timezone.utc) - timedelta(minutes=20),
+        )
+    )
+    app = FastAPI()
+    extension.init_app(app)
+
+    with TestClient(app):
+        procs.append(_spawn_worker(prefix, nodename, tmp_path / "worker.log", 0))
+        deadline = time.monotonic() + TIMEOUT_S
+        while time.monotonic() < deadline:
+            if any(nodename in (names or ()) for names in answered_names):
+                break
+            time.sleep(0.2)
+        assert any(nodename in (names or ()) for names in answered_names)
+    # The probe is stopped; nobody has made a request. SIGKILL the fleet.
+    os.killpg(procs[0].pid, signal.SIGKILL)
+    procs[0].wait(timeout=20)
+    later = timedelta(hours=7)
+    monkeypatch.setattr(
+        store_module, "_utcnow", lambda: datetime.now(timezone.utc) + later
+    )
+    monkeypatch.setattr(params, "utcnow", lambda: datetime.now(timezone.utc) + later)
+    monkeypatch.setattr(routes, "_monotonic", lambda: time.monotonic() + 7 * 3600)
+
+    body = TestClient(app).get(f"/{prefix}/api/anomalies").json()
+
+    assert [(a["kind"], a["task_count"]) for a in body["anomalies"]] == [
+        ("no_workers_online", 1)
+    ]
