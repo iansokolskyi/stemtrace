@@ -850,6 +850,14 @@ def _add_task_routes(
         to_date: Annotated[
             datetime | None, Query(description="Filter by end date (ISO format)")
         ] = None,
+        updated_before: Annotated[
+            datetime | None,
+            Query(
+                description=(
+                    "Only tasks last updated before this time (ISO format, exclusive)"
+                )
+            ),
+        ] = None,
         hostname: Annotated[
             str | None,
             Query(description="Filter by exact worker nodename (name@host)"),
@@ -890,7 +898,9 @@ def _add_task_routes(
         task's furthest-along event that has one (a later retry beats an
         earlier one). ``task_group`` matches the task's group name exactly and
         ``tag`` one of its group's tags. ``within`` is a relative ``from_date``
-        (now minus it); pass one or the other.
+        (now minus it); pass one or the other. ``from_date`` with
+        ``updated_before`` lists the runs one bucket of ``/stats/timeseries``
+        counts: both compare the time of the run's last event.
         """
         states = params.parse_states(state)
         start = params.start_from(within, from_date, params.utcnow())
@@ -905,6 +915,7 @@ def _add_task_routes(
             name_exact=name_exact,
             from_date=start,
             to_date=to_date,
+            updated_before=updated_before,
             hostname=hostname,
             queue=queue,
             exception_type=exception_type,
