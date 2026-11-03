@@ -4,7 +4,7 @@ import { TaskName } from '@/components/TaskName'
 import { formatAgo, formatCount, formatDateTime } from '@/utils/format'
 import { exceptionOfId } from './exceptionId'
 import { usePanel } from './PanelContext'
-import { BUTTON_QUIET, Facts, type PanelData, Section } from './PanelParts'
+import { BUTTON_QUIET, Facts, type PanelData, rangeOf, Section } from './PanelParts'
 import { RunRows } from './RunRows'
 import { encodeScope } from './runsScope'
 
@@ -69,7 +69,7 @@ export function ExceptionBody({ id, data }: { id: string; data: PanelData }): Re
                 search={{
                   state: 'FAILURE',
                   exception_type: type,
-                  range: data.within === '1h' || data.within === '6h' ? data.within : 'all',
+                  range: rangeOf(data.within),
                 }}
                 className={BUTTON_QUIET}
               >

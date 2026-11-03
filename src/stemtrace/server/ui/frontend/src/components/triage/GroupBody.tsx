@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import { TaskName } from '@/components/TaskName'
 import { formatCount, formatPercent, formatSpan } from '@/utils/format'
 import { usePanel } from './PanelContext'
-import { BUTTON_QUIET, Figures, type PanelData, Section } from './PanelParts'
+import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
 import { encodeScope } from './runsScope'
 
 const TH = 'h-8 border-b border-rule px-2.5 text-left text-xs font-semibold text-muted'
@@ -96,7 +96,7 @@ export function GroupBody({ id, data }: { id: string; data: PanelData }): ReactE
             to="/executions"
             search={{
               task_group: id,
-              range: data.within === '1h' || data.within === '6h' ? data.within : 'all',
+              range: rangeOf(data.within),
             }}
             className={BUTTON_QUIET}
           >

@@ -16,6 +16,10 @@ export interface PanelData {
   within: string | undefined
 }
 
+/** The Executions range that matches the Overview's window (`6h`; none is All). */
+export const rangeOf = (within: string | undefined): Range =>
+  within === '1h' || within === '6h' ? within : 'all'
+
 export const BUTTON =
   'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'
 export const BUTTON_QUIET = `${BUTTON} bg-raised text-ink hover:bg-press`

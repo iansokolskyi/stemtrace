@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactElement, useState } from 'react'
 import { formatCount, formatPercent } from '@/utils/format'
-import { BUTTON_QUIET, Figures, type PanelData, Section } from './PanelParts'
+import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
 import { RunRows } from './RunRows'
 import { decodeScope, scopeFilters } from './runsScope'
 
@@ -41,7 +41,7 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
     ? {
         state: scope.state,
         name_exact: scope.name,
-        range: scope.within === '1h' || scope.within === '6h' ? scope.within : ('all' as const),
+        range: rangeOf(scope.within),
       }
     : null
 

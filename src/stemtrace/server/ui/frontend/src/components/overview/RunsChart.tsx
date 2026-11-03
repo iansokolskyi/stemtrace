@@ -146,7 +146,7 @@ export function RunsChart({
     if (dragSpan) return dragSpan
     if (!brush || n === 0) return null
     const a = buckets.findIndex((b) => b.end > brush.from)
-    const zIndex = buckets.findLastIndex((b) => b.start < brush.to)
+    const zIndex = buckets.map((b) => b.start < brush.to).lastIndexOf(true)
     return a < 0 || zIndex < a ? null : ([a, zIndex] as [number, number])
   })()
 
@@ -241,12 +241,12 @@ export function RunsChart({
         ) : (
           <>
             {/* biome-ignore lint/a11y/useSemanticElements: an svg cannot be a fieldset; it is one group the arrow keys move through */}
-            {/* biome-ignore lint/a11y/noNoninteractiveTabindex: the chart is keyboard-operable (arrows, Enter) */}
             <svg
               viewBox={`0 0 ${width} ${height}`}
               width={width}
               height={height}
               role="group"
+              // biome-ignore lint/a11y/noNoninteractiveTabindex: the chart is keyboard-operable (arrows, Enter)
               tabIndex={0}
               aria-label="Stacked bars of successful, failed and retried runs per bucket. Arrow keys move between buckets, Enter opens the runs in a bucket."
               className="block h-auto w-full cursor-crosshair touch-pan-y select-none"

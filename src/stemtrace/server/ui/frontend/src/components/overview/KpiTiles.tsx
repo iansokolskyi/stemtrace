@@ -12,7 +12,7 @@ import { Sparkline } from './Sparkline'
 import { AnomaliesTileSlot } from './slots'
 
 /** How many tiles the row holds: 5 once the Anomalies tile fills its slot. */
-export const TILE_COUNT = 4
+export const TILE_COUNT: number = 4
 
 const TILE =
   'flex min-w-0 flex-col gap-[3px] rounded-lg bg-surface px-3.5 pt-3.5 pb-2.5 text-left text-ink hover:bg-[color-mix(in_srgb,var(--ink)_6%,var(--surface))] data-[on]:outline-2 data-[on]:-outline-offset-2 data-[on]:outline-ink'
