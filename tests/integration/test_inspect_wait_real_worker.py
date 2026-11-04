@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -130,6 +131,59 @@ async def test_r1_two_concurrent_refresh_requests_both_read_the_worker_online(
             worker_registry=registry,
             broker_url=REDIS_URL,
             inspect_probe=QuietProbe(),
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        page = asyncio.create_task(client.get("/api/workers?refresh=true"))
+        await asyncio.sleep(0.001)
+        badge = asyncio.create_task(client.get("/api/workers?refresh=true"))
+        responses = await asyncio.gather(page, badge)
+
+    statuses = [
+        sorted(w["status"] for w in r.json()["workers"] if w["hostname"] == nodename)
+        for r in responses
+    ]
+    assert len(inspections) == 1
+    assert statuses == [[WorkerStatus.ONLINE.value]] * 2
+
+
+async def test_r1_aged_worker_reads_online_for_both_concurrent_refresh_requests(
+    worker: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, nodename = worker
+    _wait_until_it_answers(nodename)
+    inspections: list[float] = []
+    real_get = routes._get_inspector
+
+    def counting(url: str, **kwargs: float) -> object:
+        inspections.append(time.monotonic())
+        return real_get(url, **kwargs)  # type: ignore[arg-type]  # test passthrough
+
+    monkeypatch.setattr(routes, "_get_inspector", counting)
+    registry = WorkerRegistry()
+    refresher = routes._InspectRefresher(registry, REDIS_URL)
+    assert refresher.refresh_blocking() == frozenset({nodename})  # the first inspect
+    # Idle past the stale window, and the stale sweep has run (D7c reading 4).
+    for info in registry.get_workers_by_hostname(nodename):
+        info.last_seen = datetime.now(timezone.utc) - timedelta(minutes=4)
+    registry.remove_stale_workers()
+    assert [w.status for w in registry.get_workers_by_hostname(nodename)] == [
+        WorkerStatus.OFFLINE
+    ]
+    time.sleep(routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS + 0.2)
+    inspections.clear()
+    probe = QuietProbe()
+    probe.bind(refresher)
+    app = FastAPI()
+    app.include_router(
+        create_api_router(
+            GraphStore(),
+            worker_registry=registry,
+            broker_url=REDIS_URL,
+            inspect_probe=probe,
         )
     )
 
