@@ -321,3 +321,28 @@ def test_stop_during_a_periodic_refresh_returns_within_its_bound(
     blocking.gate.set()
 
     assert elapsed < 2.0
+
+
+def test_a_periodic_check_that_raises_does_not_end_the_probe_thread(
+    probes: list[InspectProbe],
+) -> None:
+    clock = FakeClock()
+    stepper = Stepper(clock)
+    recorder = Recorder(clock)
+
+    def broken() -> float | None:
+        raise RuntimeError("registry exploded")
+
+    probe = InspectProbe(INTERVAL_S, clock=clock.now, wait=stepper.wait)
+    probe.bind(recorder, Periodic(broken))
+    stepper.probe = probe
+    probes.append(probe)
+
+    probe.start()
+    assert stepper.next_block() is None  # the startup attempt ran, nothing else is owed
+    probe.trigger()
+    assert stepper.next_block() == INTERVAL_S  # owed within the shared interval
+    stepper.expire()
+    assert stepper.next_block() is None
+
+    assert len(recorder.starts) == 2

@@ -319,14 +319,15 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
         return answered
 
     monkeypatch.setattr(routes._InspectRefresher, "refresh_blocking", recording)
-    tasks_seen: list[tuple[str, object]] = []
+    tasks_seen: list[tuple[str, int | None, object]] = []
     real_tasks = routes._tasks_for_worker_key
 
     def recording_tasks(
         registered: dict[str, object] | None, worker_key: str
     ) -> list[str] | None:
         found = real_tasks(registered, worker_key)
-        tasks_seen.append((worker_key, None if found is None else len(found)))
+        keys = sorted(registered) if isinstance(registered, dict) else registered
+        tasks_seen.append((worker_key, None if found is None else len(found), keys))
         return found
 
     monkeypatch.setattr(routes, "_tasks_for_worker_key", recording_tasks)
@@ -371,8 +372,11 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
             f"/{prefix}/api/anomalies?refresh=false&kind=unregistered"
         ).json()
 
+    diagnostics = (
+        f"attempts {attempts}; tasks {tasks_seen}; stamps {registry.authority_stamps}"
+    )
     assert latest is not None
-    assert latest > first
+    assert latest > first, diagnostics
     assert max(ages) <= window_s, (
         f"authority aged to {max(ages):.1f}s; ages {ages[::25]}; attempts {attempts}"
     )

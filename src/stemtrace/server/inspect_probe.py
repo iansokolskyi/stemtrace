@@ -253,7 +253,14 @@ class InspectProbe:
 
     def _periodic_remaining(self) -> float | None:
         """Seconds until the periodic refresh is due, or None when none is wanted."""
-        return None if self._periodic is None else self._periodic.remaining()
+        if self._periodic is None:
+            return None
+        # Fire-and-forget boundary: a failing probe must not end its own thread.
+        try:
+            return self._periodic.remaining()
+        except Exception:
+            logger.debug("Inspect probe periodic check failed", exc_info=True)
+            return None
 
     def _next_due(self) -> float | None:
         """The soonest owed time: a pending nodename's or the periodic refresh's."""
