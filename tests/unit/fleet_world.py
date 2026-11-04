@@ -330,6 +330,37 @@ class World:
                 1  # only the newest worker_ready protects the listed pid
             )
 
+    def delayed_stop(self, name: str) -> None:
+        """A clean stop of an unannounced restart, stamped between the listed pid's registration and now.
+
+        D4e reading 1: stamped at or after the registration, so the listed pid ends too. A stamp
+        equal to the registration is the tie, which counts as newer.
+        """
+        node = self.nodes.get(name)
+        listed = self.reg.get(name)
+        if self.truth[name] not in ("alive", "busy") or listed is None:
+            return
+        if node is None or not node.listed or node.stopped:
+            return
+        now = self.clock.now
+        stamp = listed[1]
+        if now <= stamp:
+            return
+        stop = stamp + (now - stamp) * self.rng.choice([0, 0.5])
+        # Never earlier than an event already received: a stop that overtakes later-stamped
+        # events is a reordering the spec doesn't define (D4b "event after a stop").
+        stop = max(stop, self.last_event.get(name, stop))
+        self.truth[name] = "stopped"
+        self.registry.mark_shutdown(name, 1000 + self.rng.randrange(1000), stop)
+        self.stopped_at[name] = now
+        self.stop_ts[name] = stop
+        self.generation[name] += 1
+        self.reported_stopped.add(name)
+        self.rev_listed.discard(name)
+        self.confirm_spent.discard(name)
+        node.stopped = True
+        self.reached["28t"] += 1
+
     def kill(self, name: str) -> None:
         """SIGKILL: no event."""
         if self.truth[name] in ("alive", "busy"):
@@ -716,6 +747,7 @@ class World:
             "task": self.task,
             "late": self.late_task,
             "late_stop": self.late_stop,
+            "delayed_stop": self.delayed_stop,
             "revive_run": self.revive_run,
         }
         if op in per_node:
@@ -746,6 +778,7 @@ class World:
             "task",
             "late",
             "late_stop",
+            "delayed_stop",
             "advance",
             "advance",
             "cleanup",
