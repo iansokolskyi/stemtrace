@@ -727,6 +727,7 @@ class _InspectRefresher:
         dispatched = False
 
         def attempt() -> frozenset[str]:
+            """Run the attempt on the pool thread, noting that it started."""
             nonlocal dispatched
             dispatched = True
             return self._run_flight(worker_registry, broker_url)
