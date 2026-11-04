@@ -319,6 +319,17 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
         return answered
 
     monkeypatch.setattr(routes._InspectRefresher, "refresh_blocking", recording)
+    tasks_seen: list[tuple[str, object]] = []
+    real_tasks = routes._tasks_for_worker_key
+
+    def recording_tasks(
+        registered: dict[str, object] | None, worker_key: str
+    ) -> list[str] | None:
+        found = real_tasks(registered, worker_key)
+        tasks_seen.append((worker_key, None if found is None else len(found)))
+        return found
+
+    monkeypatch.setattr(routes, "_tasks_for_worker_key", recording_tasks)
     extension.store.add_event(
         TaskEvent(
             task_id="p11",
@@ -340,7 +351,9 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
             time.sleep(0.2)
         log = (tmp_path / "worker.log").read_text(errors="replace")[-3000:]
         assert first is not None, (
-            f"no inspect reply stamped authority; attempts {attempts}; log:\n{log}"
+            f"no inspect reply stamped authority; attempts {attempts}; "
+            f"tasks {tasks_seen}; stamps {registry.authority_stamps}; "
+            f"generations {registry.event_generations()}; log:\n{log}"
         )
 
         # No request at all: only the probe can refresh. Sample the stamp's age
