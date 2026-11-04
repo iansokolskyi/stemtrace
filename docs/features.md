@@ -102,15 +102,19 @@ pages work even if the server missed `worker_ready` events.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
   nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
-  latest `worker_ready` (or, for a pid known only from an inspect reply, the time of its first
-  reply). A shutdown stamped earlier is a late stop of an older process and leaves the listed
-  pid alone, whether it names that pid's number (a container that reuses pids) or another. A task event stamped after the stop, or an inspect reply that names the pid, brings
-  the nodename back.
-  Limitations: for a pid known only from an inspect reply, the server compares its own receive
-  time with the worker's clock. A worker clock ahead of the server's can make an older stop
-  count as newer and mark a live pid stopped, and a worker clock that steps back across the
-  restart leaves the old pid shown online until the stale window. Either heals at the worker's
-  next task event or inspect reply.
+  latest `worker_ready`. A shutdown stamped before the listed pid's latest `worker_ready` is a
+  late stop of an older process and changes nothing, whether it names a different pid or that
+  pid's own number (a container that reuses pids). A shutdown stamped before the nodename's
+  latest task event doesn't take the nodename offline either. A pid the server knows only from
+  an inspect reply has no `worker_ready` to compare with, so any shutdown that names it stops it.
+  After a stop, a task event stamped later brings the nodename back, and so does an inspect reply
+  that names the pid (`stats()`). A ping reply never does.
+  Limitations: the comparison uses the worker's clock for the shutdown and its `worker_ready`
+  (for a pid known only from an inspect reply, the server's receive time). A worker clock ahead
+  of the server's can make an older shutdown count as newer and mark a live pid stopped; that
+  heals at its next task event or inspect reply. A worker clock that steps back across a restart
+  can make a real shutdown look older: the server then ignores it and shows the old pid online
+  until the stale window ends.
 - A worker is shown offline once 3 minutes pass without a sign of life from it: its
   `worker_ready`, an event from one of its tasks, or an inspect reply (the Workers page asks
   when it loads). The check runs as events arrive, so on a server that receives no events at
@@ -153,8 +157,8 @@ pages work even if the server missed `worker_ready` events.
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and
   offline on every refresh. Give each worker a unique nodename. If one of them also misses its
-  `worker_ready`, its `worker_shutdown` marks the other as stopped until that one sends its next
-  task event or answers an inspect.
+  `worker_ready`, its `worker_shutdown` marks the other as stopped until that one sends a later
+  task event or an inspect reply that names its pid.
 
 ## Ignored and rejected tasks
 
