@@ -1,10 +1,10 @@
-"""Rows 28aa/28ab: a stale same-pid worker_ready changes nothing (D4e reading 15)."""
+"""Rows 28aa/28ab: a same-pid worker_ready never moves last_seen back (D4e reading 16)."""
 
 from datetime import timedelta
 
 import pytest
 
-from stemtrace.server.store import WorkerRegistry, WorkerStatus
+from stemtrace.server.store import WorkerRegistry
 from tests.unit.anomaly_pipeline import T0
 from tests.unit.test_fleet_alert import (
     MINUTE,
@@ -66,53 +66,31 @@ def test_row28aa_a_ready_stamped_before_the_last_seen_keeps_it() -> None:
     assert worker.last_seen == T0 + MINUTE
 
 
-@pytest.mark.parametrize(
-    "replay",
-    [-10 * MINUTE, timedelta(0), timedelta(seconds=30)],
-    ids=["older", "duplicate", "just-before-the-stop"],
-)
-@pytest.mark.parametrize("announced", [True, False], ids=["ready", "stats"])
-def test_row28ab_a_stale_ready_does_not_revive_a_stopped_pid(
-    replay: timedelta, announced: bool
+@pytest.mark.parametrize("stopped", [False, True], ids=["live", "stopped"])
+def test_row28ab_an_older_same_pid_ready_never_moves_last_seen_back(
+    stopped: bool,
 ) -> None:
     registry = WorkerRegistry()
-    if announced:
-        registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
-    else:
-        registry.apply_stats_reply(
-            registry.event_generations(), {SOLO: (1, ["app.known"])}, now=T0
-        )
-    registry.mark_shutdown(SOLO, 1, T0 + MINUTE, now=T0 + MINUTE)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
+    registry.mark_seen(SOLO, T0 + MINUTE, now=T0 + MINUTE)
+    if stopped:
+        registry.mark_shutdown(SOLO, 1, T0 + 2 * MINUTE, now=T0 + 2 * MINUTE)
 
-    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 + replay)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - MINUTE)
 
     worker = registry.get_worker(SOLO, 1)
     assert worker is not None
-    assert (worker.status, worker.shutdown_reported) == (WorkerStatus.OFFLINE, True)
+    assert worker.last_seen == T0 + MINUTE
 
 
-def test_row28ab_a_ready_stamped_after_the_stop_revives_the_pid() -> None:
+def test_row28ab_a_naive_stamp_then_a_second_ready_does_not_raise() -> None:
     registry = WorkerRegistry()
-    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
-    registry.mark_shutdown(SOLO, 1, T0 + MINUTE, now=T0 + MINUTE)
+    registry.register_worker(
+        SOLO, 1, ["app.known"], event_timestamp=T0.replace(tzinfo=None)
+    )
 
-    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 + 2 * MINUTE)
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 + MINUTE)
 
     worker = registry.get_worker(SOLO, 1)
     assert worker is not None
-    assert (worker.status, worker.shutdown_reported) == (WorkerStatus.ONLINE, False)
-
-
-def test_row28ab_a_stale_ready_does_not_supersede_the_newer_pid() -> None:
-    registry = WorkerRegistry()
-    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
-    registry.register_worker(SOLO, 2, ["app.known"], event_timestamp=T0 + MINUTE)
-
-    registry.register_worker(SOLO, 1, ["app.old"], event_timestamp=T0 - MINUTE)
-
-    older, newer = registry.get_worker(SOLO, 1), registry.get_worker(SOLO, 2)
-    assert older is not None
-    assert newer is not None
-    assert (older.status, older.superseded) == (WorkerStatus.OFFLINE, True)
-    assert (newer.status, newer.superseded) == (WorkerStatus.ONLINE, False)
-    assert older.registered_tasks == ["app.known"]
+    assert worker.last_seen == T0 + MINUTE

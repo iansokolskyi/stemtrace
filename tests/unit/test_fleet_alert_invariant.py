@@ -20,16 +20,11 @@ STEPS = 70
 MIN_REACH = 3
 
 
-def run_seed(
-    monkeypatch: pytest.MonkeyPatch,
-    seed: int,
-    reached: Counter[str],
-    steps: int = STEPS,
-) -> None:
+def run_seed(monkeypatch: pytest.MonkeyPatch, seed: int, reached: Counter[str]) -> None:
     # A quarter of the seeds have no broker, a quarter have remote control off.
     world = World(seed, reached, broker=seed % 4 != 0, deaf=seed % 4 == 1)
     patched_clock(monkeypatch, world)
-    world.run(steps)
+    world.run(STEPS)
 
 
 def test_invariant_holds_over_seeded_interleavings(
@@ -41,10 +36,3 @@ def test_invariant_holds_over_seeded_interleavings(
     print("rows reached:", {row: reached[row] for row in ROWS})
 
     assert {row: reached[row] for row in ROWS if reached[row] < MIN_REACH} == {}
-
-
-def test_pinned_seed_312371_a_pid_the_registry_dropped_registers_afresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The oracle kept a listing after the registry dropped the pid (found with D4e reading 15)."""
-    run_seed(monkeypatch, 312371, Counter(), steps=250)

@@ -401,8 +401,6 @@ class WorkerRegistry:
             return
 
         with self._lock:
-            if self._is_stale_ready(hostname, pid, event_timestamp):
-                return
             is_new = hostname not in self._newest_by_node
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
             ready = self._workers[f"{hostname}:{pid}"]
@@ -417,23 +415,6 @@ class WorkerRegistry:
             self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
         if is_new:
             self._notify_new_node([hostname])
-
-    def _is_stale_ready(
-        self, hostname: str, pid: int, event_timestamp: datetime | None
-    ) -> bool:
-        """Whether a worker_ready for a listed pid predates its newest ready or its stop.
-
-        An older stamp is a replay or a clock that stepped back (D4e reading 15).
-        Hold the lock.
-        """
-        worker = self._workers.get(f"{hostname}:{pid}")
-        if worker is None or event_timestamp is None:
-            return False
-        stamp = ensure_tz_aware(event_timestamp)
-        if worker.ready_at is not None and stamp < ensure_tz_aware(worker.ready_at):
-            return True
-        stop = self._stopped_at.get(hostname)
-        return worker.shutdown_reported and stop is not None and stamp < stop[0]
 
     def _register(
         self,
@@ -450,7 +431,7 @@ class WorkerRegistry:
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
-            timestamp = event_timestamp or _utcnow()
+            timestamp = ensure_tz_aware(event_timestamp or _utcnow())
 
             # Update global task definitions map (best-effort, last-writer-wins).
             if task_definitions:

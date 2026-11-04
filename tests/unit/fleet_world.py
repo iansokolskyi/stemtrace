@@ -53,7 +53,6 @@ ROWS = (
     "28z",
     "replay_ready",
     "late_ready",
-    "replay_ready_stopped",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -404,27 +403,26 @@ class World:
         self.clock.advance(1)  # a later event is then stamped after the stop, not at it
 
     def replay_ready(self, name: str) -> None:
-        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 15).
+        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 5).
 
-        It is stale (stamped before the pid's newest ready), so the registry changes nothing:
-        ``last_seen``, a stop and the live pid all stay, so the oracle changes nothing either.
+        It moves neither the pid's stamp nor anything else the oracle tracks, and
+        ``last_seen`` never moves back (D4d reading 2, #277).
         """
+        node = self.nodes.get(name)
         listed = self.reg.get(name)
-        if name not in self.nodes or listed is None:
+        if node is None or not node.listed or node.stopped or listed is None:
             return
         pid, stamp, _, announced = listed
         if not announced:
             return
         old = stamp - timedelta(seconds=1)
-        stop = self.stop_ts.get(name)
-        node = self.nodes[name]
-        if node.stopped and name in self.stopped_at and stop is not None:
-            gap = int((stop - stamp).total_seconds())
-            if gap >= 1 and self.rng.random() < 0.5:
-                # After the pid's ready but not after its stop (a duplicate when 0): stale too.
-                old = stamp + timedelta(seconds=self.rng.randint(0, gap - 1))
-                self.reached["replay_ready_stopped"] += 1
         self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
+        self.generation[name] += 1
+        self.confirm_spent.discard(name)
+        self.reported_stopped.discard(name)
+        self.stopped_at.pop(name, None)
+        self.last_event.pop(name, None)
+        self.guard_event.pop(name, None)  # a worker_ready starts a new process
         self.reached["replay_ready"] += 1
 
     def late_ready(self, name: str) -> None:
@@ -563,7 +561,7 @@ class World:
         self.stopped_at = {n: t for n, t in self.stopped_at.items() if t >= cutoff}
         for name, node in list(self.nodes.items()):
             if node.listed and node.last_seen < cutoff:
-                self._forget_pid(name)
+                self.reg.pop(name, None)
                 if node.stopped or self.silent(name, node):
                     del self.nodes[name]
                 else:
@@ -580,17 +578,7 @@ class World:
         for name in list(self.reg):
             node = self.nodes.get(name)
             if node is None or (not node.listed and node.last_seen < cutoff):
-                self._forget_pid(name)
-            elif self.registry.get_worker(name, self.reg[name][0]) is None:
-                # The registry dropped the pid entry (offline, unseen 30 min); the oracle's
-                # listing outlives it, so replies and replays must register it afresh.
-                self._forget_pid(name)
-
-    def _forget_pid(self, name: str) -> None:
-        """The registry dropped the node's pid entry: a later reply registers it afresh."""
-        dropped = self.reg.pop(name, None)
-        if dropped is not None:
-            self.seen_ids.discard((name, dropped[0]))
+                del self.reg[name]
 
     # --- refresh and evaluation ---------------------------------------------
 
