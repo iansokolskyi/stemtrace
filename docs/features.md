@@ -72,6 +72,8 @@ pages work even if the server missed `worker_ready` events.
   seconds of a successful background inspect doesn't inspect again. Each call waits 0.5 s for
   replies. A trigger that arrives while an inspect runs, or inside the 2 seconds, causes one more
   inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
+  The first unanswered `stats()` call for a worker also causes one more inspect when the
+  interval ends (see [No workers online](#no-workers-online)).
 - A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
   (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
   inspect that the server sent for its `worker_ready` goes unanswered) is owed an inspect at 2, 6,
@@ -426,14 +428,31 @@ with evidence** when all of these hold:
 
 1. Some worker has answered an `inspect` call since the server started, which shows that the
    server can hear workers.
-2. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
-   it returned without a transport error; an empty reply counts.
-3. The worker didn't answer that call.
+2. Two `inspect` `stats()` calls in a row completed after the worker's last sign of life, at
+   least 2 seconds apart on the server's monotonic clock. Completed means a call returned
+   without a transport error; an empty reply counts. A call that completes less than 2 seconds
+   after the previous counted one (back-to-back page loads) doesn't add a miss.
+3. The worker didn't answer either call. Any answer (`stats()` or ping) starts the count over.
+   A `worker_ready` or task event stamped after a miss moves the worker's last sign of life past
+   it and drops that miss. A replayed event stamped earlier drops nothing.
 4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
    minutes old.
 
 A completed call counts only once the server has applied its answers, so a request that arrives
-while a refresh is running doesn't see a healthy fleet as silent. Without a broker URL, or while
+while a refresh is running doesn't see a healthy fleet as silent. One missed call isn't
+evidence: replies get lost now and then, so a healthy idle worker misses a call from time to
+time. When a call is the first miss of a worker, the server runs one more `inspect` when the
+2-second interval ends, with no request needed. A killed fleet therefore gives the item about
+one interval plus one `inspect` after the first unanswered call, when no failure backoff is in
+effect (after failures, the confirm waits for the backoff, up to 60 seconds).
+
+A worker owes at most one confirm until it answers an `inspect` call or starts again (a
+`worker_ready` for its nodename, or an event that revives it after a reported stop): other events
+and later misses don't owe another. A call that runs as a confirm never owes a confirm itself, even when a new
+nodename joined at the same time, so a fleet of any size costs at most one confirm per
+non-confirm call. Two misses counted while a worker was fresh become evidence once it passes
+the 3-minute window with no sign of life, without a new call; a page load refreshes first, so
+a live worker answers and clears them before the page shows the item. Without a broker URL, or while
 the broker can't be reached, no call completes, so silence is never evidence and only a
 reported stop makes a worker offline. The item doesn't use `authority_window`, and it doesn't
 need a trusted registry: it works with or without a broker URL.
@@ -449,8 +468,13 @@ completed since) is remembered until a completed call it doesn't answer proves i
   worker, it can't tell an empty fleet from one it hasn't heard from.
 - **A busy worker can look silent.** A worker that can't answer `inspect` (for example, a solo
   pool running one task for more than 3 minutes, which sends no events) is silent with
-  evidence once a call completes. If it is the only worker, the item is a false alert until it
-  answers or sends an event.
+  evidence once two calls in a row complete without its answer. If it is the only worker, the
+  item is a false alert until it answers or sends an event.
+- **Two missed calls in a row still read as silent.** The rule assumes replies are lost
+  independently. A pause longer than the 2-second interval (a garbage collection pause, a
+  pub/sub resubscribe) that eats two calls at least 2 seconds apart reads as offline until the
+  next answered call. A degraded broker link that makes `stats()` return an empty reply for
+  every worker gives a false item once the fleet is idle for more than 3 minutes.
 - **Without a broker URL, a lost worker can hide a later stop.** The 30-minute cleanup keeps a
   worker it removed without proof that it stopped, because silence alone isn't evidence. Without
   a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
