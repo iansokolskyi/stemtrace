@@ -167,13 +167,23 @@ export function barOf(node: GraphNode): RawBar | null {
   }
 }
 
+/** The least of `value` over `items`; reduce, since a spread of 200k items overflows the call. */
+export function minOf<T>(items: T[], value: (item: T) => number): number {
+  return items.reduce((least, item) => Math.min(least, value(item)), Number.POSITIVE_INFINITY)
+}
+
+/** The greatest of `value` over `items` (see `minOf`). */
+export function maxOf<T>(items: T[], value: (item: T) => number): number {
+  return items.reduce((most, item) => Math.max(most, value(item)), Number.NEGATIVE_INFINITY)
+}
+
 /** The bar of a "+N more" row: from the first hidden start to the last hidden end. */
 function aggregate(bars: RawBar[]): RawBar | null {
   if (bars.length === 0) return null
-  const from = Math.min(...bars.map((bar) => bar.from))
+  const from = minOf(bars, (bar) => bar.from)
   const runs = bars.filter((bar) => bar.hasRun)
   const open = bars.some((bar) => bar.end === null && (runs.length === 0 || bar.hasRun))
-  const end = open ? null : Math.max(...(runs.length > 0 ? runs : bars).map((bar) => bar.end ?? 0))
+  const end = open ? null : maxOf(runs.length > 0 ? runs : bars, (bar) => bar.end ?? 0)
   if (runs.length === 0) {
     return {
       from,
@@ -184,7 +194,7 @@ function aggregate(bars: RawBar[]): RawBar | null {
       hasRun: false,
     }
   }
-  const start = Math.min(...runs.map((bar) => bar.runFrom))
+  const start = minOf(runs, (bar) => bar.runFrom)
   return { from, scheduledTo: from, leadTo: start, runFrom: start, end, hasRun: true }
 }
 
@@ -387,8 +397,8 @@ export function buildTimeline(
       ends: new Map(),
     }
   }
-  const t0 = Math.min(...bars.map((bar) => bar.from))
-  const settledEnd = Math.max(...bars.map((bar) => (bar.end === null ? bar.runFrom : bar.end)))
+  const t0 = minOf(bars, (bar) => bar.from)
+  const settledEnd = maxOf(bars, (bar) => (bar.end === null ? bar.runFrom : bar.end))
   // An open bar runs to now, but not past settledEnd plus a cap: one orphaned task, or a browser
   // clock far ahead, must not squash the finished work
   const anyOpen = bars.some((bar) => bar.end === null) && Number.isFinite(now)

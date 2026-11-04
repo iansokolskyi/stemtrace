@@ -9,7 +9,7 @@ import { firstFailure, summarizeFlow } from './flowFacts'
 import { Gantt } from './Gantt'
 import { Inspector } from './Inspector'
 import { layoutFlow } from './layoutFlow'
-import { buildTimeline } from './timeline'
+import { buildTimeline, maxOf, minOf } from './timeline'
 
 /** Zoom steps above Fit (natural size): 1.0 to 1.4 by 0.2, as the prototype. */
 const ZOOM_STEP = 0.2
@@ -150,10 +150,10 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     if (!before || !box || locked) return
     const added = [...ids].filter((id) => !before.has(id)).flatMap((id) => rectOf(id) ?? [])
     if (added.length === 0) return
-    const left = Math.min(...added.map((rect) => rect.x)) * scale
-    const top = Math.min(...added.map((rect) => rect.y)) * scale
-    const right = Math.max(...added.map((rect) => rect.x + rect.w)) * scale
-    const bottom = Math.max(...added.map((rect) => rect.y + rect.h)) * scale
+    const left = minOf(added, (rect) => rect.x) * scale
+    const top = minOf(added, (rect) => rect.y) * scale
+    const right = maxOf(added, (rect) => rect.x + rect.w) * scale
+    const bottom = maxOf(added, (rect) => rect.y + rect.h) * scale
     const margin = 16
     let nextLeft = box.scrollLeft
     let nextTop = box.scrollTop

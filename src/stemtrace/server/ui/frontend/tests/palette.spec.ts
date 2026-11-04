@@ -346,19 +346,84 @@ test.describe('lookups and failures', () => {
     })
   })
 
-  test('two failed sources read "a and b"', async ({ page }) => {
+  test('failed sources read "a and b" and "a, b and c"', async ({ page }) => {
     const boom = { status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }
     await page.route(/\/api\/graphs/, (route) => route.fulfill(boom))
     await page.route(/\/api\/tasks\/registry/, (route) => route.fulfill(boom))
     await page.goto('/executions')
+    // The shortcut listener mounts with the frame: wait for the page before pressing
+    await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
     await openPalette(page)
     await page.keyboard.type('zzzqqq')
     await expect(dialog(page).getByRole('status')).toHaveText(
       "Couldn't load task names and flows",
-      {
-        timeout: 2_000,
-      },
+      { timeout: 2_000 },
     )
+  })
+
+  test('three failed sources read "a, b and c"', async ({ page }) => {
+    const boom = { status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }
+    await page.route(/\/api\/graphs/, (route) => route.fulfill(boom))
+    await page.route(/\/api\/tasks\/registry/, (route) => route.fulfill(boom))
+    await page.route(/\/api\/workers(\?|$)/, (route) => route.fulfill(boom))
+    await page.goto('/executions')
+    await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
+    await openPalette(page)
+    await page.keyboard.type('zzzqqq')
+    await expect(dialog(page).getByRole('status')).toHaveText(
+      "Couldn't load task names, flows and workers",
+      { timeout: 2_000 },
+    )
+  })
+
+  test('a refresh that fails under a list already loaded is not a failed source', async ({
+    page,
+  }) => {
+    await page.clock.install()
+    await loadPage(page)
+    await openPalette(page)
+    await expect(options(page).first()).toBeVisible()
+    await page.route(/\/api\/graphs/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await page.clock.runFor(31_000)
+    await page.keyboard.type('zzzqqq')
+    await expect(dialog(page).getByRole('status')).toHaveText('No results for “zzzqqq”')
+  })
+
+  test('Enter on a selected row opens it when the ID lookup finds nothing', async ({ page }) => {
+    // A hex hostname has a task-ID shape: the lookup runs, 404s, and the worker row stays selected
+    mockApi.setWorkers([worker('celery@3f4e5d6c7b8a', 'online')])
+    await page.route(/\/api\/tasks\/3f4e5d6c7b8a$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await route.fallback()
+    })
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('3f4e5d6c7b8a')
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(/\/workers\/celery(%40|@)3f4e5d6c7b8a$/)
+  })
+
+  test('a row arrowed to during the wait is the one Enter opens', async ({ page }) => {
+    mockApi.setWorkers([
+      worker('celery@deadbeef01', 'online'),
+      worker('celery@deadbeef02', 'online'),
+    ])
+    await page.route(/\/api\/tasks\/deadbeef0$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await route.fallback()
+    })
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('deadbeef0')
+    await expect(options(page)).toHaveCount(2)
+    await page.keyboard.press('ArrowDown')
+    const second = options(page).nth(1)
+    await expect(second).toHaveAttribute('aria-selected', 'true')
+    const hostname = (await second.locator('span').first().innerText()).trim()
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(new RegExp(`/workers/${hostname.replace('@', '(%40|@)')}$`))
   })
 
   test('a task-ID lookup that fails with a server error says so, not "No results"', async ({
@@ -392,6 +457,24 @@ test.describe('events and names', () => {
     await page.keyboard.press('Control+k')
     await expect(box(page)).toBeFocused()
     expect(errors).toEqual([])
+  })
+
+  test('an Enter that commits a WebKit composition (keyCode 229) is left to the IME', async ({
+    page,
+  }) => {
+    await loadPage(page)
+    await openPalette(page)
+    const prevented = await box(page).evaluate((input) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        keyCode: 229,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    expect(prevented).toBe(false)
   })
 
   test('an Enter that commits an IME composition is left to the IME', async ({ page }) => {

@@ -125,10 +125,11 @@ export function useAnomalyBadge() {
 }
 
 /** The fleet item alone, for when the capped list does not hold it. */
-export function useFleetAnomaly(enabled: boolean, { refresh = true }: { refresh?: boolean } = {}) {
+export function useFleetAnomaly(enabled: boolean) {
   return useQuery<AnomalyListResponse>({
-    queryKey: ['anomalies', 'fleet', refresh],
-    queryFn: () => fetchAnomalies({ kind: 'no_workers_online', refresh }),
+    queryKey: ['anomalies', 'fleet'],
+    // refresh=false: the list request that found the fleet item missing already asked the workers
+    queryFn: () => fetchAnomalies({ kind: 'no_workers_online', refresh: false }),
     enabled,
     refetchInterval: pollUnlessMissing,
     retry: false,

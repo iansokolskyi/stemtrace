@@ -18,6 +18,16 @@ import { type PaletteItem, type PaletteKind, paletteItems, TASK_ID_SHAPE } from 
 /** How long the query rests before a task ID is looked up, so typing sends one request. */
 const LOOKUP_DELAY_MS = 250
 
+/** A deferred Enter with no row selected yet: only a task row can answer it. */
+const PENDING_ENTER: PaletteItem = {
+  key: 'pending',
+  kind: 'name',
+  group: '',
+  id: '',
+  label: '',
+  desc: '',
+}
+
 /** The server's task IDs are lower-case and its lookup is case-sensitive: retry once lower-case. */
 async function lookupTask(id: string): ReturnType<typeof fetchTask> {
   try {
@@ -111,14 +121,15 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   )
   const optionId = (index: number) => `${id}-option-${index}`
 
-  // Enter pressed while the ID lookup is still out: act on the task row when it lands
-  const enterWaiting = useRef(false)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `choose` only reads values already listed here
+  // An Enter on the top row while the ID lookup is still out: when it ends, open the task row
+  // if one landed, else the row that was selected at the press
+  const enterWaiting = useRef<PaletteItem | null>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect runs this render's closure, so `choose` and `items` are current; it fires only when the wait ends or the rows change
   useEffect(() => {
-    if (!enterWaiting.current || waitingForId) return
-    enterWaiting.current = false
-    const found = items.find((item) => item.kind === 'task')
-    if (found) choose(found)
+    const pressed = enterWaiting.current
+    if (!pressed || waitingForId) return
+    enterWaiting.current = null
+    choose(items.find((item) => item.kind === 'task') ?? pressed)
   }, [waitingForId, items])
 
   function choose(item: PaletteItem | undefined): void {
@@ -155,9 +166,14 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
       document.getElementById(optionId(next))?.scrollIntoView({ block: 'nearest' })
     } else if (event.key === 'Enter') {
       // An Enter that commits an IME composition belongs to the IME
-      if (event.nativeEvent.isComposing) return
+      // (WebKit sends that Enter with isComposing already false, but keyCode 229)
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
       event.preventDefault()
-      if (waitingForId) enterWaiting.current = true
+      // Only the top row can be displaced by the task row the lookup may add on top; a row the
+      // reader moved to, or any row once a task row is there, is acted on now
+      const defer = waitingForId && selected === 0 && !items.some((item) => item.kind === 'task')
+      if (defer && items[selected]) enterWaiting.current = items[selected]
+      else if (defer) enterWaiting.current = PENDING_ENTER
       else choose(items[selected])
     } else if (event.key === 'Tab') {
       // The dialog holds focus: the only stop is the search box
@@ -178,9 +194,10 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
 
   const loading = names.isPending || workers.isPending || flows.isPending
   const failed = [
-    names.isError && 'task names',
-    flows.isError && 'flows',
-    workers.isError && 'workers',
+    // A refetch that fails under data already shown is not a source that did not load
+    names.isError && !names.data && 'task names',
+    flows.isError && !flows.data && 'flows',
+    workers.isError && !workers.data && 'workers',
     lookupFailed && 'that task ID',
   ].filter(Boolean)
   let emptyText = ''
@@ -227,7 +244,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
           value={query}
           onChange={(event) => {
             setQuery(event.target.value)
-            enterWaiting.current = false
+            enterWaiting.current = null
             setSelectedKey(null)
           }}
           className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-sm text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none!"

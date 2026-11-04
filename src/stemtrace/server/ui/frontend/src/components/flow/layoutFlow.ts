@@ -302,7 +302,7 @@ export function layoutFlow(
       if (seen.has(current)) continue
       seen.add(current)
       if (isFailedState(nodes[current].state)) found = true
-      else stack.push(...childrenOf(current))
+      else for (const child of childrenOf(current)) stack.push(child) // not a spread: 200k children
     }
     failedDescendants.set(id, found)
     return found
