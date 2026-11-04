@@ -520,7 +520,7 @@ class WorkerRegistry:
         worker_ready was missed. Hold the lock.
         """
         newest = self._workers.get(self._newest_by_node.get(hostname, ""))
-        if newest is None or newest.shutdown_reported or newest.superseded:
+        if newest is None or newest.shutdown_reported:
             return None
         return newest if stopped >= ensure_tz_aware(newest.registered_at) else None
 
