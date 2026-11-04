@@ -678,15 +678,6 @@ class _InspectRefresher:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(_resolve_waiter, future)
 
-    def _run_flight(
-        self, worker_registry: WorkerRegistry, broker_url: str
-    ) -> frozenset[str]:
-        """Run the attempt the caller holds the lock for; always ends the flight."""
-        try:
-            return self._inspect_and_apply(worker_registry, broker_url)
-        finally:
-            self._end_flight()
-
     def _start_or_join(self) -> asyncio.Future[None] | bool:
         """Start a flight (True), join the one running (its future), or skip (False)."""
         with self._waiters_lock:
@@ -724,21 +715,14 @@ class _InspectRefresher:
             return
         if not started:
             return
-        dispatched = False
-
-        def attempt() -> frozenset[str]:
-            """Run the attempt on the pool thread, noting that it started."""
-            nonlocal dispatched
-            dispatched = True
-            return self._run_flight(worker_registry, broker_url)
-
         try:
-            await run_in_threadpool(attempt)
-        except BaseException:
-            # The thread never started: nothing else would release the flight.
-            if not dispatched:
-                self._end_flight()
-            raise
+            # starlette 1.7.0 run_in_threadpool -> anyio 4.14.2 run_sync defaults to
+            # abandon_on_cancel=False: the thread has finished by the time this returns or raises, so releasing is safe.
+            await run_in_threadpool(
+                self._inspect_and_apply, worker_registry, broker_url
+            )
+        finally:
+            self._end_flight()
 
 
 def _resolve_waiter(future: asyncio.Future[None]) -> None:
