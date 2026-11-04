@@ -72,6 +72,8 @@ pages work even if the server missed `worker_ready` events.
   seconds of a successful background inspect doesn't inspect again. Each call waits 0.5 s for
   replies. A trigger that arrives while an inspect runs, or inside the 2 seconds, causes one more
   inspect when the interval ends, and a storm of new nodenames causes one, not one per nodename.
+  The first unanswered `stats()` call for a worker also causes one more inspect when the
+  interval ends (see [No workers online](#no-workers-online)).
 - A new nodename stays pending until an inspect reply names it. A worker that doesn't answer yet
   (for example, a slow `worker_ready` receiver keeps its event loop from starting, and the
   inspect that the server sent for its `worker_ready` goes unanswered) is owed an inspect at 2, 6,
@@ -81,10 +83,13 @@ pages work even if the server missed `worker_ready` events.
   within one interval, and the owed times of the first don't move. A nodename that never answers
   (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
   until the worker joins again. Until a reply names a worker, the server may show it offline.
-- With a down broker, an attempt can take about 18 s (see
-  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented))
-  and a pending nodename is owed one inspect plus at most five more. Stopping the server waits up to
-  2 s for a running attempt. The background inspect does nothing without a broker URL.
+- With a down or silent broker, an attempt ends within about 5 s (see
+  [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)).
+  A failed attempt counts toward pacing: the next one, from a request or the background
+  inspect, waits 2, 4, 8 and so on up to 60 s, and a success resets that. A worker nodename
+  the server learns for the first time clears the wait, so its first inspect runs within one
+  2-second interval. Stopping the server waits up to 2 s for a running attempt. The background
+  inspect does nothing without a broker URL.
   Limitations: with `create_router()` alone, the app's startup event starts the first inspect, so
   an app that sets its own `lifespan` gets inspects only when a worker joins. A nodename whose
   task events arrive but that never registers triggers one inspect, not one per event.
@@ -311,14 +316,16 @@ appears as time passes even when no event arrives. A task has at most one flag, 
 task's latest attempt counts. A task that has ended, and the GROUP and CHORD nodes of a graph,
 never has one.
 
-- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=` lists the flagged items, oldest
+- `GET /api/anomalies?kind=&hostname=&name=&limit=&offset=&refresh=` lists the flagged items, oldest
   `since` first, then by task ID, then by name (an item without a task ID or a name comes
   last). `kind` is `stuck`, `interrupted`, `unregistered` or `no_workers_online`; any other value is
   a `422`. `hostname` and `name` match exactly, so an item without a hostname or
   name never matches that filter. `limit` is 1 to 500 (default 100). `counts` has a number
   for every kind, 0 included, and ignores `kind`, `hostname` and `name`, so it suits a badge;
   `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
-  is the time the server judged at, and every `since` is in UTC.
+  is the time the server judged at, and every `since` is in UTC. `refresh` (default `true`)
+  asks the workers first, as `/api/workers` does; `refresh=false` judges on the registry as it
+  is, without contacting the broker.
 - Stuck and interrupted are one item per task. Unregistered is one item per task name, with
   `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
   name with 40 waiting tasks counts once. `no_workers_online` is at most one item for the whole
@@ -382,7 +389,7 @@ trusted when either of these holds:
 
 - The last `inspect` reply that listed the tasks of every worker that answered arrived at most
   `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
-  seconds. A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  seconds (unless `refresh=false`; after a failed ask the wait grows to 60 s). A reply with only a ping, an empty reply, a worker that answered `stats()` but not
   `registered()`, or a reply that a worker event overtook doesn't count.
 - No broker URL is configured, so the server has only worker events, and at least one live
   worker has registered tasks.
@@ -421,14 +428,31 @@ with evidence** when all of these hold:
 
 1. Some worker has answered an `inspect` call since the server started, which shows that the
    server can hear workers.
-2. An `inspect` `stats()` call completed after the worker's last sign of life. Completed means
-   it returned without a transport error; an empty reply counts.
-3. The worker didn't answer that call.
+2. Two `inspect` `stats()` calls in a row completed after the worker's last sign of life, at
+   least 2 seconds apart on the server's monotonic clock. Completed means a call returned
+   without a transport error; an empty reply counts. A call that completes less than 2 seconds
+   after the previous counted one (back-to-back page loads) doesn't add a miss.
+3. The worker didn't answer either call. Any answer (`stats()` or ping) starts the count over.
+   A `worker_ready` or task event stamped after a miss moves the worker's last sign of life past
+   it and drops that miss. A replayed event stamped earlier drops nothing.
 4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
    minutes old.
 
 A completed call counts only once the server has applied its answers, so a request that arrives
-while a refresh is running doesn't see a healthy fleet as silent. Without a broker URL, or while
+while a refresh is running doesn't see a healthy fleet as silent. One missed call isn't
+evidence: replies get lost now and then, so a healthy idle worker misses a call from time to
+time. When a call is the first miss of a worker, the server runs one more `inspect` when the
+2-second interval ends, with no request needed. A killed fleet therefore gives the item about
+one interval plus one `inspect` after the first unanswered call, when no failure backoff is in
+effect (after failures, the confirm waits for the backoff, up to 60 seconds).
+
+A worker owes at most one confirm until it answers an `inspect` call or starts again (a
+`worker_ready` for its nodename, or an event that revives it after a reported stop): other events
+and later misses don't owe another. A call that runs as a confirm never owes a confirm itself, even when a new
+nodename joined at the same time, so a fleet of any size costs at most one confirm per
+non-confirm call. Two misses counted while a worker was fresh become evidence once it passes
+the 3-minute window with no sign of life, without a new call; a page load refreshes first, so
+a live worker answers and clears them before the page shows the item. Without a broker URL, or while
 the broker can't be reached, no call completes, so silence is never evidence and only a
 reported stop makes a worker offline. The item doesn't use `authority_window`, and it doesn't
 need a trusted registry: it works with or without a broker URL.
@@ -444,8 +468,13 @@ completed since) is remembered until a completed call it doesn't answer proves i
   worker, it can't tell an empty fleet from one it hasn't heard from.
 - **A busy worker can look silent.** A worker that can't answer `inspect` (for example, a solo
   pool running one task for more than 3 minutes, which sends no events) is silent with
-  evidence once a call completes. If it is the only worker, the item is a false alert until it
-  answers or sends an event.
+  evidence once two calls in a row complete without its answer. If it is the only worker, the
+  item is a false alert until it answers or sends an event.
+- **Two missed calls in a row still read as silent.** The rule assumes replies are lost
+  independently. A pause longer than the 2-second interval (a garbage collection pause, a
+  pub/sub resubscribe) that eats two calls at least 2 seconds apart reads as offline until the
+  next answered call. A degraded broker link that makes `stats()` return an empty reply for
+  every worker gives a false item once the fleet is idle for more than 3 minutes.
 - **Without a broker URL, a lost worker can hide a later stop.** The 30-minute cleanup keeps a
   worker it removed without proof that it stopped, because silence alone isn't evidence. Without
   a broker URL, no `inspect` call completes to prove it, so after a worker was lost to a
