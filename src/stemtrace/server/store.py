@@ -343,6 +343,10 @@ class WorkerRegistry:
         # removed by the cleanup with no evidence they stopped. Nodename ->
         # last_seen. Bounded.
         self._unlisted: dict[str, datetime] = {}
+        # Nodename -> newest task-event time (the worker's clock) of an unlisted
+        # nodename. A stop is compared with this, never with ``_unlisted``, whose
+        # value a ping moves to server time (D4e reading 12).
+        self._event_at: dict[str, datetime] = {}
         self._max_unlisted = max_unlisted
         # Nodename -> time of its latest reported stop (the event's clock), so
         # a task's last events, stamped before it and arriving after, don't
@@ -402,6 +406,9 @@ class WorkerRegistry:
             ready = self._workers[f"{hostname}:{pid}"]
             stamp = ensure_tz_aware(event_timestamp or ready.last_seen)
             ready.ready_at = max(ready.ready_at or stamp, stamp)
+            self._event_at.pop(
+                hostname, None
+            )  # a new process: older events aren't its own
             self._event_generation[hostname] = (
                 self._event_generation.get(hostname, 0) + 1
             )
@@ -513,9 +520,10 @@ class WorkerRegistry:
                 worker.shutdown_reported = True
             # A stop stamped before the nodename's last event is a late one: it leaves
             # stop memory but not the liveness the event gave (D4e reading 10).
-            last_event = self._unlisted.get(hostname)
-            if last_event is not None and stopped >= ensure_tz_aware(last_event):
-                del self._unlisted[hostname]
+            last_event = self._event_at.get(hostname)
+            if last_event is None or stopped >= last_event:
+                self._unlisted.pop(hostname, None)
+                self._event_at.pop(hostname, None)
             previous = self._stopped_at.get(hostname)
             if previous is not None:
                 stopped = max(stopped, previous[0])
@@ -569,6 +577,9 @@ class WorkerRegistry:
             worker = self._workers.get(live_id) if live_id else None
             current = now or _utcnow()
             seen_at = min(ensure_tz_aware(timestamp), current)
+            self._event_at[hostname] = max(
+                seen_at, self._event_at.get(hostname, seen_at)
+            )
             stop = self._stopped_at.get(hostname)
             after_stop = stop is not None and ensure_tz_aware(timestamp) > stop[0]
             announce = False
@@ -1044,6 +1055,12 @@ class WorkerRegistry:
                 if self._newest_by_node.get(worker.hostname) == worker_id:
                     del self._newest_by_node[worker.hostname]
                     self._keep_if_unproven(worker, stale_cutoff)
+            # Event stamps only matter for a nodename that is still live.
+            self._event_at = {
+                n: t
+                for n, t in self._event_at.items()
+                if n in self._newest_by_node or n in self._unlisted
+            }
 
     def _keep_if_unproven(self, worker: WorkerInfo, stale_cutoff: datetime) -> None:
         """Remember a removed worker that no stop or silence evidence closed.

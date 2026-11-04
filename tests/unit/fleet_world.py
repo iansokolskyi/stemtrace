@@ -51,7 +51,7 @@ ROWS = (
     "28y",
     "28y_stats",
     "28z",
-    "28r",
+    "replay_ready",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -171,6 +171,9 @@ class World:
         # Truth-side logs for the two direction checks.
         self.reported_stopped: set[str] = set()
         self.last_event: dict[str, datetime] = {}
+        # Newest task-event stamp a stop is compared with (D4e reading 12): dropped by a stop
+        # stamped at or after it, by a worker_ready, and with the oracle's node.
+        self.guard_event: dict[str, datetime] = {}
         self.answered_latest: set[str] = set()
         self.last_late_event: datetime | None = None
         self.last_stopped_unlisted: bool = False
@@ -291,6 +294,7 @@ class World:
             self.nodes[name] = ONode(False, self.clock.now, True)
             self.ever_seen = True
             self.last_event.pop(name, None)
+            self.guard_event.pop(name, None)
 
     def stop(self, name: str) -> None:
         """A clean stop: ``worker_shutdown`` (or ``worker_terminating``) is reported."""
@@ -301,6 +305,7 @@ class World:
         self.truth[name] = "stopped"
         self.registry.mark_shutdown(name, self.pid[name], self.clock.now)
         self.stopped_at[name] = self.stop_ts[name] = self.clock.now
+        self.guard_event.pop(name, None)  # a stop stamped now is at or after any event
         self.generation[name] += 1
         self.reported_stopped.add(name)
         self.rev_listed.discard(name)
@@ -337,7 +342,12 @@ class World:
             # registry, which a stop of this stamp would end (reading 1): skip it.
             if name in self.reg and name not in self.rev_listed:
                 return
-            stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
+            # Compared with the newest task event (the worker's clock), not with a ping,
+            # which moves ``last_seen`` to server time (D4e reading 12).
+            event = self.guard_event.get(name)
+            if event is None:
+                return
+            stop = event - timedelta(seconds=self.rng.choice([1, 30, 600]))
             self.reached["28y" if name in self.rev_listed else "28z"] += 1
         else:
             listed = self.reg.get(name)
@@ -359,11 +369,18 @@ class World:
                     1  # only the newest worker_ready protects the pid
                 )
         self.registry.mark_shutdown(name, pid, stop)
+        self._drop_guard(name, stop)
         self.generation[name] += 1
         node.misses = []
         self.confirm_spent.discard(name)
         self.stopped_at[name] = self.clock.now
         self.last_stopped_unlisted = False
+
+    def _drop_guard(self, name: str, stop: datetime) -> None:
+        """The registry forgets the event stamp of a nodename a stop at or after it ended."""
+        seen = self.guard_event.get(name)
+        if seen is None or stop >= seen:
+            self.guard_event.pop(name, None)
 
     def _stats_only_exact_stop(
         self, name: str, node: ONode, pid: int, stop: datetime
@@ -372,6 +389,7 @@ class World:
         # Never earlier than an event already received (reordering the spec doesn't define).
         stop = max(stop, self.last_event.get(name, stop))
         self.registry.mark_shutdown(name, pid, stop)
+        self._drop_guard(name, stop)
         self.stopped_at[name] = self.clock.now
         self.stop_ts[name] = stop
         self.generation[name] += 1
@@ -409,7 +427,8 @@ class World:
         self.reported_stopped.discard(name)
         self.stopped_at.pop(name, None)
         self.last_event.pop(name, None)
-        self.reached["28r"] += 1
+        self.guard_event.pop(name, None)  # a worker_ready starts a new process
+        self.reached["replay_ready"] += 1
 
     def delayed_stop(self, name: str) -> None:
         """A clean stop of an unannounced restart, stamped between the listed pid's registration and now.
@@ -433,6 +452,7 @@ class World:
         stop = max(stop, self.last_event.get(name, stop))
         self.truth[name] = "stopped"
         self.registry.mark_shutdown(name, 1000 + self.rng.randrange(1000), stop)
+        self._drop_guard(name, stop)
         self.stopped_at[name] = now
         self.stop_ts[name] = stop
         self.generation[name] += 1
@@ -463,7 +483,7 @@ class World:
         now = self.clock.now
         self.registry.mark_seen(name, now)
         self.ever_seen = True
-        self.last_event[name] = now
+        self.last_event[name] = self.guard_event[name] = now
         node = self.nodes.get(name)
         if node is None:
             self.nodes[name] = ONode(False, now, False)
@@ -530,6 +550,9 @@ class World:
                 del self.nodes[name]
         # The registry deletes a worker entry not seen for the cleanup time, whether the
         # oracle lists the name or not; a later reply registers it afresh.
+        for name in list(self.guard_event):
+            if name not in self.nodes:
+                del self.guard_event[name]
         for name in list(self.reg):
             node = self.nodes.get(name)
             if node is None or (not node.listed and node.last_seen < cutoff):
