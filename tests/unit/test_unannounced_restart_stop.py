@@ -102,8 +102,63 @@ def test_row28v_a_stats_reply_naming_the_old_pid_registers_it_again() -> None:
     assert fleet_items(report_at(registry, T0 + MINUTE)) == []
 
 
-# Seeds that failed on a17d2d3 with the unannounced-restart state on (34-111), plus the ones backlog 19a names.
-REGRESSION_SEEDS = [34, 51, 65, 74, 78, 89, 111, 206, 303, 422, 1002, 1127, 1322, 1674]
+# --- Row 28w: "registration" is the newest worker_ready stamp (D4e reading 5) -----
+
+
+def pids_state(registry: WorkerRegistry) -> list[tuple[int, bool]]:
+    """(pid, stopped) of every listed worker."""
+    return [(w.pid, w.shutdown_reported) for w in registry.get_all_workers()]
+
+
+def test_row28w_a_reannounced_same_pid_moves_the_stamp_so_an_older_stop_is_ignored() -> (
+    None
+):
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0 - 30 * MINUTE)
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0)
+
+    registry.mark_shutdown(SOLO, 8, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, False)]
+    assert fleet_items(report_at(registry, T0)) == []
+
+
+def test_row28w_a_replayed_older_ready_does_not_move_the_stamp_back() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0)
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0 - 30 * MINUTE)
+
+    registry.mark_shutdown(SOLO, 8, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, False)]
+
+
+def test_row28w_stats_replies_keep_the_first_registration_time() -> None:
+    registry = WorkerRegistry()
+    for at in (T0 - 30 * MINUTE, T0):
+        registry.apply_stats_reply(
+            registry.event_generations(), {SOLO: (7, ["app.known"])}, now=at
+        )
+
+    registry.mark_shutdown(SOLO, 8, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, True)]
+
+
+def test_row28w_a_stats_reply_after_a_ready_does_not_move_the_stamp() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0 - 30 * MINUTE)
+    registry.apply_stats_reply(
+        registry.event_generations(), {SOLO: (7, ["app.known"])}, now=T0
+    )
+
+    registry.mark_shutdown(SOLO, 8, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, True)]
+
+
+# Seeds that failed on a17d2d3 with the unannounced-restart state on.
+REGRESSION_SEEDS = [34, 51, 65, 74, 89, 111]
 
 
 @pytest.mark.parametrize("seed", REGRESSION_SEEDS)
