@@ -1730,6 +1730,7 @@ class TestStaleInspectReplyLosesToNewerEvents:
         }
 
 
+@pytest.mark.usefixtures("stop_probes")
 class TestInspectRateLimiting:
     """Tests for rate limiting and early-return branches in API refresh."""
 

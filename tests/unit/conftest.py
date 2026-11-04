@@ -1,8 +1,18 @@
 """Unit-test fixtures shared by every module under ``tests/unit``."""
 
+import threading
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 
+from stemtrace.server import inspect_probe
 from stemtrace.server.api import routes
+from stemtrace.server.inspect_probe import InspectProbe
+
+PROBE_THREAD_NAME = inspect_probe._THREAD_NAME
+# Bound on each cleanup stop() of a leaked probe.
+LEAK_GRACE_S = 2.0
 
 
 @pytest.fixture(autouse=True)
@@ -20,3 +30,40 @@ def _no_real_inspect_from_the_probe(
     monkeypatch.setattr(
         routes._InspectRefresher, "refresh_blocking", lambda _self: frozenset()
     )
+
+
+def _live_probe_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == PROBE_THREAD_NAME]
+
+
+@pytest.fixture(autouse=True)
+def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProbe]]:
+    """Record every probe a test creates, and fail the test if its thread outlives it.
+
+    A probe thread resolves ``routes._get_inspector``, ``routes._monotonic`` and
+    ``WorkerRegistry.apply_ping_reply`` when it runs, so one that outlives its
+    test consumes the next test's fakes. A test that starts one stops it, or
+    requests ``stop_probes``. A leaked probe is stopped here, then the test fails.
+    """
+    probes: list[InspectProbe] = []
+    original_init = InspectProbe.__init__
+
+    def recording_init(self: InspectProbe, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        probes.append(self)
+
+    monkeypatch.setattr(InspectProbe, "__init__", recording_init)
+    before = set(_live_probe_threads())
+    yield probes
+    leaked = [t for t in _live_probe_threads() if t not in before]
+    for probe in probes:
+        probe.stop(LEAK_GRACE_S)
+    assert not leaked, f"inspect probe thread(s) outlived the test: {leaked}"
+
+
+@pytest.fixture
+def stop_probes(inspect_probes: list[InspectProbe]) -> Iterator[None]:
+    """Stop every probe the test created when it ends, before the leak check."""
+    yield
+    for probe in inspect_probes:
+        probe.stop(LEAK_GRACE_S)

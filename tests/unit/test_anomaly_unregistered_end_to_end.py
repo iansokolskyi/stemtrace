@@ -26,6 +26,7 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
 from tests.unit.anomaly_api import ReplayTransport
 
+pytestmark = pytest.mark.usefixtures("stop_probes")
 DEADLINE_S = 10
 NODE = "celery@w1"
 BROKER = "redis://broker:6379/0"
