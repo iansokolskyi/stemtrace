@@ -174,6 +174,7 @@ class World:
         # stamp). The stamp is the newest worker_ready (a re-announce moves it); a stats
         # reply registers a new pid at its reply time and never moves it after that.
         self.reg: dict[str, tuple[int, datetime, datetime]] = {}
+        self.seen_ids: set[tuple[str, int]] = set()
         self.in_flight: Plan | None = None
         self.stage = ""
         self.killed_since_completion = False
@@ -217,10 +218,13 @@ class World:
         now = self.clock.now
         node = self.nodes.get(name)
         if with_pid:
-            listed = self.reg.get(name)
             # The pid the reply named when it was asked, not the one running now.
-            if pid is not None and (listed is None or listed[0] != pid):
+            # Only a pid the server never saw: for a known one the registry keeps its
+            # older registration, which the oracle can't tell from its own bookkeeping.
+            if pid is not None and (name, pid) not in self.seen_ids:
                 self.reg[name] = (pid, now, now)
+            if pid is not None:
+                self.seen_ids.add((name, pid))
             self.nodes[name] = ONode(False, now, True)
             self.stopped_at.pop(name, None)
             self.reported_stopped.discard(name)
@@ -272,6 +276,7 @@ class World:
             self.reported_stopped.discard(name)
             self.rev_listed.discard(name)
             self.stopped_at.pop(name, None)
+            self.seen_ids.add((name, self.pid[name]))
             listed = self.reg.get(name)
             first = (
                 listed[2] if listed and listed[0] == self.pid[name] else self.clock.now
