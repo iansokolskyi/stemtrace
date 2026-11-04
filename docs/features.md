@@ -99,6 +99,27 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- When a worker restarts under the same nodename and the server misses its `worker_ready`, the
+  later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
+  nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
+  latest `worker_ready`. A shutdown stamped before the listed pid's latest `worker_ready` is a
+  late stop of an older process and leaves the process online, whether it names a different pid
+  or that pid's own number (a container that reuses pids). For a nodename the server knows only
+  from task events, or one that task events brought back after a stop, a shutdown stamped before
+  its latest task event leaves the nodename online. Pings and inspect replies don't count as
+  task events for this comparison. A late shutdown still counts as a worker event. A pid the
+  server knows only from an inspect reply has no `worker_ready` to compare with, so any shutdown
+  that names it stops it. After a stop, a task event stamped later brings the nodename back, and
+  so does an inspect reply that names the pid (`stats()`). A ping reply never does.
+  Limitations: the comparison uses the worker's clock for the shutdown and its `worker_ready`
+  (for a pid known only from an inspect reply, the server's receive time). A worker clock ahead
+  of the server's can make an older shutdown count as newer and mark a live pid stopped; that
+  heals at its next task event or inspect reply. A worker clock that steps back across a restart
+  can make a real shutdown look older: the server then ignores it and shows the old pid online
+  until the stale window ends. For a listed pid, the comparison is with its latest `worker_ready`
+  only, not with its task events, so a late shutdown that arrives after a newer task event still
+  stops it. The outcome depends on arrival order and heals at the next task event or an inspect
+  reply that names the pid.
 - A worker is shown offline once 3 minutes pass without a sign of life from it: its
   `worker_ready`, an event from one of its tasks, or an inspect reply (the Workers page asks
   when it loads). The check runs as events arrive, so on a server that receives no events at
@@ -140,7 +161,9 @@ pages work even if the server missed `worker_ready` events.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and
-  offline on every refresh. Give each worker a unique nodename.
+  offline on every refresh. Give each worker a unique nodename. If one of them also misses its
+  `worker_ready`, its `worker_shutdown` marks the other as stopped until that one sends a later
+  task event or an inspect reply that names its pid.
 
 ## Ignored and rejected tasks
 
