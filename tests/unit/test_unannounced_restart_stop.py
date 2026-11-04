@@ -242,6 +242,43 @@ def test_row28z_a_late_stop_leaves_an_events_only_nodename_online() -> None:
     assert fleet_items(report_at(registry, T0)) == []
 
 
+# --- Reading 12: a ping never moves the stamp a stop is compared with ------------------
+
+
+def test_reading12_a_ping_does_not_make_a_real_stop_from_a_slow_clock_look_late() -> (
+    None
+):
+    registry = WorkerRegistry()
+    registry.mark_seen(SOLO, T0, now=T0)
+    registry.apply_ping_reply([SOLO], now=T0 + MINUTE)  # server time, 60 s later
+
+    # The worker's clock is 40 s behind the server's: its real stop is stamped T0+30s.
+    registry.mark_shutdown(SOLO, 7, T0 + timedelta(seconds=30), now=T0 + MINUTE)
+
+    assert fleet_items(report_at(registry, T0 + MINUTE)) == STOPPED
+
+
+def test_reading12_a_stop_before_the_last_event_still_leaves_a_ping_kept_nodename() -> (
+    None
+):
+    registry = WorkerRegistry()
+    registry.mark_seen(SOLO, T0, now=T0)
+    registry.apply_ping_reply([SOLO], now=T0 + MINUTE)
+
+    registry.mark_shutdown(SOLO, 7, T0 - MINUTE, now=T0 + MINUTE)
+
+    assert fleet_items(report_at(registry, T0 + MINUTE)) == []
+
+
+def test_reading12_a_nodename_known_only_from_pings_is_ended_by_any_stop() -> None:
+    registry = WorkerRegistry()
+    registry.apply_ping_reply([SOLO], now=T0)
+
+    registry.mark_shutdown(SOLO, 7, T0 - 10 * MINUTE, now=T0)
+
+    assert fleet_items(report_at(registry, T0)) == STOPPED
+
+
 # --- Reading 11: a stop naming a superseded pid ends only that entry ---------------------
 
 
