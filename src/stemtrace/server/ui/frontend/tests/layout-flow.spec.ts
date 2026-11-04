@@ -283,8 +283,8 @@ test.describe('layoutFlow: replace()', () => {
   })
 })
 
-// Rows of a collapsed group of 200,000: the container, the first three members and "+N more"
-const COLLAPSED_ROWS = 5
+// Rows of a collapsed group of 200,000: the first three members and "+N more" (the root has none)
+const COLLAPSED_ROWS = 4
 
 test.describe('layoutFlow: size', () => {
   test('lays out an expanded group of 200,000 members, above any call-argument limit', () => {
@@ -297,7 +297,7 @@ test.describe('layoutFlow: size', () => {
   })
 
   for (const [expanded, ROWS] of [
-    [true, 200_001],
+    [true, 200_000],
     [false, COLLAPSED_ROWS],
   ] as const) {
     test(`builds the timeline of a group of 200,000 members, ${expanded ? 'expanded' : 'collapsed'}`, () => {
@@ -331,7 +331,7 @@ test.describe('layoutFlow: fan-in', () => {
     const timeline = buildTimeline(graph, layout, 'g', Date.now())
 
     expect(performance.now() - started).toBeLessThan(10_000)
-    expect(timeline.rows).toHaveLength(members + 2)
+    expect(timeline.rows).toHaveLength(members + 1)
   })
 })
 
