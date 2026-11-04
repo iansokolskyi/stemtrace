@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import logging
@@ -567,6 +568,9 @@ _INSPECT_TIMEOUT_SECONDS = 0.5
 _INSPECT_BACKOFF_START_SECONDS = 2.0
 _INSPECT_BACKOFF_MAX_SECONDS = 60.0
 _INSPECT_FAILURES_MAX = 64
+# One attempt is bounded at about 5 s (D7a reading 1); the margin keeps a waiter
+# under the client's 10 s timeout. On expiry the request evaluates current state.
+_INSPECT_WAIT_SECONDS = 7.0
 
 
 class _InspectRefresher:
@@ -574,8 +578,8 @@ class _InspectRefresher:
 
     Runs at most one refresh at a time and at most one per
     ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
-    in progress, or one still paced out, returns at once instead of waiting.
-    A failed attempt counts too: the next waits 2, 4, 8 ... up to 60 s, and a
+    in progress waits for it (bounded, no thread held); one still paced out
+    returns at once. A failed attempt counts too: the next waits 2, 4, 8 ... up to 60 s, and a
     success resets that. The probe and every route read the same clock.
     """
 
@@ -586,6 +590,9 @@ class _InspectRefresher:
         self._worker_registry = worker_registry
         self._broker_url = broker_url
         self._lock = threading.Lock()
+        # Guards the in-flight check against the release, so a waiter can't miss it.
+        self._waiters_lock = threading.Lock()
+        self._waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = []
         self._pace_lock = threading.Lock()
         self._last_attempt: float = 0.0
         self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
@@ -659,27 +666,84 @@ class _InspectRefresher:
         try:
             return self._inspect_and_apply(worker_registry, broker_url)
         finally:
+            self._end_flight()
+
+    def _end_flight(self) -> None:
+        """Release the single-flight lock and wake every request waiting on it."""
+        with self._waiters_lock:
             self._lock.release()
+            waiters, self._waiters = self._waiters, []
+        for loop, future in waiters:
+            # A closed loop has no waiter left to wake.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_resolve_waiter, future)
+
+    def _run_flight(
+        self, worker_registry: WorkerRegistry, broker_url: str
+    ) -> frozenset[str]:
+        """Run the attempt the caller holds the lock for; always ends the flight."""
+        try:
+            return self._inspect_and_apply(worker_registry, broker_url)
+        finally:
+            self._end_flight()
+
+    def _start_or_join(self) -> asyncio.Future[None] | bool:
+        """Start a flight (True), join the one running (its future), or skip (False)."""
+        with self._waiters_lock:
+            if self._lock.locked():
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[None] = loop.create_future()
+                self._waiters.append((loop, future))
+                return future
+            if self._paced_out():
+                return False
+            return self._lock.acquire(blocking=False)
+
+    async def _wait_for_flight(self, future: asyncio.Future[None]) -> None:
+        """Wait for the attempt in flight, at most ``_INSPECT_WAIT_SECONDS``."""
+        try:
+            await asyncio.wait_for(future, _INSPECT_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.debug("Inspect still running; evaluating current state")
+        finally:
+            with self._waiters_lock, contextlib.suppress(ValueError):
+                self._waiters.remove((asyncio.get_running_loop(), future))
 
     async def maybe_refresh(self) -> None:
-        """Refresh the worker registry unless disabled, paced out, or in progress."""
+        """Refresh the worker registry unless disabled or paced out.
+
+        A refresh already in flight is waited for, never repeated.
+        """
         worker_registry = self._worker_registry
         broker_url = self._broker_url
         if worker_registry is None or broker_url is None:
             return
-        if self._paced_out():
+        started = self._start_or_join()
+        if isinstance(started, asyncio.Future):
+            await self._wait_for_flight(started)
             return
-        # Don't block requests waiting for an in-progress refresh.
-        if not self._lock.acquire(blocking=False):
+        if not started:
             return
+        dispatched = False
+
+        def attempt() -> frozenset[str]:
+            nonlocal dispatched
+            dispatched = True
+            return self._run_flight(worker_registry, broker_url)
+
         try:
-            if self._paced_out():
-                return
-            await run_in_threadpool(
-                self._inspect_and_apply, worker_registry, broker_url
-            )
-        finally:
-            self._lock.release()
+            await run_in_threadpool(attempt)
+        except BaseException:
+            # The thread never started: nothing else would release the flight.
+            if not dispatched:
+                self._end_flight()
+            raise
+
+
+def _resolve_waiter(future: asyncio.Future[None]) -> None:
+    """Wake a waiter unless it already timed out or was cancelled."""
+    if not future.done():
+        future.set_result(None)
 
 
 def _wire_inspect_probe(
