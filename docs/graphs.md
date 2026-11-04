@@ -49,6 +49,18 @@ batch_processor
 To label nodes with a task argument instead of the task name, see
 [Node names from task arguments](configuration.md#node-names-from-task-arguments).
 
+## Graph list time
+
+`GET /stemtrace/api/graphs` sorts and filters flows by the time of the whole flow, not of the root
+task. A flow's latest time is the newest `last_updated` over every task in it (chain links, group
+and chord members, callbacks, nested flows), so a flow whose root ended hours ago and whose child
+failed a minute ago is in `within=6h` and sorts first. Flows with the same latest time sort by
+root task ID.
+
+- `from_date` and `within` keep the flows whose latest time is at or after the bound.
+- `to_date` keeps the flows whose first event is at or before the end of that day.
+- Each graph's own `first_seen` and `last_updated` in the list still describe its root.
+
 ## Chord callbacks
 
 stemtrace draws a chord's callback, the task its body starts with, only when IDs in the events name it.
