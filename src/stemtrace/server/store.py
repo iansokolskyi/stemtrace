@@ -538,8 +538,6 @@ class WorkerRegistry:
             seen_at = min(ensure_tz_aware(timestamp), current)
             stop = self._stopped_at.get(hostname)
             after_stop = stop is not None and ensure_tz_aware(timestamp) > stop[0]
-            if after_stop:  # revived after its reported stop: a new process (reading 7)
-                self._confirm_spent.discard(hostname)
             announce = False
             if worker is None:
                 if stop is None or after_stop:

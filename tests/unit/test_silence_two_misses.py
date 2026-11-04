@@ -638,6 +638,21 @@ def test_row28s_registry_a_worker_ready_re_arms_and_an_ordinary_event_does_not()
     assert calls == [2]
 
 
+def test_row28s_an_event_that_revives_a_stopped_nodename_re_arms_through_the_stop() -> (
+    None
+):
+    """The stop already forgot the spent confirm, so the revival needs no code of its own."""
+    registry = idle_fleet(SOLO)
+    calls = count_first_misses(registry)
+    miss(registry, FIRST_MISS_AT)
+    registry.mark_shutdown(SOLO, 1, now=FIRST_MISS_AT + TWO_S)
+    revived_at = FIRST_MISS_AT + 10 * MINUTE
+    registry.mark_seen(SOLO, revived_at, now=revived_at)  # stamped after the stop
+    miss(registry, revived_at + TWO_S)
+
+    assert calls == [2]
+
+
 def test_reading1_a_confirm_that_finds_the_slot_busy_is_still_owed_as_a_confirm() -> (
     None
 ):
