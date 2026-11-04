@@ -8,6 +8,7 @@ reply describes the cluster as of the moment the call started. The probe's
 clock and wait are faked, so no test waits out the 2 s interval.
 """
 
+import itertools
 import threading
 import time
 from collections.abc import Iterator
@@ -407,7 +408,7 @@ def test_p8_a_worker_that_never_answers_is_retried_only_on_the_backoff_ladder(
             take(fleet.attempt_done)
 
     times = [t for t in fleet.stats_times if t >= joined_at]
-    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    gaps = [b - a for a, b in itertools.pairwise(times)]
     # The fake clock runs freely, so only the first gaps are read.
     assert gaps[:8] == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
 
