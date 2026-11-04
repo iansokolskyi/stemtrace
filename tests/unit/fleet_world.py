@@ -52,6 +52,7 @@ ROWS = (
     "28y_stats",
     "28z",
     "replay_ready",
+    "late_ready",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -402,33 +403,47 @@ class World:
         self.clock.advance(1)  # a later event is then stamped after the stop, not at it
 
     def replay_ready(self, name: str) -> None:
-        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 5).
+        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 15).
 
-        It moves neither the pid's stamp nor anything else the oracle tracks except
-        ``last_seen``, which the registry sets to the event's time.
+        It is stale (stamped before the pid's newest ready), so the registry changes nothing:
+        ``last_seen``, a stop and the live pid all stay, so the oracle changes nothing either.
+        """
+        listed = self.reg.get(name)
+        if name not in self.nodes or listed is None:
+            return
+        pid, stamp, _, announced = listed
+        if not announced:
+            return
+        old = stamp - timedelta(seconds=1)
+        self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
+        self.reached["replay_ready"] += 1
+
+    def late_ready(self, name: str) -> None:
+        """A re-announce of the listed pid stamped after its ready but before its ``last_seen``.
+
+        Not stale, so it is a new process for the registry, but ``last_seen`` stays (D4e reading 15).
         """
         node = self.nodes.get(name)
         listed = self.reg.get(name)
         if node is None or not node.listed or node.stopped or listed is None:
             return
-        pid, stamp, _, announced = listed
-        if not announced:
+        pid, stamp, first, announced = listed
+        gap = int((node.last_seen - stamp).total_seconds())
+        if not announced or gap < 2:
             return
-        # The registry keeps counted misses and filters them by ``last_seen``, so moving it back
-        # would bring older misses back to life (D4d reading 2 doesn't define that). Replay only
-        # when no broadcast completed within 2 s before the announce, so none can come back.
-        if self.completed is not None and self.completed > stamp - timedelta(seconds=2):
-            return
-        old = stamp - timedelta(seconds=1)
-        self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
+        at = stamp + timedelta(seconds=self.rng.randint(1, gap - 1))
+        self.registry.register_worker(name, pid, ["app.t"], event_timestamp=at)
         self.generation[name] += 1
-        node.last_seen = old
+        if name in self.confirm_spent:
+            self.rearmed.add(name)
         self.confirm_spent.discard(name)
         self.reported_stopped.discard(name)
+        self.rev_listed.discard(name)
         self.stopped_at.pop(name, None)
+        self.reg[name] = (pid, at, first, True)
         self.last_event.pop(name, None)
-        self.guard_event.pop(name, None)  # a worker_ready starts a new process
-        self.reached["replay_ready"] += 1
+        self.guard_event.pop(name, None)
+        self.reached["late_ready"] += 1
 
     def delayed_stop(self, name: str) -> None:
         """A clean stop of an unannounced restart, stamped between the listed pid's registration and now.
@@ -539,7 +554,7 @@ class World:
         self.stopped_at = {n: t for n, t in self.stopped_at.items() if t >= cutoff}
         for name, node in list(self.nodes.items()):
             if node.listed and node.last_seen < cutoff:
-                self.reg.pop(name, None)
+                self._forget_pid(name)
                 if node.stopped or self.silent(name, node):
                     del self.nodes[name]
                 else:
@@ -556,7 +571,17 @@ class World:
         for name in list(self.reg):
             node = self.nodes.get(name)
             if node is None or (not node.listed and node.last_seen < cutoff):
-                del self.reg[name]
+                self._forget_pid(name)
+            elif self.registry.get_worker(name, self.reg[name][0]) is None:
+                # The registry dropped the pid entry (offline, unseen 30 min); the oracle's
+                # listing outlives it, so replies and replays must register it afresh.
+                self._forget_pid(name)
+
+    def _forget_pid(self, name: str) -> None:
+        """The registry dropped the node's pid entry: a later reply registers it afresh."""
+        dropped = self.reg.pop(name, None)
+        if dropped is not None:
+            self.seen_ids.discard((name, dropped[0]))
 
     # --- refresh and evaluation ---------------------------------------------
 
@@ -871,6 +896,7 @@ class World:
             "late_stop": self.late_stop,
             "delayed_stop": self.delayed_stop,
             "replay_ready": self.replay_ready,
+            "late_ready": self.late_ready,
             "revive_run": self.revive_run,
         }
         if op in per_node:
@@ -903,6 +929,7 @@ class World:
             "late_stop",
             "delayed_stop",
             "replay_ready",
+            "late_ready",
             "advance",
             "advance",
             "cleanup",

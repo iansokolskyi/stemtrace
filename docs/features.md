@@ -120,6 +120,12 @@ pages work even if the server missed `worker_ready` events.
   only, not with its task events, so a late shutdown that arrives after a newer task event still
   stops it. The outcome depends on arrival order and heals at the next task event or an inspect
   reply that names the pid.
+- A `worker_ready` for a pid the server lists changes nothing if it is stamped before that pid's
+  latest `worker_ready`, or, for a stopped pid, before its recorded shutdown. That is a replayed
+  event or a worker clock that stepped back. It doesn't bring a stopped pid back, and it never
+  moves the pid's last sign of life earlier. A real restart whose clock stepped back behind its
+  previous `worker_ready` or shutdown shows up again at the next inspect reply that names the pid,
+  or at a task event stamped after the shutdown.
 - A worker is shown offline once 3 minutes pass without a sign of life from it: its
   `worker_ready`, an event from one of its tasks, or an inspect reply (the Workers page asks
   when it loads). The check runs as events arrive, so on a server that receives no events at

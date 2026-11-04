@@ -401,6 +401,10 @@ class WorkerRegistry:
             return
 
         with self._lock:
+            if self._is_stale_ready(hostname, pid, event_timestamp):
+                if task_definitions:
+                    self._task_definitions_by_name.update(task_definitions)
+                return
             is_new = hostname not in self._newest_by_node
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
             ready = self._workers[f"{hostname}:{pid}"]
@@ -415,6 +419,23 @@ class WorkerRegistry:
             self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
         if is_new:
             self._notify_new_node([hostname])
+
+    def _is_stale_ready(
+        self, hostname: str, pid: int, event_timestamp: datetime | None
+    ) -> bool:
+        """Whether a worker_ready for a listed pid predates its newest ready or its stop.
+
+        An older stamp is a replay or a clock that stepped back (D4e reading 15).
+        Hold the lock.
+        """
+        worker = self._workers.get(f"{hostname}:{pid}")
+        if worker is None or event_timestamp is None:
+            return False
+        stamp = ensure_tz_aware(event_timestamp)
+        if worker.ready_at is not None and stamp < ensure_tz_aware(worker.ready_at):
+            return True
+        stop = self._stopped_at.get(hostname)
+        return worker.shutdown_reported and stop is not None and stamp < stop[0]
 
     def _register(
         self,
@@ -441,7 +462,10 @@ class WorkerRegistry:
             if worker_id in self._workers:
                 self._workers[worker_id].registered_tasks = tasks
                 self._workers[worker_id].pid = pid
-                self._workers[worker_id].last_seen = timestamp
+                # Never back: older counted misses would count again (D4d reading 2).
+                self._workers[worker_id].last_seen = max(
+                    self._workers[worker_id].last_seen, ensure_tz_aware(timestamp)
+                )
                 self._workers[worker_id].status = WorkerStatus.ONLINE
                 self._workers[worker_id].shutdown_reported = False
                 self._workers[worker_id].superseded = False
