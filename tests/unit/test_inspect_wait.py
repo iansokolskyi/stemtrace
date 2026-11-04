@@ -301,3 +301,12 @@ async def test_r5_the_lock_is_free_after_each_attempt(
     assert server.refresher._lock.acquire(blocking=False)
     server.refresher._lock.release()
     assert broker.attempts == 1  # the second is paced out
+
+
+async def test_r4_waking_a_waiter_that_already_gave_up_is_a_no_op() -> None:
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    future.cancel()
+
+    routes._resolve_waiter(future)  # would raise InvalidStateError on a done future
+
+    assert future.cancelled()
