@@ -102,8 +102,8 @@ def test_row28v_a_stats_reply_naming_the_old_pid_registers_it_again() -> None:
     assert fleet_items(report_at(registry, T0 + MINUTE)) == []
 
 
-# Seeds the backlog (19a) names: the unannounced-restart class and the oracle's stop memory.
-REGRESSION_SEEDS = [78, 206, 303, 422, 1002, 1127, 1322, 1674]
+# Seeds that failed on a17d2d3 with the unannounced-restart state on (34-111), plus the ones backlog 19a names.
+REGRESSION_SEEDS = [34, 51, 65, 74, 78, 89, 111, 206, 303, 422, 1002, 1127, 1322, 1674]
 
 
 @pytest.mark.parametrize("seed", REGRESSION_SEEDS)
