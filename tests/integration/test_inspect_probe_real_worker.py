@@ -34,7 +34,8 @@ READY_DELAY_S = 3
 # One shared interval (2 s) plus one attempt (three 0.5 s calls), with margin.
 FLEET = "no_workers_online"
 CONFIRM_BOUND_S = 8.0
-BROADCASTS = 40
+BROADCASTS = 25
+MISSED_BROADCAST = 8  # the one broadcast the worker is stopped across
 BROADCAST_GAP_S = 2.1  # just over the interval two misses need
 
 
@@ -320,11 +321,13 @@ def test_d4d_real_idle_worker_never_reads_offline_across_many_broadcasts(
     worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An idle healthy solo worker, past the stale window, over many real broadcasts.
+    """An idle healthy solo worker, stale at every broadcast, with one real miss forced.
 
-    The registry's clock runs 10 minutes ahead, so the worker is past
-    ``WORKER_STALE_TIMEOUT_MINUTES`` and only the two-miss rule keeps it online.
-    Isolated misses (``stats()`` returning None now and then) are counted, not hidden.
+    The evaluation clock grows by more than the stale window per broadcast, so the
+    worker is past ``WORKER_STALE_TIMEOUT_MINUTES`` each time and only the two-miss
+    rule keeps it online. At broadcast ``MISSED_BROADCAST`` the worker is stopped
+    (SIGSTOP) across exactly that broadcast, then resumed: one real unanswered
+    ``stats()``, and the fleet item must not show at any point.
     """
     prefix, nodename, procs = worker_process
     misses: list[int] = []  # per broadcast: 1 when the worker did not answer it
@@ -357,23 +360,32 @@ def test_d4d_real_idle_worker_never_reads_offline_across_many_broadcasts(
         while nodename not in (refresher.refresh_blocking() or ()):
             assert time.monotonic() < deadline, "the worker never answered an inspect"
             time.sleep(BROADCAST_GAP_S)
-        ahead = timedelta(minutes=10)
-        monkeypatch.setattr(
-            store_module, "_utcnow", lambda: datetime.now(timezone.utc) + ahead
-        )
-        monkeypatch.setattr(
-            params, "utcnow", lambda: datetime.now(timezone.utc) + ahead
-        )
+        broadcast_no = 0
+
+        def evaluation_now() -> datetime:
+            # 10 minutes ahead, plus 4 more per broadcast: the worker's last sign of
+            # life (the previous answered broadcast) is always past the stale window.
+            return datetime.now(timezone.utc) + timedelta(minutes=10 + 4 * broadcast_no)
+
+        monkeypatch.setattr(store_module, "_utcnow", evaluation_now)
+        monkeypatch.setattr(params, "utcnow", evaluation_now)
         items_seen: list[list[tuple[str, int]]] = []
-        for _ in range(BROADCASTS):
-            answered = refresher.refresh_blocking()
-            if answered is not None:  # None: the probe's own refresh held the slot
-                misses.append(0 if nodename in answered else 1)
-                items_seen.append(
-                    _fleet_items(client, prefix, f"?refresh=false&kind={FLEET}")
-                )
+        for broadcast_no in range(BROADCASTS):
+            stopped = broadcast_no == MISSED_BROADCAST
+            if stopped:
+                os.killpg(procs[0].pid, signal.SIGSTOP)
+            try:
+                answered = refresher.refresh_blocking()
+            finally:
+                if stopped:
+                    os.killpg(procs[0].pid, signal.SIGCONT)
+            assert answered is not None  # this refresher is nobody else's
+            misses.append(0 if nodename in answered else 1)
+            items_seen.append(
+                _fleet_items(client, prefix, f"?refresh=false&kind={FLEET}")
+            )
             time.sleep(BROADCAST_GAP_S)
 
     print(f"broadcasts={len(misses)} worker-missed={sum(misses)} pattern={misses}")
-    assert len(misses) >= BROADCASTS // 2
-    assert items_seen == [[]] * len(misses)
+    assert misses[MISSED_BROADCAST] == 1, "the stopped worker answered the broadcast"
+    assert items_seen == [[]] * BROADCASTS
