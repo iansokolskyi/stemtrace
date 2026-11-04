@@ -325,7 +325,10 @@ never has one.
   `total` counts the items that pass the filters, before `limit` and `offset`. `evaluated_at`
   is the time the server judged at, and every `since` is in UTC. `refresh` (default `true`)
   asks the workers first, as `/api/workers` does; `refresh=false` judges on the registry as it
-  is, without contacting the broker.
+  is, without contacting the broker. A request with `refresh=true` (also on `/api/workers` and
+  `/api/tasks/registry`) that arrives while another ask is running waits for that ask, for at
+  most 7 seconds, and then answers from the registry as it stands. It doesn't start a second
+  ask. A request that arrives inside the 2-second interval or a failure backoff doesn't wait.
 - Stuck and interrupted are one item per task. Unregistered is one item per task name, with
   `task_id` `null`, `task_count` and the oldest waiting `since`. `counts` counts items, so a
   name with 40 waiting tasks counts once. `no_workers_online` is at most one item for the whole
