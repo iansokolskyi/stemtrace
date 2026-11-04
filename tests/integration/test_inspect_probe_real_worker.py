@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMEOUT_S = 40
 READY_DELAY_S = 3
 # One shared interval (2 s) plus one attempt (three 0.5 s calls), with margin.
+FLEET = "no_workers_online"
 CONFIRM_BOUND_S = 8.0
 BROADCASTS = 40
 BROADCAST_GAP_S = 2.1  # just over the interval two misses need
@@ -367,7 +368,9 @@ def test_d4d_real_idle_worker_never_reads_offline_across_many_broadcasts(
             answered = refresher.refresh_blocking()
             if answered is not None:  # None: the probe's own refresh held the slot
                 misses.append(0 if nodename in answered else 1)
-                items_seen.append(_fleet_items(client, prefix, "?refresh=false"))
+                items_seen.append(
+                    _fleet_items(client, prefix, f"?refresh=false&kind={FLEET}")
+                )
             time.sleep(BROADCAST_GAP_S)
 
     print(f"broadcasts={len(misses)} worker-missed={sum(misses)} pattern={misses}")
