@@ -423,7 +423,7 @@ function TaskBlock({
         </>
       ) : (
         <>
-          <text className="t1" x={34} y={21} {...{ title: node.name }}>
+          <text className="t1" x={34} y={21}>
             {truncate(shortName, 22)}
           </text>
           <text className="t2" x={34} y={38}>
