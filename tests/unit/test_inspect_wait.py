@@ -310,3 +310,74 @@ async def test_r4_waking_a_waiter_that_already_gave_up_is_a_no_op() -> None:
     routes._resolve_waiter(future)  # would raise InvalidStateError on a done future
 
     assert future.cancelled()
+
+
+# --- R6: the probe can't slip in between "is one in flight" and "start one" ----------------
+
+
+async def test_r6_a_probe_that_starts_inside_the_start_window_is_still_waited_for(
+    server: Server, broker: GatedBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_monotonic = routes._monotonic
+    fired: list[threading.Thread] = []
+
+    def monotonic_with_probe() -> float:
+        # The pacing check runs inside the request's start window: start the
+        # probe's attempt there, and give it time to reach its gated stats().
+        if not fired:
+            probe = threading.Thread(target=server.refresher.refresh_blocking)
+            fired.append(probe)
+            probe.start()
+            broker.started.wait(0.3)
+        return real_monotonic()
+
+    monkeypatch.setattr(routes, "_monotonic", monotonic_with_probe)
+    page = asyncio.create_task(server.get())
+    await asyncio.sleep(0.5)
+    broker.gate.set()
+
+    response = await page
+    fired[0].join(BOUND_S)
+
+    assert names(response) == [(NODE, ["app.t"])]
+    assert broker.attempts == 1
+
+
+# --- R7: a cancelled starter leaves its attempt, and its waiters, alone ---------------------
+
+
+async def test_r7_cancelling_the_starter_keeps_the_flight_until_the_attempt_ends(
+    server: Server, broker: GatedBroker
+) -> None:
+    starter = asyncio.create_task(server.get())
+    await started(broker)
+    starter.cancel()
+    await asyncio.gather(starter, return_exceptions=True)
+    waiter = asyncio.create_task(server.get())
+
+    done, _ = await asyncio.wait({waiter}, timeout=0.3)
+    probe_saw = await asyncio.to_thread(server.refresher.refresh_blocking)
+    broker.gate.set()
+    response = await waiter
+
+    assert not done
+    assert probe_saw is None  # still one attempt in flight: no concurrent second
+    assert names(response) == [(NODE, ["app.t"])]
+    assert broker.attempts == 1
+    assert server.refresher._lock.acquire(blocking=False)
+    server.refresher._lock.release()
+
+
+# --- reading 3: no inspector counts as a failed attempt for pacing -------------------------
+
+
+def test_r3_reading_a_missing_inspector_backs_the_next_attempt_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(routes, "_get_inspector", lambda *_a, **_k: None)
+    refresher = routes._InspectRefresher(WorkerRegistry(), BROKER)
+
+    refresher.refresh_blocking()
+
+    assert refresher._failures == 1
+    assert refresher._wait_s == routes._INSPECT_BACKOFF_START_SECONDS
