@@ -540,7 +540,10 @@ function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
         depth.has(from) ? [(depth.get(from) as number) + (containers.has(from) ? 0 : 1)] : [],
       )
       // reduce, not a spread: a callback has one level per member
-      depth.set(id, levels.length > 0 ? levels.reduce((a, b) => Math.min(a, b)) : 0)
+      depth.set(
+        id,
+        levels.length > 0 ? levels.reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY) : 0,
+      )
     }
   }
   return depth
