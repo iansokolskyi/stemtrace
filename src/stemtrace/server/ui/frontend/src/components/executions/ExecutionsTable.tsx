@@ -131,7 +131,7 @@ function EmptyTable({
         <HeaderRow columns={columns} template={template} />
       </div>
       {/* Outside the min-width strip, so the text wraps inside the box instead of being
-          centred in a strip wider than it */}
+          centered in a strip wider than it */}
       <div data-testid="executions-empty" className="px-4 py-8 text-center text-xs text-muted">
         <p data-testid="executions-empty-text" className="m-0">
           {filtered ? 'No executions match these filters' : 'No executions'}

@@ -167,13 +167,23 @@ export function barOf(node: GraphNode): RawBar | null {
   }
 }
 
+/** The least of `value` over `items`; reduce, since a spread of 200k items overflows the call. */
+export function minOf<T>(items: T[], value: (item: T) => number): number {
+  return items.reduce((least, item) => Math.min(least, value(item)), Number.POSITIVE_INFINITY)
+}
+
+/** The greatest of `value` over `items` (see `minOf`). */
+export function maxOf<T>(items: T[], value: (item: T) => number): number {
+  return items.reduce((most, item) => Math.max(most, value(item)), Number.NEGATIVE_INFINITY)
+}
+
 /** The bar of a "+N more" row: from the first hidden start to the last hidden end. */
 function aggregate(bars: RawBar[]): RawBar | null {
   if (bars.length === 0) return null
-  const from = Math.min(...bars.map((bar) => bar.from))
+  const from = minOf(bars, (bar) => bar.from)
   const runs = bars.filter((bar) => bar.hasRun)
   const open = bars.some((bar) => bar.end === null && (runs.length === 0 || bar.hasRun))
-  const end = open ? null : Math.max(...(runs.length > 0 ? runs : bars).map((bar) => bar.end ?? 0))
+  const end = open ? null : maxOf(runs.length > 0 ? runs : bars, (bar) => bar.end ?? 0)
   if (runs.length === 0) {
     return {
       from,
@@ -184,7 +194,7 @@ function aggregate(bars: RawBar[]): RawBar | null {
       hasRun: false,
     }
   }
-  const start = Math.min(...runs.map((bar) => bar.runFrom))
+  const start = minOf(runs, (bar) => bar.runFrom)
   return { from, scheduledTo: from, leadTo: start, runFrom: start, end, hasRun: true }
 }
 
@@ -202,10 +212,17 @@ function dependencies(layout: FlowLayout): {
     if (block.kind === 'more') seq.set(moreId(block.containerId), block.seq)
 
   const out = new Map<string, string[]>()
+  // A Set beside each list: `includes` on a container with 200k heads is quadratic
+  const listed = new Map<string, Set<string>>()
   const add = (from: string, to: string): void => {
     const list = out.get(from) ?? []
-    if (!list.includes(to)) list.push(to)
+    const has = listed.get(from) ?? new Set<string>()
+    if (!has.has(to)) {
+      has.add(to)
+      list.push(to)
+    }
     out.set(from, list)
+    listed.set(from, has)
   }
   const containerOf = new Map(layout.tasks.map((task) => [task.id, task.containerId]))
   const inRow = new Set<string>()
@@ -219,10 +236,11 @@ function dependencies(layout: FlowLayout): {
   for (const task of layout.tasks) {
     if (task.containerId && !inRow.has(task.id)) add(task.containerId, task.id)
   }
+  const boxById = new Map(layout.containers.map((box) => [box.id, box]))
   for (const block of layout.more) {
     if (block.kind !== 'more') continue
     add(block.containerId, moreId(block.containerId))
-    const callback = layout.containers.find((box) => box.id === block.containerId)?.callbackId
+    const callback = boxById.get(block.containerId)?.callbackId
     if (callback) add(moreId(block.containerId), callback)
   }
   for (const [from, list] of out) {
@@ -260,7 +278,10 @@ export function criticalPath(
   for (let at = 0; at < queue.length; at++) {
     const id = queue[at]
     for (const successor of next.get(id) ?? []) {
-      preds.set(successor, [...(preds.get(successor) ?? []), id])
+      // Append in place: a copy per predecessor is quadratic for a callback with n members
+      const into = preds.get(successor)
+      if (into) into.push(id)
+      else preds.set(successor, [id])
       if (!depth.has(successor)) {
         depth.set(successor, (depth.get(id) as number) + 1)
         parent.set(successor, id)
@@ -387,8 +408,8 @@ export function buildTimeline(
       ends: new Map(),
     }
   }
-  const t0 = Math.min(...bars.map((bar) => bar.from))
-  const settledEnd = Math.max(...bars.map((bar) => (bar.end === null ? bar.runFrom : bar.end)))
+  const t0 = minOf(bars, (bar) => bar.from)
+  const settledEnd = maxOf(bars, (bar) => (bar.end === null ? bar.runFrom : bar.end))
   // An open bar runs to now, but not past settledEnd plus a cap: one orphaned task, or a browser
   // clock far ahead, must not squash the finished work
   const anyOpen = bars.some((bar) => bar.end === null) && Number.isFinite(now)
@@ -492,7 +513,11 @@ function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
   const { next } = dependencies(layout)
   const incoming = new Map<string, string[]>()
   for (const [from, list] of next)
-    for (const to of list) incoming.set(to, [...(incoming.get(to) ?? []), from])
+    for (const to of list) {
+      const into = incoming.get(to)
+      if (into) into.push(from)
+      else incoming.set(to, [from])
+    }
   const containers = new Map(layout.containers.map((box) => [box.id, box]))
   const callbackOwner = new Map<string, string>()
   for (const box of layout.containers) if (box.callbackId) callbackOwner.set(box.callbackId, box.id)
@@ -514,7 +539,11 @@ function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
       const levels = (incoming.get(id) ?? []).flatMap((from) =>
         depth.has(from) ? [(depth.get(from) as number) + (containers.has(from) ? 0 : 1)] : [],
       )
-      depth.set(id, levels.length > 0 ? Math.min(...levels) : 0)
+      // reduce, not a spread: a callback has one level per member
+      depth.set(
+        id,
+        levels.length > 0 ? levels.reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY) : 0,
+      )
     }
   }
   return depth

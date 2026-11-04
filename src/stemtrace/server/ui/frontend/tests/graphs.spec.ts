@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from '@playwright/test'
-
+import { TASK_STATES } from '../src/routes/-search'
 import {
   flowContainerLabels,
   flowContainerMembers,
@@ -184,7 +184,7 @@ test.describe('Graph Detail Page', () => {
       els.map((el) => el.getAttribute('data-state')),
     )
     expect(states.length).toBeGreaterThan(0)
-    for (const state of states) expect(state).toMatch(/^[A-Z]+$/)
+    for (const state of states) expect(TASK_STATES).toContain(state)
   })
 
   test('can click node to see task details', async ({ page }) => {
@@ -834,17 +834,23 @@ test.describe('Graph Page - Live Updates', () => {
     return { first, second }
   }
 
-  /** The store after step_2 finished and spawned step_3. */
-  function finishStepTwo(mockApi: MockApiContext, first: MockTask, second: MockTask): MockTask {
-    const [, , third] = createChain('app.flow', 3)
-    third.task_id = `${first.task_id.slice(0, -4)}ffff`
-    third.root_id = first.task_id
-    third.parent_id = second.task_id
-    third.state = 'STARTED'
-    second.state = 'SUCCESS'
-    second.children.push(third.task_id)
-    mockApi.addTask(third)
-    return third
+  /** The store after `last` finished and spawned step number `step` (running) under `first`'s flow. */
+  function finishStep(
+    mockApi: MockApiContext,
+    first: MockTask,
+    last: MockTask,
+    step: number,
+  ): MockTask {
+    const [next] = createChain('app.flow', 1)
+    next.name = `app.flow.step_${step}`
+    next.task_id = `${first.task_id.slice(0, -4)}ffff`
+    next.root_id = first.task_id
+    next.parent_id = last.task_id
+    next.state = 'STARTED'
+    last.state = 'SUCCESS'
+    last.children.push(next.task_id)
+    mockApi.addTask(next)
+    return next
   }
 
   test('shows a new task and a state change without a reload', async ({ page }) => {
@@ -857,7 +863,7 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(flowNode(page, second.task_id)).toHaveAttribute('data-state', 'STARTED')
     await expect(flowNode(page, first.task_id)).toHaveAttribute('data-state', 'SUCCESS')
 
-    const third = finishStepTwo(mockApi, first, second)
+    const third = finishStep(mockApi, first, second, 3)
     await push(third)
 
     await expect(flowNode(page, third.task_id)).toContainText('step_3')
@@ -885,7 +891,7 @@ test.describe('Graph Page - Live Updates', () => {
     await expect(page.getByText('Polling', { exact: true })).toBeVisible()
     await expect(flowNode(page, second.task_id)).toContainText('STARTED')
 
-    const third = finishStepTwo(mockApi, first, second)
+    const third = finishStep(mockApi, first, second, 3)
 
     // The page polls every 5 s
     await expect(flowNode(page, third.task_id)).toContainText('step_3', { timeout: 15_000 })
@@ -902,17 +908,24 @@ test.describe('Graph Page - Live Updates', () => {
     // A click is a mouse down and up on the canvas: no pan, no zoom
     const box = (await graphCanvas(page).boundingBox())!
     const [x, y] = [box.x + box.width - 40, box.y + 40]
-    // The point is empty canvas, not a node
+    // The point is empty canvas: the topmost element is inside the canvas (no overlay over it)
+    // and is not a node
     expect(
       await page.evaluate(
-        ([px, py]) => !!document.elementFromPoint(px, py)?.closest('[data-testid="flow-node"]'),
+        ([px, py]) => {
+          const top = document.elementFromPoint(px, py)
+          return {
+            inCanvas: !!top?.closest('[data-testid="flow-canvas"]'),
+            onNode: !!top?.closest('[data-testid="flow-node"]'),
+          }
+        },
         [x, y],
       ),
-    ).toBe(false)
+    ).toEqual({ inCanvas: true, onNode: false })
     await page.mouse.click(x, y)
     expect(await settledBox(node)).toEqual(fitted)
 
-    const third = finishStepTwo(mockApi, first, second)
+    const third = finishStep(mockApi, first, second, 3)
     await push(third)
 
     await expect(flowNode(page, third.task_id)).toBeInViewport({ ratio: FULLY_VISIBLE })
@@ -934,14 +947,7 @@ test.describe('Graph Page - Live Updates', () => {
     expect(zoomed).not.toEqual(fitted)
 
     // The last step finishes and spawns another
-    const [, , , , , , next] = createChain('app.flow', 7)
-    next.task_id = `${first.task_id.slice(0, -4)}ffff`
-    next.root_id = first.task_id
-    next.parent_id = last.task_id
-    next.state = 'STARTED'
-    last.state = 'SUCCESS'
-    last.children.push(next.task_id)
-    mockApi.addTask(next)
+    const next = finishStep(mockApi, first, last, 8)
     await push(next)
     // A re-fit (the behaviour under test) would move the view once the new node is drawn
     await expect(flowNode(page, next.task_id)).toBeVisible()

@@ -302,7 +302,7 @@ export function layoutFlow(
       if (seen.has(current)) continue
       seen.add(current)
       if (isFailedState(nodes[current].state)) found = true
-      else stack.push(...childrenOf(current))
+      else for (const child of childrenOf(current)) stack.push(child) // not a spread: 200k children
     }
     failedDescendants.set(id, found)
     return found
@@ -389,7 +389,8 @@ export function layoutFlow(
     const shown = collapsed
       ? rows.filter((row, index) => index < COLLAPSED_HEAD || rowFailed(row))
       : rows
-    const hidden = collapsed ? rows.filter((row) => !shown.includes(row)) : []
+    const shownRows = new Set(shown)
+    const hidden = collapsed ? rows.filter((row) => !shownRows.has(row)) : []
 
     type Item = { row: string[] } | { more: string[][] } | { less: true }
     const items: Item[] = shown.map((row) => ({ row }))
@@ -399,7 +400,8 @@ export function layoutFlow(
     const singleCells = shown.every((row) => row.length === 1)
     const columns = isExpanded && singleCells && shown.length > COLLAPSE_AT ? EXPANDED_COLUMNS : 1
     const trackRows = Math.max(1, Math.ceil(items.length / columns))
-    const longest = Math.max(1, ...shown.map((row) => row.length))
+    // reduce, not Math.max(...rows): spreading 200k rows overflows the call's argument limit
+    const longest = shown.reduce((most, row) => Math.max(most, row.length), 1)
     const inner =
       columns > 1
         ? columns * MEMBER_W + (columns - 1) * TRACK_GAP

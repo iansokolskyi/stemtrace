@@ -26,10 +26,8 @@ export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; f
   const list = useAnomalyBadge()
   const data = list.data
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
-  // The list is capped and sorts the fleet item last, so a full one may not hold it
-  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList, {
-    refresh: false,
-  })
+  // The list is capped and sorted by `since`, so a full one may not hold the fleet item
+  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
   if (!data) return { data: undefined, failed: list.isError }
   return {
     data: {

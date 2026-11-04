@@ -21,9 +21,10 @@ export const Route = createFileRoute('/anomalies')({
 
 function AnomaliesPage(): ReactElement {
   const { data, isLoading, error } = useAnomalies()
-  // The fleet item is one banner above the list, whatever its `since` sorts it to
-  // The list is capped and sorts the fleet item last, so a full list may not hold it: `counts`
-  // says whether there is one, and a request of its own fetches it.
+  // The fleet item is one banner above the list, whatever its `since` sorts it to.
+  // The list is capped and sorted by `since`, so a full list may not hold it: `counts` says
+  // whether there is one, and a request of its own fetches it. That request does not ask the
+  // workers again (`refresh=false`): the list request just did.
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
   const fleet = inList ?? fleetQuery.data?.anomalies[0]
@@ -42,7 +43,7 @@ function AnomaliesPage(): ReactElement {
       {error && (
         <p role="alert" data-testid="anomalies-error" className="text-failure-t">
           {error instanceof AnomaliesTimeoutError
-            ? 'Anomalies are taking long to load'
+            ? 'Anomalies are taking a long time to load'
             : 'Failed to load anomalies'}
           {data ? '; showing the last result.' : '.'}
         </p>
@@ -61,6 +62,11 @@ function AnomaliesPage(): ReactElement {
       )}
 
       {fleet && <AnomalyCallout anomaly={fleet} placement="fleet" />}
+      {fleetQuery.isError && !fleet && (
+        <p role="alert" data-testid="anomalies-fleet-error" className="text-failure-t">
+          Couldn't load the notice that no workers are online.
+        </p>
+      )}
 
       {data && data.total > data.anomalies.length && (
         <p data-testid="anomalies-truncated" className="text-xs text-muted">

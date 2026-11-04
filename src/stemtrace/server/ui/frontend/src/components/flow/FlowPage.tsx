@@ -8,8 +8,11 @@ import { FlowDiagram } from './FlowDiagram'
 import { firstFailure, summarizeFlow } from './flowFacts'
 import { Gantt } from './Gantt'
 import { Inspector } from './Inspector'
-import { layoutFlow } from './layoutFlow'
-import { buildTimeline } from './timeline'
+import { layoutFlow, type PlacedContainer, type PlacedNotRun, type PlacedTask } from './layoutFlow'
+
+type PlacedRect = PlacedTask | PlacedContainer | PlacedNotRun
+
+import { buildTimeline, maxOf, minOf } from './timeline'
 
 /** Zoom steps above Fit (natural size): 1.0 to 1.4 by 0.2, as the prototype. */
 const ZOOM_STEP = 0.2
@@ -74,10 +77,16 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     return () => clearInterval(timer)
   }, [anyOpen])
 
-  const rectOf = (id: string) =>
-    layout.tasks.find((task) => task.id === id) ??
-    layout.containers.find((box) => box.id === id) ??
-    layout.notRun.find((box) => box.id === id)
+  // By id, built once per layout: a `find` per id is quadratic when many nodes arrive at once.
+  // A task wins over a container, a container over a not-run box.
+  const rects = useMemo(() => {
+    const byId = new Map<string, PlacedRect>()
+    for (const box of layout.notRun) byId.set(box.id, box)
+    for (const box of layout.containers) byId.set(box.id, box)
+    for (const task of layout.tasks) byId.set(task.id, task)
+    return byId
+  }, [layout])
+  const rectOf = (id: string) => rects.get(id)
 
   // The box's own scrolls (centring, zoom, scroll-into-view) are marked, so that any other
   // scroll, by whatever input (wheel, scrollbar, keys, focus moving to a node), is the reader's.
@@ -150,10 +159,10 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     if (!before || !box || locked) return
     const added = [...ids].filter((id) => !before.has(id)).flatMap((id) => rectOf(id) ?? [])
     if (added.length === 0) return
-    const left = Math.min(...added.map((rect) => rect.x)) * scale
-    const top = Math.min(...added.map((rect) => rect.y)) * scale
-    const right = Math.max(...added.map((rect) => rect.x + rect.w)) * scale
-    const bottom = Math.max(...added.map((rect) => rect.y + rect.h)) * scale
+    const left = minOf(added, (rect) => rect.x) * scale
+    const top = minOf(added, (rect) => rect.y) * scale
+    const right = maxOf(added, (rect) => rect.x + rect.w) * scale
+    const bottom = maxOf(added, (rect) => rect.y + rect.h) * scale
     const margin = 16
     let nextLeft = box.scrollLeft
     let nextTop = box.scrollTop

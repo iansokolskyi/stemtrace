@@ -20,6 +20,8 @@ export function AppFrame({ children }: { children: ReactNode }): ReactElement {
   // another script (non-Latin layouts such as Ukrainian), `key` is not ASCII, so the physical key decides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Chrome's autofill dispatches keydown events without a key
+      if (typeof e.key !== 'string') return
       const nonAscii = e.key.length === 1 && e.key.charCodeAt(0) > 0x7f
       const isK = e.key.toLowerCase() === 'k' || (nonAscii && e.code === 'KeyK')
       if (isK && (e.metaKey || e.ctrlKey) && !e.altKey) {

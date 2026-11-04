@@ -10,13 +10,26 @@ import {
   useRef,
   useState,
 } from 'react'
-import { fetchTask } from '@/api/client'
+import { fetchTask, HttpError } from '@/api/client'
 import { registrySnapshot, useGraphs, workersSnapshot } from '@/api/queries'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
 import { type PaletteItem, type PaletteKind, paletteItems, TASK_ID_SHAPE } from './paletteItems'
 
 /** How long the query rests before a task ID is looked up, so typing sends one request. */
 const LOOKUP_DELAY_MS = 250
+
+/** The server's task IDs are lower-case and its lookup is case-sensitive: retry once lower-case. */
+async function lookupTask(id: string): ReturnType<typeof fetchTask> {
+  try {
+    return await fetchTask(id)
+  } catch (error) {
+    const lower = id.toLowerCase()
+    if (error instanceof HttpError && error.status === 404 && lower !== id) {
+      return fetchTask(lower)
+    }
+    throw error
+  }
+}
 
 interface CommandPaletteProps {
   open: boolean
@@ -30,6 +43,11 @@ interface CommandPaletteProps {
  */
 export function CommandPalette({ open, onClose }: CommandPaletteProps): ReactElement | null {
   return open ? <PaletteDialog onClose={onClose} /> : null
+}
+
+/** "a", "a and b", "a, b and c". */
+function joinWords(words: string[]): string {
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
 }
 
 function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
@@ -52,7 +70,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
 
   const names = useQuery({ ...registrySnapshot, retry: false })
   const workers = useQuery({ ...workersSnapshot, retry: false })
-  const flows = useGraphs()
+  const flows = useGraphs(undefined, { retry: false })
 
   const text = query.trim()
   const [rested, setRested] = useState('')
@@ -63,11 +81,17 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   const lookupId = TASK_ID_SHAPE.test(text) && rested === text ? text : ''
   const lookup = useQuery({
     queryKey: ['tasks', lookupId],
-    queryFn: () => fetchTask(lookupId),
+    queryFn: () => lookupTask(lookupId),
     enabled: lookupId !== '',
     retry: false,
   })
   const waitingForId = TASK_ID_SHAPE.test(text) && (rested !== text || lookup.isFetching)
+  // A 404 is an answer ("no such task"); any other error means the lookup itself failed
+  const lookupFailed =
+    lookupId !== '' &&
+    lookup.isError &&
+    !lookup.data &&
+    !(lookup.error instanceof HttpError && lookup.error.status === 404)
 
   const items = useMemo(
     () =>
@@ -87,6 +111,17 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
     items.findIndex((item) => item.key === selectedKey),
   )
   const optionId = (index: number) => `${id}-option-${index}`
+
+  // An Enter on the top row while the ID lookup is still out: when it ends, open the task row
+  // if one landed, else the row that was selected at the press
+  const enterWaiting = useRef<{ row: PaletteItem | undefined } | null>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the effect runs this render's closure, so `choose` and `items` are current; it fires only when the wait ends or the rows change
+  useEffect(() => {
+    const pressed = enterWaiting.current
+    if (!pressed || waitingForId) return
+    enterWaiting.current = null
+    choose(items.find((item) => item.kind === 'task') ?? pressed.row)
+  }, [waitingForId, items])
 
   function choose(item: PaletteItem | undefined): void {
     if (!item) return
@@ -115,15 +150,22 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
       onClose()
     } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      if (items.length === 0) return
+      // While an Enter waits for the lookup, the highlight is the row it will open: it stays put
+      if (enterWaiting.current || items.length === 0) return
       const step = event.key === 'ArrowDown' ? 1 : items.length - 1
       const next = (selected + step) % items.length
       setSelectedKey(items[next].key)
       document.getElementById(optionId(next))?.scrollIntoView({ block: 'nearest' })
     } else if (event.key === 'Enter') {
+      // An Enter that commits an IME composition belongs to the IME
+      // (WebKit sends that Enter with isComposing already false, but keyCode 229)
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
       event.preventDefault()
-      if (event.nativeEvent.isComposing) return
-      choose(items[selected])
+      // Only the top row can be displaced by the task row the lookup may add on top; a row the
+      // reader moved to, or any row once a task row is there, is acted on now
+      const defer = waitingForId && selected === 0 && !items.some((item) => item.kind === 'task')
+      if (defer) enterWaiting.current = { row: items[selected] }
+      else choose(items[selected])
     } else if (event.key === 'Tab') {
       // The dialog holds focus: the only stop is the search box
       event.preventDefault()
@@ -143,14 +185,16 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
 
   const loading = names.isPending || workers.isPending || flows.isPending
   const failed = [
-    names.isError && 'task names',
-    flows.isError && 'flows',
-    workers.isError && 'workers',
+    // A refetch that fails under data already shown is not a source that did not load
+    names.isError && !names.data && 'task names',
+    flows.isError && !flows.data && 'flows',
+    workers.isError && !workers.data && 'workers',
+    lookupFailed && 'that task ID',
   ].filter(Boolean)
   let emptyText = ''
   if (failed.length > 0) {
     // Not "No results": the answer may be in a source that did not load
-    emptyText = `Couldn't load ${failed.join(' and ')}`
+    emptyText = `Couldn't load ${joinWords(failed as string[])}`
   } else if (items.length === 0) {
     if (waitingForId || (loading && !text)) emptyText = 'Searching…'
     else emptyText = text ? `No results for “${text}”` : 'No flows or workers yet'
@@ -191,6 +235,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
           value={query}
           onChange={(event) => {
             setQuery(event.target.value)
+            enterWaiting.current = null
             setSelectedKey(null)
           }}
           className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-sm text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none!"

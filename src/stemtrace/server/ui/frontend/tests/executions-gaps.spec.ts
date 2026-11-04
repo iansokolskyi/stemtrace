@@ -96,6 +96,8 @@ test.describe('Empty result', () => {
   test('with filters there is no hint', async ({ page }) => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/executions?queue=nowhere')
+    // Wait for the empty state itself: an absent hint means nothing before the table renders
+    await expect(page.getByTestId('executions-empty-text')).toBeVisible()
     await expect(empty(page).getByText('Run a Celery task')).toHaveCount(0)
   })
 

@@ -113,7 +113,10 @@ export function useTask(taskId: string) {
   })
 }
 
-export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) {
+export function useGraphs(
+  params?: Omit<FetchGraphsParams, 'limit' | 'offset'>,
+  options?: { retry?: boolean },
+) {
   const { isConnected } = useWebSocketContext()
 
   return useQuery<GraphListResponse>({
@@ -121,6 +124,7 @@ export function useGraphs(params?: Omit<FetchGraphsParams, 'limit' | 'offset'>) 
     queryFn: () => fetchGraphs({ ...params, limit: PAGE_SIZE }),
     // Only poll when WS is disconnected
     refetchInterval: isConnected ? false : POLL_INTERVAL,
+    ...options,
   })
 }
 
@@ -198,7 +202,7 @@ export function useRegistryPage(within: string) {
     queryFn: async () => {
       const refresh = queryClient.getQueryData(queryKey) === undefined
       const [registry, stats] = await Promise.all([
-        fetchTaskRegistry(undefined, undefined, { refresh }),
+        fetchTaskRegistry({ refresh }),
         fetchTaskStats(within).catch(() => null),
       ])
       return { registry, stats }
@@ -266,7 +270,7 @@ export function useGroupFailureRates(within: string | undefined, enabled = true)
  */
 export const registrySnapshot = {
   queryKey: ['badges', 'registry'],
-  queryFn: () => fetchTaskRegistry(undefined, undefined, { refresh: false }),
+  queryFn: () => fetchTaskRegistry({ refresh: false }),
 }
 
 /** The registry entry for exactly `name`; idle while `name` is undefined, none when the request fails. */

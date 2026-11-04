@@ -8,15 +8,19 @@ export const STATUS_LOOK: Record<TaskStatus, { word: string; icon: IconName; lou
   not_registered: { word: 'Not registered', icon: 'alert', loud: true },
 }
 
+/** How many worker names a never-run note lists before it counts the rest. */
+const MAX_HOSTS_IN_NOTE = 2
+
 /** The sentence under a name that explains its status; none for an active task. */
 export function noteOf(task: RegisteredTask): string | null {
   if (task.status === 'not_registered') {
     return 'No worker has this task registered. New runs with this name may stay in Pending.'
   }
   if (task.status === 'never_run') {
-    return task.registered_by.length > 0
-      ? `Registered by ${task.registered_by.join(', ')}; it has not run yet.`
-      : 'It has not run yet.'
+    // The server only calls a name never_run when a worker registers it, so there is a host
+    const hosts = task.registered_by.slice(0, MAX_HOSTS_IN_NOTE).join(', ')
+    const more = task.registered_by.length - MAX_HOSTS_IN_NOTE
+    return `Registered by ${hosts}${more > 0 ? ` and ${more} more` : ''}; it has not run yet.`
   }
   return null
 }

@@ -57,6 +57,19 @@ test.describe('Sidebar broker label', () => {
   })
 })
 
+/**
+ * Goes to `url` and returns once the stats answer has arrived and React has painted it, so a
+ * test that asserts "no rate" is asserting on the answer, not on the page before it.
+ */
+async function gotoAfterStats(page: Page, url: string): Promise<void> {
+  const answered = page.waitForResponse(/\/api\/stats\/timeseries/)
+  await page.goto(url)
+  await answered
+  await page.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+  )
+}
+
 test.describe('Sidebar group failure rate', () => {
   const GROUPS = [group('Billing'), group('Search'), group('Email'), group('Idle')]
   const STATS = {
@@ -165,7 +178,10 @@ test.describe('Sidebar group failure rate', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setGroups(GROUPS)
     api.setGroupStats(null)
+    // Not gotoAfterStats: the fake clock fakes requestAnimationFrame too
+    const answered = page.waitForResponse(/\/api\/stats\/timeseries/)
     await page.goto('/executions')
+    await answered
     await expect(groupLink(page, /Billing/)).toBeVisible()
     await expect.poll(() => api.statsRequests.length).toBe(1)
     await page.clock.runFor(95_000)
@@ -183,7 +199,7 @@ test.describe('Sidebar group failure rate', () => {
         body: JSON.stringify({ by_task_group: null }),
       }),
     )
-    await page.goto('/executions')
+    await gotoAfterStats(page, '/executions')
     await expect(groupLink(page, /Billing/)).toBeVisible()
     await expect(sidebar(page).locator('[title^="Failure rate"]')).toHaveCount(0)
   })
@@ -202,7 +218,7 @@ test.describe('Sidebar group failure rate', () => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setGroups(GROUPS)
     api.setGroupStats('error')
-    await page.goto('/executions')
+    await gotoAfterStats(page, '/executions')
     await expect(groupLink(page, /Billing/)).toBeVisible()
     await expect(sidebar(page).locator('[title^="Failure rate"]')).toHaveCount(0)
   })

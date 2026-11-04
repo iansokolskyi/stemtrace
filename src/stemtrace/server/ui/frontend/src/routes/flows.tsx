@@ -29,7 +29,7 @@ function FlowsPage() {
         <h1 className="text-2xl font-bold text-ink">Flows</h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
           {total !== undefined &&
-            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} in the retention window`}
+            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} ${hasDates(dates) ? 'in this time window' : 'in the retention window'}`}
         </p>
       </div>
 

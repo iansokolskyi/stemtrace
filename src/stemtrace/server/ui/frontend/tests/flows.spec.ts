@@ -207,7 +207,7 @@ test.describe('Flows list - no time range', () => {
   test('explicit dates are still sent, alone', async ({ page }) => {
     const lists = await open(page, '/flows?range=1h&from_date=2026-10-01&to_date=2026-10-02')
     expect(lists[0]).toEqual({ ...PAGE, from_date: '2026-10-01', to_date: '2026-10-02' })
-    await expect(subtitle(page)).toHaveText('4 flows in the retention window')
+    await expect(subtitle(page)).toHaveText('4 flows in this time window')
   })
 
   test('one explicit date is sent alone', async ({ page }) => {

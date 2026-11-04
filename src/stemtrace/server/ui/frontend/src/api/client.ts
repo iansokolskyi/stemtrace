@@ -451,14 +451,10 @@ export interface InspectOptions {
   refresh?: boolean
 }
 
-export async function fetchTaskRegistry(
-  query?: string,
-  status?: TaskStatus,
-  { refresh = true }: InspectOptions = {},
-): Promise<TaskRegistryResponse> {
+export async function fetchTaskRegistry({
+  refresh = true,
+}: InspectOptions = {}): Promise<TaskRegistryResponse> {
   const searchParams = new URLSearchParams()
-  if (query) searchParams.set('query', query)
-  if (status) searchParams.set('status', status)
   if (!refresh) searchParams.set('refresh', 'false')
 
   const url = `${API_BASE}/tasks/registry${searchParams.toString() ? `?${searchParams}` : ''}`

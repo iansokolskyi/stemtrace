@@ -706,6 +706,31 @@ test.describe('Overview anomalies', () => {
     expect(urls.filter((u) => !u.includes('refresh=false'))).toEqual([])
   })
 
+  test('a fleet item missing from a cut list is fetched without asking the workers', async ({
+    page,
+  }) => {
+    const urls: URL[] = []
+    page.on('request', (r) => {
+      if (/\/api\/anomalies(\?|$)/.test(r.url())) urls.push(new URL(r.url()))
+    })
+    await openOverview(page, '/', ({ api }) =>
+      api.setAnomalies([
+        ...Array.from({ length: 501 }, (_, i) =>
+          createAnomaly('unregistered', {
+            name: `bulk.tasks.t${i}`,
+            since: new Date(Date.now() - (600 - i) * 60_000).toISOString(),
+          }),
+        ),
+        createAnomaly('no_workers_online', { task_count: 4 }),
+      ]),
+    )
+    await expect(page.getByTestId('overview-anomaly').first()).toBeVisible()
+    await expect
+      .poll(() => urls.filter((u) => u.searchParams.get('kind') === 'no_workers_online').length)
+      .toBe(1)
+    expect(urls.filter((u) => u.searchParams.get('refresh') !== 'false')).toEqual([])
+  })
+
   test('What is wrong lists the fleet item first, then the items, and counts them', async ({
     page,
   }) => {
@@ -726,9 +751,7 @@ test.describe('Overview anomalies', () => {
       .click()
     const panel = panelOf(page)
     await expect(panel.getByRole('heading', { level: 2 })).toHaveText('Stuck step_2')
-    await expect(panel.getByTestId('panel-anomaly')).toContainText(
-      'Stuck: running far longer than usual',
-    )
+    await expect(panel.getByTestId('panel-anomaly')).toContainText('Stuck: running past its limit')
     await expect(panel.getByTestId('panel-anomaly')).toContainText('41m')
     await expect(panel.getByRole('link', { name: 'Open task page' })).toHaveAttribute(
       'href',

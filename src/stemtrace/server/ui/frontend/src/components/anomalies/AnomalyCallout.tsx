@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { Anomaly } from '@/api/anomalies'
 import { Icon } from '@/components/Icon'
 import { AnomalyActions } from './AnomalyActions'
-import { explain, KIND_HEADING, sinceText } from './anomalies'
+import { explain, kindHeading, sinceText } from './anomalies'
 
 interface AnomalyCalloutProps {
   anomaly: Anomaly
@@ -24,7 +24,7 @@ export function AnomalyCallout({ anomaly, placement }: AnomalyCalloutProps): Rea
         <Icon name="alert" size={18} className="[stroke-width:2.6]" />
       </div>
       <div className="min-w-0">
-        <h2 className="mb-0.5 text-sm font-bold">{KIND_HEADING[anomaly.kind]}</h2>
+        <h2 className="mb-0.5 text-sm font-bold">{kindHeading(anomaly)}</h2>
         <p className="mb-2 text-[13px] [overflow-wrap:anywhere]">
           {explain(anomaly)}{' '}
           <span className="text-muted">

@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { Anomaly } from '@/api/anomalies'
 import { AnomalyActions } from '@/components/anomalies/AnomalyActions'
 import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
-import { explain, KIND_HEADING, sinceText } from '@/components/anomalies/anomalies'
+import { explain, kindHeading, sinceText } from '@/components/anomalies/anomalies'
 import { Icon } from '@/components/Icon'
 import { TaskName } from '@/components/TaskName'
 import { ALL_ANOMALIES_ID, anomalyEntryId } from './anomalyId'
@@ -85,7 +85,7 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
             <Icon name="alert" size={18} className="[stroke-width:2.6]" />
           </div>
           <div className="min-w-0">
-            <h3 className="m-0 mb-0.5 text-sm font-bold">{KIND_HEADING[anomaly.kind]}</h3>
+            <h3 className="m-0 mb-0.5 text-sm font-bold">{kindHeading(anomaly)}</h3>
             <p className="m-0 mb-2 text-[13px] [overflow-wrap:anywhere]">
               {explain(anomaly)}{' '}
               <span className="text-muted">Since {sinceText(anomaly.since)}.</span>

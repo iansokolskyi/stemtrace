@@ -1,8 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
-import type { ReactElement } from 'react'
+import { type ReactElement, useState } from 'react'
 import { useRecentExecutions } from '@/api/queries'
-import { columnsFor } from '@/components/executions/columns'
+import { type Column, columnsFor } from '@/components/executions/columns'
 import { Panel } from '@/components/task/Panel'
 import { StatusChip } from '../StatusChip'
 import { TaskName } from '../TaskName'
@@ -16,8 +16,12 @@ interface RecentRunsProps {
 export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
   const { data, isLoading, error } = useRecentExecutions(hostname)
   const runs = data?.tasks ?? []
-  // The Worker column would repeat this page's own host on every row
-  const columns = columnsFor(runs).filter((column) => column.id !== 'worker')
+  // Decided once, from the first runs that arrive, like the Executions table: a refetch never
+  // adds or drops a column. The Worker column would repeat this page's own host on every row.
+  const [columns, setColumns] = useState<Column[] | null>(null)
+  if (columns === null && runs.length > 0) {
+    setColumns(columnsFor(runs).filter((column) => column.id !== 'worker'))
+  }
 
   return (
     <Panel
@@ -26,11 +30,11 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
     >
       {isLoading ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading executions...</p>
-      ) : error ? (
+      ) : error && !data ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs font-semibold text-failure-t">
           Failed to load executions
         </p>
-      ) : runs.length === 0 ? (
+      ) : runs.length === 0 || !columns ? (
         <p className="m-0 px-4 pt-2 pb-5 text-xs text-muted">No executions from this worker.</p>
       ) : (
         <div className="overflow-x-auto">
@@ -60,7 +64,7 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
                           to="/tasks/$taskId"
                           params={{ taskId: run.task_id }}
                           aria-label={run.name}
-                          className="block max-w-[210px] after:absolute after:inset-0"
+                          className="block max-w-[46ch] after:absolute after:inset-0"
                         >
                           <TaskName name={run.name} />
                         </Link>
