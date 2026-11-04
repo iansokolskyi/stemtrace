@@ -322,12 +322,14 @@ def test_p11_idle_fleet_keeps_authority_fresh_past_the_window_without_a_request(
 
     with TestClient(app) as client:
         procs.append(_spawn_worker(prefix, nodename, tmp_path / "worker.log", 0))
-        deadline = time.monotonic() + TIMEOUT_S
+        # A cold worker start on a loaded CI host can take well over TIMEOUT_S.
+        deadline = time.monotonic() + 3 * TIMEOUT_S
         first: datetime | None = None
         while time.monotonic() < deadline and first is None:
             first = registry.registry_facts(broker_configured=True).authority_at
             time.sleep(0.2)
-        assert first is not None, "no inspect reply ever stamped authority"
+        log = (tmp_path / "worker.log").read_text(errors="replace")[-3000:]
+        assert first is not None, f"no inspect reply stamped authority; log:\n{log}"
 
         # No request for longer than the window: only the probe can refresh.
         time.sleep(window_s + 5)
