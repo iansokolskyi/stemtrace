@@ -70,6 +70,7 @@ class Clock:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, start: datetime) -> None:
         self.now = start
         monkeypatch.setattr(store_module, "_utcnow", lambda: self.now)
+        monkeypatch.setattr(store_module, "_monotonic", lambda: mono(self.now))
 
     def advance(self, delta: timedelta) -> None:
         self.now += delta
@@ -111,6 +112,16 @@ class FakeInspect:
 def refresh(registry: WorkerRegistry, inspect: FakeInspect) -> None:
     """Run the real refresh against ``inspect``."""
     _refresh_worker_registry_from_inspect(registry, inspect)  # type: ignore[arg-type]  # a fake of Celery's Inspect
+
+
+def mono(at: datetime) -> float:
+    """The monotonic reading that goes with the wall time ``at`` (both move together)."""
+    return (at - T0).total_seconds()
+
+
+def apply_miss(registry: WorkerRegistry, at: datetime) -> None:
+    """A completed ``stats()`` broadcast nobody answered, at ``at`` on both clocks."""
+    registry.apply_stats_reply({}, {}, now=at, monotonic=mono(at))
 
 
 def prove_channel(registry: WorkerRegistry, at: datetime = T0) -> None:
@@ -218,7 +229,7 @@ def test_row28_a_stopped_worker_next_to_a_live_one_is_not_the_whole_fleet() -> N
 def test_row28a_a_server_that_has_seen_no_worker_emits_nothing(broker: bool) -> None:
     registry = WorkerRegistry()
     registry.mark_shutdown(SOLO, 1)  # a stop of a worker the server never saw
-    registry.apply_stats_reply({}, {}, now=T0)  # inspect completed, nobody answered
+    apply_miss(registry, T0)  # inspect completed, nobody answered
 
     report = report_at(registry, T0 + 20 * MINUTE, broker=broker)
 
@@ -242,7 +253,7 @@ def test_row28b_a_worker_that_misses_one_broadcast_inside_the_window_stays_onlin
 ) -> None:
     registry = WorkerRegistry()
     registry.apply_stats_reply({}, answer_pairs(SOLO), now=T0)
-    registry.apply_stats_reply({}, {}, now=T0 + timedelta(seconds=after_s))  # missed
+    apply_miss(registry, T0 + timedelta(seconds=after_s))  # missed
 
     report = report_at(registry, T0 + timedelta(seconds=after_s))
 
@@ -291,12 +302,13 @@ def test_row28c_a_completed_inspect_nobody_answers_makes_the_silent_fleet_offlin
 
 def refresh_at(registry: WorkerRegistry, now: datetime, inspect: FakeInspect) -> None:
     """Run the real refresh with the registry's clock at ``now``."""
-    original = store_module._utcnow
+    original = store_module._utcnow, store_module._monotonic
     store_module._utcnow = lambda: now
+    store_module._monotonic = lambda: mono(now)
     try:
         refresh(registry, inspect)
     finally:
-        store_module._utcnow = original
+        store_module._utcnow, store_module._monotonic = original
 
 
 def test_row28c_the_silent_worker_still_keeps_its_names_so_no_per_name_item() -> None:
@@ -391,8 +403,8 @@ def test_row28c_a_worker_clock_far_behind_looks_silent_after_a_completed_inspect
     prove_channel(registry, T0 - MINUTE)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 10 * MINUTE)
 
-    registry.apply_stats_reply({}, {}, now=T0)  # a worker that is up but didn't answer
-    registry.apply_stats_reply({}, {}, now=T0 + TWO_S)
+    apply_miss(registry, T0)  # a worker that is up but didn't answer
+    apply_miss(registry, T0 + TWO_S)
 
     assert fleet_items(report_at(registry, T0 + TWO_S)) == [(None, None, 1)]
 
@@ -432,8 +444,9 @@ def test_row28j_once_a_worker_answered_an_inspect_silence_is_evidence(
         inspect = FakeInspect(stats=None, ping={OTHER: {"ok": "pong"}})
     refresh_at(registry, first, inspect)
     registry.mark_shutdown(OTHER, 2)
-    later = T0 + 9 * MINUTE
-    refresh_at(registry, later, FakeInspect(stats=None))
+    later = T0 + 9 * MINUTE + TWO_S
+    for at in (later - TWO_S, later):  # D4d: two misses
+        refresh_at(registry, at, FakeInspect(stats=None))
 
     assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
 
@@ -462,7 +475,7 @@ def test_row28j_an_empty_ping_reply_does_not_prove_the_channel() -> None:
     registry = WorkerRegistry()
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     registry.apply_ping_reply([], now=T0 + MINUTE)  # stats() raised, nobody pinged back
-    registry.apply_stats_reply({}, {}, now=T0 + 9 * MINUTE)  # a completed, empty call
+    apply_miss(registry, T0 + 9 * MINUTE)  # a completed, empty call
 
     assert fleet_items(report_at(registry, T0 + 9 * MINUTE)) == []
 
@@ -755,8 +768,8 @@ def test_row28h_the_next_unanswered_broadcast_then_makes_it_offline() -> None:
     registry = WorkerRegistry()
     registry.apply_stats_reply({}, answer_pairs(SOLO), now=T0)
     later = T0 + 5 * MINUTE
-    registry.apply_stats_reply({}, {}, now=later)
-    registry.apply_stats_reply({}, {}, now=later + TWO_S)
+    apply_miss(registry, later)
+    apply_miss(registry, later + TWO_S)
 
     assert fleet_items(report_at(registry, later + TWO_S)) == [(None, None, 1)]
 
@@ -853,8 +866,8 @@ def test_the_cleanup_keeps_an_unknown_nodename_seen_recently() -> None:
     prove_channel(registry, T0 - MINUTE)
     registry.mark_seen(SOLO, T0, now=T0)
     registry.mark_seen(OTHER, T0, now=T0)
-    registry.apply_stats_reply({}, {}, now=T0 + MINUTE)  # completed: both unanswered
-    registry.apply_stats_reply({}, {}, now=T0 + MINUTE + TWO_S)  # and again
+    apply_miss(registry, T0 + MINUTE)  # completed: both unanswered
+    apply_miss(registry, T0 + MINUTE + TWO_S)  # and again
     registry.mark_seen(OTHER, T0 + 40 * MINUTE, now=T0 + 40 * MINUTE)
 
     registry.remove_stale_workers(now=T0 + 45 * MINUTE)

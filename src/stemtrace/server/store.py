@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -203,6 +204,11 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
 
 
+def _monotonic() -> float:
+    """A monotonic reading (a seam for tests); the miss gap is measured on it."""
+    return time.monotonic()
+
+
 def _utcnow() -> datetime:
     """The registry's clock (a seam for tests that replay a timeline)."""
     return datetime.now(timezone.utc)
@@ -339,12 +345,15 @@ class WorkerRegistry:
         # make an unlisted nodename live again. Cleared by a worker_ready or
         # stats reply naming a pid; bounded like ``_unlisted``.
         self._stopped_at: dict[str, tuple[datetime, datetime]] = {}
-        # Nodename -> (misses, latest counted miss): completed
-        # ``stats()`` broadcasts it didn't answer since its last sign of life,
-        # stamped in the locked step that applied that broadcast's answers.
-        # Two make it silent (D4d); any answer or event drops the entry. The
-        # count stops at 2 and only live nodenames are kept.
-        self._misses: dict[str, tuple[int, datetime]] = {}
+        # Nodename -> its last two counted misses (completion on the wall clock,
+        # for comparing with ``last_seen``, and on the monotonic clock, for the
+        # 2 s gap), stamped in the locked step that applied that broadcast's
+        # answers. A miss is evidence only while it completed after the node's
+        # ``last_seen``; two make it silent (D4d). An answer drops them.
+        self._misses: dict[str, list[tuple[datetime, float]]] = {}
+        # Nodenames that already owed a confirm since they last answered: events
+        # and later misses don't re-arm it (D4d reading 1).
+        self._confirm_spent: set[str] = set()
         # Whether any worker has answered an inspect since the server started.
         # Until then an unanswered broadcast may only mean the server can't hear
         # workers (remote control off, an unshared control setting), not that
@@ -403,7 +412,6 @@ class WorkerRegistry:
     ) -> None:
         """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
-            self._misses.pop(hostname, None)
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
@@ -477,7 +485,7 @@ class WorkerRegistry:
             now: When the server received it (tests); defaults to now.
         """
         with self._lock:
-            self._misses.pop(hostname, None)
+            self._forget_misses(hostname)
             self._event_generation[hostname] = (
                 self._event_generation.get(hostname, 0) + 1
             )
@@ -522,7 +530,6 @@ class WorkerRegistry:
         """
         with self._lock:
             self._ever_seen = True
-            self._misses.pop(hostname, None)
             live_id = self._newest_by_node.get(hostname)
             worker = self._workers.get(live_id) if live_id else None
             current = now or _utcnow()
@@ -586,7 +593,7 @@ class WorkerRegistry:
             now: When the node answered (tests); defaults to now.
         """
         with self._lock:
-            self._misses.pop(hostname, None)
+            self._forget_misses(hostname)
             live_id = (
                 self._newest_by_node.get(hostname)
                 if pid is None
@@ -682,6 +689,7 @@ class WorkerRegistry:
         replies: Mapping[str, tuple[int | None, list[str] | None]],
         *,
         now: datetime | None = None,
+        monotonic: float | None = None,
     ) -> None:
         """Apply a non-empty ``inspect.stats()`` reply, atomically.
 
@@ -701,6 +709,7 @@ class WorkerRegistry:
             replies: Nodename -> (pid or None, registered task names or None).
                 None tasks keep the worker's current list.
             now: When the reply arrived (tests); defaults to now.
+            monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
         with self._lock:
             known = set(self._newest_by_node)
@@ -729,7 +738,7 @@ class WorkerRegistry:
             # The broadcast completed: stamped here, after its answers are
             # applied and in the same locked step, so no evaluation sees it
             # completed while a worker that answered still looks silent.
-            first_miss = self._finish_inspect(now, replies)
+            first_miss = self._finish_inspect(now, replies, monotonic)
             learned = self._registered_since(known, replies)
         self._notify_new_node(learned)
         self._notify_first_miss(first_miss)
@@ -737,6 +746,11 @@ class WorkerRegistry:
     def _registered_since(self, known: set[str], nodenames: Iterable[str]) -> list[str]:
         """The nodenames now registered that were not in ``known``. Call with the lock."""
         return [n for n in nodenames if n in self._newest_by_node and n not in known]
+
+    def _forget_misses(self, hostname: str) -> None:
+        """Drop the counted misses and the spent confirm of a nodename. Hold the lock."""
+        self._misses.pop(hostname, None)
+        self._confirm_spent.discard(hostname)
 
     def _notify_first_miss(self, first_miss: bool) -> None:
         """Tell the listeners a first miss was stamped. Call without the lock."""
@@ -759,37 +773,42 @@ class WorkerRegistry:
             seen[node] = max(at, seen.get(node, at))
         return seen
 
-    def _finish_inspect(self, now: datetime, answered: Iterable[str]) -> bool:
+    def _finish_inspect(
+        self, now: datetime, answered: Iterable[str], monotonic: float | None
+    ) -> bool:
         """Count a completed ``stats()`` broadcast as a miss for each live node that didn't answer it.
 
         A miss counts when the broadcast completed after the node's last sign of
-        life and at least ``INSPECT_REFRESH_MIN_INTERVAL_SECONDS`` after its
-        previous counted miss. Hold the lock.
+        life and at least ``INSPECT_REFRESH_MIN_INTERVAL_SECONDS`` (monotonic)
+        after its previous counted miss. Hold the lock.
 
         Returns:
-            Whether some node just had its first miss.
+            Whether some node's first miss since it last answered is owed a confirm.
         """
         replied = frozenset(answered)
         self._channel_proven = self._channel_proven or bool(replied)
         for node in replied:
-            self._misses.pop(node, None)
+            self._forget_misses(node)
         live = self._live_last_seen()
-        gap = timedelta(seconds=INSPECT_REFRESH_MIN_INTERVAL_SECONDS)
-        first_miss = False
-        misses: dict[str, tuple[int, datetime]] = {}
+        mono = _monotonic() if monotonic is None else monotonic
+        owes_confirm = False
+        misses: dict[str, list[tuple[datetime, float]]] = {}
         for node, last_seen in live.items():
-            previous = self._misses.get(node)
             if node in replied or not self._channel_proven:
                 continue
-            if previous is None and now > last_seen:
-                misses[node] = (1, now)
-                first_miss = True
-            elif previous is not None:
-                count, latest = previous
-                counted = now - latest >= gap
-                misses[node] = (min(count + 1, 2), now) if counted else previous
+            kept = [m for m in self._misses.get(node, []) if m[0] > last_seen]
+            if not kept and now > last_seen:
+                kept = [(now, mono)]
+                if node not in self._confirm_spent:
+                    self._confirm_spent.add(node)
+                    owes_confirm = True
+            elif kept and mono - kept[-1][1] >= INSPECT_REFRESH_MIN_INTERVAL_SECONDS:
+                kept = [*kept, (now, mono)][-2:]
+            if kept:
+                misses[node] = kept
         self._misses = misses
-        return first_miss
+        self._confirm_spent &= live.keys()
+        return owes_confirm
 
     def _see_unlisted(self, nodename: str, seen_at: datetime) -> None:
         """A task event or reply names a nodename with no worker: it is live, until stopped."""
@@ -809,11 +828,11 @@ class WorkerRegistry:
 
         ``cutoff`` is now minus ``WORKER_STALE_TIMEOUT_MINUTES``.
         """
-        miss = self._misses.get(nodename)
+        misses = self._misses.get(nodename, [])
         return (
             self._channel_proven
-            and miss is not None
-            and miss[0] >= 2
+            and len(misses) >= 2
+            and misses[0][0] > last_seen
             and last_seen < cutoff
         )
 
@@ -860,6 +879,7 @@ class WorkerRegistry:
         *,
         stats_completed: bool = False,
         now: datetime | None = None,
+        monotonic: float | None = None,
     ) -> None:
         """Apply an ``inspect.ping()`` reply.
 
@@ -875,6 +895,7 @@ class WorkerRegistry:
                 with an empty reply: then the broadcast is stamped here, after
                 the pings are applied.
             now: When the reply arrived (tests); defaults to now.
+            monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
         with self._lock:
             answered = list(nodenames)
@@ -883,7 +904,7 @@ class WorkerRegistry:
                 self.mark_node_alive(nodename, now=now)
             first_miss = False
             if stats_completed:
-                first_miss = self._finish_inspect(now, answered)
+                first_miss = self._finish_inspect(now, answered, monotonic)
             elif answered:
                 self._channel_proven = True
         self._notify_first_miss(first_miss)

@@ -8,7 +8,7 @@ the spec ("D4b fleet item"). ``World.evaluate`` checks the invariant both ways.
 
 import random
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -42,6 +42,7 @@ ROWS = (
     "28m",
     "28n",
     "28o",
+    "28q",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -63,9 +64,9 @@ class ONode:
     stopped: bool
     last_seen: datetime
     listed: bool
-    misses: int = 0  # D4d: counted unanswered broadcasts since its last sign of life
-    first_miss: datetime | None = None
-    last_miss: datetime | None = None
+    # D4d: the last two counted unanswered broadcasts (completion times); each is
+    # evidence only while it is after ``last_seen``.
+    misses: list[datetime] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,11 @@ class World:
         # Who answered each of the last two completed broadcasts (D4d invariant).
         self.answered_window: list[frozenset[str]] = []
         self.had_miss_reset: set[str] = set()  # answered after a miss (row 28n)
+        # D4d reading 1: nodes that already owed a confirm since they last answered.
+        self.confirm_spent: set[str] = set()
+        self.owed_confirm = False
+        self.confirms = 0  # first-miss listener calls on the real registry
+        self.registry.add_first_miss_listener(self._count_confirm)
         self.generation: dict[str, int] = dict.fromkeys(NODES, 0)
         # Truth-side logs for the two direction checks.
         self.reported_stopped: set[str] = set()
@@ -187,9 +193,8 @@ class World:
         """Silent with evidence: two counted misses after the last sign, past the window."""
         return (
             self.channel_proven
-            and node.misses >= 2
-            and node.first_miss is not None
-            and node.first_miss > node.last_seen
+            and len(node.misses) >= 2
+            and node.misses[0] > node.last_seen
             and node.last_seen < self.clock.now - STALE
         )
 
@@ -211,7 +216,6 @@ class World:
         elif node is not None:
             if not node.stopped:  # a ping never revives a stopped worker
                 node.last_seen = now
-                node.misses, node.first_miss, node.last_miss = 0, None, None
         elif (
             name not in self.stopped_at
         ):  # a stopped nodename can't be revived by a ping
@@ -267,6 +271,7 @@ class World:
         self.generation[name] += 1
         self.reported_stopped.add(name)
         self.rev_listed.discard(name)
+        self.confirm_spent.discard(name)
         node = self.nodes.get(name)
         if node is not None and node.listed:
             node.stopped = True
@@ -305,7 +310,6 @@ class World:
             self.rev_listed.add(name)
         else:
             node.last_seen = max(node.last_seen, now)
-            node.misses, node.first_miss, node.last_miss = 0, None, None
         self.last_stopped_unlisted = False
 
     def late_task(self, name: str) -> None:
@@ -402,18 +406,26 @@ class World:
         for op in plan.meanwhile[stage]:
             self.run_op(op)
 
+    def _count_confirm(self) -> None:
+        self.confirms += 1
+
     def refresh(self) -> None:
         """Run the real refresh function against a fake inspect, then update the oracle."""
         plan = self.plan()
         self.in_flight = plan
+        confirms = self.confirms
+        self.owed_confirm = False
         _refresh_worker_registry_from_inspect(self.registry, FakeInspect(self, plan))
         self.in_flight = None
         self.stage = ""
         self._oracle_refresh(plan)
+        assert (self.confirms - confirms) == int(self.owed_confirm), (
+            f"confirms owed: registry {self.confirms - confirms}, oracle {self.owed_confirm}"
+        )
 
     def _oracle_refresh(self, plan: Plan) -> None:
         now = self.clock.now
-        before = {n: o.misses for n, o in self.nodes.items()}
+        before = {n: len(o.misses) for n, o in self.nodes.items()}
         answered: set[str] = set()
         completed = not plan.stats_raises
         if plan.stats_answered:
@@ -444,25 +456,44 @@ class World:
     def _count_misses(
         self, now: datetime, answered: set[str], before: dict[str, int]
     ) -> None:
-        """D4d: a completed broadcast an unstopped node didn't answer is a miss, if 2 s after the last."""
+        """D4d, from the spec: count a miss, track who is owed a confirm.
+
+        A miss counts when it completed after the node's last sign and 2 s after
+        the previous counted one. A node owes one confirm per first miss until it
+        answers; events don't re-arm it.
+        """
         self.had_miss_reset |= {n for n in answered if before.get(n)}
+        owes = False
         for name, node in self.nodes.items():
             if node.stopped:
                 continue
             if name in answered:
-                node.misses, node.first_miss, node.last_miss = 0, None, None
-            elif not self.channel_proven:
+                node.misses = []
+                self.confirm_spent.discard(name)
                 continue
-            elif node.misses == 0:
+            if not self.channel_proven:
+                node.misses = []
+                continue
+            kept = [m for m in node.misses if m > node.last_seen]
+            if not kept:
                 if now > node.last_seen:
-                    node.misses, node.first_miss, node.last_miss = 1, now, now
+                    kept = [now]
                     if name in self.had_miss_reset:
                         self.reached["28n"] += 1
                         self.had_miss_reset.discard(name)
-            elif node.last_miss is not None and now - node.last_miss >= MISS_GAP:
-                node.misses, node.last_miss = 2, now
+                    if name in self.confirm_spent:
+                        self.reached["28q"] += 1
+                    else:
+                        self.confirm_spent.add(name)
+                        owes = True
+            elif now - kept[-1] >= MISS_GAP:
+                kept = [*kept, now][-2:]
             else:
                 self.reached["28o"] += 1
+            node.misses = kept
+        live = {n for n, o in self.nodes.items() if not o.stopped}
+        self.confirm_spent &= live
+        self.owed_confirm = owes
 
     def evaluate(self) -> None:
         """Compare the registry with the oracle and the truth, and record what was reached."""
@@ -540,13 +571,13 @@ class World:
         now = self.clock.now
         if got and live and self.completed is not None:
             rows.append("28c")
-        if got and live and all(o.misses >= 2 for o in live.values()):
+        if got and live and all(len(o.misses) >= 2 for o in live.values()):
             rows.append("28m")
         if (
             not got
             and live
             and self.channel_proven
-            and all(o.misses == 1 for o in live.values())
+            and all(len(o.misses) == 1 for o in live.values())
             and all(o.last_seen < now - STALE for o in live.values())
         ):
             rows.append("28l")
@@ -664,3 +695,6 @@ class World:
 def patched_clock(monkeypatch: pytest.MonkeyPatch, world: World) -> None:
     """Make the registry read the world's clock wherever it isn't passed a time."""
     monkeypatch.setattr(store, "_utcnow", lambda: world.clock.now)
+    monkeypatch.setattr(
+        store, "_monotonic", lambda: (world.clock.now - T0).total_seconds()
+    )

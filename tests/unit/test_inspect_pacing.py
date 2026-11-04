@@ -459,7 +459,7 @@ def test_reading8_registered_failure_after_empty_stats_skips_ping_stamps_and_bac
 
     assert inspector.ping_calls == 0
     # The empty broadcast did complete: it counts as a miss for NODE (D4d).
-    assert registry._misses[NODE][0] == 1
+    assert len(registry._misses[NODE]) == 1
     assert registry.get_all_workers() == []  # ping's answer was never applied
     assert (target._failures, target.ready_in()) == (1, 2.0)
 

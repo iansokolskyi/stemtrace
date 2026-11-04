@@ -705,7 +705,7 @@ def _wire_inspect_probe(
     worker_registry.add_new_node_listener(refresher.note_new_node)
     worker_registry.add_new_node_listener(probe.trigger)
     # A first unanswered broadcast owes one confirming attempt (D4d).
-    worker_registry.add_first_miss_listener(probe.trigger)
+    worker_registry.add_first_miss_listener(probe.confirm)
     if own:
         router.add_event_handler("startup", probe.start)
         router.add_event_handler("shutdown", probe.stop)
