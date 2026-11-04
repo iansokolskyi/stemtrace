@@ -8,7 +8,7 @@ the spec ("D4b fleet item"). ``World.evaluate`` checks the invariant both ways.
 
 import random
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -21,6 +21,7 @@ from stemtrace.server.store import WORKER_STALE_TIMEOUT_MINUTES, WorkerRegistry
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 STALE = timedelta(minutes=WORKER_STALE_TIMEOUT_MINUTES)
 CLEANUP = timedelta(minutes=30)
+MISS_GAP = timedelta(seconds=2)  # D4d: the shared inspect interval two misses need
 LATE = timedelta(minutes=10)  # how late a stopped worker's last events may arrive
 NODES = ("celery@a", "celery@b", "celery@c")
 ROWS = (
@@ -37,6 +38,10 @@ ROWS = (
     "28j",
     "28k",
     "28k_long",
+    "28l",
+    "28m",
+    "28n",
+    "28o",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -58,6 +63,9 @@ class ONode:
     stopped: bool
     last_seen: datetime
     listed: bool
+    misses: int = 0  # D4d: counted unanswered broadcasts since its last sign of life
+    first_miss: datetime | None = None
+    last_miss: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,9 @@ class World:
         # Names restarted without a worker_ready since their last announced start.
         self.unannounced: set[str] = set()
         self.answered_last: frozenset[str] = frozenset()
+        # Who answered each of the last two completed broadcasts (D4d invariant).
+        self.answered_window: list[frozenset[str]] = []
+        self.had_miss_reset: set[str] = set()  # answered after a miss (row 28n)
         self.generation: dict[str, int] = dict.fromkeys(NODES, 0)
         # Truth-side logs for the two direction checks.
         self.reported_stopped: set[str] = set()
@@ -173,12 +184,12 @@ class World:
     # --- the oracle, from the spec -----------------------------------------
 
     def silent(self, name: str, node: ONode) -> bool:
-        """Silent with evidence: a broadcast completed after the last sign, unanswered, past the window."""
+        """Silent with evidence: two counted misses after the last sign, past the window."""
         return (
             self.channel_proven
-            and self.completed is not None
-            and self.completed > node.last_seen
-            and name not in self.answered_last
+            and node.misses >= 2
+            and node.first_miss is not None
+            and node.first_miss > node.last_seen
             and node.last_seen < self.clock.now - STALE
         )
 
@@ -200,10 +211,14 @@ class World:
         elif node is not None:
             if not node.stopped:  # a ping never revives a stopped worker
                 node.last_seen = now
+                node.misses, node.first_miss, node.last_miss = 0, None, None
         elif (
             name not in self.stopped_at
         ):  # a stopped nodename can't be revived by a ping
             self.nodes[name] = ONode(False, now, False)
+            self.reported_stopped.discard(
+                name
+            )  # its stop memory expired; it is running
             self.ever_seen = True
         self.last_stopped_unlisted = False
 
@@ -290,6 +305,7 @@ class World:
             self.rev_listed.add(name)
         else:
             node.last_seen = max(node.last_seen, now)
+            node.misses, node.first_miss, node.last_miss = 0, None, None
         self.last_stopped_unlisted = False
 
     def late_task(self, name: str) -> None:
@@ -337,7 +353,7 @@ class World:
                 if node.stopped or self.silent(name, node):
                     del self.nodes[name]
                 else:
-                    self.nodes[name] = ONode(False, node.last_seen, False)
+                    self.nodes[name] = replace(node, stopped=False, listed=False)
             elif (
                 not node.listed and node.last_seen < cutoff and self.silent(name, node)
             ):
@@ -349,7 +365,13 @@ class World:
         """Decide what the next refresh asks and who answers it, as of now."""
         rng = self.rng
         up = rng.random() < 0.85
-        answering = [n for n in NODES if self.truth[n] == "alive" and not self.deaf]
+        # Each alive worker independently misses a broadcast now and then (D4d:
+        # isolated misses), on top of whole-fleet misses and busy runs of them.
+        answering = [
+            n
+            for n in NODES
+            if self.truth[n] == "alive" and not self.deaf and rng.random() > 0.12
+        ]
         ops = ["evaluate", "task", "advance", "start", "stop", "kill", "cleanup"]
         meanwhile = {
             stage: [rng.choice(ops) for _ in range(rng.choice([0, 0, 1, 2]))]
@@ -391,6 +413,7 @@ class World:
 
     def _oracle_refresh(self, plan: Plan) -> None:
         now = self.clock.now
+        before = {n: o.misses for n, o in self.nodes.items()}
         answered: set[str] = set()
         completed = not plan.stats_raises
         if plan.stats_answered:
@@ -409,12 +432,37 @@ class World:
                 self.channel_proven = True
                 self._answer(name, with_pid=False)
         if completed:
+            self._count_misses(now, answered, before)
             self.completed = now
             self.answered_last = frozenset(answered)
+            self.answered_window = [*self.answered_window[-1:], frozenset(answered)]
             self.answered_latest = {
                 n for n in answered if n not in self.reported_stopped
             }
             self.killed_since_completion = False
+
+    def _count_misses(
+        self, now: datetime, answered: set[str], before: dict[str, int]
+    ) -> None:
+        """D4d: a completed broadcast an unstopped node didn't answer is a miss, if 2 s after the last."""
+        self.had_miss_reset |= {n for n in answered if before.get(n)}
+        for name, node in self.nodes.items():
+            if node.stopped:
+                continue
+            if name in answered:
+                node.misses, node.first_miss, node.last_miss = 0, None, None
+            elif not self.channel_proven:
+                continue
+            elif node.misses == 0:
+                if now > node.last_seen:
+                    node.misses, node.first_miss, node.last_miss = 1, now, now
+                    if name in self.had_miss_reset:
+                        self.reached["28n"] += 1
+                        self.had_miss_reset.discard(name)
+            elif node.last_miss is not None and now - node.last_miss >= MISS_GAP:
+                node.misses, node.last_miss = 2, now
+            else:
+                self.reached["28o"] += 1
 
     def evaluate(self) -> None:
         """Compare the registry with the oracle and the truth, and record what was reached."""
@@ -422,8 +470,9 @@ class World:
         want = self.expected_offline()
         assert got == want, self.describe(got, want)
         now = self.clock.now
-        if self.answered_latest - self.reported_stopped:
-            assert not got, "offline while a worker answered the latest broadcast"
+        for answered in self.answered_window:
+            if answered - self.reported_stopped:
+                assert not got, "offline while a worker answered a recent broadcast"
         for name, at in self.last_event.items():
             stop = self.stop_ts.get(name)
             if (stop is None or at > stop) and at >= now - STALE:
@@ -491,6 +540,16 @@ class World:
         now = self.clock.now
         if got and live and self.completed is not None:
             rows.append("28c")
+        if got and live and all(o.misses >= 2 for o in live.values()):
+            rows.append("28m")
+        if (
+            not got
+            and live
+            and self.channel_proven
+            and all(o.misses == 1 for o in live.values())
+            and all(o.last_seen < now - STALE for o in live.values())
+        ):
+            rows.append("28l")
         unproven = not got and not self.channel_proven and self.completed is not None
         if unproven and any(
             self.completed > o.last_seen and o.last_seen < now - STALE
@@ -570,6 +629,11 @@ class World:
         elif op == "refresh":
             if self.broker:
                 self.refresh()
+        elif op == "refresh_again":  # back-to-back requests, 0-3 s apart (D4d)
+            if self.broker:
+                self.refresh()
+                self.clock.advance(self.rng.choice([0, 1, 2, 3]))
+                self.refresh()
         else:
             self.evaluate()
 
@@ -588,6 +652,7 @@ class World:
             "cleanup",
             "refresh",
             "refresh",
+            "refresh_again",
             "revive_run",
             "evaluate",
         ]

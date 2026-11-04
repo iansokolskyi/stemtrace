@@ -6,6 +6,7 @@ refresher; only the Celery ``Inspect`` and the transport are fakes (Celery 5.6.3
 broker is unreachable).
 """
 
+import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -206,6 +207,12 @@ def test_e2e_a_silent_fleet_after_a_completed_inspect_gives_the_item(
         registry = extension.worker_registry
         registry.apply_stats_reply({}, {"celery@probe": (9, [])})
         registry.mark_shutdown("celery@probe", 9)
+        # D4d: this request's broadcast is the first miss, the probe's confirm the second.
+        assert items_of(client) == []
+        for _ in range(100):
+            if items_of(client):
+                break
+            time.sleep(0.1)
         assert items_of(client) == [("no_workers_online", None, None, 1)]
 
 

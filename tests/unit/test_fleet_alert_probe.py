@@ -7,6 +7,7 @@ the registry's (``store._utcnow``) and the API's (``params.utcnow``); the probe'
 pacing clock is the fleet's fake one, so nothing waits out the 2 s interval.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -32,16 +33,24 @@ HOURS_LATER = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
 
 
 class Wall:
-    """The registry's and the API's wall clock."""
+    """The registry's and the API's wall clock; the registry's can tick on every read."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.now = JOINED
-        monkeypatch.setattr(store_module, "_utcnow", lambda: self.now)
+        self.registry_step = timedelta(0)
+        monkeypatch.setattr(store_module, "_utcnow", self._registry_now)
         monkeypatch.setattr(params, "utcnow", lambda: self.now)
 
+    def _registry_now(self) -> datetime:
+        at = self.now
+        self.now += self.registry_step
+        return at
 
-def fleet_items(client: TestClient) -> list[tuple[str, str | None, str | None, int]]:
-    body = client.get("/stemtrace/api/anomalies").json()
+
+def fleet_items(
+    client: TestClient, query: str = ""
+) -> list[tuple[str, str | None, str | None, int]]:
+    body = client.get(f"/stemtrace/api/anomalies{query}").json()
     return [
         (a["kind"], a["task_id"], a["name"], a["task_count"]) for a in body["anomalies"]
     ]
@@ -50,7 +59,12 @@ def fleet_items(client: TestClient) -> list[tuple[str, str | None, str | None, i
 def run_outage(
     fake: FakeFleet, monkeypatch: pytest.MonkeyPatch, *, hears: bool
 ) -> list:
-    """Workers join at 02:00, nobody requests, the fleet dies, one request at 09:00."""
+    """Workers join at 02:00, nobody requests, the fleet dies, one request at 09:00.
+
+    D4d: that request is the first miss; the probe's confirming attempt (a few
+    seconds later on the registry's clock) is the second. Returns what a read
+    sees once the confirm has run, with no second request.
+    """
     wall = Wall(monkeypatch)
     extension, app = extension_app()
     registry = extension.worker_registry
@@ -62,7 +76,7 @@ def run_outage(
             timestamp=JOINED + timedelta(minutes=10),
         )
     )
-    with TestClient(app):
+    with TestClient(app) as client:
         take(fake.attempt_done)  # the startup probe: nobody there yet
         if hears:
             fake.nodes = {NODE_A: (1, ["app.known"]), NODE_B: (2, ["app.known"])}
@@ -73,12 +87,46 @@ def run_outage(
         take(fake.attempt_done)  # the probe the joins triggered
         while got(fake.attempt_done, 0.3):  # follow-ups, until the probe is idle
             pass
-    # SIGKILL of the whole fleet; the first request comes hours later.
-    fake.nodes = {}
-    fake.mode = "silent"
-    wall.now = HOURS_LATER
-    fake.clock._now += 7 * 3600
-    return fleet_items(TestClient(app))
+        # SIGKILL of the whole fleet; the first request comes hours later.
+        fake.nodes = {}
+        fake.mode = "silent"
+        wall.now = HOURS_LATER
+        fake.clock._now += 7 * 3600
+        wall.registry_step = timedelta(seconds=3)
+        before = fake.attempts
+        assert fleet_items(client) == []  # one miss is not evidence
+        take(fake.attempt_done)  # the request's own attempt
+        if hears:
+            take(fake.attempt_done)  # the confirm the first miss owed
+        items = poll_items(client, until_found=hears)
+        assert not got(fake.attempt_done, 0.5)  # nothing is owed after the confirm
+        fake.outage_attempts = fake.attempts - before  # type: ignore[attr-defined]  # test-only note
+        return items
+
+
+def poll_items(client: TestClient, *, until_found: bool) -> list:
+    """Read the anomalies without a refresh until the item shows (or the bound passes)."""
+    items: list = []
+    for _ in range(50):
+        items = fleet_items(client, "?refresh=false")
+        if items or not until_found:
+            break
+        time.sleep(0.1)
+    return items
+
+
+def test_row28p_a_killed_fleet_gives_the_item_from_one_request_plus_one_confirm(
+    fleet: FakeFleet,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    items = run_outage(fleet, monkeypatch, hears=True)
+
+    assert items == [("no_workers_online", None, None, 1)]
+    # The request's attempt and the one confirm, then nothing: no loop.
+    assert fleet.outage_attempts == 2  # type: ignore[attr-defined]  # set by run_outage
+    # The confirm waits out the shared interval after the request's attempt.
+    first, confirm = fleet.stats_times[-2:]
+    assert confirm - first >= inspect_probe.INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
 
 def test_p6_a_fleet_killed_before_any_request_gives_the_item_hours_later(

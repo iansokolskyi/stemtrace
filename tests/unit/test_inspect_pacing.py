@@ -6,6 +6,8 @@ unreachable broker: ``stats()`` raises (``Mailbox._broadcast`` ->
 The clock is injected; nothing sleeps.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -447,14 +449,17 @@ def test_reading8_registered_failure_after_empty_stats_skips_ping_stamps_and_bac
     inspector = EmptyStatsThenRegisteredFails()
     monkeypatch.setattr(routes, "_get_inspector", lambda _u, **_: inspector)
     registry = WorkerRegistry()
+    registry.apply_ping_reply(["celery@prover"])  # the channel is proven
+    registry.mark_seen(
+        NODE, datetime.now(timezone.utc) - timedelta(hours=1)
+    )  # a worker known from its task events
     target = routes._InspectRefresher(registry, BROKER)
 
     target.refresh_blocking()
 
     assert inspector.ping_calls == 0
-    assert (
-        registry._inspect_completed_at is not None
-    )  # the empty broadcast did complete
+    # The empty broadcast did complete: it counts as a miss for NODE (D4d).
+    assert registry._misses[NODE][0] == 1
     assert registry.get_all_workers() == []  # ping's answer was never applied
     assert (target._failures, target.ready_in()) == (1, 2.0)
 

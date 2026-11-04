@@ -29,6 +29,7 @@ from tests.unit.anomaly_pipeline import SMALL, T0, task_event
 SOLO, OTHER = "celery@solo", "celery@other"
 PROBE = "celery@probe"
 MINUTE = timedelta(minutes=1)
+TWO_S = timedelta(seconds=2)  # the shared inspect interval: the gap two misses need
 SETTINGS = replace(
     SMALL,
     pending_grace=timedelta(seconds=60),
@@ -278,9 +279,10 @@ def test_row28c_a_completed_inspect_nobody_answers_makes_the_silent_fleet_offlin
     registry = WorkerRegistry()
     prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
-    now = T0 + silent_min * MINUTE
+    now = T0 + silent_min * MINUTE + TWO_S
 
-    refresh_at(registry, now, FakeInspect(stats=stats, ping=ping))  # type: ignore[arg-type]  # parametrized values are typed loosely
+    for at in (now - TWO_S, now):  # D4d: it takes two misses
+        refresh_at(registry, at, FakeInspect(stats=stats, ping=ping))  # type: ignore[arg-type]  # parametrized values are typed loosely
     report = report_at(registry, now, names=("app.known", "app.new"))
 
     assert fleet_items(report) == [(None, None, 2)]
@@ -302,6 +304,8 @@ def test_row28c_the_silent_worker_still_keeps_its_names_so_no_per_name_item() ->
     prove_channel(registry)
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     now = T0 + 6 * MINUTE
+    refresh_at(registry, now, FakeInspect(stats=None))
+    now += TWO_S
     refresh_at(registry, now, FakeInspect(stats=None))
 
     report = report_at(registry, now, names=("app.known",))
@@ -388,8 +392,9 @@ def test_row28c_a_worker_clock_far_behind_looks_silent_after_a_completed_inspect
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 10 * MINUTE)
 
     registry.apply_stats_reply({}, {}, now=T0)  # a worker that is up but didn't answer
+    registry.apply_stats_reply({}, {}, now=T0 + TWO_S)
 
-    assert fleet_items(report_at(registry, T0)) == [(None, None, 1)]
+    assert fleet_items(report_at(registry, T0 + TWO_S)) == [(None, None, 1)]
 
 
 # --- Row 28j: workers we can't hear are not evidence (channel proven) ----------------
@@ -639,8 +644,9 @@ def test_row28e_the_cleanup_keeps_what_it_cannot_prove_and_later_evidence_closes
 
     # The broker comes back and nobody answers the broadcast: now silence is evidence.
     refresh_at(registry, now + MINUTE, FakeInspect(stats=None))
+    refresh_at(registry, now + MINUTE + TWO_S, FakeInspect(stats=None))
 
-    assert fleet_items(report_at(registry, now + MINUTE)) == [(None, None, 1)]
+    assert fleet_items(report_at(registry, now + MINUTE + TWO_S)) == [(None, None, 1)]
 
 
 def test_row28e_a_clean_shutdown_of_every_worker_still_gives_the_item() -> None:
@@ -699,6 +705,8 @@ def test_row28g_a_concurrent_evaluation_sees_a_fleet_that_goes_silent_only_once_
     registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0)
     clock.advance(5 * MINUTE)
     mid: list[list[tuple[str | None, str | None, int]]] = []
+    refresh(registry, FakeInspect(stats=None, ping=None))  # the first miss
+    clock.advance(TWO_S)
 
     refresh(
         registry,
@@ -748,8 +756,9 @@ def test_row28h_the_next_unanswered_broadcast_then_makes_it_offline() -> None:
     registry.apply_stats_reply({}, answer_pairs(SOLO), now=T0)
     later = T0 + 5 * MINUTE
     registry.apply_stats_reply({}, {}, now=later)
+    registry.apply_stats_reply({}, {}, now=later + TWO_S)
 
-    assert fleet_items(report_at(registry, later)) == [(None, None, 1)]
+    assert fleet_items(report_at(registry, later + TWO_S)) == [(None, None, 1)]
 
 
 # --- Row 28i and the unknown nodenames ------------------------------------------------
@@ -845,6 +854,7 @@ def test_the_cleanup_keeps_an_unknown_nodename_seen_recently() -> None:
     registry.mark_seen(SOLO, T0, now=T0)
     registry.mark_seen(OTHER, T0, now=T0)
     registry.apply_stats_reply({}, {}, now=T0 + MINUTE)  # completed: both unanswered
+    registry.apply_stats_reply({}, {}, now=T0 + MINUTE + TWO_S)  # and again
     registry.mark_seen(OTHER, T0 + 40 * MINUTE, now=T0 + 40 * MINUTE)
 
     registry.remove_stale_workers(now=T0 + 45 * MINUTE)
