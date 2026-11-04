@@ -44,6 +44,14 @@ ROWS = (
     "28o",
     "28q",
     "28s",
+    "28t",
+    "28u",
+    "28w",
+    "28x",
+    "28y",
+    "28y_stats",
+    "28z",
+    "replay_ready",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -151,6 +159,7 @@ class World:
         self.answered_last: frozenset[str] = frozenset()
         # Who answered each of the last two completed broadcasts (D4d invariant).
         self.answered_window: list[frozenset[str]] = []
+        self.window_at: list[datetime] = []  # when each of them completed
         self.had_miss_reset: set[str] = set()  # answered after a miss (row 28n)
         # D4d reading 1: nodes that already owed a confirm since they last answered.
         self.confirm_spent: set[str] = set()
@@ -162,11 +171,19 @@ class World:
         # Truth-side logs for the two direction checks.
         self.reported_stopped: set[str] = set()
         self.last_event: dict[str, datetime] = {}
+        # Newest task-event stamp a stop is compared with (D4e reading 12): dropped by a stop
+        # stamped at or after it, by a worker_ready, and with the oracle's node.
+        self.guard_event: dict[str, datetime] = {}
         self.answered_latest: set[str] = set()
         self.last_late_event: datetime | None = None
         self.last_stopped_unlisted: bool = False
         self.stop_ts: dict[str, datetime] = {}
         self.stopped_at: dict[str, datetime] = {}  # oracle: when a stop was reported
+        # D4e: name -> (listed pid, stamp a stop is compared with, first registration
+        # stamp). The stamp is the newest worker_ready (a re-announce moves it); a stats
+        # reply registers a new pid at its reply time and never moves it after that.
+        self.reg: dict[str, tuple[int, datetime, datetime, bool]] = {}
+        self.seen_ids: set[tuple[str, int]] = set()
         self.in_flight: Plan | None = None
         self.stage = ""
         self.killed_since_completion = False
@@ -206,10 +223,17 @@ class World:
             n.stopped or self.silent(name, n) for name, n in self.nodes.items()
         )
 
-    def _answer(self, name: str, *, with_pid: bool) -> None:
+    def _answer(self, name: str, *, with_pid: bool, pid: int | None = None) -> None:
         now = self.clock.now
         node = self.nodes.get(name)
         if with_pid:
+            # The pid the reply named when it was asked, not the one running now.
+            # Only a pid the server never saw: for a known one the registry keeps its
+            # older registration, which the oracle can't tell from its own bookkeeping.
+            if pid is not None and (name, pid) not in self.seen_ids:
+                self.reg[name] = (pid, now, now, False)
+            if pid is not None:
+                self.seen_ids.add((name, pid))
             self.nodes[name] = ONode(False, now, True)
             self.stopped_at.pop(name, None)
             self.reported_stopped.discard(name)
@@ -218,6 +242,8 @@ class World:
         elif node is not None:
             if not node.stopped:  # a ping never revives a stopped worker
                 node.last_seen = now
+                # Alive in the oracle, so no stop is held against it (as the pid branch and task()).
+                self.reported_stopped.discard(name)
         elif (
             name not in self.stopped_at
         ):  # a stopped nodename can't be revived by a ping
@@ -237,14 +263,9 @@ class World:
         if node is None or self.rng.random() >= 0.25:
             self.pid[name] += 1
         self.truth[name] = "alive"
-        # A restart the server listed under another pid always sends worker_ready
-        # (a shutdown for an unlisted pid would not stop the listed one).
-        announced = (
-            announce
-            if announce is not None
-            else (node is not None and node.listed and not node.stopped)
-            or self.rng.random() < 0.8
-        )
+        # D4e: a restart's worker_ready may be missed whatever the server knows of the
+        # name, including a listed live pid (its later stop must end that pid too).
+        announced = announce if announce is not None else self.rng.random() < 0.8
         if announced:
             self.unannounced.discard(name)
         else:
@@ -264,9 +285,16 @@ class World:
             self.reported_stopped.discard(name)
             self.rev_listed.discard(name)
             self.stopped_at.pop(name, None)
+            self.seen_ids.add((name, self.pid[name]))
+            listed = self.reg.get(name)
+            first = (
+                listed[2] if listed and listed[0] == self.pid[name] else self.clock.now
+            )
+            self.reg[name] = (self.pid[name], self.clock.now, first, True)
             self.nodes[name] = ONode(False, self.clock.now, True)
             self.ever_seen = True
             self.last_event.pop(name, None)
+            self.guard_event.pop(name, None)
 
     def stop(self, name: str) -> None:
         """A clean stop: ``worker_shutdown`` (or ``worker_terminating``) is reported."""
@@ -277,16 +305,163 @@ class World:
         self.truth[name] = "stopped"
         self.registry.mark_shutdown(name, self.pid[name], self.clock.now)
         self.stopped_at[name] = self.stop_ts[name] = self.clock.now
+        self.guard_event.pop(name, None)  # a stop stamped now is at or after any event
         self.generation[name] += 1
         self.reported_stopped.add(name)
         self.rev_listed.discard(name)
         self.confirm_spent.discard(name)
         node = self.nodes.get(name)
         if node is not None and node.listed:
+            listed = self.reg.get(name)
+            if not node.stopped and listed and listed[0] != self.pid[name]:
+                self.reached["28t"] += (
+                    1  # D4e: the stop of an unlisted pid ended the listed one
+                )
             node.stopped = True
         elif node is not None:
             del self.nodes[name]
             self.last_stopped_unlisted = True
+
+    def late_stop(self, name: str) -> None:
+        """A stop stamped before the nodename's newest sign of life (D4e readings 1, 5, 9, 10).
+
+        It changes nothing for a listed pid whose newest ``worker_ready`` is later, nor for a
+        nodename with a later event. It does end a pid known only from a stats reply when it
+        names that pid. It always counts as a worker event (misses forgotten, older replies
+        stale) and leaves stop memory.
+        """
+        node = self.nodes.get(name)
+        if node is None:
+            return
+        pid = 1000 + self.rng.randrange(1000)
+        if node.stopped:
+            stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
+        elif not node.listed:
+            # Events-only or revived: a stop older than its last event leaves it live. A name
+            # the oracle once listed but didn't revive may still have a live pid in the
+            # registry, which a stop of this stamp would end (reading 1): skip it.
+            if name in self.reg and name not in self.rev_listed:
+                return
+            # Compared with the newest task event (the worker's clock), not with a ping,
+            # which moves ``last_seen`` to server time (D4e reading 12).
+            event = self.guard_event.get(name)
+            if event is None:
+                return
+            stop = event - timedelta(seconds=self.rng.choice([1, 30, 600]))
+            self.reached["28y" if name in self.rev_listed else "28z"] += 1
+        else:
+            listed = self.reg.get(name)
+            if listed is None:
+                return
+            _, stamp, first, announced = listed
+            stop = stamp - timedelta(seconds=self.rng.choice([1, 30, 600]))
+            if not announced and self.rng.random() < 0.4:
+                self._stats_only_exact_stop(name, node, listed[0], stop)
+                return
+            # Pid reuse: the stop names the listed pid's own number, compared with its newest
+            # worker_ready, so only for a pid the oracle saw announced.
+            if announced and self.rng.random() < 0.4:
+                pid = listed[0]
+                self.reached["28x"] += 1
+            self.reached["28u"] += 1
+            if stop >= first:
+                self.reached["28w"] += (
+                    1  # only the newest worker_ready protects the pid
+                )
+        self.registry.mark_shutdown(name, pid, stop)
+        self._drop_guard(name, stop)
+        self.generation[name] += 1
+        node.misses = []
+        self.confirm_spent.discard(name)
+        self.stopped_at[name] = self.clock.now
+        self.last_stopped_unlisted = False
+
+    def _drop_guard(self, name: str, stop: datetime) -> None:
+        """The registry forgets the event stamp of a nodename a stop at or after it ended."""
+        seen = self.guard_event.get(name)
+        if seen is None or stop >= seen:
+            self.guard_event.pop(name, None)
+
+    def _stats_only_exact_stop(
+        self, name: str, node: ONode, pid: int, stop: datetime
+    ) -> None:
+        """A stop naming a pid known only from a stats reply ends it, whatever its stamp (reading 9)."""
+        # Never earlier than an event already received (reordering the spec doesn't define).
+        stop = max(stop, self.last_event.get(name, stop))
+        self.registry.mark_shutdown(name, pid, stop)
+        self._drop_guard(name, stop)
+        self.stopped_at[name] = self.clock.now
+        self.stop_ts[name] = stop
+        self.generation[name] += 1
+        self.reported_stopped.add(name)
+        self.rev_listed.discard(name)
+        self.confirm_spent.discard(name)
+        node.stopped = True
+        self.last_stopped_unlisted = False
+        self.reached["28y_stats"] += 1
+        self.clock.advance(1)  # a later event is then stamped after the stop, not at it
+
+    def replay_ready(self, name: str) -> None:
+        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 5).
+
+        It moves neither the pid's stamp nor anything else the oracle tracks except
+        ``last_seen``, which the registry sets to the event's time.
+        """
+        node = self.nodes.get(name)
+        listed = self.reg.get(name)
+        if node is None or not node.listed or node.stopped or listed is None:
+            return
+        pid, stamp, _, announced = listed
+        if not announced:
+            return
+        # The registry keeps counted misses and filters them by ``last_seen``, so moving it back
+        # would bring older misses back to life (D4d reading 2 doesn't define that). Replay only
+        # when no broadcast completed within 2 s before the announce, so none can come back.
+        if self.completed is not None and self.completed > stamp - timedelta(seconds=2):
+            return
+        old = stamp - timedelta(seconds=1)
+        self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
+        self.generation[name] += 1
+        node.last_seen = old
+        self.confirm_spent.discard(name)
+        self.reported_stopped.discard(name)
+        self.stopped_at.pop(name, None)
+        self.last_event.pop(name, None)
+        self.guard_event.pop(name, None)  # a worker_ready starts a new process
+        self.reached["replay_ready"] += 1
+
+    def delayed_stop(self, name: str) -> None:
+        """A clean stop of an unannounced restart, stamped between the listed pid's registration and now.
+
+        D4e reading 1: stamped at or after the registration, so the listed pid ends too. A stamp
+        equal to the registration is the tie, which counts as newer.
+        """
+        node = self.nodes.get(name)
+        listed = self.reg.get(name)
+        if self.truth[name] not in ("alive", "busy") or listed is None:
+            return
+        if node is None or not node.listed or node.stopped:
+            return
+        now = self.clock.now
+        stamp = listed[1]
+        if now <= stamp:
+            return
+        stop = stamp + (now - stamp) * self.rng.choice([0, 0.5])
+        # Never earlier than an event already received: a stop that overtakes later-stamped
+        # events is a reordering the spec doesn't define (D4b "event after a stop").
+        stop = max(stop, self.last_event.get(name, stop))
+        self.truth[name] = "stopped"
+        self.registry.mark_shutdown(name, 1000 + self.rng.randrange(1000), stop)
+        self._drop_guard(name, stop)
+        self.stopped_at[name] = now
+        self.stop_ts[name] = stop
+        self.generation[name] += 1
+        self.reported_stopped.add(name)
+        self.rev_listed.discard(name)
+        self.confirm_spent.discard(name)
+        node.stopped = True
+        self.reached["28t"] += 1
+        self.clock.advance(1)  # a later event is then stamped after the stop, not at it
 
     def kill(self, name: str) -> None:
         """SIGKILL: no event."""
@@ -308,7 +483,7 @@ class World:
         now = self.clock.now
         self.registry.mark_seen(name, now)
         self.ever_seen = True
-        self.last_event[name] = now
+        self.last_event[name] = self.guard_event[name] = now
         node = self.nodes.get(name)
         if node is None:
             self.nodes[name] = ONode(False, now, False)
@@ -364,6 +539,7 @@ class World:
         self.stopped_at = {n: t for n, t in self.stopped_at.items() if t >= cutoff}
         for name, node in list(self.nodes.items()):
             if node.listed and node.last_seen < cutoff:
+                self.reg.pop(name, None)
                 if node.stopped or self.silent(name, node):
                     del self.nodes[name]
                 else:
@@ -372,6 +548,15 @@ class World:
                 not node.listed and node.last_seen < cutoff and self.silent(name, node)
             ):
                 del self.nodes[name]
+        # The registry deletes a worker entry not seen for the cleanup time, whether the
+        # oracle lists the name or not; a later reply registers it afresh.
+        for name in list(self.guard_event):
+            if name not in self.nodes:
+                del self.guard_event[name]
+        for name in list(self.reg):
+            node = self.nodes.get(name)
+            if node is None or (not node.listed and node.last_seen < cutoff):
+                del self.reg[name]
 
     # --- refresh and evaluation ---------------------------------------------
 
@@ -386,17 +571,23 @@ class World:
             for n in NODES
             if self.truth[n] == "alive" and not self.deaf and rng.random() > 0.12
         ]
-        ops = ["evaluate", "task", "advance", "start", "stop", "kill", "cleanup"]
+        ops = [
+            "evaluate",
+            "task",
+            "advance",
+            "start",
+            "stop",
+            "late_stop",
+            "kill",
+            "cleanup",
+        ]
         meanwhile = {
             stage: [rng.choice(ops) for _ in range(rng.choice([0, 0, 1, 2]))]
             for stage in ("stats", "registered", "ping")
         }
         # stats() completes empty although workers are alive (a slow link): the ping
         # fallback may still answer, and registered() may still fail (D7a readings 4, 5, 8).
-        # Not while a name was restarted unannounced: a later worker_shutdown for its new
-        # pid leaves the old pid live in the registry but removes it from this oracle (a
-        # pre-existing model gap, parked: it is not an inspect rule).
-        stats_silent = up and not self.unannounced and rng.random() < 0.2
+        stats_silent = up and rng.random() < 0.2
         return Plan(
             stats_raises=not up or rng.random() < 0.05,
             registered_raises=rng.random() < 0.1,
@@ -437,13 +628,15 @@ class World:
         now = self.clock.now
         before = {n: len(o.misses) for n, o in self.nodes.items()}
         answered: set[str] = set()
+        applied: set[str] = set()  # answers the registry took (not dropped as stale)
         completed = not plan.stats_raises
         if plan.stats_answered:
             self.channel_proven = True
             for name in plan.stats_answered:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
-                    self._answer(name, with_pid=plan.pids)
+                    applied.add(name)
+                    self._answer(name, with_pid=plan.pids, pid=plan.answers.get(name))
         else:
             # Written from the D7a spec: a stats() error ends the attempt (reading 4); empty
             # stats whose registered() fails ends it too, broadcast stamped (readings 5, 8);
@@ -452,12 +645,14 @@ class World:
             for name in [] if plan.ping_raises or not ping_runs else plan.ping_answers:
                 answered.add(name)
                 self.channel_proven = True
+                applied.add(name)
                 self._answer(name, with_pid=False)
         if completed:
             self._count_misses(now, answered, before)
             self.completed = now
             self.answered_last = frozenset(answered)
-            self.answered_window = [*self.answered_window[-1:], frozenset(answered)]
+            self.answered_window = [*self.answered_window[-1:], frozenset(applied)]
+            self.window_at = [*self.window_at[-1:], now]
             self.answered_latest = {
                 n for n in answered if n not in self.reported_stopped
             }
@@ -518,8 +713,15 @@ class World:
         want = self.expected_offline()
         assert got == want, self.describe(got, want)
         now = self.clock.now
-        for answered in self.answered_window:
-            if answered - self.reported_stopped:
+        # A ping can't revive a nodename the server holds a stop for, including the memory a
+        # late stop of an older process leaves (D4b "stop memory", D4e reading 1).
+        remembered = {n for n in self.stopped_at if n not in self.nodes}
+        # Not once the cleanup (30 min) may have removed a worker that answered long ago.
+        for answered, at in zip(self.answered_window, self.window_at, strict=True):
+            live = {
+                n for n in answered if n in self.nodes
+            }  # the cleanup may have removed the rest
+            if now - at <= CLEANUP and live - self.reported_stopped - remembered:
                 assert not got, "offline while a worker answered a recent broadcast"
         for name, at in self.last_event.items():
             stop = self.stop_ts.get(name)
@@ -666,6 +868,9 @@ class World:
             "busy": self.toggle_busy,
             "task": self.task,
             "late": self.late_task,
+            "late_stop": self.late_stop,
+            "delayed_stop": self.delayed_stop,
+            "replay_ready": self.replay_ready,
             "revive_run": self.revive_run,
         }
         if op in per_node:
@@ -695,6 +900,9 @@ class World:
             "task",
             "task",
             "late",
+            "late_stop",
+            "delayed_stop",
+            "replay_ready",
             "advance",
             "advance",
             "cleanup",

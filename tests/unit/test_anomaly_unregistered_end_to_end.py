@@ -134,6 +134,9 @@ def test_route_after_a_restart_without_replay_flags_nothing_until_inspect_answer
             stats={NODE: {"pid": 11}}, registered={NODE: ["app.known"]}, ping=None
         )
         monkeypatch.setattr(routes, "_get_inspector", lambda _url, **_: answered)
+        # The unreachable attempt backed off (D7c reading 3): let the wait pass.
+        later = routes._monotonic() + routes._INSPECT_BACKOFF_START_SECONDS + 1
+        monkeypatch.setattr(routes, "_monotonic", lambda: later)
         after = _items(_extension_client(extension))
 
     assert before == []
