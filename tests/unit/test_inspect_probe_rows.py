@@ -27,6 +27,7 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
+STRICT_PROBE_LEAKS = True
 REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE_A, NODE_B, NODE_C = "celery@a", "celery@b", "celery@c"

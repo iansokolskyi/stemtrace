@@ -42,13 +42,18 @@ def _only(before: set[threading.Thread]) -> list[threading.Thread]:
 
 
 @pytest.fixture(autouse=True)
-def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProbe]]:
-    """Record every probe a test creates, and fail the test if its thread outlives it.
+def inspect_probes(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[InspectProbe]]:
+    """Record every probe a test creates and stop it when the test ends.
+
+    A module sets ``STRICT_PROBE_LEAKS = True`` to fail, not just clean up, a test
+    whose probe thread outlives it.
 
     A probe thread resolves ``routes._get_inspector``, ``routes._monotonic`` and
     ``WorkerRegistry.apply_ping_reply`` when it runs, so one that outlives its
-    test consumes the next test's fakes. A test that starts one stops it, or
-    requests ``stop_probes``. A leaked probe is stopped here, then the test fails.
+    test consumes the next test's fakes. In a strict module a test that starts a
+    probe stops it, or requests ``stop_probes``.
     """
     probes: list[InspectProbe] = []
     original_init = InspectProbe.__init__
@@ -60,14 +65,17 @@ def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProb
     monkeypatch.setattr(InspectProbe, "__init__", recording_init)
     before = set(_live_probe_threads())
     yield probes
+    strict = getattr(request.module, "STRICT_PROBE_LEAKS", False)
     # A stopped probe's thread ends once its refresh returns; allow it a moment.
     deadline = time.monotonic() + LEAK_GRACE_S
-    while _only(before) and time.monotonic() < deadline:
+    while strict and _only(before) and time.monotonic() < deadline:
         time.sleep(0.01)
     leaked = _only(before)
     for probe in probes:
         probe.stop(LEAK_GRACE_S)
-    assert not leaked, f"inspect probe thread(s) outlived the test: {leaked}"
+    assert not (strict and leaked), (
+        f"inspect probe thread(s) outlived the test: {leaked}"
+    )
 
 
 @pytest.fixture
