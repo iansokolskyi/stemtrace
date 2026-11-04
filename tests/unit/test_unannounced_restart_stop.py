@@ -198,6 +198,67 @@ def test_row28x_a_pid_known_only_from_stats_is_stopped_by_any_stop_naming_it() -
     assert pids_state(registry) == [(7, True)]
 
 
+# --- Rows 28y, 28z: a late stop doesn't undo later liveness (D4e reading 10) -------------
+
+
+@pytest.mark.parametrize("named_pid", [5, 7], ids=["unlisted-pid", "listed-pid"])
+@pytest.mark.parametrize("broker", [True, False], ids=["broker", "no-broker"])
+def test_row28y_a_late_stop_leaves_a_revived_nodename_online(
+    named_pid: int, broker: bool
+) -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0)
+    registry.mark_shutdown(SOLO, 7, T0 + MINUTE, now=T0 + MINUTE)
+    registry.mark_seen(SOLO, T0 + 2 * MINUTE, now=T0 + 2 * MINUTE)  # revived
+
+    registry.mark_shutdown(SOLO, named_pid, T0 - 10 * MINUTE, now=T0 + 3 * MINUTE)
+
+    report = report_at(registry, T0 + 3 * MINUTE, broker=broker)
+    assert fleet_items(report) == []
+
+
+@pytest.mark.parametrize(
+    ("delta_s", "ends"),
+    [(-1, False), (0, True), (60, True)],
+    ids=["before", "at", "after"],
+)
+def test_row28z_a_stop_ends_an_events_only_nodename_only_from_its_last_event(
+    delta_s: int, ends: bool
+) -> None:
+    registry = WorkerRegistry()
+    registry.mark_seen(SOLO, T0, now=T0)
+
+    registry.mark_shutdown(SOLO, 7, T0 + timedelta(seconds=delta_s), now=T0 + MINUTE)
+
+    assert fleet_items(report_at(registry, T0 + MINUTE)) == (STOPPED if ends else [])
+
+
+def test_row28z_a_late_stop_leaves_an_events_only_nodename_online() -> None:
+    registry = WorkerRegistry()
+    registry.mark_seen(SOLO, T0, now=T0)
+
+    registry.mark_shutdown(SOLO, 7, T0 - 10 * MINUTE, now=T0)
+
+    assert fleet_items(report_at(registry, T0)) == []
+
+
+# --- Reading 11: a stop naming a superseded pid ends only that entry ---------------------
+
+
+def test_reading11_a_stop_naming_a_superseded_pid_leaves_the_newer_pid_live() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=T0 - 5 * MINUTE)
+    registry.register_worker(SOLO, 2, ["app.known"], event_timestamp=T0 - 4 * MINUTE)
+
+    registry.mark_shutdown(SOLO, 1, T0, now=T0)
+
+    states = {
+        w.pid: (w.superseded, w.shutdown_reported) for w in registry.get_all_workers()
+    }
+    assert states == {1: (True, True), 2: (False, False)}
+    assert fleet_items(report_at(registry, T0)) == []
+
+
 # Seeds that failed on a17d2d3 with the unannounced-restart state on.
 REGRESSION_SEEDS = [34, 51, 65, 74, 89, 111]
 
