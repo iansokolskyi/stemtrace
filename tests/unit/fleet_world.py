@@ -446,6 +446,12 @@ class World:
                 not node.listed and node.last_seen < cutoff and self.silent(name, node)
             ):
                 del self.nodes[name]
+        # The registry deletes a worker entry not seen for the cleanup time, whether the
+        # oracle lists the name or not; a later reply registers it afresh.
+        for name in list(self.reg):
+            node = self.nodes.get(name)
+            if node is None or (not node.listed and node.last_seen < cutoff):
+                del self.reg[name]
 
     # --- refresh and evaluation ---------------------------------------------
 
