@@ -310,7 +310,12 @@ def test_p2_task_event_from_an_unseen_nodename_triggers_a_refresh(
         # The reply names NODE_C, which the registry hadn't registered: that is
         # one more follow-up (a stats reply naming a new node), and then none.
         take(fleet.attempt_done)
-        assert not got(fleet.attempt_done, 0.5)
+        extra = got(fleet.attempt_done, 0.5)
+        assert not extra, (
+            f"attempt times {fleet.stats_times}, "
+            f"stamps {extension.worker_registry.authority_stamps}, "
+            f"online {extension.worker_registry.any_online()}"
+        )
 
     assert fleet.attempts == 3
 

@@ -297,6 +297,7 @@ def test_p6_real_fleet_killed_before_any_request_gives_the_item_hours_later(
 def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
     tmp_path: Path,
     worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prefix, nodename, procs = worker_process
     window_s = 30.0  # the period is half: 15 s
@@ -309,6 +310,15 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
         anomaly_pending_grace="1s",
     )
     registry = extension.worker_registry
+    attempts: list[tuple[float, object]] = []
+    real_refresh = routes._InspectRefresher.refresh_blocking
+
+    def recording(self: routes._InspectRefresher) -> frozenset[str] | None:
+        answered = real_refresh(self)
+        attempts.append((round(time.monotonic(), 1), answered))
+        return answered
+
+    monkeypatch.setattr(routes._InspectRefresher, "refresh_blocking", recording)
     extension.store.add_event(
         TaskEvent(
             task_id="p11",
@@ -329,7 +339,9 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
             first = registry.registry_facts(broker_configured=True).authority_at
             time.sleep(0.2)
         log = (tmp_path / "worker.log").read_text(errors="replace")[-3000:]
-        assert first is not None, f"no inspect reply stamped authority; log:\n{log}"
+        assert first is not None, (
+            f"no inspect reply stamped authority; attempts {attempts}; log:\n{log}"
+        )
 
         # No request at all: only the probe can refresh. Sample the stamp's age
         # through 1.5 windows: it must never exceed the window (continuity), which a
@@ -349,6 +361,6 @@ def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
     assert latest is not None
     assert latest > first
     assert max(ages) <= window_s, (
-        f"authority aged to {max(ages):.1f}s; ages {ages[::25]}"
+        f"authority aged to {max(ages):.1f}s; ages {ages[::25]}; attempts {attempts}"
     )
     assert [item["name"] for item in body["anomalies"]] == ["app.never_registered"]
