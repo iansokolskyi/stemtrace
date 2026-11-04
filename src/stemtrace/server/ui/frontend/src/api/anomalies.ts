@@ -112,13 +112,15 @@ export function useAnomalies() {
 }
 
 /**
- * What the server already knows, for the sidebar badge on every page (`refresh=false`: asking
- * the workers blocks while the broker is down).
+ * The sidebar badge's count, on every page. It asks the workers like the list does: without
+ * that, the `unregistered` check lapses on an idle fleet and the badge undercounts. The request
+ * waits for the inspect: about 5 s at most with the broker down, up to 7 s when it joins an
+ * inspect already running. A request inside a backoff window answers at once.
  */
 export function useAnomalyBadge() {
   return useQuery<AnomalyListResponse>({
     queryKey: ['anomalies', 'badge'],
-    queryFn: () => fetchAnomalies({ refresh: false }),
+    queryFn: () => fetchAnomalies(),
     refetchInterval: pollUnlessMissing,
     retry: false,
   })
@@ -128,7 +130,7 @@ export function useAnomalyBadge() {
 export function useFleetAnomaly(enabled: boolean) {
   return useQuery<AnomalyListResponse>({
     queryKey: ['anomalies', 'fleet'],
-    // refresh=false: the list request that found the fleet item missing already asked the workers
+    // refresh=false: the list request that found the fleet item missing has just asked the workers
     queryFn: () => fetchAnomalies({ kind: 'no_workers_online', refresh: false }),
     enabled,
     refetchInterval: pollUnlessMissing,

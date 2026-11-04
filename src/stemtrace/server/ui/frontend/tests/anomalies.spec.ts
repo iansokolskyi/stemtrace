@@ -427,13 +427,15 @@ test.describe('Task page callout', () => {
 test.describe('Anomalies requests', () => {
   const requests = (api: MockApiContext): URL[] => api.anomalyRequests
 
-  test('the sidebar badge asks without refresh, the page asks with it', async ({ page }) => {
+  test('the sidebar badge and the page both ask the workers', async ({ page }) => {
     const api = await open(page, [stuck], '/flows')
     await expect(badge(page)).toHaveText('Anomalies1')
-    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual(['false'])
-    await page.goto('/anomalies')
+    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual([null])
+    // Client-side navigation: the only new request is the list's own
+    await badge(page).click()
     await expect(items(page)).toHaveCount(1)
-    expect(requests(api).some((u) => !u.searchParams.has('refresh'))).toBe(true)
+    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual([null, null])
+    expect(requests(api)[1].searchParams.get('limit')).not.toBeNull()
   })
 
   test('polling continues every 30 s', async ({ page }) => {

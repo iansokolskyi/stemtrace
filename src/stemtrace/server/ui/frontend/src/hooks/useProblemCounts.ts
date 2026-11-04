@@ -2,9 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { registrySnapshot, workersSnapshot } from '@/api/queries'
 import { offlineHostCount } from '@/components/workers/workers'
 
-// Badges never trigger Celery inspect (refresh=false): an inspect blocks the request for a
-// second or more, and much longer while the broker is down. They show what the server already
-// knows; the Workers and Registry pages refresh it.
+// The Workers and Registry badges never trigger Celery inspect (refresh=false): the request that
+// asks waits for the inspect, which D7a bounds (about 5 s with the broker down, up to 7 s when it
+// joins one already running). They show what the server already knows; the Workers and Registry
+// pages refresh it. The anomaly badge asks, so its `unregistered` check does not lapse on an idle
+// fleet; its inspect is bounded the same way.
 const BADGE_POLL_MS = 30_000
 
 /** Counts behind the sidebar's problem badges; null while unknown (no badge is shown). */
