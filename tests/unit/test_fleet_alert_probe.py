@@ -7,6 +7,7 @@ the registry's (``store._utcnow``) and the API's (``params.utcnow``); the probe'
 pacing clock is the fleet's fake one, so nothing waits out the 2 s interval.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,6 +17,7 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server import inspect_probe
 from stemtrace.server import store as store_module
 from stemtrace.server.api import params
+from stemtrace.server.store import WorkerRegistry
 from tests.unit.test_inspect_probe_rows import (
     NODE_A,
     NODE_B,
@@ -32,16 +34,23 @@ HOURS_LATER = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
 
 
 class Wall:
-    """The registry's and the API's wall clock."""
+    """The registry's and the API's wall clock, and the registry's monotonic one.
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    The monotonic clock is the fleet's fake one, which the probe's waits advance, so
+    the 2 s gap between two misses is the probe's own wait (D4d reading 3).
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, fake: FakeFleet) -> None:
         self.now = JOINED
         monkeypatch.setattr(store_module, "_utcnow", lambda: self.now)
+        monkeypatch.setattr(store_module, "_monotonic", fake.clock.now)
         monkeypatch.setattr(params, "utcnow", lambda: self.now)
 
 
-def fleet_items(client: TestClient) -> list[tuple[str, str | None, str | None, int]]:
-    body = client.get("/stemtrace/api/anomalies").json()
+def fleet_items(
+    client: TestClient, query: str = ""
+) -> list[tuple[str, str | None, str | None, int]]:
+    body = client.get(f"/stemtrace/api/anomalies{query}").json()
     return [
         (a["kind"], a["task_id"], a["name"], a["task_count"]) for a in body["anomalies"]
     ]
@@ -50,8 +59,13 @@ def fleet_items(client: TestClient) -> list[tuple[str, str | None, str | None, i
 def run_outage(
     fake: FakeFleet, monkeypatch: pytest.MonkeyPatch, *, hears: bool
 ) -> list:
-    """Workers join at 02:00, nobody requests, the fleet dies, one request at 09:00."""
-    wall = Wall(monkeypatch)
+    """Workers join at 02:00, nobody requests, the fleet dies, one request at 09:00.
+
+    D4d: that request is the first miss; the probe's confirming attempt (a few
+    seconds later on the registry's clock) is the second. Returns what a read
+    sees once the confirm has run, with no second request.
+    """
+    wall = Wall(monkeypatch, fake)
     extension, app = extension_app()
     registry = extension.worker_registry
     extension.store.add_event(
@@ -62,7 +76,7 @@ def run_outage(
             timestamp=JOINED + timedelta(minutes=10),
         )
     )
-    with TestClient(app):
+    with TestClient(app) as client:
         take(fake.attempt_done)  # the startup probe: nobody there yet
         if hears:
             fake.nodes = {NODE_A: (1, ["app.known"]), NODE_B: (2, ["app.known"])}
@@ -73,12 +87,46 @@ def run_outage(
         take(fake.attempt_done)  # the probe the joins triggered
         while got(fake.attempt_done, 0.3):  # follow-ups, until the probe is idle
             pass
-    # SIGKILL of the whole fleet; the first request comes hours later.
-    fake.nodes = {}
-    fake.mode = "silent"
-    wall.now = HOURS_LATER
-    fake.clock._now += 7 * 3600
-    return fleet_items(TestClient(app))
+        # SIGKILL of the whole fleet; the first request comes hours later.
+        fake.nodes = {}
+        fake.mode = "silent"
+        wall.now = HOURS_LATER
+        fake.clock._now += 7 * 3600
+        applied = threading.Semaphore(0)
+        real_apply = WorkerRegistry.apply_ping_reply
+
+        def apply_then_signal(
+            self: WorkerRegistry, *args: object, **kw: object
+        ) -> None:
+            real_apply(self, *args, **kw)  # type: ignore[arg-type]  # forwarded as is
+            applied.release()
+
+        monkeypatch.setattr(WorkerRegistry, "apply_ping_reply", apply_then_signal)
+        before = fake.attempts
+        assert fleet_items(client) == []  # one miss is not evidence
+        take(applied)  # the request's own attempt
+        if hears:
+            take(applied)  # the confirm the first miss owed, applied
+        items = fleet_items(client, "?refresh=false")  # no refresh: the confirm did it
+        for _ in range(2 if hears else 1):
+            take(fake.attempt_done)
+        assert not got(fake.attempt_done, 0.5)  # nothing is owed after the confirm
+        fake.outage_attempts = fake.attempts - before  # type: ignore[attr-defined]  # test-only note
+        return items
+
+
+def test_row28p_a_killed_fleet_gives_the_item_from_one_request_plus_one_confirm(
+    fleet: FakeFleet,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    items = run_outage(fleet, monkeypatch, hears=True)
+
+    assert items == [("no_workers_online", None, None, 1)]
+    # The request's attempt and the one confirm, then nothing: no loop.
+    assert fleet.outage_attempts == 2  # type: ignore[attr-defined]  # set by run_outage
+    # The confirm waits out the shared interval after the request's attempt.
+    first, confirm = fleet.stats_times[-2:]
+    assert confirm - first >= inspect_probe.INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
 
 def test_p6_a_fleet_killed_before_any_request_gives_the_item_hours_later(
@@ -108,7 +156,7 @@ def test_p6_without_the_probe_nobody_proved_the_channel_so_no_item(
     monkeypatch.setattr(
         inspect_probe.InspectProbe, "trigger", lambda _self, _nodename=None: None
     )
-    wall = Wall(monkeypatch)
+    wall = Wall(monkeypatch, fleet)
     extension, app = extension_app()
     extension.store.add_event(
         TaskEvent(

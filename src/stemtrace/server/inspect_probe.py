@@ -99,6 +99,11 @@ class InspectProbe:
         # Nodename -> its owed attempt times not yet served, fixed at its join;
         # insertion order is age.
         self._pending: dict[str, list[float]] = {}
+        # D4d: a first unanswered broadcast owes one confirming attempt. An
+        # attempt that runs while one is owed is the confirm, and its own misses
+        # owe nothing (so confirms never chain).
+        self._confirm_owed = False
+        self._confirming = False
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -149,6 +154,17 @@ class InspectProbe:
                 )
                 self._thread.start()
 
+    def confirm(self) -> None:
+        """Owe one confirming attempt at the end of the shared interval.
+
+        Ignored while a confirm runs, so a confirm's own misses owe no further one.
+        """
+        with self._lock:
+            if self._confirming:
+                return
+            self._confirm_owed = True
+        self.trigger()
+
     def stop(self, timeout: float | None = None) -> None:
         """Stop the probe thread, waiting up to ``timeout`` for a running refresh.
 
@@ -198,7 +214,16 @@ class InspectProbe:
             wake.clear()
             started = self._clock()
             self._next_allowed = started + self._min_interval_s
+            with self._lock:
+                confirming = self._confirming = self._confirm_owed
+                self._confirm_owed = False
             answered = self._attempt()
+            with self._lock:
+                self._confirming = False
+                # Nothing ran: the confirm is still owed.
+                self._confirm_owed = self._confirm_owed or (
+                    confirming and answered is None
+                )
             if answered is None:
                 # Another refresh held the slot: owe one rather than drop it.
                 wake.set()

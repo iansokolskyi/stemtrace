@@ -6,6 +6,7 @@ refresher; only the Celery ``Inspect`` and the transport are fakes (Celery 5.6.3
 broker is unreachable).
 """
 
+import itertools
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState, WorkerEvent, WorkerEventType
+from stemtrace.server import store as store_module
 from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.fastapi.extension import StemtraceExtension
@@ -204,8 +206,16 @@ def test_e2e_a_silent_fleet_after_a_completed_inspect_gives_the_item(
     with fed(consumer, stream):
         # Some worker answered an inspect earlier, so the server can hear workers.
         registry = extension.worker_registry
-        registry.apply_stats_reply({}, {"celery@probe": (9, [])})
+        registry.apply_ping_reply(["celery@probe"])  # a ping answer proves the channel
         registry.mark_shutdown("celery@probe", 9)
+        # Each broadcast completes 3 s of monotonic time after the last (D4d reading 3).
+        ticks = itertools.count(1000, 3)
+        monkeypatch.setattr(store_module, "_monotonic", lambda: float(next(ticks)))
+        monkeypatch.setattr(routes, "_monotonic", lambda: float(next(ticks)))
+
+        assert items_of(client) == []  # one unanswered broadcast is not evidence
+        # The unit-test probe is stubbed (see conftest); the probe's own confirm is
+        # proved in test_fleet_alert_probe.py. A second request is the second miss.
         assert items_of(client) == [("no_workers_online", None, None, 1)]
 
 

@@ -195,7 +195,8 @@ async def test_ping_only_refresh_moves_the_refresher_clock_but_not_the_authority
 
     # fact 8: the refresher's clock advances on every refresh that returns,
     # which is why the authority can't reuse it.
-    assert refresher._last_refresh > 0.0
+    assert refresher._failures == 0
+    assert refresher.ready_in() > 0.0
     assert not _stamped(registry)
 
 

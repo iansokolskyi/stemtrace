@@ -1770,10 +1770,10 @@ class TestInspectRateLimiting:
         assert r2.status_code == 200
         assert calls["n"] == 1
 
-    def test_workers_endpoint_refresh_skips_when_inner_interval_check_trips(
+    def test_workers_endpoint_refresh_skips_when_the_interval_check_trips(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the inner rate-limit check trips, refresh should return before calling inspect."""
+        """If the rate-limit check trips, refresh should return before calling inspect."""
         store = GraphStore()
         worker_registry = WorkerRegistry()
 
@@ -1782,8 +1782,8 @@ class TestInspectRateLimiting:
         def _fake_get_inspector(_url: str, **_: object) -> None:
             called["n"] += 1
 
-        # Outer check passes (2.1s since last=0), inner check fails (<2s).
-        values = iter([2.1, 0.1])
+        # One atomic check with the in-flight test (D7c): 0.1 s since last=0.
+        values = iter([0.1])
         monkeypatch.setattr(routes, "_monotonic", lambda: next(values))
         monkeypatch.setattr(routes, "_get_inspector", _fake_get_inspector)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import logging
@@ -12,7 +13,7 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Query
@@ -400,6 +401,36 @@ def _node_to_graph_response(
     )
 
 
+# kombu 5.6.2, celery 5.6.3, amqp 5.3.1, redis 8.1.0. Inspect reads
+# ``Connection.default_channel``, whose ``_ensure_connection`` runs ``retry_over_time``
+# (kombu/utils/functional.py) with ``timeout=connect_timeout`` and ``max_retries=None``: the
+# deadline is checked only after an attempt fails, with a 2 s sleep between attempts, so a
+# refused port costs 3 attempts (about 6 s) per call. ``transport_options['max_retries']``
+# (read by ``_extract_failover_opts``) set to 0 makes the first failure raise. One attempt is
+# bounded by the socket connect timeout: amqp ``Transport._connect`` calls
+# ``sock.settimeout(connect_timeout)``; for Redis, kombu's ``socket_connect_timeout`` (default
+# None: the OS TCP timeout, about 2 minutes) goes to redis-py. Name resolution is unbounded.
+# After the connect, nothing bounds a read by default: kombu's Redis ``Channel.__init__`` pings
+# and ``_size`` reads with ``socket_timeout`` None, and amqp ``Transport._read`` blocks on a
+# socket set back to blocking mode (``_init_socket``), so a broker that goes quiet hangs the
+# attempt. ``socket_timeout`` (Redis) and ``read_timeout``/``write_timeout`` (amqp, passed by
+# kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait. A call
+# that times out still costs about 2.5 s on Redis and 3 s on RabbitMQ (its connect, then
+# the read timeout, measured), so a whole attempt ends within about 5 s.
+_INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
+_INSPECT_IO_TIMEOUT_SECONDS = 1.0
+_INSPECT_CONNECT_BOUNDS: dict[str, object] = {
+    "broker_connection_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
+    "broker_transport_options": {
+        "max_retries": 0,
+        "socket_connect_timeout": _INSPECT_CONNECT_TIMEOUT_SECONDS,
+        "socket_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
+        "read_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
+        "write_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
+    },
+}
+
+
 def _get_inspector(
     broker_url: str | None,
     *,
@@ -421,7 +452,7 @@ def _get_inspector(
     # accidentally treating this as `loader=...` (which can import stdlib
     # modules like `inspect` and crash during app finalization).
     try:
-        app = Celery("stemtrace", broker=broker_url)
+        app = Celery("stemtrace", broker=broker_url, changes=_INSPECT_CONNECT_BOUNDS)
         # Celery's Inspect signature differs by version. Newer versions accept
         # `timeout=...`, older versions raise TypeError.
         with contextlib.suppress(TypeError):
@@ -436,10 +467,17 @@ def _get_inspector(
         return None
 
 
+class _InspectOutcome(NamedTuple):
+    """What one refresh learned: who answered, and whether every call finished."""
+
+    answered: frozenset[str]
+    complete: bool
+
+
 def _refresh_worker_registry_from_inspect(
     worker_registry: WorkerRegistry,
     inspector: Inspect,
-) -> frozenset[str]:
+) -> _InspectOutcome | None:
     """Refresh worker registry from Celery inspect (best-effort).
 
     This supports "late join" scenarios where the server missed worker_ready
@@ -457,7 +495,8 @@ def _refresh_worker_registry_from_inspect(
         inspector: Celery inspector to query.
 
     Returns:
-        The nodenames that answered (stats, else ping).
+        The nodenames that answered (stats, else ping) and whether every call
+        completed, or None when ``stats()`` failed (the caller backs off).
     """
     # The replies describe the workers as of now, but the consumer keeps
     # applying worker events while inspect waits (up to 0.5 s per call).
@@ -467,31 +506,40 @@ def _refresh_worker_registry_from_inspect(
     stats: dict[str, object] | None = None
     registered: dict[str, object] | None = None
 
-    stats_completed = False
     try:
         stats = inspector.stats()
         # Celery 5.6.3 Inspect._prepare returns None for an empty reply; kombu
         # 5.6.2 Mailbox._broadcast -> Connection.default_channel raises when the
         # broker is unreachable. So returning at all means the broadcast ran.
-        stats_completed = True
     except Exception:
+        # Whatever the class: registered() and ping() would each run the whole
+        # connect (or wait out a read timeout) again, so stop at the first failure.
         logger.debug("inspect stats() failed", exc_info=True)
+        return None
 
-    with contextlib.suppress(Exception):
+    complete = True
+    try:
         registered = inspector.registered()
+    except Exception:  # noqa: BLE001  best-effort: a failed call applies what stats() gave
+        complete = False
+        if not stats:
+            # A broken connection: ping() would only wait out another timeout. The empty
+            # stats() still stamps the broadcast, as when no one answers a ping.
+            worker_registry.apply_ping_reply((), stats_completed=True)
+            return _InspectOutcome(frozenset(), complete)
 
     # Fallback: if stats is unavailable, at least refresh online status via ping().
     # This keeps the Workers tab responsive even for minimal Celery setups.
     if not stats:
         active: dict[str, object] | None = None
-        with contextlib.suppress(Exception):
+        try:
             active = inspector.ping()
-        if not active and not stats_completed:
-            return frozenset()
+        except Exception:  # noqa: BLE001  best-effort: same as registered()
+            complete = False
         # An empty stats() that completed still stamps the broadcast, after the
         # pings: nobody answered, which is evidence for silent workers.
-        worker_registry.apply_ping_reply(active or (), stats_completed=stats_completed)
-        return frozenset(active or ())
+        worker_registry.apply_ping_reply(active or (), stats_completed=True)
+        return _InspectOutcome(frozenset(active or ()), complete)
 
     # If we got a non-empty stats response, workers that didn't answer go
     # offline (an unanswered inspect doesn't prove the process closed, so a
@@ -505,7 +553,7 @@ def _refresh_worker_registry_from_inspect(
         tasks = _tasks_for_worker_key(registered, nodename) if pid else None
         replies[nodename] = (pid, tasks)
     worker_registry.apply_stats_reply(seen, replies)
-    return frozenset(replies)
+    return _InspectOutcome(frozenset(replies), complete)
 
 
 def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
@@ -525,16 +573,22 @@ def _is_consumer_degraded(consumer: AsyncEventConsumer | None) -> bool:
 
 _INSPECT_REFRESH_MIN_INTERVAL_SECONDS = INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 _INSPECT_TIMEOUT_SECONDS = 0.5
+_INSPECT_BACKOFF_START_SECONDS = 2.0
+_INSPECT_BACKOFF_MAX_SECONDS = 60.0
+_INSPECT_FAILURES_MAX = 64
+# One attempt is bounded at about 5 s (D7a reading 1); the margin keeps a waiter
+# under the client's 10 s timeout. On expiry the request evaluates current state.
+_INSPECT_WAIT_SECONDS = 7.0
 
 
 class _InspectRefresher:
-    """Rate-limited, non-blocking worker registry refresh from Celery inspect.
+    """Rate-limited worker registry refresh from Celery inspect that never blocks the loop.
 
     Runs at most one refresh at a time and at most one per
     ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
-    in progress, or a recent one, returns at once instead of waiting. Failures
-    are swallowed (the refresh is best-effort) and don't count as a refresh,
-    so the next request retries. State is per router instance.
+    in progress waits for it (bounded, no thread held); one still paced out
+    returns at once. A failed attempt counts too: the next waits 2, 4, 8 ... up to 60 s, and a
+    success resets that. The probe and every route read the same clock.
     """
 
     def __init__(
@@ -544,36 +598,67 @@ class _InspectRefresher:
         self._worker_registry = worker_registry
         self._broker_url = broker_url
         self._lock = threading.Lock()
-        self._last_refresh: float = 0.0
+        # Guards the in-flight check against the release, so a waiter can't miss it.
+        self._waiters_lock = threading.Lock()
+        self._waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = []
+        self._pace_lock = threading.Lock()
+        self._last_attempt: float = 0.0
+        self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+        self._failures = 0
 
-    def _refreshed_recently(self) -> bool:
-        return _monotonic() - self._last_refresh < _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    def _paced_out(self) -> bool:
+        with self._pace_lock:
+            return _monotonic() - self._last_attempt < self._wait_s
 
     def ready_in(self) -> float:
-        """Seconds until the last successful refresh is a full interval old."""
-        if self._last_refresh <= 0.0:
-            return 0.0
-        return max(
-            0.0,
-            self._last_refresh + _INSPECT_REFRESH_MIN_INTERVAL_SECONDS - _monotonic(),
-        )
+        """Seconds until the next attempt is allowed (interval or failure backoff)."""
+        with self._pace_lock:
+            if self._last_attempt <= 0.0:
+                return 0.0
+            return max(0.0, self._last_attempt + self._wait_s - _monotonic())
+
+    def note_new_node(self, _nodename: str) -> None:
+        """Drop the failure backoff: a nodename we just learned proves the broker delivers."""
+        with self._pace_lock:
+            self._failures = 0
+            self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+
+    def _record(self, *, succeeded: bool) -> None:
+        """Count an attempt toward pacing: an interval after a success, else a backoff."""
+        with self._pace_lock:
+            if succeeded:
+                self._failures = 0
+                self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+            else:
+                # Doubling the wait (not 2**failures) can't overflow; the count is capped too.
+                self._wait_s = (
+                    _INSPECT_BACKOFF_START_SECONDS
+                    if self._failures == 0
+                    else min(self._wait_s * 2, _INSPECT_BACKOFF_MAX_SECONDS)
+                )
+                self._failures = min(self._failures + 1, _INSPECT_FAILURES_MAX)
+            self._last_attempt = _monotonic()
 
     def _inspect_and_apply(
         self, worker_registry: WorkerRegistry, broker_url: str
     ) -> frozenset[str]:
-        """Ask Celery and apply the reply; a failure doesn't count as a refresh.
+        """Ask Celery and apply the reply; a failure backs the next attempt off.
 
         Returns:
             The nodenames that answered (empty on a failure).
         """
         inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
         if inspector is None:
+            # No inspector is a failed attempt too: no back-to-back retries (D7c).
+            self._record(succeeded=False)
             return frozenset()
-        answered: frozenset[str] = frozenset()
+        outcome: _InspectOutcome | None = None
         with contextlib.suppress(Exception):
-            answered = _refresh_worker_registry_from_inspect(worker_registry, inspector)
-            self._last_refresh = _monotonic()
-        return answered
+            outcome = _refresh_worker_registry_from_inspect(worker_registry, inspector)
+        # A half-finished refresh (stats() answered, registered() or ping() didn't)
+        # applied what it got but still backs off: the broker is struggling.
+        self._record(succeeded=outcome is not None and outcome.complete)
+        return outcome.answered if outcome else frozenset()
 
     def refresh_blocking(self) -> frozenset[str] | None:
         """Refresh on the calling thread; the probe paces it with ``ready_in``.
@@ -591,27 +676,117 @@ class _InspectRefresher:
         try:
             return self._inspect_and_apply(worker_registry, broker_url)
         finally:
+            self._end_flight()
+
+    def _end_flight(self) -> None:
+        """Release the single-flight lock and wake every request waiting on it."""
+        with self._waiters_lock:
             self._lock.release()
+            waiters, self._waiters = self._waiters, []
+        for loop, future in waiters:
+            # A closed loop has no waiter left to wake.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_resolve_waiter, future)
+
+    def _start_or_join(self) -> asyncio.Future[None] | _Flight | None:
+        """Start a flight (its handle), join the one running (a future), or skip (None).
+
+        The acquire itself decides "in flight", so the probe, which takes the
+        lock without ``_waiters_lock``, can't slip in between a check and it.
+        """
+        with self._waiters_lock:
+            if not self._lock.acquire(blocking=False):
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[None] = loop.create_future()
+                self._waiters.append((loop, future))
+                return future
+            if self._paced_out():
+                self._lock.release()
+                return None
+            return _Flight()
+
+    def _mark_flight(self, flight: _Flight, *, thread: bool) -> None:
+        """Note that the attempt's thread or its starter is done; the second ends the flight.
+
+        Both must be done: a cancelled starter must not free the lock under a
+        running attempt, and the starter evaluates before the next attempt starts.
+        """
+        with self._waiters_lock:
+            if thread:
+                flight.thread_done = True
+            else:
+                flight.starter_done = True
+            if not (flight.thread_done and flight.starter_done):
+                return
+        self._end_flight()
+
+    def _run_flight(
+        self, flight: _Flight, worker_registry: WorkerRegistry, broker_url: str
+    ) -> frozenset[str]:
+        """Run the attempt on a pool thread, unless its starter gave up before it began."""
+        with self._waiters_lock:
+            if flight.abandoned:
+                return frozenset()
+            flight.started = True
+        try:
+            return self._inspect_and_apply(worker_registry, broker_url)
+        finally:
+            self._mark_flight(flight, thread=True)
+
+    async def _wait_for_flight(self, future: asyncio.Future[None]) -> None:
+        """Wait for the attempt in flight, at most ``_INSPECT_WAIT_SECONDS``."""
+        try:
+            await asyncio.wait_for(future, _INSPECT_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.debug("Inspect still running; evaluating current state")
+        finally:
+            with self._waiters_lock, contextlib.suppress(ValueError):
+                self._waiters.remove((asyncio.get_running_loop(), future))
 
     async def maybe_refresh(self) -> None:
-        """Refresh the worker registry unless disabled, recent, or in progress."""
+        """Refresh the worker registry unless disabled or paced out.
+
+        A refresh already in flight is waited for, never repeated.
+        """
         worker_registry = self._worker_registry
         broker_url = self._broker_url
         if worker_registry is None or broker_url is None:
             return
-        if self._refreshed_recently():
+        started = self._start_or_join()
+        if isinstance(started, asyncio.Future):
+            await self._wait_for_flight(started)
             return
-        # Don't block requests waiting for an in-progress refresh.
-        if not self._lock.acquire(blocking=False):
+        if started is None:
             return
         try:
-            if self._refreshed_recently():
-                return
             await run_in_threadpool(
-                self._inspect_and_apply, worker_registry, broker_url
+                self._run_flight, started, worker_registry, broker_url
             )
         finally:
-            self._lock.release()
+            with self._waiters_lock:
+                if not started.started:
+                    # Cancelled before the thread began: nothing will run or end it.
+                    started.abandoned = started.thread_done = True
+            self._mark_flight(started, thread=False)
+
+
+class _Flight:
+    """One attempt's progress, shared by the starting request and its pool thread."""
+
+    __slots__ = ("abandoned", "started", "starter_done", "thread_done")
+
+    def __init__(self) -> None:
+        """Start with nothing run: not started, abandoned or done."""
+        self.started = False
+        self.abandoned = False
+        self.thread_done = False
+        self.starter_done = False
+
+
+def _resolve_waiter(future: asyncio.Future[None]) -> None:
+    """Wake a waiter unless it already timed out or was cancelled."""
+    if not future.done():
+        future.set_result(None)
 
 
 def _wire_inspect_probe(
@@ -633,7 +808,11 @@ def _wire_inspect_probe(
     own = probe is None
     probe = probe or InspectProbe()
     probe.bind(refresher)
+    # Before the probe's trigger: a join clears the backoff, then asks for its inspect.
+    worker_registry.add_new_node_listener(refresher.note_new_node)
     worker_registry.add_new_node_listener(probe.trigger)
+    # A first unanswered broadcast owes one confirming attempt (D4d).
+    worker_registry.add_first_miss_listener(probe.confirm)
     if own:
         router.add_event_handler("startup", probe.start)
         router.add_event_handler("shutdown", probe.stop)
