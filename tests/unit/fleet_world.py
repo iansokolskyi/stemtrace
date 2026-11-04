@@ -155,6 +155,7 @@ class World:
         self.answered_last: frozenset[str] = frozenset()
         # Who answered each of the last two completed broadcasts (D4d invariant).
         self.answered_window: list[frozenset[str]] = []
+        self.window_at: list[datetime] = []  # when each of them completed
         self.had_miss_reset: set[str] = set()  # answered after a miss (row 28n)
         # D4d reading 1: nodes that already owed a confirm since they last answered.
         self.confirm_spent: set[str] = set()
@@ -536,12 +537,14 @@ class World:
         now = self.clock.now
         before = {n: len(o.misses) for n, o in self.nodes.items()}
         answered: set[str] = set()
+        applied: set[str] = set()  # answers the registry took (not dropped as stale)
         completed = not plan.stats_raises
         if plan.stats_answered:
             self.channel_proven = True
             for name in plan.stats_answered:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
+                    applied.add(name)
                     self._answer(name, with_pid=plan.pids, pid=plan.answers.get(name))
         else:
             # Written from the D7a spec: a stats() error ends the attempt (reading 4); empty
@@ -551,12 +554,14 @@ class World:
             for name in [] if plan.ping_raises or not ping_runs else plan.ping_answers:
                 answered.add(name)
                 self.channel_proven = True
+                applied.add(name)
                 self._answer(name, with_pid=False)
         if completed:
             self._count_misses(now, answered, before)
             self.completed = now
             self.answered_last = frozenset(answered)
-            self.answered_window = [*self.answered_window[-1:], frozenset(answered)]
+            self.answered_window = [*self.answered_window[-1:], frozenset(applied)]
+            self.window_at = [*self.window_at[-1:], now]
             self.answered_latest = {
                 n for n in answered if n not in self.reported_stopped
             }
@@ -621,9 +626,11 @@ class World:
         # late stop of an older process leaves (D4b "stop memory", D4e reading 1).
         remembered = {n for n in self.stopped_at if n not in self.nodes}
         # Not once the cleanup (30 min) may have removed a worker that answered long ago.
-        fresh = self.completed is not None and now - self.completed <= CLEANUP
-        for answered in self.answered_window if fresh else []:
-            if answered - self.reported_stopped - remembered:
+        for answered, at in zip(self.answered_window, self.window_at, strict=True):
+            live = {
+                n for n in answered if n in self.nodes
+            }  # the cleanup may have removed the rest
+            if now - at <= CLEANUP and live - self.reported_stopped - remembered:
                 assert not got, "offline while a worker answered a recent broadcast"
         for name, at in self.last_event.items():
             stop = self.stop_ts.get(name)
