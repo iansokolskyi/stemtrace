@@ -27,6 +27,7 @@ from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
+STRICT_PROBE_LEAKS = True
 REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE_A, NODE_B, NODE_C = "celery@a", "celery@b", "celery@c"
@@ -143,7 +144,12 @@ def fleet(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeFleet]:
     monkeypatch.setattr(inspect_probe, "_clock", clock.now)
     monkeypatch.setattr(inspect_probe, "_wait", clock.wait)
     yield fake
+    # P5 abandons a probe blocked on the gate on purpose: release it and wait for
+    # it here, while this test's fakes are still patched in.
     fake.first_attempt_gate.set()
+    for thread in threading.enumerate():
+        if thread.name == inspect_probe._THREAD_NAME:
+            thread.join(timeout=BOUND_S)
 
 
 def extension_app() -> tuple[StemtraceExtension, FastAPI]:

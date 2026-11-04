@@ -23,6 +23,7 @@ from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.inspect_probe import InspectProbe
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
+STRICT_PROBE_LEAKS = True
 REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE = "w1@host"
