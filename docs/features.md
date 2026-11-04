@@ -460,7 +460,8 @@ with evidence** when all of these hold:
    after the previous counted one (back-to-back page loads) doesn't add a miss.
 3. The worker didn't answer either call. Any answer (`stats()` or ping) starts the count over.
    A `worker_ready` or task event stamped after a miss moves the worker's last sign of life past
-   it and drops that miss. A replayed event stamped earlier drops nothing.
+   it and drops that miss. A replayed event stamped earlier, a `worker_ready` included, drops
+   nothing and never moves the last sign of life back.
 4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
    minutes old.
 

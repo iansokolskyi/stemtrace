@@ -431,7 +431,7 @@ class WorkerRegistry:
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
-            timestamp = event_timestamp or _utcnow()
+            timestamp = ensure_tz_aware(event_timestamp or _utcnow())
 
             # Update global task definitions map (best-effort, last-writer-wins).
             if task_definitions:
@@ -441,7 +441,10 @@ class WorkerRegistry:
             if worker_id in self._workers:
                 self._workers[worker_id].registered_tasks = tasks
                 self._workers[worker_id].pid = pid
-                self._workers[worker_id].last_seen = timestamp
+                # Never back: older counted misses would count again (D4d reading 2).
+                self._workers[worker_id].last_seen = max(
+                    self._workers[worker_id].last_seen, ensure_tz_aware(timestamp)
+                )
                 self._workers[worker_id].status = WorkerStatus.ONLINE
                 self._workers[worker_id].shutdown_reported = False
                 self._workers[worker_id].superseded = False

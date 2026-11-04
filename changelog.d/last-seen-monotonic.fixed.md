@@ -1,0 +1,1 @@
+- A `worker_ready` stamped earlier than a worker's last sign of life (a replay, or a worker clock that stepped back) no longer moves that last sign of life back. Before, it brought old missed inspect calls back, so the fleet item `no_workers_online` could fire while the worker was still sending events.
