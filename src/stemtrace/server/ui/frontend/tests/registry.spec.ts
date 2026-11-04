@@ -444,6 +444,26 @@ test.describe('Registry page', () => {
     await expect(table(page).getByRole('columnheader', { name: 'Group' })).toBeVisible()
   })
 
+  test('the Group column is left out when every task is "ungrouped"', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry([
+      entry('app.jobs.add', { task_group: 'ungrouped' }),
+      entry('app.jobs.sub', { task_group: 'ungrouped' }),
+    ])
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    await expect(table(page).getByRole('columnheader', { name: 'Status' })).toBeVisible()
+    await expect(table(page).getByRole('columnheader', { name: 'Group' })).toHaveCount(0)
+  })
+
+  test('a never-run note names two workers and counts the rest', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    mockApi?.setRegistry([neverRun('app.jobs.wide', ['w-1', 'w-2', 'w-3', 'w-4', 'w-5'])])
+    await loadRegistryPage(page, () => page.goto('/registry'))
+    await expect(rowOf(page, 'app.jobs.wide').getByTestId('registry-note')).toHaveText(
+      'Registered by w-1, w-2 and 3 more; it has not run yet.',
+    )
+  })
+
   test('the page asks for a refreshed registry and the badge for the stored one', async ({
     page,
   }) => {

@@ -43,8 +43,9 @@ function RegistryPage() {
   const [query, setQuery] = useState('')
   const tasks = data?.tasks ?? []
   const shown = tasks.filter((task) => matchesQuery(task, query))
-  // A group column only when the server sends groups (older servers do not)
-  const showGroup = tasks.some((task) => task.task_group)
+  // A group column only when some task has a real group: older servers send none, and a default
+  // install sends "ungrouped" on every row
+  const showGroup = tasks.some((task) => task.task_group && task.task_group !== 'ungrouped')
 
   return (
     <div className="space-y-4">
