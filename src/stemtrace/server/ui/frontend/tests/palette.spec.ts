@@ -407,8 +407,15 @@ test.describe('lookups and failures', () => {
     await page.route(new RegExp(`/api/tasks/${receipt.task_id}$`), (route) =>
       route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
     )
+    const refetch = page.waitForResponse(
+      (r) => r.url().endsWith(`/api/tasks/${receipt.task_id}`) && r.status() === 500,
+    )
     await page.keyboard.type(receipt.task_id)
     await page.clock.runFor(300)
+    await refetch
+    // React renders the failed refetch a moment after the response (a real-time wait: the page
+    // clock is faked), so an absent message means something only after it
+    await new Promise((resolve) => setTimeout(resolve, 300))
     await expect(options(page).filter({ hasText: receipt.task_id })).toBeVisible()
     await expect(dialog(page).getByRole('status')).toHaveCount(0)
   })
