@@ -304,6 +304,7 @@ def test_p6_real_fleet_killed_before_any_request_gives_the_item_hours_later(
             items = _fleet_items(client, prefix, "?refresh=false")
         confirmed_after = time.monotonic() - started
 
+    print(f"confirmed {confirmed_after:.2f}s after the first request")
     assert first == [], "one unanswered broadcast must not be evidence"
     assert items == [("no_workers_online", 1)]
     assert confirmed_after <= CONFIRM_BOUND_S, f"confirmed after {confirmed_after:.1f}s"
