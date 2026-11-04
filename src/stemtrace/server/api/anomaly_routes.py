@@ -188,6 +188,7 @@ def add_anomaly_routes(
         responses={422: {"description": "Unknown kind, or limit/offset out of range"}},
     )
     async def list_anomalies(
+        *,
         kind: Annotated[
             str | None,
             Query(description=f"Only this kind: {', '.join(_KINDS)}"),
@@ -200,6 +201,16 @@ def add_anomaly_routes(
         ] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
+        refresh: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Refresh the worker registry from Celery inspect first, at most "
+                    "every 2 s and backing off to 60 s while the broker is "
+                    "unreachable. False evaluates on current registry state."
+                )
+            ),
+        ] = True,
     ) -> AnomalyListResponse:
         """Tasks that are stuck, interrupted or unregistered, oldest ``since`` first.
 
@@ -213,7 +224,8 @@ def add_anomaly_routes(
                 status_code=422,
                 detail=f"Unknown kind {kind}; valid kinds: {', '.join(_KINDS)}",
             )
-        await refresher.maybe_refresh()
+        if refresh:
+            await refresher.maybe_refresh()
         evaluation = await evaluator.evaluate()
         found = [
             a

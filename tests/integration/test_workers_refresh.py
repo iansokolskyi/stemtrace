@@ -19,6 +19,14 @@ class _FakeInspect:
     def __init__(self, ping_result: dict[str, Any] | None) -> None:
         self._ping_result = ping_result
 
+    def stats(self) -> dict[str, Any] | None:
+        return (
+            None  # remote control stats unavailable: the broadcast ran, nobody answered
+        )
+
+    def registered(self) -> dict[str, Any] | None:
+        return None
+
     def ping(self) -> dict[str, Any] | None:
         return self._ping_result
 

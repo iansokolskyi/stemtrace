@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -20,6 +21,7 @@ from stemtrace.core.graph import (
     flow_summary,
 )
 from stemtrace.server.api.schemas import WorkerStatus
+from stemtrace.server.inspect_probe import INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 from stemtrace.server.stats import RunRecord
 
 if TYPE_CHECKING:
@@ -262,6 +264,11 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
 
 
+def _monotonic() -> float:
+    """A monotonic reading (a seam for tests); the miss gap is measured on it."""
+    return time.monotonic()
+
+
 def _utcnow() -> datetime:
     """The registry's clock (a seam for tests that replay a timeline)."""
     return datetime.now(timezone.utc)
@@ -398,16 +405,22 @@ class WorkerRegistry:
         # make an unlisted nodename live again. Cleared by a worker_ready or
         # stats reply naming a pid; bounded like ``_unlisted``.
         self._stopped_at: dict[str, tuple[datetime, datetime]] = {}
-        # The latest inspect ``stats()`` broadcast that completed, stamped in
-        # the locked step that applied its answers, and who answered it.
-        self._inspect_completed_at: datetime | None = None
-        self._answered_last: frozenset[str] = frozenset()
+        # Nodename -> its last two counted misses (completion on the wall clock,
+        # for comparing with ``last_seen``, and on the monotonic clock, for the
+        # 2 s gap), stamped in the locked step that applied that broadcast's
+        # answers. A miss is evidence only while it completed after the node's
+        # ``last_seen``; two make it silent (D4d). An answer drops them.
+        self._misses: dict[str, list[tuple[datetime, float]]] = {}
+        # Nodenames that already owed a confirm since they last answered: events
+        # and later misses don't re-arm it (D4d reading 1).
+        self._confirm_spent: set[str] = set()
         # Whether any worker has answered an inspect since the server started.
         # Until then an unanswered broadcast may only mean the server can't hear
         # workers (remote control off, an unshared control setting), not that
         # they are gone.
         self._channel_proven = False
         self._new_node_listeners: list[Callable[[str], None]] = []
+        self._first_miss_listeners: list[Callable[[], None]] = []
         self._announced_unregistered: dict[str, None] = {}
         self._lock = threading.RLock()
 
@@ -459,6 +472,8 @@ class WorkerRegistry:
     ) -> None:
         """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
+            # A worker_ready is a new process (D4d reading 7): it can owe a confirm again.
+            self._confirm_spent.discard(hostname)
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
@@ -532,6 +547,7 @@ class WorkerRegistry:
             now: When the server received it (tests); defaults to now.
         """
         with self._lock:
+            self._forget_misses(hostname)
             self._event_generation[hostname] = (
                 self._event_generation.get(hostname, 0) + 1
             )
@@ -639,6 +655,7 @@ class WorkerRegistry:
             now: When the node answered (tests); defaults to now.
         """
         with self._lock:
+            self._forget_misses(hostname)
             live_id = (
                 self._newest_by_node.get(hostname)
                 if pid is None
@@ -679,6 +696,16 @@ class WorkerRegistry:
         with self._lock:
             if listener not in self._new_node_listeners:
                 self._new_node_listeners.append(listener)
+
+    def add_first_miss_listener(self, listener: Callable[[], None]) -> None:
+        """Call ``listener()`` when a completed broadcast is a nodename's first miss.
+
+        It owes that nodename one confirming broadcast (D4d). Same threading
+        contract as :meth:`add_new_node_listener`; adding it again is a no-op.
+        """
+        with self._lock:
+            if listener not in self._first_miss_listeners:
+                self._first_miss_listeners.append(listener)
 
     def _announce_unregistered(self, hostname: str) -> bool:
         """Whether a task event from an unregistered node is the first one seen."""
@@ -724,6 +751,7 @@ class WorkerRegistry:
         replies: Mapping[str, tuple[int | None, list[str] | None]],
         *,
         now: datetime | None = None,
+        monotonic: float | None = None,
     ) -> None:
         """Apply a non-empty ``inspect.stats()`` reply, atomically.
 
@@ -743,6 +771,7 @@ class WorkerRegistry:
             replies: Nodename -> (pid or None, registered task names or None).
                 None tasks keep the worker's current list.
             now: When the reply arrived (tests); defaults to now.
+            monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
         with self._lock:
             known = set(self._newest_by_node)
@@ -771,19 +800,77 @@ class WorkerRegistry:
             # The broadcast completed: stamped here, after its answers are
             # applied and in the same locked step, so no evaluation sees it
             # completed while a worker that answered still looks silent.
-            self._finish_inspect(now, replies)
+            first_miss = self._finish_inspect(now, replies, monotonic)
             learned = self._registered_since(known, replies)
         self._notify_new_node(learned)
+        self._notify_first_miss(first_miss)
 
     def _registered_since(self, known: set[str], nodenames: Iterable[str]) -> list[str]:
         """The nodenames now registered that were not in ``known``. Call with the lock."""
         return [n for n in nodenames if n in self._newest_by_node and n not in known]
 
-    def _finish_inspect(self, now: datetime, answered: Iterable[str]) -> None:
-        """Stamp a completed ``stats()`` broadcast and who answered it. Hold the lock."""
-        self._inspect_completed_at = now
-        self._answered_last = frozenset(answered)
-        self._channel_proven = self._channel_proven or bool(self._answered_last)
+    def _forget_misses(self, hostname: str) -> None:
+        """Drop the counted misses and the spent confirm of a nodename. Hold the lock."""
+        self._misses.pop(hostname, None)
+        self._confirm_spent.discard(hostname)
+
+    def _notify_first_miss(self, first_miss: bool) -> None:
+        """Tell the listeners a first miss was stamped. Call without the lock."""
+        if not first_miss:
+            return
+        with self._lock:
+            listeners = list(self._first_miss_listeners)
+        for listener in listeners:
+            # A listener is a side channel; it must not break event handling.
+            with contextlib.suppress(Exception):
+                listener()
+
+    def _live_last_seen(self) -> dict[str, datetime]:
+        """Nodename -> latest sign of life, for every nodename not stopped. Hold the lock."""
+        seen: dict[str, datetime] = {}
+        for w in self._workers.values():
+            if not (w.shutdown_reported or w.superseded):
+                seen[w.hostname] = max(w.last_seen, seen.get(w.hostname, w.last_seen))
+        for node, at in self._unlisted.items():
+            seen[node] = max(at, seen.get(node, at))
+        return seen
+
+    def _finish_inspect(
+        self, now: datetime, answered: Iterable[str], monotonic: float | None
+    ) -> bool:
+        """Count a completed ``stats()`` broadcast as a miss for each live node that didn't answer it.
+
+        A miss counts when the broadcast completed after the node's last sign of
+        life and at least ``INSPECT_REFRESH_MIN_INTERVAL_SECONDS`` (monotonic)
+        after its previous counted miss. Hold the lock.
+
+        Returns:
+            Whether some node's first miss since it last answered is owed a confirm.
+        """
+        replied = frozenset(answered)
+        self._channel_proven = self._channel_proven or bool(replied)
+        for node in replied:
+            self._forget_misses(node)
+        live = self._live_last_seen()
+        mono = _monotonic() if monotonic is None else monotonic
+        owes_confirm = False
+        misses: dict[str, list[tuple[datetime, float]]] = {}
+        for node, last_seen in live.items():
+            if node in replied or not self._channel_proven:
+                continue
+            kept = [m for m in self._misses.get(node, []) if m[0] > last_seen]
+            if not kept and now > last_seen:
+                kept = [(now, mono)]
+                if node not in self._confirm_spent:
+                    self._confirm_spent.add(node)
+                    owes_confirm = True
+            elif kept and mono - kept[-1][1] >= INSPECT_REFRESH_MIN_INTERVAL_SECONDS:
+                kept = [*kept, (now, mono)][-2:]
+            if kept:
+                misses[node] = kept
+        self._misses = misses
+        self._confirm_spent &= live.keys()
+        return owes_confirm
 
     def _see_unlisted(self, nodename: str, seen_at: datetime) -> None:
         """A task event or reply names a nodename with no worker: it is live, until stopped."""
@@ -799,16 +886,15 @@ class WorkerRegistry:
             del self._unlisted[oldest]
 
     def _is_silent(self, nodename: str, last_seen: datetime, cutoff: datetime) -> bool:
-        """Silent with evidence: an inspect completed after ``last_seen`` without an answer.
+        """Silent with evidence: two counted ``stats()`` misses after ``last_seen``.
 
         ``cutoff`` is now minus ``WORKER_STALE_TIMEOUT_MINUTES``.
         """
-        completed = self._inspect_completed_at
+        misses = self._misses.get(nodename, [])
         return (
             self._channel_proven
-            and completed is not None
-            and completed > last_seen
-            and nodename not in self._answered_last
+            and len(misses) >= 2
+            and misses[0][0] > last_seen
             and last_seen < cutoff
         )
 
@@ -855,6 +941,7 @@ class WorkerRegistry:
         *,
         stats_completed: bool = False,
         now: datetime | None = None,
+        monotonic: float | None = None,
     ) -> None:
         """Apply an ``inspect.ping()`` reply.
 
@@ -870,16 +957,19 @@ class WorkerRegistry:
                 with an empty reply: then the broadcast is stamped here, after
                 the pings are applied.
             now: When the reply arrived (tests); defaults to now.
+            monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
         with self._lock:
             answered = list(nodenames)
             now = now or _utcnow()
             for nodename in answered:
                 self.mark_node_alive(nodename, now=now)
+            first_miss = False
             if stats_completed:
-                self._finish_inspect(now, answered)
+                first_miss = self._finish_inspect(now, answered, monotonic)
             elif answered:
                 self._channel_proven = True
+        self._notify_first_miss(first_miss)
 
     def get_registered_tasks(self, hostname: str, pid: int) -> list[str]:
         """Get registered tasks for a specific worker.
