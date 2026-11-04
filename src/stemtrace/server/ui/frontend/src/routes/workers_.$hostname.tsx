@@ -31,7 +31,7 @@ function WorkerPage() {
   if (isLoading) {
     return <p className="m-0 text-xs text-muted">Loading worker...</p>
   }
-  if (error) {
+  if (error && !data) {
     return (
       <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
         Failed to load worker
@@ -52,11 +52,16 @@ function WorkerPage() {
   const worker = leadingWorker(processes)
   return (
     <div>
+      {error && (
+        <p role="alert" data-testid="refresh-failed" className="mt-0 mb-3 text-xs text-failure-t">
+          Couldn't refresh this worker; showing the last result.
+        </p>
+      )}
       <WorkerHeader worker={worker} />
       <div className="grid grid-cols-1 items-start gap-x-4 xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="min-w-0">
           <RegisteredTasks tasks={registeredTasks(processes)} />
-          <RecentRuns hostname={hostname} />
+          <RecentRuns key={hostname} hostname={hostname} />
         </div>
         <Details worker={worker} />
       </div>

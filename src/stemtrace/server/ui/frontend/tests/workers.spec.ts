@@ -54,6 +54,24 @@ test.describe('Workers page', () => {
     mockApi = isRealMode ? null : await setupMockApi(page)
   })
 
+  test('a failed background refresh keeps the list and says so', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await page.clock.install()
+    mockApi?.setWorkers([worker({ hostname: 'celery@alpha' })])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(rowOf(page, 'celery@alpha')).toBeVisible()
+    await page.route(/\/api\/workers(\?|$)/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    // The 30 s poll, then the query's three retries (1 s, 2 s and 4 s) before it reports the error
+    await page.clock.runFor(40_000)
+    await expect(page.getByTestId('refresh-failed')).toHaveText(
+      "Couldn't refresh workers; showing the last result.",
+    )
+    await expect(rowOf(page, 'celery@alpha')).toBeVisible()
+    await expect(page.getByText('Failed to load workers')).toHaveCount(0)
+  })
+
   test('shows the heading and how many workers are online', async ({ page }) => {
     await loadWorkersPage(page, () => page.goto('/workers'))
     await expect(page.getByRole('heading', { name: 'Workers', level: 1 })).toBeVisible()

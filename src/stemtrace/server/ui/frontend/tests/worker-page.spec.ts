@@ -272,6 +272,40 @@ test.describe('Worker page', () => {
     await expect(page.getByText('Failed to load worker')).toBeVisible({ timeout: 15_000 })
   })
 
+  test('a failed background refresh keeps the page and says so', async ({ page }) => {
+    await page.clock.install()
+    api.addTasks([run('app.billing.send')])
+    await openWorker(page)
+    await expect(page.getByRole('heading', { name: HOST, level: 1 })).toBeVisible()
+    await page.route(/\/api\/workers(\?|$)/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    // The 30 s poll, then the query's three retries (1 s, 2 s and 4 s) before it reports the error
+    await page.clock.runFor(40_000)
+    await expect(page.getByTestId('refresh-failed')).toHaveText(
+      "Couldn't refresh this worker; showing the last result.",
+    )
+    await expect(page.getByRole('heading', { name: HOST, level: 1 })).toBeVisible()
+    await expect(page.getByText('Failed to load worker')).toHaveCount(0)
+  })
+
+  test('the recent runs keep their columns when a refetch brings a value for a new one', async ({
+    page,
+  }) => {
+    await page.clock.install()
+    api.addTasks([run('app.billing.send', { queue_wait_ms: null })])
+    await openWorker(page)
+    const headers = panel(page, 'Recent executions').getByRole('columnheader')
+    await expect(headers.filter({ hasText: 'Task' })).toBeVisible()
+    await expect(headers.filter({ hasText: 'Queue wait' })).toHaveCount(0)
+    api.addTasks([run('app.billing.send_again', { queue_wait_ms: 90 })])
+    const refetched = page.waitForResponse((r) => /\/api\/tasks\?.*hostname=/.test(r.url()))
+    await page.clock.runFor(31_000)
+    await refetched
+    await expect(panel(page, 'Recent executions').getByRole('row')).toHaveCount(3)
+    await expect(headers.filter({ hasText: 'Queue wait' })).toHaveCount(0)
+  })
+
   test('a nodename under a mount prefix opens', async ({ page }) => {
     await page.addInitScript(() => {
       window.__STEMTRACE_BASE__ = '/stemtrace'

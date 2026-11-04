@@ -29,9 +29,15 @@ function WorkersPage() {
         </p>
       </div>
 
+      {error && data && (
+        <p role="alert" data-testid="refresh-failed" className="m-0 text-xs text-failure-t">
+          Couldn't refresh workers; showing the last result.
+        </p>
+      )}
+
       {isLoading ? (
         <TableSkeleton />
-      ) : error ? (
+      ) : error && !data ? (
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
           Failed to load workers
         </p>
