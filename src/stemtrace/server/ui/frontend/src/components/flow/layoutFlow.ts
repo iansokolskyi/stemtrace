@@ -399,7 +399,8 @@ export function layoutFlow(
     const singleCells = shown.every((row) => row.length === 1)
     const columns = isExpanded && singleCells && shown.length > COLLAPSE_AT ? EXPANDED_COLUMNS : 1
     const trackRows = Math.max(1, Math.ceil(items.length / columns))
-    const longest = Math.max(1, ...shown.map((row) => row.length))
+    // reduce, not Math.max(...rows): spreading 200k rows overflows the call's argument limit
+    const longest = shown.reduce((most, row) => Math.max(most, row.length), 1)
     const inner =
       columns > 1
         ? columns * MEMBER_W + (columns - 1) * TRACK_GAP

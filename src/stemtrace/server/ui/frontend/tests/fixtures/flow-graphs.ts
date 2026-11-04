@@ -85,7 +85,8 @@ export function group(
     group_id: 'g',
     children: members.map((member) => member.task_id),
   })
-  return graphOf(container, ...members)
+  // Not graphOf(container, ...members): a spread of 200k members overflows the call stack
+  return Object.fromEntries([container, ...members].map((entry) => [entry.task_id, entry]))
 }
 
 /** What `GET /api/tasks/{id}` sends for one node: the node and its events. */

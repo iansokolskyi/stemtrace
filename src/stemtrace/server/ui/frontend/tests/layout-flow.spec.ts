@@ -282,6 +282,17 @@ test.describe('layoutFlow: replace()', () => {
   })
 })
 
+test.describe('layoutFlow: size', () => {
+  test('lays out an expanded group of 200,000 members, above any call-argument limit', () => {
+    const graph = group(200_000)
+
+    const layout = layoutFlow(graph, 'g', new Set(['g']))
+
+    expect(layout.tasks).toHaveLength(200_000)
+    expect(layout.containers).toHaveLength(1)
+  })
+})
+
 test.describe('layoutFlow: malformed links', () => {
   test('draws a group listed among its own children once', () => {
     const graph = group(2)
