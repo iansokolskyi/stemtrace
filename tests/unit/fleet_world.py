@@ -218,6 +218,8 @@ class World:
         elif node is not None:
             if not node.stopped:  # a ping never revives a stopped worker
                 node.last_seen = now
+                # Alive in the oracle, so no stop is held against it (as the pid branch and task()).
+                self.reported_stopped.discard(name)
         elif (
             name not in self.stopped_at
         ):  # a stopped nodename can't be revived by a ping
@@ -237,14 +239,9 @@ class World:
         if node is None or self.rng.random() >= 0.25:
             self.pid[name] += 1
         self.truth[name] = "alive"
-        # A restart the server listed under another pid always sends worker_ready
-        # (a shutdown for an unlisted pid would not stop the listed one).
-        announced = (
-            announce
-            if announce is not None
-            else (node is not None and node.listed and not node.stopped)
-            or self.rng.random() < 0.8
-        )
+        # D4e: a restart's worker_ready may be missed whatever the server knows of the
+        # name, including a listed live pid (its later stop must end that pid too).
+        announced = announce if announce is not None else self.rng.random() < 0.8
         if announced:
             self.unannounced.discard(name)
         else:
@@ -393,10 +390,7 @@ class World:
         }
         # stats() completes empty although workers are alive (a slow link): the ping
         # fallback may still answer, and registered() may still fail (D7a readings 4, 5, 8).
-        # Not while a name was restarted unannounced: a later worker_shutdown for its new
-        # pid leaves the old pid live in the registry but removes it from this oracle (a
-        # pre-existing model gap, parked: it is not an inspect rule).
-        stats_silent = up and not self.unannounced and rng.random() < 0.2
+        stats_silent = up and rng.random() < 0.2
         return Plan(
             stats_raises=not up or rng.random() < 0.05,
             registered_raises=rng.random() < 0.1,
