@@ -472,11 +472,16 @@ class ScriptedFleet:
         self.done = threading.Semaphore(0)
         self.lost: Callable[[str, int], bool] = lambda _node, _attempt: False
         self.events_between: list[str] = []
+        self.calls = 0
+        self.busy_on_calls: set[int] = set()  # calls that find the refresh slot taken
 
     def ready_in(self) -> float:
         return 0.0
 
     def refresh_blocking(self) -> frozenset[str] | None:
+        self.calls += 1
+        if self.calls in self.busy_on_calls:
+            return None
         self.attempts += 1
         wall = T0 + timedelta(seconds=self.clock.now())
         for node in self.events_between:  # events arrive between broadcasts
@@ -494,17 +499,28 @@ class ScriptedFleet:
         return frozenset(answered)
 
 
-def run_probe_until_idle(fleet: ScriptedFleet) -> int:
-    """Start a probe on a fake clock over ``fleet``; return the attempts made once it idles."""
+def drain(fleet: ScriptedFleet) -> int:
+    """Wait for the probe's attempts to stop; return the attempts made so far."""
+    assert fleet.done.acquire(timeout=BOUND_S)
+    while fleet.done.acquire(timeout=0.4):
+        assert fleet.attempts < 30, "the probe keeps confirming"
+    return fleet.attempts
+
+
+def make_probe(fleet: ScriptedFleet) -> InspectProbe:
+    """A probe on the fleet's fake clock whose first misses owe it confirms."""
     probe = InspectProbe(clock=fleet.clock.now, wait=fleet.clock.wait)
     probe.bind(fleet)
     fleet.registry.add_first_miss_listener(probe.confirm)
+    return probe
+
+
+def run_probe_until_idle(fleet: ScriptedFleet) -> int:
+    """Start a probe on a fake clock over ``fleet``; return the attempts made once it idles."""
+    probe = make_probe(fleet)
     try:
         probe.start()
-        assert fleet.done.acquire(timeout=BOUND_S)
-        while fleet.done.acquire(timeout=0.4):
-            assert fleet.attempts < 30, "the probe keeps confirming"
-        return fleet.attempts
+        return drain(fleet)
     finally:
         probe.stop()
 
@@ -564,3 +580,80 @@ def test_a_confirm_attempt_coalesced_with_a_join_is_still_a_confirm() -> None:
     attempts = run_probe_until_idle(fleet)
 
     assert attempts == 2  # c's first miss, seen by the confirm attempt, owes nothing
+
+
+# --- Reading 7: a new process re-arms the confirm (row 28s) ---------------------------------
+
+
+@pytest.mark.parametrize("same_pid", [True, False], ids=["same-pid", "new-pid"])
+def test_row28s_a_restarted_nodename_that_dies_again_is_confirmed_again(
+    same_pid: bool,
+) -> None:
+    registry = WorkerRegistry()
+    clock = FakeClock()
+    fleet = ScriptedFleet(registry, clock, ["celery@a", "celery@x"])
+    fleet.lost = lambda node, _attempt: node == "celery@x"  # x is dead from the start
+    for node in fleet.nodes:
+        registry.apply_stats_reply(
+            {}, {node: (1, [])}, now=T0 - MINUTE, monotonic=-60.0
+        )
+    probe = make_probe(fleet)
+    try:
+        probe.start()
+        assert drain(fleet) == 2  # the first miss and its confirm
+        # x restarts under the same name (a worker_ready, no inspect answer), then dies again.
+        clock._now += 180
+        ready_at = T0 + timedelta(seconds=clock.now())
+        registry.register_worker(
+            "celery@x", 1 if same_pid else 2, [], event_timestamp=ready_at
+        )
+        clock._now += 180
+        probe.trigger()  # one request, nothing else
+        attempts = drain(fleet)
+    finally:
+        probe.stop()
+
+    assert attempts == 4  # the request's attempt owes, and gets, one more confirm
+
+
+def test_row28s_registry_a_worker_ready_re_arms_and_an_ordinary_event_does_not() -> (
+    None
+):
+    registry = idle_fleet(SOLO, OTHER)
+    calls = count_first_misses(registry)
+    miss(registry, FIRST_MISS_AT)
+    assert calls == [1]
+    # An ordinary event (28q) moves last_seen but owes nothing on the next first miss.
+    event_at = FIRST_MISS_AT + 10 * TWO_S
+    registry.mark_seen(SOLO, event_at, now=event_at)
+    registry.mark_seen(OTHER, event_at, now=event_at)
+    miss(registry, event_at + TWO_S)
+    assert calls == [1]
+    # A worker_ready for each nodename (a new process): the next first miss owes again.
+    ready_at = event_at + 20 * TWO_S
+    registry.register_worker(SOLO, 1, ["app.known"], event_timestamp=ready_at)
+    registry.register_worker(OTHER, 9, ["app.known"], event_timestamp=ready_at)
+    miss(registry, ready_at + TWO_S)
+
+    assert calls == [2]
+
+
+def test_reading1_a_confirm_that_finds_the_slot_busy_is_still_owed_as_a_confirm() -> (
+    None
+):
+    registry = WorkerRegistry()
+    clock = FakeClock()
+    nodes = ["celery@a", "celery@x", "celery@y"]
+    fleet = ScriptedFleet(registry, clock, nodes)
+    # x misses the first attempt; the confirm's first try finds the slot busy; y misses
+    # only the retried attempt, which is still the confirm and so owes nothing.
+    fleet.lost = lambda node, attempt: (
+        (node == "celery@x" and attempt == 1) or (node == "celery@y" and attempt == 2)
+    )
+    fleet.busy_on_calls = {2}
+    for node in nodes:
+        registry.apply_stats_reply(
+            {}, {node: (1, [])}, now=T0 - MINUTE, monotonic=-60.0
+        )
+
+    assert run_probe_until_idle(fleet) == 2

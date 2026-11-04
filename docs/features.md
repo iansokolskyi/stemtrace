@@ -446,8 +446,9 @@ time. When a call is the first miss of a worker, the server runs one more `inspe
 one interval plus one `inspect` after the first unanswered call, when no failure backoff is in
 effect (after failures, the confirm waits for the backoff, up to 60 seconds).
 
-A worker owes at most one confirm until it answers an `inspect` call: events and later misses
-don't owe another. A call that runs as a confirm never owes a confirm itself, even when a new
+A worker owes at most one confirm until it answers an `inspect` call or starts again (a
+`worker_ready` for its nodename, or an event that revives it after a reported stop): other events
+and later misses don't owe another. A call that runs as a confirm never owes a confirm itself, even when a new
 nodename joined at the same time, so a fleet of any size costs at most one confirm per
 non-confirm call. Two misses counted while a worker was fresh become evidence once it passes
 the 3-minute window with no sign of life, without a new call; a page load refreshes first, so

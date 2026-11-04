@@ -412,6 +412,8 @@ class WorkerRegistry:
     ) -> None:
         """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
+            # A worker_ready is a new process (D4d reading 7): it can owe a confirm again.
+            self._confirm_spent.discard(hostname)
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
             # Fall back to now() for direct calls (e.g., tests)
@@ -536,6 +538,8 @@ class WorkerRegistry:
             seen_at = min(ensure_tz_aware(timestamp), current)
             stop = self._stopped_at.get(hostname)
             after_stop = stop is not None and ensure_tz_aware(timestamp) > stop[0]
+            if after_stop:  # revived after its reported stop: a new process (reading 7)
+                self._confirm_spent.discard(hostname)
             announce = False
             if worker is None:
                 if stop is None or after_stop:

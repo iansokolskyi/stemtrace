@@ -43,6 +43,7 @@ ROWS = (
     "28n",
     "28o",
     "28q",
+    "28s",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -153,6 +154,7 @@ class World:
         self.had_miss_reset: set[str] = set()  # answered after a miss (row 28n)
         # D4d reading 1: nodes that already owed a confirm since they last answered.
         self.confirm_spent: set[str] = set()
+        self.rearmed: set[str] = set()
         self.owed_confirm = False
         self.confirms = 0  # first-miss listener calls on the real registry
         self.registry.add_first_miss_listener(self._count_confirm)
@@ -230,9 +232,11 @@ class World:
 
     def start(self, name: str, *, announce: bool | None = None) -> None:
         """A worker process starts; its ``worker_ready`` is seen unless it is the first start."""
-        self.pid[name] += 1
-        self.truth[name] = "alive"
         node = self.nodes.get(name)
+        # D4d reading 7: a restart under the same name, with the same pid or a new one.
+        if node is None or self.rng.random() >= 0.25:
+            self.pid[name] += 1
+        self.truth[name] = "alive"
         # A restart the server listed under another pid always sends worker_ready
         # (a shutdown for an unlisted pid would not stop the listed one).
         announced = (
@@ -252,6 +256,11 @@ class World:
                 name, self.pid[name], ["app.t"], event_timestamp=self.clock.now
             )
             self.generation[name] += 1
+            if name in self.confirm_spent:
+                self.rearmed.add(
+                    name
+                )  # reading 7: this restart re-arms a spent confirm
+            self.confirm_spent.discard(name)  # a worker_ready is a new process
             self.reported_stopped.discard(name)
             self.rev_listed.discard(name)
             self.stopped_at.pop(name, None)
@@ -305,6 +314,7 @@ class World:
             self.nodes[name] = ONode(False, now, False)
             self.reported_stopped.discard(name)
         elif node.stopped:  # stamped after the stop: a restart whose ready was missed
+            self.confirm_spent.discard(name)
             self.nodes[name] = ONode(False, now, False)
             self.reported_stopped.discard(name)
             self.rev_listed.add(name)
@@ -453,6 +463,20 @@ class World:
             }
             self.killed_since_completion = False
 
+    def _first_miss(self, name: str) -> bool:
+        """Tag a first miss; whether it owes a confirm (once per answer or restart)."""
+        if name in self.had_miss_reset:
+            self.reached["28n"] += 1
+            self.had_miss_reset.discard(name)
+        if name in self.confirm_spent:
+            self.reached["28q"] += 1
+            return False
+        self.confirm_spent.add(name)
+        if name in self.rearmed:
+            self.reached["28s"] += 1
+            self.rearmed.discard(name)
+        return True
+
     def _count_misses(
         self, now: datetime, answered: set[str], before: dict[str, int]
     ) -> None:
@@ -478,14 +502,7 @@ class World:
             if not kept:
                 if now > node.last_seen:
                     kept = [now]
-                    if name in self.had_miss_reset:
-                        self.reached["28n"] += 1
-                        self.had_miss_reset.discard(name)
-                    if name in self.confirm_spent:
-                        self.reached["28q"] += 1
-                    else:
-                        self.confirm_spent.add(name)
-                        owes = True
+                    owes = self._first_miss(name) or owes
             elif now - kept[-1] >= MISS_GAP:
                 kept = [*kept, now][-2:]
             else:

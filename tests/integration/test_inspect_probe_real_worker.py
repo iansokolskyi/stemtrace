@@ -321,10 +321,11 @@ def test_d4d_real_idle_worker_never_reads_offline_across_many_broadcasts(
     worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An idle healthy solo worker, stale at every broadcast, with one real miss forced.
+    """An idle healthy solo worker, with one real miss forced.
 
     The evaluation clock grows by more than the stale window per broadcast, so the
-    worker is past ``WORKER_STALE_TIMEOUT_MINUTES`` each time and only the two-miss
+    worker is past ``WORKER_STALE_TIMEOUT_MINUTES`` since its previous answer when each
+    broadcast runs, and only the two-miss
     rule keeps it online. At broadcast ``MISSED_BROADCAST`` the worker is stopped
     (SIGSTOP) across exactly that broadcast, then resumed: one real unanswered
     ``stats()``, and the fleet item must not show at any point.
