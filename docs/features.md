@@ -104,7 +104,7 @@ pages work even if the server missed `worker_ready` events.
   nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
   latest `worker_ready` (or, for a pid known only from an inspect reply, the time of its first
   reply). A shutdown stamped earlier is a late stop of an older process and leaves the listed
-  pid alone. A task event stamped after the stop, or an inspect reply that names the pid, brings
+  pid alone, whether it names that pid's number (a container that reuses pids) or another. A task event stamped after the stop, or an inspect reply that names the pid, brings
   the nodename back.
   Limitations: for a pid known only from an inspect reply, the server compares its own receive
   time with the worker's clock. A worker clock ahead of the server's can make an older stop
