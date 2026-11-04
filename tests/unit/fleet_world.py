@@ -607,7 +607,9 @@ class World:
         # A ping can't revive a nodename the server holds a stop for, including the memory a
         # late stop of an older process leaves (D4b "stop memory", D4e reading 1).
         remembered = {n for n in self.stopped_at if n not in self.nodes}
-        for answered in self.answered_window:
+        # Not once the cleanup (30 min) may have removed a worker that answered long ago.
+        fresh = self.completed is not None and now - self.completed <= CLEANUP
+        for answered in self.answered_window if fresh else []:
             if answered - self.reported_stopped - remembered:
                 assert not got, "offline while a worker answered a recent broadcast"
         for name, at in self.last_event.items():
