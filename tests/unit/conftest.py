@@ -67,8 +67,10 @@ def inspect_probes(
     yield probes
     strict = getattr(request.module, "STRICT_PROBE_LEAKS", False)
     # A stopped probe's thread ends once its refresh returns; allow it a moment.
-    deadline = time.monotonic() + LEAK_GRACE_S
-    while strict and _only(before) and time.monotonic() < deadline:
+    # Counted, not timed: a test may have patched ``time.monotonic``.
+    for _ in range(int(LEAK_GRACE_S / 0.01) if strict else 0):
+        if not _only(before):
+            break
         time.sleep(0.01)
     leaked = _only(before)
     for probe in probes:
