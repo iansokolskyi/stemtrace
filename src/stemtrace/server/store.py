@@ -511,7 +511,11 @@ class WorkerRegistry:
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
-            self._unlisted.pop(hostname, None)
+            # A stop stamped before the nodename's last event is a late one: it leaves
+            # stop memory but not the liveness the event gave (D4e reading 10).
+            last_event = self._unlisted.get(hostname)
+            if last_event is not None and stopped >= ensure_tz_aware(last_event):
+                del self._unlisted[hostname]
             previous = self._stopped_at.get(hostname)
             if previous is not None:
                 stopped = max(stopped, previous[0])
