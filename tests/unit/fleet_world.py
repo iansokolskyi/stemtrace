@@ -48,6 +48,10 @@ ROWS = (
     "28u",
     "28w",
     "28x",
+    "28y",
+    "28y_stats",
+    "28z",
+    "28r",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -314,35 +318,93 @@ class World:
             self.last_stopped_unlisted = True
 
     def late_stop(self, name: str) -> None:
-        """A stop for a pid the server doesn't list, stamped before the listed pid's registration.
+        """A stop stamped before the nodename's newest sign of life (D4e readings 1, 5, 9, 10).
 
-        D4e reading 1: a late stop of an older process leaves the listed pid live. It still
-        counts as a worker event (misses forgotten, older replies stale) and leaves stop memory.
+        It changes nothing for a listed pid whose newest ``worker_ready`` is later, nor for a
+        nodename with a later event. It does end a pid known only from a stats reply when it
+        names that pid. It always counts as a worker event (misses forgotten, older replies
+        stale) and leaves stop memory.
         """
         node = self.nodes.get(name)
-        listed = self.reg.get(name)
-        if node is None or not node.listed or node.stopped or listed is None:
+        if node is None:
             return
-        _, stamp, first, announced = listed
-        stop = stamp - timedelta(seconds=self.rng.choice([1, 30, 600]))
-        # Pid reuse: the late stop names the listed pid's own number. Compared with the pid's
-        # newest worker_ready, so only for a pid the oracle saw announced (a stats-only pid has none).
-        reuse = announced and self.rng.random() < 0.4
-        self.registry.mark_shutdown(
-            name, listed[0] if reuse else 1000 + self.rng.randrange(1000), stop
-        )
-        if reuse:
-            self.reached["28x"] += 1
+        pid = 1000 + self.rng.randrange(1000)
+        if node.stopped:
+            stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
+        elif not node.listed:
+            # Events-only or revived: a stop older than its last event leaves it live.
+            stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
+            self.reached["28y" if name in self.rev_listed else "28z"] += 1
+        else:
+            listed = self.reg.get(name)
+            if listed is None:
+                return
+            _, stamp, first, announced = listed
+            stop = stamp - timedelta(seconds=self.rng.choice([1, 30, 600]))
+            if not announced and self.rng.random() < 0.4:
+                self._stats_only_exact_stop(name, node, listed[0], stop)
+                return
+            # Pid reuse: the stop names the listed pid's own number, compared with its newest
+            # worker_ready, so only for a pid the oracle saw announced.
+            if announced and self.rng.random() < 0.4:
+                pid = listed[0]
+                self.reached["28x"] += 1
+            self.reached["28u"] += 1
+            if stop >= first:
+                self.reached["28w"] += (
+                    1  # only the newest worker_ready protects the pid
+                )
+        self.registry.mark_shutdown(name, pid, stop)
         self.generation[name] += 1
         node.misses = []
         self.confirm_spent.discard(name)
         self.stopped_at[name] = self.clock.now
         self.last_stopped_unlisted = False
-        self.reached["28u"] += 1
-        if stop >= first:
-            self.reached["28w"] += (
-                1  # only the newest worker_ready protects the listed pid
-            )
+
+    def _stats_only_exact_stop(
+        self, name: str, node: ONode, pid: int, stop: datetime
+    ) -> None:
+        """A stop naming a pid known only from a stats reply ends it, whatever its stamp (reading 9)."""
+        # Never earlier than an event already received (reordering the spec doesn't define).
+        stop = max(stop, self.last_event.get(name, stop))
+        self.registry.mark_shutdown(name, pid, stop)
+        self.stopped_at[name] = self.clock.now
+        self.stop_ts[name] = stop
+        self.generation[name] += 1
+        self.reported_stopped.add(name)
+        self.rev_listed.discard(name)
+        self.confirm_spent.discard(name)
+        node.stopped = True
+        self.last_stopped_unlisted = False
+        self.reached["28y_stats"] += 1
+
+    def replay_ready(self, name: str) -> None:
+        """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 5).
+
+        It moves neither the pid's stamp nor anything else the oracle tracks except
+        ``last_seen``, which the registry sets to the event's time.
+        """
+        node = self.nodes.get(name)
+        listed = self.reg.get(name)
+        if node is None or not node.listed or node.stopped or listed is None:
+            return
+        pid, stamp, _, announced = listed
+        if not announced:
+            return
+        # The registry keeps counted misses and filters them by ``last_seen``, so moving it back
+        # would bring older misses back to life (D4d reading 2 doesn't define that). Replay only
+        # when no broadcast completed within 2 s before the announce, so none can come back.
+        if self.completed is not None and self.completed > stamp - timedelta(seconds=2):
+            return
+        old = stamp - timedelta(seconds=1)
+        self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
+        self.generation[name] += 1
+        node.last_seen = old
+        self.confirm_spent.discard(name)
+        self.reported_stopped.discard(name)
+        self.stopped_at.pop(name, None)
+        self.last_event.pop(name, None)
+        self.reached["28r"] += 1
 
     def delayed_stop(self, name: str) -> None:
         """A clean stop of an unannounced restart, stamped between the listed pid's registration and now.
@@ -779,6 +841,7 @@ class World:
             "late": self.late_task,
             "late_stop": self.late_stop,
             "delayed_stop": self.delayed_stop,
+            "replay_ready": self.replay_ready,
             "revive_run": self.revive_run,
         }
         if op in per_node:
@@ -810,6 +873,7 @@ class World:
             "late",
             "late_stop",
             "delayed_stop",
+            "replay_ready",
             "advance",
             "advance",
             "cleanup",
