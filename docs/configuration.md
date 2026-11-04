@@ -199,6 +199,9 @@ no worker is online, the server reports one `no_workers_online` item instead. It
 | `--anomaly-pending-grace` | `STEMTRACE_ANOMALY_PENDING_GRACE` | `anomaly_pending_grace` | `5m` |
 | `--anomaly-registry-window` | `STEMTRACE_ANOMALY_REGISTRY_WINDOW` | `anomaly_registry_window` | `10m` |
 
+While a worker is live, the server also asks the workers every half of `anomaly_registry_window`,
+so the registry stays trusted without requests.
+
 Durations are `90s`, `10m`, `1h` or `7d` (a `timedelta` in Python). Values must be positive, and
 `factor` at most 100,000. The floor can be above the ceiling. See [Stuck, interrupted and unregistered
 tasks](features.md#stuck-interrupted-and-unregistered-tasks) for what the flags mean and their limits.

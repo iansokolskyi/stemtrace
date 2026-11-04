@@ -387,7 +387,12 @@ trusted when either of these holds:
 
 - The last `inspect` reply that listed the tasks of every worker that answered arrived at most
   `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
-  seconds (unless `refresh=false`; after a failed ask the wait grows to 60 s). A reply with only a ping, an empty reply, a worker that answered `stats()` but not
+  seconds (unless `refresh=false`; after a failed ask the wait grows to 60 s). While at least
+  one worker is live, the server also asks on its own every half of `authority_window` (5
+  minutes by default), so a name stays trusted with no one requesting anything. That background
+  ask follows the same 2-second interval and failure wait; with the broker down it makes one
+  attempt per period at most. It doesn't run while no worker is live or without a broker URL.
+  A reply with only a ping, an empty reply, a worker that answered `stats()` but not
   `registered()`, or a reply that a worker event overtook doesn't count.
 - No broker URL is configured, so the server has only worker events, and at least one live
   worker has registered tasks.

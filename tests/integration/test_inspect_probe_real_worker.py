@@ -292,3 +292,52 @@ def test_p6_real_fleet_killed_before_any_request_gives_the_item_hours_later(
     assert [(a["kind"], a["task_count"]) for a in body["anomalies"]] == [
         ("no_workers_online", 1)
     ]
+
+
+def test_p11_idle_fleet_keeps_authority_fresh_past_the_window_without_a_request(
+    tmp_path: Path,
+    worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
+) -> None:
+    prefix, nodename, procs = worker_process
+    window_s = 20.0  # the period is half: 10 s
+    extension = StemtraceExtension(
+        broker_url=REDIS_URL,
+        transport_url=REDIS_URL,
+        prefix=f"/{prefix}",
+        serve_ui=False,
+        anomaly_registry_window=f"{int(window_s)}s",
+        anomaly_pending_grace="1s",
+    )
+    registry = extension.worker_registry
+    extension.store.add_event(
+        TaskEvent(
+            task_id="p11",
+            name="app.never_registered",
+            state=TaskState.PENDING,
+            timestamp=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    app = FastAPI()
+    extension.init_app(app)
+
+    with TestClient(app) as client:
+        procs.append(_spawn_worker(prefix, nodename, tmp_path / "worker.log", 0))
+        deadline = time.monotonic() + TIMEOUT_S
+        first: datetime | None = None
+        while time.monotonic() < deadline and first is None:
+            first = registry.registry_facts(broker_configured=True).authority_at
+            time.sleep(0.2)
+        assert first is not None, "no inspect reply ever stamped authority"
+
+        # No request for longer than the window: only the probe can refresh.
+        time.sleep(window_s + 5)
+
+        latest = registry.registry_facts(broker_configured=True).authority_at
+        body = client.get(
+            f"/{prefix}/api/anomalies?refresh=false&kind=unregistered"
+        ).json()
+
+    assert latest is not None
+    assert latest > first
+    assert datetime.now(timezone.utc) - latest < timedelta(seconds=window_s)
+    assert [item["name"] for item in body["anomalies"]] == ["app.never_registered"]
