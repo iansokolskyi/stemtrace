@@ -400,3 +400,31 @@ def test_r3_reading_a_missing_inspector_backs_the_next_attempt_off(
 
     assert refresher._failures == 1
     assert refresher._wait_s == routes._INSPECT_BACKOFF_START_SECONDS
+
+
+async def test_r7_a_starter_cancelled_before_its_thread_began_ends_the_flight(
+    server: Server, broker: GatedBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def cancelled(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(routes, "run_in_threadpool", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await server.refresher.maybe_refresh()
+
+    assert server.refresher._lock.acquire(blocking=False)  # nobody would end it later
+    server.refresher._lock.release()
+    assert broker.attempts == 0
+
+
+def test_r7_a_thread_that_starts_after_its_flight_was_abandoned_runs_nothing(
+    server: Server, broker: GatedBroker
+) -> None:
+    flight = routes._Flight()
+    flight.abandoned = True
+
+    result = server.refresher._run_flight(flight, WorkerRegistry(), broker.url)
+
+    assert result == frozenset()
+    assert broker.attempts == 0
