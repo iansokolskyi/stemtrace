@@ -42,6 +42,10 @@ class WorkerInfo(BaseModel):
     shutdown_reported: bool = False
     # True while a newer pid of the same nodename is the live process.
     superseded: bool = False
+    # Stamp of the newest worker_ready for this pid; None if it was only ever
+    # seen in a stats reply (D4e reading 5: a stop for an unlisted pid is
+    # compared with this, else with registered_at).
+    ready_at: datetime | None = None
 
 
 def ensure_tz_aware(dt: datetime) -> datetime:
@@ -395,6 +399,9 @@ class WorkerRegistry:
         with self._lock:
             is_new = hostname not in self._newest_by_node
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
+            ready = self._workers[f"{hostname}:{pid}"]
+            stamp = ensure_tz_aware(event_timestamp or ready.last_seen)
+            ready.ready_at = max(ready.ready_at or stamp, stamp)
             self._event_generation[hostname] = (
                 self._event_generation.get(hostname, 0) + 1
             )
@@ -516,13 +523,14 @@ class WorkerRegistry:
         """The node's live listed pid that a stop for an unlisted pid ends (D4e reading 1).
 
         A nodename has one live process, so a stop stamped at or after the
-        newest listed pid's registration came from a newer process whose
-        worker_ready was missed. Hold the lock.
+        pid's newest worker_ready (else its first registration) came from a
+        newer process whose worker_ready was missed. Hold the lock.
         """
         newest = self._workers.get(self._newest_by_node.get(hostname, ""))
         if newest is None or newest.shutdown_reported:
             return None
-        return newest if stopped >= ensure_tz_aware(newest.registered_at) else None
+        registered = ensure_tz_aware(newest.ready_at or newest.registered_at)
+        return newest if stopped >= registered else None
 
     def mark_seen(
         self, hostname: str, timestamp: datetime, *, now: datetime | None = None
