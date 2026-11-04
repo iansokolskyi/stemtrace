@@ -21,7 +21,7 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.store import GraphStore, WorkerRegistry
+from stemtrace.server.store import GraphStore, WorkerRegistry, _root_of_each
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 HOUR = timedelta(hours=1)
@@ -381,3 +381,26 @@ def test_flow_list_equals_the_oracle_for_random_recorded_flows(chunk: int) -> No
                 task_names=wanted,
             )
             assert [r.task_id for r in page] == expected[1:3], where
+
+
+def _node(task_id: str, parent_id: str | None) -> TaskNode:
+    return TaskNode(
+        task_id=task_id, name="t.task", state=TaskState.PENDING, parent_id=parent_id
+    )
+
+
+def test_root_of_each_resolves_chains_in_any_order_and_loops_to_none() -> None:
+    """Children before parents, a missing parent, and a parent loop (no root)."""
+    ids = [("d", "c"), ("b", "a"), ("c", "b"), ("a", None), ("m", "gone")]
+    ids += [("x", "y"), ("y", "x"), ("z", "x")]
+    nodes = {task_id: _node(task_id, parent) for task_id, parent in ids}
+    assert _root_of_each(nodes) == {
+        "a": "a",
+        "b": "a",
+        "c": "a",
+        "d": "a",
+        "m": "m",
+        "x": None,
+        "y": None,
+        "z": None,
+    }

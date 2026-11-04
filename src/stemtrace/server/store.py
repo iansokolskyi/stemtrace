@@ -83,6 +83,40 @@ def _snapshot(node: TaskNode) -> TaskNode:
 _MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _root_of_each(nodes: Mapping[str, TaskNode]) -> dict[str, str | None]:
+    """Each node's root: the end of its parent chain, walked once per node.
+
+    A walk stops at a node an earlier walk resolved, so the whole store costs
+    O(nodes). A node on a parent loop has no root (``None``).
+    """
+    root_of: dict[str, str | None] = {}
+    for start, node in nodes.items():
+        parent = node.parent_id
+        if parent is None or parent not in nodes:
+            root_of[start] = start
+            continue
+        if parent in root_of and start not in root_of:
+            root_of[start] = root_of[parent]  # the usual case: parents come first
+            continue
+        if start in root_of:
+            continue
+        path: list[str] = []
+        current = start
+        while current not in root_of:
+            root_of[current] = None  # met again on this walk: a parent loop
+            path.append(current)
+            parent = nodes[current].parent_id
+            if parent is None or parent not in nodes:
+                root_of[current] = current
+                path.pop()
+                break
+            current = parent
+        root = root_of[current]
+        for node_id in path:
+            root_of[node_id] = root
+    return root_of
+
+
 def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     """Sort key for eviction: a task's first event; a group's newest member's.
 
@@ -1274,7 +1308,7 @@ class GraphStore:
             root_nodes = [n for n in root_nodes if n.task_id in matching]
 
         # A flow's time is over its whole graph, not the root's own events.
-        times = self._flow_times_locked()
+        times = self._flow_times_locked(with_first=to_date is not None)
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
             root_nodes = [n for n in root_nodes if times[n.task_id][1] >= from_dt]
@@ -1288,48 +1322,32 @@ class GraphStore:
         total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
 
-    def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
+    def _flow_times_locked(
+        self, *, with_first: bool
+    ) -> dict[str, tuple[datetime, datetime]]:
         """Each root's flow: its (first, latest) time over every node under it.
 
-        One pass: each node's parent chain is walked up to its root once,
-        and later nodes stop at a node already resolved, so the whole store
-        costs O(nodes). A flow with no timed node is ``_MIN_DATETIME`` in
-        both. Call with the lock held.
+        One pass over the nodes (see ``_root_of_each``). A flow with no timed
+        node is ``_MIN_DATETIME`` in both; ``first`` is only worked out
+        ``with_first``. Call with the lock held.
         """
         nodes = self._graph.nodes
-        root_of: dict[str, str | None] = {}
-        for start in nodes:
-            path: list[str] = []
-            on_path: set[str] = set()
-            current: str | None = start
-            root: str | None = None
-            while current is not None:
-                if current in root_of:
-                    root = root_of[current]
-                    break
-                if current in on_path:
-                    break  # a parent loop: under no root
-                path.append(current)
-                on_path.add(current)
-                parent = nodes[current].parent_id
-                if parent is None or parent not in nodes:
-                    root = current
-                    break
-                current = parent
-            for node_id in path:
-                root_of[node_id] = root
         firsts: dict[str, datetime] = {}
         lasts: dict[str, datetime] = {}
-        for node_id, root in root_of.items():
-            if root is None:
-                continue
+        for node_id, root in _root_of_each(nodes).items():
             node = nodes[node_id]
             # GROUP/CHORD nodes have no events: their members are nodes of the
             # flow themselves, so they count through those.
-            first, last = node.first_seen, node.last_updated
-            if first is not None and last is not None:
-                firsts[root] = min(first, firsts.get(root, first))
-                lasts[root] = max(last, lasts.get(root, last))
+            last = node.last_updated
+            if root is None or last is None:
+                continue
+            if last > lasts.get(root, _MIN_DATETIME):
+                lasts[root] = last
+            first = node.first_seen if with_first else None
+            if first is not None and first < firsts.get(root, first):
+                firsts[root] = first
+            elif first is not None:
+                firsts.setdefault(root, first)
         return {
             root: (firsts.get(root, _MIN_DATETIME), lasts.get(root, _MIN_DATETIME))
             for root in self._graph.root_ids
