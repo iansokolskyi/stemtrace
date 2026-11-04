@@ -212,10 +212,17 @@ function dependencies(layout: FlowLayout): {
     if (block.kind === 'more') seq.set(moreId(block.containerId), block.seq)
 
   const out = new Map<string, string[]>()
+  // A Set beside each list: `includes` on a container with 200k heads is quadratic
+  const listed = new Map<string, Set<string>>()
   const add = (from: string, to: string): void => {
     const list = out.get(from) ?? []
-    if (!list.includes(to)) list.push(to)
+    const has = listed.get(from) ?? new Set<string>()
+    if (!has.has(to)) {
+      has.add(to)
+      list.push(to)
+    }
     out.set(from, list)
+    listed.set(from, has)
   }
   const containerOf = new Map(layout.tasks.map((task) => [task.id, task.containerId]))
   const inRow = new Set<string>()
