@@ -665,31 +665,3 @@ def test_extension_router_built_twice_shares_one_refresher_and_one_rate_limit(
 
     # The startup probe's refresh counts for the second router's page load.
     assert fleet.attempts == 1
-
-
-def test_i10_a_join_after_an_outage_is_inspected_within_one_interval(
-    fleet: FakeFleet,
-) -> None:
-    fleet.mode = "raises"
-    extension, app = extension_app()
-    registry = extension.worker_registry
-
-    with TestClient(app):
-        take(fleet.attempt_done)
-        shared = extension._inspect_probe.target
-        assert shared is not None
-        for _ in range(5):  # the outage drives the backoff up to its 60 s cap
-            fleet.clock.wait(threading.Event(), shared.ready_in())
-            shared.refresh_blocking()
-        assert shared.ready_in() == 60.0
-        fleet.mode = "up"
-        fleet.nodes = {NODE_B: (22, ["app.b"])}
-        joined_at = fleet.clock.now()
-
-        registry.register_worker(NODE_B, 22, ["app.b"])
-        take(fleet.attempt_done)
-
-    assert (
-        fleet.stats_times[-1] - joined_at
-        <= inspect_probe.INSPECT_REFRESH_MIN_INTERVAL_SECONDS
-    )

@@ -20,7 +20,7 @@ from stemtrace.server.api import params, routes
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.store import WorkerRegistry
 from tests.unit.test_inspect_probe import FakeClock
-from tests.unit.test_inspect_probe_rows import BROKER, NODE_A, FakeFleet
+from tests.unit.test_inspect_probe_rows import BROKER, NODE_A, NODE_B, FakeFleet
 from tests.unit.test_inspect_probe_schedule import Stepper
 
 REAL_INSPECT_PROBE = True
@@ -335,3 +335,35 @@ def test_p18_a_restart_under_the_same_nodename_refreshes_old_authority_at_once(
         stepper.next_block()
 
     assert fleet.stats_times[-1] - restarted <= 2.0
+
+
+def test_i10_a_join_after_an_outage_is_inspected_within_one_interval(
+    fleet: FakeFleet, stepper: Stepper, clock: FakeClock
+) -> None:
+    fleet.mode = "raises"
+    extension, app = extension_app()
+    stepper.probe = extension._inspect_probe
+    registry = extension.worker_registry
+
+    with TestClient(app):
+        shared = extension._inspect_probe.target
+        assert shared is not None
+        for _ in range(12):  # the outage drives the backoff up to its 60 s cap
+            if shared.ready_in() >= 60.0:
+                break
+            step(stepper)
+        assert shared.ready_in() >= 60.0 - 1e-9
+        fleet.mode = "up"
+        fleet.nodes = {NODE_B: (22, ["app.b"])}
+        joined_at = clock.now()
+        attempts = len(fleet.stats_times)
+
+        registry.register_worker(NODE_B, 22, ["app.b"])
+        stepper.next_block()  # the trigger is owed within the interval: the probe waits it out
+        step(stepper)
+
+    assert len(fleet.stats_times) > attempts
+    assert (
+        fleet.stats_times[attempts] - joined_at
+        <= inspect_probe.INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    )

@@ -199,8 +199,10 @@ no worker is online, the server reports one `no_workers_online` item instead. It
 | `--anomaly-pending-grace` | `STEMTRACE_ANOMALY_PENDING_GRACE` | `anomaly_pending_grace` | `5m` |
 | `--anomaly-registry-window` | `STEMTRACE_ANOMALY_REGISTRY_WINDOW` | `anomaly_registry_window` | `10m` |
 
-While a worker is live, the server also asks the workers every half of `anomaly_registry_window`,
-so the registry stays trusted without requests.
+The server also asks the workers whenever the last reply that listed every worker's tasks is
+older than half of `anomaly_registry_window` (at least 10 seconds) and a worker is online, so the
+registry stays trusted without requests. A window under 20 seconds isn't kept fresh by this alone:
+requests still refresh it. Each server process asks on its own.
 
 Durations are `90s`, `10m`, `1h` or `7d` (a `timedelta` in Python). Values must be positive, and
 `factor` at most 100,000. The floor can be above the ceiling. See [Stuck, interrupted and unregistered

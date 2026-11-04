@@ -294,12 +294,12 @@ def test_p6_real_fleet_killed_before_any_request_gives_the_item_hours_later(
     ]
 
 
-def test_p11_idle_fleet_keeps_authority_fresh_past_the_window_without_a_request(
+def test_p11_idle_fleet_keeps_authority_continuously_fresh_without_a_request(
     tmp_path: Path,
     worker_process: tuple[str, str, list[subprocess.Popen[bytes]]],
 ) -> None:
     prefix, nodename, procs = worker_process
-    window_s = 20.0  # the period is half: 10 s
+    window_s = 30.0  # the period is half: 15 s
     extension = StemtraceExtension(
         broker_url=REDIS_URL,
         transport_url=REDIS_URL,
@@ -331,26 +331,24 @@ def test_p11_idle_fleet_keeps_authority_fresh_past_the_window_without_a_request(
         log = (tmp_path / "worker.log").read_text(errors="replace")[-3000:]
         assert first is not None, f"no inspect reply stamped authority; log:\n{log}"
 
-        # No request at all: only the probe can refresh. A loaded host may miss a
-        # reply (inspect waits 0.5 s), so wait for the first one that lands after
-        # the first stamp has aged out of the window.
-        idle_from = time.monotonic()
-        latest = first
-        deadline = idle_from + window_s + 3 * TIMEOUT_S
-        while time.monotonic() < deadline:
-            latest = registry.registry_facts(broker_configured=True).authority_at
-            aged_out = time.monotonic() - idle_from > window_s
-            fresh = latest is not None and (
-                datetime.now(timezone.utc) - latest < timedelta(seconds=window_s)
-            )
-            if aged_out and fresh and latest > first:
-                break
+        # No request at all: only the probe can refresh. Sample the stamp's age
+        # through 1.5 windows: it must never exceed the window (continuity), which a
+        # lapse of one period between two missed replies would break.
+        ages: list[float] = []
+        idle_until = time.monotonic() + 1.5 * window_s
+        while time.monotonic() < idle_until:
+            stamp = registry.registry_facts(broker_configured=True).authority_at
+            assert stamp is not None
+            ages.append((datetime.now(timezone.utc) - stamp).total_seconds())
             time.sleep(0.2)
+        latest = registry.registry_facts(broker_configured=True).authority_at
         body = client.get(
             f"/{prefix}/api/anomalies?refresh=false&kind=unregistered"
         ).json()
 
     assert latest is not None
     assert latest > first
-    assert datetime.now(timezone.utc) - latest < timedelta(seconds=window_s)
+    assert max(ages) <= window_s, (
+        f"authority aged to {max(ages):.1f}s; ages {ages[::25]}"
+    )
     assert [item["name"] for item in body["anomalies"]] == ["app.never_registered"]

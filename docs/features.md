@@ -78,13 +78,15 @@ pages work even if the server missed `worker_ready` events.
   14, 30 and 60 seconds after it joined, then dropped. These are owed times, measured from the
   join and subject to the shared 2-second interval, so the real gaps run longer by the inspect's
   own duration. A new nodename that joins while another waits for its owed time is inspected
-  within one interval, and the owed times of the first don't move. A nodename that never answers
-  (remote control off) costs one inspect plus at most five more, and the server doesn't ask again
-  until the worker joins again. Until a reply names a worker, the server may show it offline.
+  within one interval, and the owed times of the first don't move. A nodename that never
+  answers (remote control off) is owed one inspect plus at most five more. After those, the
+  periodic refresh (see [unregistered tasks](#stuck-interrupted-and-unregistered-tasks)) keeps
+  asking while authority is old, at most once per 60 s. Until a reply names a worker, the server may show it offline.
 - With a down or silent broker, an attempt ends within about 5 s (see
   [What the server shows](adopting.md#what-the-server-shows-before-your-workers-are-instrumented)).
-  A failed attempt counts toward pacing: the next one, from a request or the background
-  inspect, waits 2, 4, 8 and so on up to 60 s, and a success resets that. A worker nodename
+  An attempt that doesn't stamp authority counts toward pacing: after a failure, a reply
+  with no worker, or a worker whose `registered()` reply is missing, the next attempt, from a request
+  or the background inspect, waits 2, 4, 8 and so on up to 60 s, and a stamp resets that. A worker nodename
   the server learns for the first time clears the wait, so its first inspect runs within one
   2-second interval. Stopping the server waits up to 2 s for a running attempt. The background
   inspect does nothing without a broker URL.
@@ -387,13 +389,17 @@ trusted when either of these holds:
 
 - The last `inspect` reply that listed the tasks of every worker that answered arrived at most
   `authority_window` ago. `GET /api/anomalies` asks the workers first, at most once every 2
-  seconds (unless `refresh=false`; after a failed ask the wait grows to 60 s). While at least
-  one worker is live, the server also asks on its own every half of `authority_window` (5
-  minutes by default), so a name stays trusted with no one requesting anything. That background
-  ask follows the same 2-second interval and failure wait; with the broker down it makes one
-  attempt per period at most. It doesn't run while no worker is live or without a broker URL.
-  A reply with only a ping, an empty reply, a worker that answered `stats()` but not
-  `registered()`, or a reply that a worker event overtook doesn't count.
+  seconds (unless `refresh=false`; after an ask that doesn't stamp, the wait grows to 60 s).
+  The server also asks on its own: whenever the last stamp is older than half of
+  `authority_window` (5 minutes by default, at least 10 seconds) and a worker is online (listed,
+  or known only from task events), or the last ask failed. An ask that doesn't stamp is retried on
+  the 2, 4, 8 ... 60 s wait, so a missed reply is retried within seconds, and a worker that never
+  answers `registered()` costs at most one ask per 60 s. A stamp from a request also moves the next
+  background ask out. It doesn't run without a broker URL or while every worker has stopped (unless
+  an ask just failed, because a down broker can't tell whether the fleet left). A worker that
+  restarts, or a node turning online again, triggers it at once. A reply with only a ping, an
+  empty reply, a worker that answered `stats()` but not `registered()`, or a reply that a worker
+  event overtook doesn't count.
 - No broker URL is configured, so the server has only worker events, and at least one live
   worker has registered tasks.
 
