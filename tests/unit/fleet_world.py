@@ -332,7 +332,11 @@ class World:
         if node.stopped:
             stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
         elif not node.listed:
-            # Events-only or revived: a stop older than its last event leaves it live.
+            # Events-only or revived: a stop older than its last event leaves it live. A name
+            # the oracle once listed but didn't revive may still have a live pid in the
+            # registry, which a stop of this stamp would end (reading 1): skip it.
+            if name in self.reg and name not in self.rev_listed:
+                return
             stop = node.last_seen - timedelta(seconds=self.rng.choice([1, 30, 600]))
             self.reached["28y" if name in self.rev_listed else "28z"] += 1
         else:
@@ -377,6 +381,7 @@ class World:
         node.stopped = True
         self.last_stopped_unlisted = False
         self.reached["28y_stats"] += 1
+        self.clock.advance(1)  # a later event is then stamped after the stop, not at it
 
     def replay_ready(self, name: str) -> None:
         """An older ``worker_ready`` of the listed, announced pid is replayed (D4e reading 5).
@@ -436,6 +441,7 @@ class World:
         self.confirm_spent.discard(name)
         node.stopped = True
         self.reached["28t"] += 1
+        self.clock.advance(1)  # a later event is then stamped after the stop, not at it
 
     def kill(self, name: str) -> None:
         """SIGKILL: no event."""
