@@ -331,10 +331,21 @@ def test_p11_idle_fleet_keeps_authority_fresh_past_the_window_without_a_request(
         log = (tmp_path / "worker.log").read_text(errors="replace")[-3000:]
         assert first is not None, f"no inspect reply stamped authority; log:\n{log}"
 
-        # No request for longer than the window: only the probe can refresh.
-        time.sleep(window_s + 5)
-
-        latest = registry.registry_facts(broker_configured=True).authority_at
+        # No request at all: only the probe can refresh. A loaded host may miss a
+        # reply (inspect waits 0.5 s), so wait for the first one that lands after
+        # the first stamp has aged out of the window.
+        idle_from = time.monotonic()
+        latest = first
+        deadline = idle_from + window_s + 3 * TIMEOUT_S
+        while time.monotonic() < deadline:
+            latest = registry.registry_facts(broker_configured=True).authority_at
+            aged_out = time.monotonic() - idle_from > window_s
+            fresh = latest is not None and (
+                datetime.now(timezone.utc) - latest < timedelta(seconds=window_s)
+            )
+            if aged_out and fresh and latest > first:
+                break
+            time.sleep(0.2)
         body = client.get(
             f"/{prefix}/api/anomalies?refresh=false&kind=unregistered"
         ).json()
