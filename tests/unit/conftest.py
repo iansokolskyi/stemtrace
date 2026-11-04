@@ -1,6 +1,7 @@
 """Unit-test fixtures shared by every module under ``tests/unit``."""
 
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -36,6 +37,10 @@ def _live_probe_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == PROBE_THREAD_NAME]
 
 
+def _only(before: set[threading.Thread]) -> list[threading.Thread]:
+    return [t for t in _live_probe_threads() if t not in before]
+
+
 @pytest.fixture(autouse=True)
 def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProbe]]:
     """Record every probe a test creates, and fail the test if its thread outlives it.
@@ -55,7 +60,11 @@ def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProb
     monkeypatch.setattr(InspectProbe, "__init__", recording_init)
     before = set(_live_probe_threads())
     yield probes
-    leaked = [t for t in _live_probe_threads() if t not in before]
+    # A stopped probe's thread ends once its refresh returns; allow it a moment.
+    deadline = time.monotonic() + LEAK_GRACE_S
+    while not _only(before) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    leaked = _only(before)
     for probe in probes:
         probe.stop(LEAK_GRACE_S)
     assert not leaked, f"inspect probe thread(s) outlived the test: {leaked}"
