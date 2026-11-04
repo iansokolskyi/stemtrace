@@ -598,8 +598,11 @@ class World:
         want = self.expected_offline()
         assert got == want, self.describe(got, want)
         now = self.clock.now
+        # A ping can't revive a nodename the server holds a stop for, including the memory a
+        # late stop of an older process leaves (D4b "stop memory", D4e reading 1).
+        remembered = {n for n in self.stopped_at if n not in self.nodes}
         for answered in self.answered_window:
-            if answered - self.reported_stopped:
+            if answered - self.reported_stopped - remembered:
                 assert not got, "offline while a worker answered a recent broadcast"
         for name, at in self.last_event.items():
             stop = self.stop_ts.get(name)

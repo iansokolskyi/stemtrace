@@ -99,6 +99,18 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- When a worker restarts under the same nodename and the server misses its `worker_ready`, the
+  later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
+  nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
+  latest `worker_ready` (or, for a pid known only from an inspect reply, the time of its first
+  reply). A shutdown stamped earlier is a late stop of an older process and leaves the listed
+  pid alone. A task event stamped after the stop, or an inspect reply that names the pid, brings
+  the nodename back.
+  Limitations: for a pid known only from an inspect reply, the server compares its own receive
+  time with the worker's clock. A worker clock ahead of the server's can make an older stop
+  count as newer and mark a live pid stopped, and a worker clock that steps back across the
+  restart leaves the old pid shown online until the stale window. Either heals at the worker's
+  next task event or inspect reply.
 - A worker is shown offline once 3 minutes pass without a sign of life from it: its
   `worker_ready`, an event from one of its tasks, or an inspect reply (the Workers page asks
   when it loads). The check runs as events arrive, so on a server that receives no events at
@@ -140,7 +152,9 @@ pages work even if the server missed `worker_ready` events.
 - **Limitation: duplicate nodenames.** Two live workers that share a nodename (e.g. started
   with the same `-n`, which Celery itself warns about with `DuplicateNodenameWarning`) can't be
   told apart: Celery keeps only the last reply per nodename, so they flip between online and
-  offline on every refresh. Give each worker a unique nodename.
+  offline on every refresh. Give each worker a unique nodename. If one of them also misses its
+  `worker_ready`, its `worker_shutdown` marks the other as stopped until that one sends its next
+  task event or answers an inspect.
 
 ## Ignored and rejected tasks
 
