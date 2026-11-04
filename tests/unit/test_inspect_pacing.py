@@ -55,13 +55,15 @@ class FakeInspect:
             broker.attempt_times.append(broker.clock.now())
         if not broker.up:
             raise broker.error
-        return None  # nobody answers: a successful broadcast, no new node
+        # A worker answers with its pid: the reply that stamps authority (D7b
+        # counts an attempt that doesn't stamp as a partial success).
+        return {NODE: {"pid": 1}}
 
     def registered(self) -> dict[str, object] | None:
         self._broker.other_calls += 1
         if not self._broker.up:
             raise self._broker.error
-        return None
+        return {NODE: ["app.t"]}
 
     def ping(self) -> dict[str, object] | None:
         self._broker.other_calls += 1

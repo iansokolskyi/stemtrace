@@ -32,6 +32,7 @@ BROKER = "redis://broker:6379/0"
 NODE_A, NODE_B, NODE_C = "celery@a", "celery@b", "celery@c"
 BOUND_S = 5.0
 PERIODIC_WAIT_S = 100.0
+LONG_WAIT_LIMIT_S = 60.0
 T = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 
 
@@ -51,7 +52,11 @@ class FakeClock:
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
         # A wait this long is the periodic refresh's (D7b): advancing the fake
         # clock through it would run a periodic refresh every loop, forever.
-        if seconds is None or seconds >= PERIODIC_WAIT_S:
+        # No test here reaches a period, so it only ends on a wake or a stop.
+        if seconds is not None and seconds >= PERIODIC_WAIT_S:
+            assert event.wait(LONG_WAIT_LIMIT_S), "a periodic wait was never ended"
+            return True
+        if seconds is None:
             return event.wait(BOUND_S)
         if event.is_set():
             return True
@@ -99,7 +104,13 @@ class FakeInspect:
             raise ConnectionError("broker unreachable")
         if fleet.mode == "silent":
             return None
-        answer = {name: tasks for name, (_, tasks) in self._snapshot.items()}
+        # Celery 5.6.3 broadcast replies are per node: a node that answered stats()
+        # but missed this broadcast is absent from the dict (D7b rule 6.2).
+        answer = {
+            name: tasks
+            for name, (_, tasks) in self._snapshot.items()
+            if name not in fleet.omit_from_registered
+        }
         fleet.attempt_done.release()
         return answer
 
@@ -119,6 +130,7 @@ class FakeFleet:
         self.mode = "up"
         self.clock = FakeClock()
         self.silent_until: dict[str, float] = {}
+        self.omit_from_registered: set[str] = set()
         self.stats_times: list[float] = []
         self.attempts = 0
         self.stats_calls = 0
@@ -376,24 +388,28 @@ def test_p7_a_worker_that_answers_later_than_its_ready_is_online_without_a_reque
     assert worker.status == WorkerStatus.ONLINE
 
 
-def test_p8_a_worker_that_never_answers_gets_exactly_five_extra_attempts(
+def test_p8_a_worker_that_never_answers_is_retried_only_on_the_backoff_ladder(
     fleet: FakeFleet,
 ) -> None:
+    # D4c asked for five extra attempts and then none. D7b (reading 2) keeps an
+    # unstamped authority owed instead, paced on the D7a ladder: never a tight loop.
     extension, app = extension_app()
     registry = extension.worker_registry
 
     with TestClient(app):
         take(fleet.attempt_done)
         fleet.clock.wait(threading.Event(), 2.0)
-        before = fleet.attempts
         fleet.nodes[NODE_B] = (22, ["app.b"])
         fleet.silent_until[NODE_B] = float("inf")
+        joined_at = fleet.clock.now()
         registry.register_worker(NODE_B, 22, ["app.b"])
-        for _ in range(6):
+        for _ in range(10):
             take(fleet.attempt_done)
-        assert not got(fleet.attempt_done, 0.5)
 
-    assert fleet.attempts - before == 6
+    times = [t for t in fleet.stats_times if t >= joined_at]
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    # The fake clock runs freely, so only the first gaps are read.
+    assert gaps[:8] == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
 
 
 # --- P9: one shared clock -------------------------------------------------------
@@ -442,13 +458,13 @@ def test_p4_broker_down_makes_one_bounded_attempt_for_the_startup_trigger(
     with TestClient(app):
         take(fleet.attempt_done)
 
-    calls_after_stats = 0 if mode == "raises" else 1
-    assert (
-        fleet.attempts,
-        fleet.stats_calls,
-        fleet.registered_calls,
-        fleet.ping_calls,
-    ) == (1, 1, calls_after_stats, calls_after_stats)
+    # Every attempt makes one stats() call, and a failed one stops there. (The
+    # fake clock runs freely, so the periodic retries pile up; each is bounded.)
+    per_attempt = 0 if mode == "raises" else 1
+    assert fleet.attempts >= 1
+    assert fleet.stats_calls == fleet.attempts
+    assert fleet.registered_calls == per_attempt * fleet.attempts
+    assert fleet.ping_calls == per_attempt * fleet.attempts
 
 
 def test_p4_broker_down_bounds_a_joins_attempts_by_the_shared_backoff(
@@ -466,23 +482,29 @@ def test_p4_broker_down_bounds_a_joins_attempts_by_the_shared_backoff(
             if not got(fleet.attempt_done, 1.0):
                 break
 
-    # The join clears the backoff (attempt at 2 s), then each owed time (4, 8, 16, 32
-    # and 62 s) gets one attempt, spaced by the failure backoff (2, 4, 8, 16, 32 s).
+    # The join clears the backoff (attempt at 2 s); each failure then doubles the wait.
     started = fleet.stats_times[0]
-    assert [t - started for t in fleet.stats_times] == [0, 2, 4, 8, 16, 32, 64]
+    # Then the periodic refresh stays owed (D7b reading 5): one attempt per 60 s.
+    times = [t - started for t in fleet.stats_times]
+    assert times[:8] == [0, 2, 6, 14, 30, 62, 122, 182]
     assert registry.get_registered_tasks(NODE_A, 1) == ["app.a"]
 
 
-def test_p4_a_failed_attempt_is_not_retried_without_a_trigger(
+def test_p4_a_failed_attempt_is_retried_on_the_backoff_ladder_without_a_trigger(
     fleet: FakeFleet,
 ) -> None:
+    # D7b reading 5: while the last attempt failed the periodic stays due.
     fleet.mode = "raises"
     _, app = extension_app()
 
     with TestClient(app):
-        take(fleet.attempt_done)
+        for _ in range(8):
+            take(fleet.attempt_done)
 
-    assert fleet.attempts == 1
+    gaps = [
+        b - a for a, b in zip(fleet.stats_times, fleet.stats_times[1:], strict=False)
+    ]
+    assert gaps[:7] == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
 
 
 def test_p4_a_blocked_inspect_does_not_block_event_processing(

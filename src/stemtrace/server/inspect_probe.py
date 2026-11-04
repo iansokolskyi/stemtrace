@@ -4,7 +4,7 @@
 when the registry learns a new nodename. Triggers that arrive while a refresh
 runs, or inside the minimum interval, coalesce into one follow-up. A new
 nodename stays pending until an inspect reply names it, with a bounded backoff.
-With a ``Periodic`` bound, it also refreshes every period while a worker is live.
+With a ``Periodic`` bound, it also refreshes when the authority stamp is due.
 """
 
 from __future__ import annotations
@@ -52,14 +52,14 @@ class ProbeTarget(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Periodic:
-    """A refresh owed every ``period_s`` while ``has_live_worker()`` is true.
+    """When the registry's authority stamp needs a refresh, as the target sees it.
 
-    The probe still paces it by the target's ``ready_in`` (the shared interval
-    and the failure backoff), so a period can't beat either.
+    ``remaining()`` is the seconds until one is due (0 or less: due now), or
+    None when none is wanted (no worker is online). The probe still paces the
+    refresh by the target's ``ready_in`` (shared interval and failure backoff).
     """
 
-    period_s: float
-    has_live_worker: Callable[[], bool]
+    remaining: Callable[[], float | None]
 
 
 class _Unbound:
@@ -119,8 +119,10 @@ class InspectProbe:
         self._thread: threading.Thread | None = None
         self._next_allowed = float("-inf")
         self._periodic: Periodic | None = None
-        # When the next periodic refresh is owed; set by each attempt's start.
-        self._periodic_at: float | None = None
+        # ``_wake`` also ends waits for a poke (re-evaluate, no attempt owed);
+        # ``_owed`` says an attempt is owed. Both are set under ``_lock``.
+        self._owed = False
+        self._poked = False
 
     def bind(self, target: ProbeTarget, periodic: Periodic | None = None) -> None:
         """Set what the probe drives, and optionally a refresh owed every period."""
@@ -140,7 +142,8 @@ class InspectProbe:
                 # Fresh events: an abandoned thread must stay stopped.
                 self._stop = threading.Event()
                 self._wake = threading.Event()
-                self._periodic_at = None
+                self._owed = False
+                self._poked = False
         self.trigger()
 
     def trigger(self, nodename: str | None = None) -> None:
@@ -158,6 +161,7 @@ class InspectProbe:
                 if len(self._pending) > PENDING_NODES_MAX:
                     del self._pending[next(iter(self._pending))]
             # Set before the thread starts, so its first look sees the trigger.
+            self._owed = True
             self._wake.set()
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(
@@ -167,6 +171,18 @@ class InspectProbe:
                     daemon=True,
                 )
                 self._thread.start()
+
+    def poke(self, _nodename: str | None = None) -> None:
+        """Re-evaluate when the periodic refresh is due, without owing an attempt.
+
+        Call it when a worker may have turned live. Never blocks; does nothing
+        before ``start``.
+        """
+        with self._lock:
+            if not self._bound or self._stop.is_set() or self._thread is None:
+                return
+            self._poked = True
+            self._wake.set()
 
     def stop(self, timeout: float | None = None) -> None:
         """Stop the probe thread, waiting up to ``timeout`` for a running refresh.
@@ -189,7 +205,11 @@ class InspectProbe:
         # Ends when stop() sets the event; stop() also sets ``wake``, which every
         # wait below is on or ends on.
         while not stop.is_set():
-            owed = wake.is_set()
+            with self._lock:
+                if self._poked and not self._owed:
+                    wake.clear()
+                self._poked = False
+                owed = self._owed
             due = self._next_due()
             if not owed and due is None:
                 self._wait(wake, None)
@@ -209,49 +229,53 @@ class InspectProbe:
                     return
                 if woken:
                     continue
-            if not owed and self._skip_idle_period():
+            if not owed and self._periodic_not_due():
                 continue
             # A trigger from here on is owed a refresh of its own, not dropped:
             # celery 5.6.3 worker/loops.py asynloop() sends worker_ready (via
             # on_ready) after kombu pidbox Node.listen() bound the control
             # queue but before the loop drains it, so an inspect sent for a
             # worker_ready can time out and the next one must still happen.
-            wake.clear()
+            with self._lock:
+                wake.clear()
+                self._owed = False
+                self._poked = False
             started = self._clock()
             self._next_allowed = started + self._min_interval_s
-            if self._periodic is not None:
-                self._periodic_at = started + self._periodic.period_s
             answered = self._attempt()
             if answered is None:
                 # Another refresh held the slot: owe one rather than drop it.
-                wake.set()
+                with self._lock:
+                    self._owed = True
+                    wake.set()
                 continue
             self._settle(started, answered)
 
+    def _periodic_remaining(self) -> float | None:
+        """Seconds until the periodic refresh is due, or None when none is wanted."""
+        return None if self._periodic is None else self._periodic.remaining()
+
     def _next_due(self) -> float | None:
         """The soonest owed time: a pending nodename's or the periodic refresh's."""
-        pending, periodic = self._earliest_due(), self._periodic_at
-        if pending is None or periodic is None:
-            return periodic if pending is None else pending
-        return min(pending, periodic)
+        pending = self._earliest_due()
+        remaining = self._periodic_remaining()
+        if remaining is None:
+            return pending
+        periodic = self._clock() + remaining
+        return periodic if pending is None else min(pending, periodic)
 
-    def _skip_idle_period(self) -> bool:
-        """True when only the period is due and no worker is live: wait another period.
+    def _periodic_not_due(self) -> bool:
+        """True when the wait ended for a periodic refresh that is not due after all.
 
-        Nothing to refresh then. Checking again each period (instead of
-        sleeping forever) picks up a worker that revives without a new nodename.
+        A request may have stamped authority meanwhile, or the fleet gone offline.
         """
-        periodic, at = self._periodic, self._periodic_at
-        now = self._clock()
-        if periodic is None or at is None or at > now:
+        if self._periodic is None:
             return False
         pending = self._earliest_due()
-        if pending is not None and pending <= now:
+        if pending is not None and pending <= self._clock():
             return False
-        if periodic.has_live_worker():
-            return False
-        self._periodic_at = now + periodic.period_s
-        return True
+        remaining = self._periodic_remaining()
+        return remaining is None or remaining > 0
 
     def _earliest_due(self) -> float | None:
         """The soonest owed time of any pending nodename, if there is one."""

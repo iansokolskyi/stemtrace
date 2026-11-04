@@ -568,6 +568,9 @@ _INSPECT_TIMEOUT_SECONDS = 0.5
 _INSPECT_BACKOFF_START_SECONDS = 2.0
 _INSPECT_BACKOFF_MAX_SECONDS = 60.0
 _INSPECT_FAILURES_MAX = 64
+# The periodic refresh runs when authority is half its window old, but no oftener
+# than this, so a tiny window can't make it a tight loop.
+_PERIODIC_MIN_PERIOD_SECONDS = 10.0
 
 
 class _InspectRefresher:
@@ -576,8 +579,8 @@ class _InspectRefresher:
     Runs at most one refresh at a time and at most one per
     ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
     in progress, or one still paced out, returns at once instead of waiting.
-    A failed attempt counts too: the next waits 2, 4, 8 ... up to 60 s, and a
-    success resets that. The probe and every route read the same clock.
+    An attempt that doesn't stamp authority counts too (a failure, a missed
+    reply): the next waits 2, 4, 8 ... up to 60 s, and a stamp resets that. The probe and every route read the same clock.
     """
 
     def __init__(
@@ -591,6 +594,13 @@ class _InspectRefresher:
         self._last_attempt: float = 0.0
         self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
         self._failures = 0
+        self._last_errored = False
+
+    @property
+    def last_errored(self) -> bool:
+        """Whether the last attempt failed outright (broker unreachable, a call raised)."""
+        with self._pace_lock:
+            return self._last_errored
 
     def _paced_out(self) -> bool:
         with self._pace_lock:
@@ -609,9 +619,10 @@ class _InspectRefresher:
             self._failures = 0
             self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 
-    def _record(self, *, succeeded: bool) -> None:
-        """Count an attempt toward pacing: an interval after a success, else a backoff."""
+    def _record(self, *, succeeded: bool, errored: bool = False) -> None:
+        """Count an attempt toward pacing: an interval after a stamp, else a backoff."""
         with self._pace_lock:
+            self._last_errored = errored
             if succeeded:
                 self._failures = 0
                 self._wait_s = _INSPECT_REFRESH_MIN_INTERVAL_SECONDS
@@ -637,11 +648,15 @@ class _InspectRefresher:
         if inspector is None:
             return frozenset()
         outcome: _InspectOutcome | None = None
+        stamps = worker_registry.authority_stamps
         with contextlib.suppress(Exception):
             outcome = _refresh_worker_registry_from_inspect(worker_registry, inspector)
-        # A half-finished refresh (stats() answered, registered() or ping() didn't)
-        # applied what it got but still backs off: the broker is struggling.
-        self._record(succeeded=outcome is not None and outcome.complete)
+        # An attempt that didn't stamp authority (failed, half-finished, or a worker's
+        # registered() missing) applied what it got but still backs off.
+        self._record(
+            succeeded=worker_registry.authority_stamps != stamps,
+            errored=outcome is None or not outcome.complete,
+        )
         return outcome.answered if outcome else frozenset()
 
     def refresh_blocking(self) -> frozenset[str] | None:
@@ -702,19 +717,22 @@ def _wire_inspect_probe(
     """
     own = probe is None
     probe = probe or InspectProbe()
-    probe.bind(
-        refresher,
-        Periodic(
-            max(
-                authority_window.total_seconds() / 2,
-                _INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
-            ),
-            worker_registry.has_live_worker,
-        ),
-    )
+    window_s = authority_window.total_seconds()
+    period_s = max(window_s / 2, _PERIODIC_MIN_PERIOD_SECONDS)
+
+    def remaining() -> float | None:
+        """Seconds until authority is a period old; None if no worker is online."""
+        # A failed attempt keeps it due: the server can't tell the fleet left.
+        if not (worker_registry.any_online() or refresher.last_errored):
+            return None
+        age = worker_registry.authority_age_s()
+        return 0.0 if age is None else period_s - age
+
+    probe.bind(refresher, Periodic(remaining))
     # Before the probe's trigger: a join clears the backoff, then asks for its inspect.
     worker_registry.add_new_node_listener(refresher.note_new_node)
     worker_registry.add_new_node_listener(probe.trigger)
+    worker_registry.add_liveness_listener(probe.poke)
     if own:
         router.add_event_handler("startup", probe.start)
         router.add_event_handler("shutdown", probe.stop)

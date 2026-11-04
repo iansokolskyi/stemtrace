@@ -323,6 +323,8 @@ class WorkerRegistry:
         # ping-only replies; kept apart from the workers, so the cleanup that
         # deletes them leaves it.
         self._authority_at: datetime | None = None
+        # How many times it was stamped: lets a caller tell whether one attempt did.
+        self._authority_stamps = 0
         # Fleet rule (no_workers_online) state. All of it is anomaly-only: the
         # Workers page never shows it, and the cleanup that deletes workers
         # leaves ``_ever_seen``.
@@ -348,6 +350,7 @@ class WorkerRegistry:
         # they are gone.
         self._channel_proven = False
         self._new_node_listeners: list[Callable[[str], None]] = []
+        self._liveness_listeners: list[Callable[[str], None]] = []
         self._announced_unregistered: dict[str, None] = {}
         self._lock = threading.RLock()
 
@@ -388,6 +391,7 @@ class WorkerRegistry:
             self._retire_other_pids(hostname, keep=f"{hostname}:{pid}")
         if is_new:
             self._notify_new_node([hostname])
+        self._notify_live(hostname)
 
     def _register(
         self,
@@ -514,6 +518,7 @@ class WorkerRegistry:
             timestamp: The event's time.
             now: Current time (tests); defaults to now.
         """
+        turned_live = False
         with self._lock:
             self._ever_seen = True
             live_id = self._newest_by_node.get(hostname)
@@ -525,6 +530,7 @@ class WorkerRegistry:
             announce = False
             if worker is None:
                 if stop is None or after_stop:
+                    turned_live = hostname not in self._unlisted
                     self._see_unlisted(hostname, seen_at)
                 announce = self._announce_unregistered(hostname)
             else:
@@ -534,6 +540,7 @@ class WorkerRegistry:
                     # A restart whose worker_ready was missed: the nodename runs
                     # tasks again, though its listed pid stays stopped. Once revived
                     # (or once the stop is forgotten) every event refreshes it.
+                    turned_live = hostname not in self._unlisted
                     self._see_unlisted(hostname, seen_at)
                 if seen_at > worker.last_seen:
                     worker.last_seen = seen_at
@@ -541,9 +548,12 @@ class WorkerRegistry:
                     minutes=WORKER_STALE_TIMEOUT_MINUTES
                 )
                 if recent and not worker.shutdown_reported:
+                    turned_live = turned_live or worker.status != WorkerStatus.ONLINE
                     worker.status = WorkerStatus.ONLINE
         if announce:
             self._notify_new_node([hostname])
+        if turned_live:
+            self._notify_live(hostname)
 
     def mark_offline(self, hostname: str, pid: int) -> None:
         """Mark a worker offline because it stopped answering, not because it said so.
@@ -619,6 +629,24 @@ class WorkerRegistry:
         with self._lock:
             if listener not in self._new_node_listeners:
                 self._new_node_listeners.append(listener)
+
+    def add_liveness_listener(self, listener: Callable[[str], None]) -> None:
+        """Call ``listener(nodename)`` when a worker_ready arrives or a node turns live again.
+
+        Same contract as :meth:`add_new_node_listener`: after the lock is
+        released, must return quickly; adding it twice is a no-op.
+        """
+        with self._lock:
+            if listener not in self._liveness_listeners:
+                self._liveness_listeners.append(listener)
+
+    def _notify_live(self, nodename: str) -> None:
+        """Tell the liveness listeners. Call without the lock."""
+        with self._lock:
+            listeners = list(self._liveness_listeners)
+        for listener in listeners:
+            with contextlib.suppress(Exception):
+                listener(nodename)
 
     def _announce_unregistered(self, hostname: str) -> bool:
         """Whether a task event from an unregistered node is the first one seen."""
@@ -699,6 +727,7 @@ class WorkerRegistry:
             fresh = [n for n in replies if not self._is_stale(n, seen)]
             if fresh and all(tasks is not None for _, tasks in replies.values()):
                 self._authority_at = now
+                self._authority_stamps += 1
             for nodename, (pid, tasks) in replies.items():
                 if self._is_stale(nodename, seen):
                     continue
@@ -752,13 +781,37 @@ class WorkerRegistry:
             and last_seen < cutoff
         )
 
-    def has_live_worker(self) -> bool:
-        """Whether a worker is live: no stop reported since its last ``worker_ready``."""
+    @property
+    def authority_stamps(self) -> int:
+        """How many inspect replies have stamped authority so far."""
         with self._lock:
-            return any(
-                not (w.shutdown_reported or w.superseded)
-                for w in self._workers.values()
-            )
+            return self._authority_stamps
+
+    def authority_age_s(self, *, now: datetime | None = None) -> float | None:
+        """Seconds since an inspect reply last stamped authority, or None if none did."""
+        with self._lock:
+            if self._authority_at is None:
+                return None
+            return ((now or _utcnow()) - self._authority_at).total_seconds()
+
+    def any_online(self, *, now: datetime | None = None) -> bool:
+        """Whether a worker is online: not stopped, superseded or silent with evidence.
+
+        The one definition the anomaly gate and the periodic refresh share.
+        """
+        cutoff = (now or _utcnow()) - timedelta(minutes=WORKER_STALE_TIMEOUT_MINUTES)
+        with self._lock:
+            return self._any_online(cutoff)
+
+    def _any_online(self, cutoff: datetime) -> bool:
+        """``any_online`` at ``cutoff``. Call with the lock."""
+        return any(
+            not self._is_silent(w.hostname, w.last_seen, cutoff)
+            for w in self._workers.values()
+            if not (w.shutdown_reported or w.superseded)
+        ) or any(
+            not self._is_silent(n, seen, cutoff) for n, seen in self._unlisted.items()
+        )
 
     def registry_facts(
         self, *, broker_configured: bool, now: datetime | None = None
@@ -788,13 +841,7 @@ class WorkerRegistry:
                 authority_at=self._authority_at,
                 broker_configured=broker_configured,
                 any_seen=self._ever_seen,
-                any_online=any(
-                    not self._is_silent(w.hostname, w.last_seen, cutoff) for w in live
-                )
-                or any(
-                    not self._is_silent(n, seen, cutoff)
-                    for n, seen in self._unlisted.items()
-                ),
+                any_online=self._any_online(cutoff),
             )
 
     def apply_ping_reply(

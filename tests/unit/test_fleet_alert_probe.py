@@ -71,8 +71,11 @@ def run_outage(
         for node, pid in ((NODE_A, 1), (NODE_B, 2)):
             registry.register_worker(node, pid, ["app.known"], event_timestamp=JOINED)
         take(fake.attempt_done)  # the probe the joins triggered
-        while got(fake.attempt_done, 0.3):  # follow-ups, until the probe is idle
-            pass
+        # Follow-ups until the probe is idle. With nobody answering, authority is
+        # never stamped and the periodic keeps retrying (the fake clock runs freely).
+        for _ in range(12):
+            if not got(fake.attempt_done, 0.3):
+                break
     # SIGKILL of the whole fleet; the first request comes hours later.
     fake.nodes = {}
     fake.mode = "silent"
