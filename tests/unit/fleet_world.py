@@ -53,6 +53,7 @@ ROWS = (
     "28z",
     "replay_ready",
     "late_ready",
+    "replay_ready_stopped",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -415,6 +416,14 @@ class World:
         if not announced:
             return
         old = stamp - timedelta(seconds=1)
+        stop = self.stop_ts.get(name)
+        node = self.nodes[name]
+        if node.stopped and name in self.stopped_at and stop is not None:
+            gap = int((stop - stamp).total_seconds())
+            if gap >= 1 and self.rng.random() < 0.5:
+                # After the pid's ready but not after its stop (a duplicate when 0): stale too.
+                old = stamp + timedelta(seconds=self.rng.randint(0, gap - 1))
+                self.reached["replay_ready_stopped"] += 1
         self.registry.register_worker(name, pid, ["app.t"], event_timestamp=old)
         self.reached["replay_ready"] += 1
 
