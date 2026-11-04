@@ -110,11 +110,8 @@ def _wait_until_it_answers(nodename: str) -> None:
     pytest.fail("the worker never answered a ping")
 
 
-async def test_r1_two_concurrent_refresh_requests_both_read_the_worker_online(
-    worker: tuple[str, str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, nodename = worker
-    _wait_until_it_answers(nodename)
+def _counting_inspector(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Count every inspect the server starts; returns the list it appends to."""
     inspections: list[float] = []
     real_get = routes._get_inspector
 
@@ -123,17 +120,22 @@ async def test_r1_two_concurrent_refresh_requests_both_read_the_worker_online(
         return real_get(url, **kwargs)  # type: ignore[arg-type]  # test passthrough
 
     monkeypatch.setattr(routes, "_get_inspector", counting)
-    registry = WorkerRegistry()
+    return inspections
+
+
+async def _statuses_from_two_concurrent_requests(
+    registry: WorkerRegistry, probe: InspectProbe, nodename: str
+) -> list[list[str]]:
+    """The worker's statuses in two ``refresh=true`` responses sent 1 ms apart."""
     app = FastAPI()
     app.include_router(
         create_api_router(
             GraphStore(),
             worker_registry=registry,
             broker_url=REDIS_URL,
-            inspect_probe=QuietProbe(),
+            inspect_probe=probe,
         )
     )
-
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -141,11 +143,23 @@ async def test_r1_two_concurrent_refresh_requests_both_read_the_worker_online(
         await asyncio.sleep(0.001)
         badge = asyncio.create_task(client.get("/api/workers?refresh=true"))
         responses = await asyncio.gather(page, badge)
-
-    statuses = [
+    return [
         sorted(w["status"] for w in r.json()["workers"] if w["hostname"] == nodename)
         for r in responses
     ]
+
+
+async def test_r1_two_concurrent_refresh_requests_both_read_the_worker_online(
+    worker: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, nodename = worker
+    _wait_until_it_answers(nodename)
+    inspections = _counting_inspector(monkeypatch)
+
+    statuses = await _statuses_from_two_concurrent_requests(
+        WorkerRegistry(), QuietProbe(), nodename
+    )
+
     assert len(inspections) == 1
     assert statuses == [[WorkerStatus.ONLINE.value]] * 2
 
@@ -155,14 +169,7 @@ async def test_r1_aged_worker_reads_online_for_both_concurrent_refresh_requests(
 ) -> None:
     _, nodename = worker
     _wait_until_it_answers(nodename)
-    inspections: list[float] = []
-    real_get = routes._get_inspector
-
-    def counting(url: str, **kwargs: float) -> object:
-        inspections.append(time.monotonic())
-        return real_get(url, **kwargs)  # type: ignore[arg-type]  # test passthrough
-
-    monkeypatch.setattr(routes, "_get_inspector", counting)
+    inspections = _counting_inspector(monkeypatch)
     registry = WorkerRegistry()
     refresher = routes._InspectRefresher(registry, REDIS_URL)
     assert refresher.refresh_blocking() == frozenset({nodename})  # the first inspect
@@ -177,27 +184,8 @@ async def test_r1_aged_worker_reads_online_for_both_concurrent_refresh_requests(
     inspections.clear()
     probe = QuietProbe()
     probe.bind(refresher)
-    app = FastAPI()
-    app.include_router(
-        create_api_router(
-            GraphStore(),
-            worker_registry=registry,
-            broker_url=REDIS_URL,
-            inspect_probe=probe,
-        )
-    )
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        page = asyncio.create_task(client.get("/api/workers?refresh=true"))
-        await asyncio.sleep(0.001)
-        badge = asyncio.create_task(client.get("/api/workers?refresh=true"))
-        responses = await asyncio.gather(page, badge)
+    statuses = await _statuses_from_two_concurrent_requests(registry, probe, nodename)
 
-    statuses = [
-        sorted(w["status"] for w in r.json()["workers"] if w["hostname"] == nodename)
-        for r in responses
-    ]
     assert len(inspections) == 1
     assert statuses == [[WorkerStatus.ONLINE.value]] * 2
