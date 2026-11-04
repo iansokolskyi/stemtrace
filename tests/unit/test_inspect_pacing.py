@@ -6,6 +6,7 @@ unreachable broker: ``stats()`` raises (``Mailbox._broadcast`` ->
 The clock is injected; nothing sleeps.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -465,6 +466,28 @@ def test_reading8_registered_failure_after_empty_stats_skips_ping_stamps_and_bac
     assert (target._failures, target.ready_in()) == (1, 2.0)
 
 
+class ProbeSpy:
+    """Stands in for the probe's target: records the pacing the probe sees, runs nothing.
+
+    A probe thread that ran the real refresher would race the test's own
+    attempts (a first miss triggers one), so the thread only reports.
+    """
+
+    def __init__(self, inner: routes._InspectRefresher) -> None:
+        self.inner = inner
+        self.ready_in_at_refresh: list[float] = []
+        self.refreshed = threading.Semaphore(0)
+
+    def refresh_blocking(self) -> frozenset[str]:
+        self.ready_in_at_refresh.append(self.inner.ready_in())
+        self.refreshed.release()
+        # Names the joined worker, so it is no longer pending and owes no retry.
+        return frozenset({"w9@host"})
+
+    def ready_in(self) -> float:
+        return self.inner.ready_in()
+
+
 def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
     broker: Broker, clock: Clock
 ) -> None:
@@ -480,15 +503,26 @@ def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
         )
     )
     shared = probe.target
-    assert shared is not None
+    assert isinstance(shared, routes._InspectRefresher)
+    spy = ProbeSpy(shared)
+    probe.bind(spy)
     for _ in range(6):
         shared.refresh_blocking()
         clock.t += shared.ready_in()
     assert shared.ready_in() == 0.0
     shared.refresh_blocking()
     assert shared.ready_in() == 60.0
+    # Let any probe run a first miss triggered finish, then start from a quiet probe.
+    probe.stop()
+    probe.start()
+    assert spy.refreshed.acquire(timeout=5)
+    spy.ready_in_at_refresh.clear()
+    while spy.refreshed.acquire(blocking=False):
+        pass
 
     registry.register_worker("w9@host", 9, ["app.t"])
+    assert spy.refreshed.acquire(timeout=5)
     probe.stop()
 
-    assert shared.ready_in() == routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    # The probe's attempt, triggered by the join, already sees the cleared backoff.
+    assert spy.ready_in_at_refresh == [routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS]
