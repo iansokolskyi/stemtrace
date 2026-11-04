@@ -236,10 +236,11 @@ function dependencies(layout: FlowLayout): {
   for (const task of layout.tasks) {
     if (task.containerId && !inRow.has(task.id)) add(task.containerId, task.id)
   }
+  const boxById = new Map(layout.containers.map((box) => [box.id, box]))
   for (const block of layout.more) {
     if (block.kind !== 'more') continue
     add(block.containerId, moreId(block.containerId))
-    const callback = layout.containers.find((box) => box.id === block.containerId)?.callbackId
+    const callback = boxById.get(block.containerId)?.callbackId
     if (callback) add(moreId(block.containerId), callback)
   }
   for (const [from, list] of out) {
@@ -277,7 +278,10 @@ export function criticalPath(
   for (let at = 0; at < queue.length; at++) {
     const id = queue[at]
     for (const successor of next.get(id) ?? []) {
-      preds.set(successor, [...(preds.get(successor) ?? []), id])
+      // Append in place: a copy per predecessor is quadratic for a callback with n members
+      const into = preds.get(successor)
+      if (into) into.push(id)
+      else preds.set(successor, [id])
       if (!depth.has(successor)) {
         depth.set(successor, (depth.get(id) as number) + 1)
         parent.set(successor, id)
@@ -509,7 +513,11 @@ function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
   const { next } = dependencies(layout)
   const incoming = new Map<string, string[]>()
   for (const [from, list] of next)
-    for (const to of list) incoming.set(to, [...(incoming.get(to) ?? []), from])
+    for (const to of list) {
+      const into = incoming.get(to)
+      if (into) into.push(from)
+      else incoming.set(to, [from])
+    }
   const containers = new Map(layout.containers.map((box) => [box.id, box]))
   const callbackOwner = new Map<string, string>()
   for (const box of layout.containers) if (box.callbackId) callbackOwner.set(box.callbackId, box.id)
@@ -531,7 +539,8 @@ function depthsOf(layout: FlowLayout, rootId: string): Map<string, number> {
       const levels = (incoming.get(id) ?? []).flatMap((from) =>
         depth.has(from) ? [(depth.get(from) as number) + (containers.has(from) ? 0 : 1)] : [],
       )
-      depth.set(id, levels.length > 0 ? Math.min(...levels) : 0)
+      // reduce, not a spread: a callback has one level per member
+      depth.set(id, levels.length > 0 ? levels.reduce((a, b) => Math.min(a, b)) : 0)
     }
   }
   return depth

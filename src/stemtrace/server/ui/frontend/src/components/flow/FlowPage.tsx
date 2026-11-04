@@ -8,7 +8,10 @@ import { FlowDiagram } from './FlowDiagram'
 import { firstFailure, summarizeFlow } from './flowFacts'
 import { Gantt } from './Gantt'
 import { Inspector } from './Inspector'
-import { layoutFlow } from './layoutFlow'
+import { layoutFlow, type PlacedContainer, type PlacedNotRun, type PlacedTask } from './layoutFlow'
+
+type PlacedRect = PlacedTask | PlacedContainer | PlacedNotRun
+
 import { buildTimeline, maxOf, minOf } from './timeline'
 
 /** Zoom steps above Fit (natural size): 1.0 to 1.4 by 0.2, as the prototype. */
@@ -74,10 +77,16 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
     return () => clearInterval(timer)
   }, [anyOpen])
 
-  const rectOf = (id: string) =>
-    layout.tasks.find((task) => task.id === id) ??
-    layout.containers.find((box) => box.id === id) ??
-    layout.notRun.find((box) => box.id === id)
+  // By id, built once per layout: a `find` per id is quadratic when many nodes arrive at once.
+  // A task wins over a container, a container over a not-run box.
+  const rects = useMemo(() => {
+    const byId = new Map<string, PlacedRect>()
+    for (const box of layout.notRun) byId.set(box.id, box)
+    for (const box of layout.containers) byId.set(box.id, box)
+    for (const task of layout.tasks) byId.set(task.id, task)
+    return byId
+  }, [layout])
+  const rectOf = (id: string) => rects.get(id)
 
   // The box's own scrolls (centring, zoom, scroll-into-view) are marked, so that any other
   // scroll, by whatever input (wheel, scrollbar, keys, focus moving to a node), is the reader's.

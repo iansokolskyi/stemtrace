@@ -90,6 +90,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   const lookupFailed =
     lookupId !== '' &&
     lookup.isError &&
+    !lookup.data &&
     !(lookup.error instanceof HttpError && lookup.error.status === 404)
 
   const items = useMemo(
@@ -149,7 +150,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
       onClose()
     } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      if (items.length === 0) return
+      // While an Enter waits for the lookup, the highlight is the row it will open: it stays put
+      if (enterWaiting.current || items.length === 0) return
       const step = event.key === 'ArrowDown' ? 1 : items.length - 1
       const next = (selected + step) % items.length
       setSelectedKey(items[next].key)

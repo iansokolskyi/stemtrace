@@ -283,6 +283,9 @@ test.describe('layoutFlow: replace()', () => {
   })
 })
 
+// Rows of a collapsed group of 200,000: the container, the first three members and "+N more"
+const COLLAPSED_ROWS = 5
+
 test.describe('layoutFlow: size', () => {
   test('lays out an expanded group of 200,000 members, above any call-argument limit', () => {
     const graph = group(200_000)
@@ -293,17 +296,43 @@ test.describe('layoutFlow: size', () => {
     expect(layout.containers).toHaveLength(1)
   })
 
-  for (const expanded of [true, false]) {
+  for (const [expanded, ROWS] of [
+    [true, 200_001],
+    [false, COLLAPSED_ROWS],
+  ] as const) {
     test(`builds the timeline of a group of 200,000 members, ${expanded ? 'expanded' : 'collapsed'}`, () => {
       const graph = group(200_000)
       const layout = layoutFlow(graph, 'g', new Set(expanded ? ['g'] : []))
 
       const timeline = buildTimeline(graph, layout, 'g', Date.now())
 
-      expect(timeline.rows.length).toBeGreaterThan(0)
-      expect(timeline.rows.length).toBeLessThanOrEqual(200_001)
+      expect(timeline.rows).toHaveLength(ROWS)
     })
   }
+})
+
+test.describe('layoutFlow: fan-in', () => {
+  // A callback takes an edge from every member: appending to its predecessor list by copying
+  // the array is quadratic. 50,000 members took 40 s that way; the bound is generous.
+  test('builds the timeline of an expanded chord with a callback and 50,000 members', () => {
+    const members = 50_000
+    const graph = group(members, {}, 'CHORD')
+    graph.g.chord_id = 'cb'
+    graph.cb = node({
+      task_id: 'cb',
+      parent_id: 'g',
+      first_seen: new Date(2027, 0, 1).toISOString(),
+    })
+    graph.g.children = [...graph.g.children, 'cb']
+    const layout = layoutFlow(graph, 'g', new Set(['g']))
+    expect(layout.edges.length).toBeGreaterThanOrEqual(members)
+
+    const started = performance.now()
+    const timeline = buildTimeline(graph, layout, 'g', Date.now())
+
+    expect(performance.now() - started).toBeLessThan(10_000)
+    expect(timeline.rows).toHaveLength(members + 2)
+  })
 })
 
 test.describe('layoutFlow: malformed links', () => {

@@ -389,7 +389,8 @@ export function layoutFlow(
     const shown = collapsed
       ? rows.filter((row, index) => index < COLLAPSED_HEAD || rowFailed(row))
       : rows
-    const hidden = collapsed ? rows.filter((row) => !shown.includes(row)) : []
+    const shownRows = new Set(shown)
+    const hidden = collapsed ? rows.filter((row) => !shownRows.has(row)) : []
 
     type Item = { row: string[] } | { more: string[][] } | { less: true }
     const items: Item[] = shown.map((row) => ({ row }))

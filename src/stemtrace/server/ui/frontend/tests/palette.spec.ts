@@ -391,6 +391,72 @@ test.describe('lookups and failures', () => {
     await expect(dialog(page).getByRole('status')).toHaveText('No results for “zzzqqq”')
   })
 
+  test('a cached task whose refetch fails keeps its row and says nothing is wrong', async ({
+    page,
+  }) => {
+    await page.clock.install()
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type(receipt.task_id)
+    await page.clock.runFor(300)
+    await expect(options(page).filter({ hasText: receipt.task_id })).toBeVisible()
+    // Leave the ID (the lookup is disabled), let the cached task go stale, come back to it
+    await page.keyboard.press('Control+a')
+    await page.keyboard.press('Backspace')
+    await page.clock.runFor(6_000)
+    await page.route(new RegExp(`/api/tasks/${receipt.task_id}$`), (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await page.keyboard.type(receipt.task_id)
+    await page.clock.runFor(300)
+    await expect(options(page).filter({ hasText: receipt.task_id })).toBeVisible()
+    await expect(dialog(page).getByRole('status')).toHaveCount(0)
+  })
+
+  test('Enter on a row arrowed to opens that row even when the lookup finds a task', async ({
+    page,
+  }) => {
+    const id = 'cafe0000-aaaa-bbbb'
+    const found = createSuccessTask('shop.orders.found')
+    found.task_id = id
+    mockApi.addTasks([found])
+    mockApi.setWorkers([worker(`celery@${id}-1`, 'online'), worker(`celery@${id}-2`, 'online')])
+    await page.route(new RegExp(`/api/tasks/${id}$`), async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await route.fallback()
+    })
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type(id)
+    await expect(options(page)).toHaveCount(2)
+    await page.keyboard.press('ArrowDown')
+    await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(new RegExp(`/workers/celery(%40|@)${id}-2$`))
+  })
+
+  test('arrow keys during a pending Enter do not move the highlight off the row it opens', async ({
+    page,
+  }) => {
+    mockApi.setWorkers([
+      worker('celery@deadbeef01', 'online'),
+      worker('celery@deadbeef02', 'online'),
+    ])
+    await page.route(/\/api\/tasks\/deadbeef0$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await route.fallback()
+    })
+    await loadPage(page)
+    await openPalette(page)
+    await page.keyboard.type('deadbeef0')
+    await expect(options(page)).toHaveCount(2)
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('ArrowDown')
+    // The highlight and the action agree: row 1 is still selected, and it is the one that opens
+    await expect(options(page).nth(0)).toHaveAttribute('aria-selected', 'true')
+    await expect(page).toHaveURL(/\/workers\/celery(%40|@)deadbeef01$/)
+  })
+
   test('Enter on a selected row opens it when the ID lookup finds nothing', async ({ page }) => {
     // A hex hostname has a task-ID shape: the lookup runs, 404s, and the worker row stays selected
     mockApi.setWorkers([worker('celery@3f4e5d6c7b8a', 'online')])
