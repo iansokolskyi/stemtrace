@@ -312,6 +312,15 @@ def test_nothing_is_owed_when_nobody_missed_or_nobody_can_be_heard() -> None:
     assert (calls, unproven_calls, stopped_calls) == ([0], [0], [0])
 
 
+def test_a_failed_stats_call_is_no_broadcast_and_owes_no_confirm() -> None:
+    registry = idle_fleet(SOLO)
+    calls = count_first_misses(registry)
+
+    refresh_at(registry, FIRST_MISS_AT, FakeInspect(stats=OSError("broker down")))
+
+    assert (calls, registry._misses) == ([0], {})
+
+
 def test_a_broadcast_before_the_last_sign_of_life_owes_nothing() -> None:
     registry = WorkerRegistry()
     prove_channel(registry)
