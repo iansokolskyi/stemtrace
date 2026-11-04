@@ -277,6 +277,8 @@ async def test_graphs_endpoint_within_lists_the_flow_with_a_recent_child(
         body = (await client.get("/api/graphs?within=6h")).json()
     assert [g["task_id"] for g in body["graphs"]] == ["a-root", "b-other"]
     assert body["total"] == 2
+    # The item still describes the root's own time, not the flow's.
+    assert datetime.fromisoformat(body["graphs"][0]["last_updated"]) == NOW - 7 * HOUR
 
 
 # ---- differential fuzz ----------------------------------------------------

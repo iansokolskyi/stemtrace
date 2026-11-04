@@ -661,7 +661,8 @@ The task list also takes:
 
 - `state=FAILURE,RETRY`: any of several states, in any case. An unknown state is a `422` that
   lists the valid ones.
-- `within=1h` (also on `GET /api/graphs`), as above.
+- `within=1h` (also on `GET /api/graphs`), as above. On `GET /api/graphs` it, `from_date` and
+  `to_date` apply to the whole flow (see [Graph list time](graphs.md#graph-list-time)).
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.
 

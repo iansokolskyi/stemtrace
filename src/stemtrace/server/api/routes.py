@@ -1231,7 +1231,8 @@ def _add_graph_routes(
 
         ``task_group`` and ``tag`` list the graphs with at least one task that
         matches (anywhere in the graph, not only its root). ``within`` is a
-        relative ``from_date`` (now minus it); pass one or the other.
+        relative ``from_date`` (now minus it); pass one or the other. Graphs sort
+        by their newest task, and the dates apply to the whole graph.
         """
         start = params.start_from(within, from_date, params.utcnow())
         group_of = group_lookup(groups)
