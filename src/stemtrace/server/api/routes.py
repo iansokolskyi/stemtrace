@@ -768,6 +768,7 @@ class _Flight:
     __slots__ = ("abandoned", "started", "starter_done", "thread_done")
 
     def __init__(self) -> None:
+        """Start with nothing run: not started, abandoned or done."""
         self.started = False
         self.abandoned = False
         self.thread_done = False
