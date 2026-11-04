@@ -402,8 +402,6 @@ class WorkerRegistry:
 
         with self._lock:
             if self._is_stale_ready(hostname, pid, event_timestamp):
-                if task_definitions:
-                    self._task_definitions_by_name.update(task_definitions)
                 return
             is_new = hostname not in self._newest_by_node
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
