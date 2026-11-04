@@ -62,7 +62,7 @@ def inspect_probes(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[InspectProb
     yield probes
     # A stopped probe's thread ends once its refresh returns; allow it a moment.
     deadline = time.monotonic() + LEAK_GRACE_S
-    while not _only(before) and time.monotonic() < deadline:
+    while _only(before) and time.monotonic() < deadline:
         time.sleep(0.01)
     leaked = _only(before)
     for probe in probes:
