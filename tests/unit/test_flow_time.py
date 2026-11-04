@@ -41,9 +41,9 @@ _ID_FIELDS = (
 )
 
 
-def _time(raw: dict[str, Any]) -> datetime:
-    """A recorded event's time (``Z`` spelled out for Python 3.10)."""
-    return datetime.fromisoformat(raw["timestamp"].replace("Z", "+00:00"))
+def _time(raw: dict[str, Any], key: str = "timestamp") -> datetime:
+    """A time field of a recorded event or a response (``Z`` spelled out for 3.10)."""
+    return datetime.fromisoformat(raw[key].replace("Z", "+00:00"))
 
 
 def _ev(
@@ -278,7 +278,7 @@ async def test_graphs_endpoint_within_lists_the_flow_with_a_recent_child(
     assert [g["task_id"] for g in body["graphs"]] == ["a-root", "b-other"]
     assert body["total"] == 2
     # The item still describes the root's own time, not the flow's.
-    assert datetime.fromisoformat(body["graphs"][0]["last_updated"]) == NOW - 7 * HOUR
+    assert _time(body["graphs"][0], "last_updated") == NOW - 7 * HOUR
 
 
 # ---- differential fuzz ----------------------------------------------------
