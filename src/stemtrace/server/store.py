@@ -503,6 +503,11 @@ class WorkerRegistry:
             stopped = ensure_tz_aware(timestamp) if timestamp else received
             if worker is None:
                 worker = self._newest_listed_before(hostname, stopped)
+            elif worker.ready_at is not None and stopped < ensure_tz_aware(
+                worker.ready_at
+            ):
+                # A stop of an older process that had this pid number (D4e reading 5).
+                worker = None
             if worker is not None:
                 worker.status = WorkerStatus.OFFLINE
                 worker.shutdown_reported = True
