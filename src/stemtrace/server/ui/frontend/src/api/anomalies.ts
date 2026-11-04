@@ -113,8 +113,9 @@ export function useAnomalies() {
 
 /**
  * The sidebar badge's count, on every page. It asks the workers like the list does: without
- * that, the `unregistered` check lapses on an idle fleet and the badge undercounts. The server
- * bounds and paces the inspect, and a down broker answers fast.
+ * that, the `unregistered` check lapses on an idle fleet and the badge undercounts. The request
+ * waits for the inspect: about 5 s at most with the broker down, up to 7 s when it joins an
+ * inspect already running. A request inside a backoff window answers at once.
  */
 export function useAnomalyBadge() {
   return useQuery<AnomalyListResponse>({

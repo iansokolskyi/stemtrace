@@ -18,8 +18,9 @@ export interface OverviewAnomalies {
 }
 
 /**
- * The anomalies for the Overview. It shares the sidebar badge's query, which asks the workers
- * (the server bounds the inspect, so a dead broker cannot block the page). `failed` is true when the
+ * The anomalies for the Overview. It shares the sidebar badge's query, which asks the workers:
+ * the request waits for the inspect (about 5 s at most with the broker down, up to 7 s when it
+ * joins one already running; inside a backoff window it answers at once). `failed` is true when the
  * request fails (an older server answers 404): the page then says nothing about anomalies.
  */
 export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; failed: boolean } {
