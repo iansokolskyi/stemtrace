@@ -157,6 +157,47 @@ def test_row28w_a_stats_reply_after_a_ready_does_not_move_the_stamp() -> None:
     assert pids_state(registry) == [(7, True)]
 
 
+# --- Row 28x: a stop stamped before the pid's newest ready is a stop of an older process ---
+
+
+def test_row28x_a_late_stop_naming_the_re_announced_pid_leaves_it_live() -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0 - 30 * MINUTE)
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0)
+
+    registry.mark_shutdown(SOLO, 7, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, False)]
+    assert fleet_items(report_at(registry, T0)) == []
+
+
+@pytest.mark.parametrize(
+    ("delta_s", "stopped"),
+    [(-1, False), (0, True), (60, True)],
+    ids=["before", "at", "after"],
+)
+def test_row28x_the_exact_pid_stop_is_compared_with_its_newest_ready(
+    delta_s: int, stopped: bool
+) -> None:
+    registry = WorkerRegistry()
+    registry.register_worker(SOLO, 7, ["app.known"], event_timestamp=T0)
+
+    registry.mark_shutdown(SOLO, 7, T0 + timedelta(seconds=delta_s), now=T0)
+
+    assert pids_state(registry) == [(7, stopped)]
+
+
+def test_row28x_a_pid_known_only_from_stats_is_stopped_by_any_stop_naming_it() -> None:
+    registry = WorkerRegistry()
+    registry.apply_stats_reply(
+        registry.event_generations(), {SOLO: (7, ["app.known"])}, now=T0
+    )
+
+    registry.mark_shutdown(SOLO, 7, T0 - 10 * MINUTE, now=T0)
+
+    assert pids_state(registry) == [(7, True)]
+
+
 # Seeds that failed on a17d2d3 with the unannounced-restart state on.
 REGRESSION_SEEDS = [34, 51, 65, 74, 89, 111]
 

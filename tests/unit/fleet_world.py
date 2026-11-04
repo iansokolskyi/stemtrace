@@ -47,6 +47,7 @@ ROWS = (
     "28t",
     "28u",
     "28w",
+    "28x",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -173,7 +174,7 @@ class World:
         # D4e: name -> (listed pid, stamp a stop is compared with, first registration
         # stamp). The stamp is the newest worker_ready (a re-announce moves it); a stats
         # reply registers a new pid at its reply time and never moves it after that.
-        self.reg: dict[str, tuple[int, datetime, datetime]] = {}
+        self.reg: dict[str, tuple[int, datetime, datetime, bool]] = {}
         self.seen_ids: set[tuple[str, int]] = set()
         self.in_flight: Plan | None = None
         self.stage = ""
@@ -222,7 +223,7 @@ class World:
             # Only a pid the server never saw: for a known one the registry keeps its
             # older registration, which the oracle can't tell from its own bookkeeping.
             if pid is not None and (name, pid) not in self.seen_ids:
-                self.reg[name] = (pid, now, now)
+                self.reg[name] = (pid, now, now, False)
             if pid is not None:
                 self.seen_ids.add((name, pid))
             self.nodes[name] = ONode(False, now, True)
@@ -281,7 +282,7 @@ class World:
             first = (
                 listed[2] if listed and listed[0] == self.pid[name] else self.clock.now
             )
-            self.reg[name] = (self.pid[name], self.clock.now, first)
+            self.reg[name] = (self.pid[name], self.clock.now, first, True)
             self.nodes[name] = ONode(False, self.clock.now, True)
             self.ever_seen = True
             self.last_event.pop(name, None)
@@ -321,9 +322,16 @@ class World:
         listed = self.reg.get(name)
         if node is None or not node.listed or node.stopped or listed is None:
             return
-        _, stamp, first = listed
+        _, stamp, first, announced = listed
         stop = stamp - timedelta(seconds=self.rng.choice([1, 30, 600]))
-        self.registry.mark_shutdown(name, 1000 + self.rng.randrange(1000), stop)
+        # Pid reuse: the late stop names the listed pid's own number. Compared with the pid's
+        # newest worker_ready, so only for a pid the oracle saw announced (a stats-only pid has none).
+        reuse = announced and self.rng.random() < 0.4
+        self.registry.mark_shutdown(
+            name, listed[0] if reuse else 1000 + self.rng.randrange(1000), stop
+        )
+        if reuse:
+            self.reached["28x"] += 1
         self.generation[name] += 1
         node.misses = []
         self.confirm_spent.discard(name)
