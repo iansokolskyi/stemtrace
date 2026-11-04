@@ -44,6 +44,9 @@ ROWS = (
     "28o",
     "28q",
     "28s",
+    "28t",
+    "28u",
+    "28w",
 )
 ADVANCES = (1, 20, 100, 200, 300, 700, 2000)  # seconds: inside and past 3 and 10 min
 
@@ -167,6 +170,10 @@ class World:
         self.last_stopped_unlisted: bool = False
         self.stop_ts: dict[str, datetime] = {}
         self.stopped_at: dict[str, datetime] = {}  # oracle: when a stop was reported
+        # D4e: name -> (listed pid, stamp a stop is compared with, first registration
+        # stamp). The stamp is the newest worker_ready (a re-announce moves it); a stats
+        # reply registers a new pid at its reply time and never moves it after that.
+        self.reg: dict[str, tuple[int, datetime, datetime]] = {}
         self.in_flight: Plan | None = None
         self.stage = ""
         self.killed_since_completion = False
@@ -206,10 +213,14 @@ class World:
             n.stopped or self.silent(name, n) for name, n in self.nodes.items()
         )
 
-    def _answer(self, name: str, *, with_pid: bool) -> None:
+    def _answer(self, name: str, *, with_pid: bool, pid: int | None = None) -> None:
         now = self.clock.now
         node = self.nodes.get(name)
         if with_pid:
+            listed = self.reg.get(name)
+            # The pid the reply named when it was asked, not the one running now.
+            if pid is not None and (listed is None or listed[0] != pid):
+                self.reg[name] = (pid, now, now)
             self.nodes[name] = ONode(False, now, True)
             self.stopped_at.pop(name, None)
             self.reported_stopped.discard(name)
@@ -261,6 +272,11 @@ class World:
             self.reported_stopped.discard(name)
             self.rev_listed.discard(name)
             self.stopped_at.pop(name, None)
+            listed = self.reg.get(name)
+            first = (
+                listed[2] if listed and listed[0] == self.pid[name] else self.clock.now
+            )
+            self.reg[name] = (self.pid[name], self.clock.now, first)
             self.nodes[name] = ONode(False, self.clock.now, True)
             self.ever_seen = True
             self.last_event.pop(name, None)
@@ -280,10 +296,39 @@ class World:
         self.confirm_spent.discard(name)
         node = self.nodes.get(name)
         if node is not None and node.listed:
+            listed = self.reg.get(name)
+            if not node.stopped and listed and listed[0] != self.pid[name]:
+                self.reached["28t"] += (
+                    1  # D4e: the stop of an unlisted pid ended the listed one
+                )
             node.stopped = True
         elif node is not None:
             del self.nodes[name]
             self.last_stopped_unlisted = True
+
+    def late_stop(self, name: str) -> None:
+        """A stop for a pid the server doesn't list, stamped before the listed pid's registration.
+
+        D4e reading 1: a late stop of an older process leaves the listed pid live. It still
+        counts as a worker event (misses forgotten, older replies stale) and leaves stop memory.
+        """
+        node = self.nodes.get(name)
+        listed = self.reg.get(name)
+        if node is None or not node.listed or node.stopped or listed is None:
+            return
+        _, stamp, first = listed
+        stop = stamp - timedelta(seconds=self.rng.choice([1, 30, 600]))
+        self.registry.mark_shutdown(name, 1000 + self.rng.randrange(1000), stop)
+        self.generation[name] += 1
+        node.misses = []
+        self.confirm_spent.discard(name)
+        self.stopped_at[name] = self.clock.now
+        self.last_stopped_unlisted = False
+        self.reached["28u"] += 1
+        if stop >= first:
+            self.reached["28w"] += (
+                1  # only the newest worker_ready protects the listed pid
+            )
 
     def kill(self, name: str) -> None:
         """SIGKILL: no event."""
@@ -361,6 +406,7 @@ class World:
         self.stopped_at = {n: t for n, t in self.stopped_at.items() if t >= cutoff}
         for name, node in list(self.nodes.items()):
             if node.listed and node.last_seen < cutoff:
+                self.reg.pop(name, None)
                 if node.stopped or self.silent(name, node):
                     del self.nodes[name]
                 else:
@@ -383,7 +429,16 @@ class World:
             for n in NODES
             if self.truth[n] == "alive" and not self.deaf and rng.random() > 0.12
         ]
-        ops = ["evaluate", "task", "advance", "start", "stop", "kill", "cleanup"]
+        ops = [
+            "evaluate",
+            "task",
+            "advance",
+            "start",
+            "stop",
+            "late_stop",
+            "kill",
+            "cleanup",
+        ]
         meanwhile = {
             stage: [rng.choice(ops) for _ in range(rng.choice([0, 0, 1, 2]))]
             for stage in ("stats", "registered", "ping")
@@ -437,7 +492,7 @@ class World:
             for name in plan.stats_answered:
                 answered.add(name)
                 if self.generation[name] == plan.seen_generation[name]:
-                    self._answer(name, with_pid=plan.pids)
+                    self._answer(name, with_pid=plan.pids, pid=plan.answers.get(name))
         else:
             # Written from the D7a spec: a stats() error ends the attempt (reading 4); empty
             # stats whose registered() fails ends it too, broadcast stamped (readings 5, 8);
@@ -660,6 +715,7 @@ class World:
             "busy": self.toggle_busy,
             "task": self.task,
             "late": self.late_task,
+            "late_stop": self.late_stop,
             "revive_run": self.revive_run,
         }
         if op in per_node:
@@ -689,6 +745,7 @@ class World:
             "task",
             "task",
             "late",
+            "late_stop",
             "advance",
             "advance",
             "cleanup",
