@@ -18,16 +18,6 @@ import { type PaletteItem, type PaletteKind, paletteItems, TASK_ID_SHAPE } from 
 /** How long the query rests before a task ID is looked up, so typing sends one request. */
 const LOOKUP_DELAY_MS = 250
 
-/** A deferred Enter with no row selected yet: only a task row can answer it. */
-const PENDING_ENTER: PaletteItem = {
-  key: 'pending',
-  kind: 'name',
-  group: '',
-  id: '',
-  label: '',
-  desc: '',
-}
-
 /** The server's task IDs are lower-case and its lookup is case-sensitive: retry once lower-case. */
 async function lookupTask(id: string): ReturnType<typeof fetchTask> {
   try {
@@ -123,13 +113,13 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
 
   // An Enter on the top row while the ID lookup is still out: when it ends, open the task row
   // if one landed, else the row that was selected at the press
-  const enterWaiting = useRef<PaletteItem | null>(null)
+  const enterWaiting = useRef<{ row: PaletteItem | undefined } | null>(null)
   // biome-ignore lint/correctness/useExhaustiveDependencies: the effect runs this render's closure, so `choose` and `items` are current; it fires only when the wait ends or the rows change
   useEffect(() => {
     const pressed = enterWaiting.current
     if (!pressed || waitingForId) return
     enterWaiting.current = null
-    choose(items.find((item) => item.kind === 'task') ?? pressed)
+    choose(items.find((item) => item.kind === 'task') ?? pressed.row)
   }, [waitingForId, items])
 
   function choose(item: PaletteItem | undefined): void {
@@ -172,8 +162,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
       // Only the top row can be displaced by the task row the lookup may add on top; a row the
       // reader moved to, or any row once a task row is there, is acted on now
       const defer = waitingForId && selected === 0 && !items.some((item) => item.kind === 'task')
-      if (defer && items[selected]) enterWaiting.current = items[selected]
-      else if (defer) enterWaiting.current = PENDING_ENTER
+      if (defer) enterWaiting.current = { row: items[selected] }
       else choose(items[selected])
     } else if (event.key === 'Tab') {
       // The dialog holds focus: the only stop is the search box
