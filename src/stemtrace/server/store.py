@@ -83,24 +83,6 @@ def _snapshot(node: TaskNode) -> TaskNode:
 _MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _get_node_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
-    """Get the most recent timestamp for a node (including children for synthetic nodes)."""
-    if node.last_updated is not None:
-        return node.last_updated
-
-    # For synthetic nodes (GROUP/CHORD), use the latest child timestamp
-    if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
-        child_timestamps: list[datetime] = []
-        for child_id in node.children:
-            child = graph.get_node(child_id)
-            if child and child.last_updated is not None:
-                child_timestamps.append(child.last_updated)
-        if child_timestamps:
-            return max(child_timestamps)
-
-    return _MIN_DATETIME
-
-
 def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     """Sort key for eviction: a task's first event; a group's newest member's.
 
@@ -182,24 +164,6 @@ def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
         steps.append(parent.task_id)
         current = parent
     return [], None
-
-
-def _get_first_timestamp(node: TaskNode, graph: TaskGraph) -> datetime:
-    """Get the first timestamp for a node (including children for synthetic nodes)."""
-    if node.first_seen is not None:
-        return node.first_seen
-
-    # For synthetic nodes (GROUP/CHORD), use the earliest child timestamp
-    if node.node_type in (NodeType.GROUP, NodeType.CHORD) and node.children:
-        child_timestamps: list[datetime] = []
-        for child_id in node.children:
-            child = graph.get_node(child_id)
-            if child and child.first_seen is not None:
-                child_timestamps.append(child.first_seen)
-        if child_timestamps:
-            return min(child_timestamps)
-
-    return _MIN_DATETIME
 
 
 if TYPE_CHECKING:
@@ -1309,25 +1273,67 @@ class GraphStore:
             matching = self._roots_with_task_locked(task_names)
             root_nodes = [n for n in root_nodes if n.task_id in matching]
 
-        # Date filtering - use child timestamps for synthetic nodes
+        # A flow's time is over its whole graph, not the root's own events.
+        times = self._flow_times_locked()
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
-            root_nodes = [
-                n for n in root_nodes if _get_node_timestamp(n, self._graph) >= from_dt
-            ]
+            root_nodes = [n for n in root_nodes if times[n.task_id][1] >= from_dt]
         if to_date is not None:
             to_dt = _ensure_end_of_day(to_date)
-            root_nodes = [
-                n for n in root_nodes if _get_first_timestamp(n, self._graph) <= to_dt
-            ]
+            root_nodes = [n for n in root_nodes if times[n.task_id][0] <= to_dt]
 
-        # Sort needs the graph for synthetic nodes' children
-        root_nodes.sort(
-            key=lambda n: _get_node_timestamp(n, self._graph),
-            reverse=True,
-        )
+        # Newest first; equal times by root ID (the sort is stable).
+        root_nodes.sort(key=lambda n: n.task_id)
+        root_nodes.sort(key=lambda n: times[n.task_id][1], reverse=True)
         total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
+
+    def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
+        """Each root's flow: its (first, latest) time over every node under it.
+
+        One pass: each node's parent chain is walked up to its root once,
+        and later nodes stop at a node already resolved, so the whole store
+        costs O(nodes). A flow with no timed node is ``_MIN_DATETIME`` in
+        both. Call with the lock held.
+        """
+        nodes = self._graph.nodes
+        root_of: dict[str, str | None] = {}
+        for start in nodes:
+            path: list[str] = []
+            on_path: set[str] = set()
+            current: str | None = start
+            root: str | None = None
+            while current is not None:
+                if current in root_of:
+                    root = root_of[current]
+                    break
+                if current in on_path:
+                    break  # a parent loop: under no root
+                path.append(current)
+                on_path.add(current)
+                parent = nodes[current].parent_id
+                if parent is None or parent not in nodes:
+                    root = current
+                    break
+                current = parent
+            for node_id in path:
+                root_of[node_id] = root
+        firsts: dict[str, datetime] = {}
+        lasts: dict[str, datetime] = {}
+        for node_id, root in root_of.items():
+            if root is None:
+                continue
+            node = nodes[node_id]
+            # GROUP/CHORD nodes have no events: their members are nodes of the
+            # flow themselves, so they count through those.
+            first, last = node.first_seen, node.last_updated
+            if first is not None and last is not None:
+                firsts[root] = min(first, firsts.get(root, first))
+                lasts[root] = max(last, lasts.get(root, last))
+        return {
+            root: (firsts.get(root, _MIN_DATETIME), lasts.get(root, _MIN_DATETIME))
+            for root in self._graph.root_ids
+        }
 
     def _roots_with_task_locked(self, task_names: Collection[str]) -> set[str]:
         """IDs of the roots whose graph has a task named one of ``task_names``.
