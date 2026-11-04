@@ -574,7 +574,7 @@ _INSPECT_WAIT_SECONDS = 7.0
 
 
 class _InspectRefresher:
-    """Rate-limited, non-blocking worker registry refresh from Celery inspect.
+    """Rate-limited worker registry refresh from Celery inspect that never blocks the loop.
 
     Runs at most one refresh at a time and at most one per
     ``_INSPECT_REFRESH_MIN_INTERVAL_SECONDS``. A request that finds a refresh
@@ -641,6 +641,8 @@ class _InspectRefresher:
         """
         inspector = _get_inspector(broker_url, timeout_seconds=_INSPECT_TIMEOUT_SECONDS)
         if inspector is None:
+            # No inspector is a failed attempt too: no back-to-back retries (D7c).
+            self._record(succeeded=False)
             return frozenset()
         outcome: _InspectOutcome | None = None
         with contextlib.suppress(Exception):
@@ -678,17 +680,50 @@ class _InspectRefresher:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(_resolve_waiter, future)
 
-    def _start_or_join(self) -> asyncio.Future[None] | bool:
-        """Start a flight (True), join the one running (its future), or skip (False)."""
+    def _start_or_join(self) -> asyncio.Future[None] | _Flight | None:
+        """Start a flight (its handle), join the one running (a future), or skip (None).
+
+        The acquire itself decides "in flight", so the probe, which takes the
+        lock without ``_waiters_lock``, can't slip in between a check and it.
+        """
         with self._waiters_lock:
-            if self._lock.locked():
+            if not self._lock.acquire(blocking=False):
                 loop = asyncio.get_running_loop()
                 future: asyncio.Future[None] = loop.create_future()
                 self._waiters.append((loop, future))
                 return future
             if self._paced_out():
-                return False
-            return self._lock.acquire(blocking=False)
+                self._lock.release()
+                return None
+            return _Flight()
+
+    def _mark_flight(self, flight: _Flight, *, thread: bool) -> None:
+        """Note that the attempt's thread or its starter is done; the second ends the flight.
+
+        Both must be done: a cancelled starter must not free the lock under a
+        running attempt, and the starter evaluates before the next attempt starts.
+        """
+        with self._waiters_lock:
+            if thread:
+                flight.thread_done = True
+            else:
+                flight.starter_done = True
+            if not (flight.thread_done and flight.starter_done):
+                return
+        self._end_flight()
+
+    def _run_flight(
+        self, flight: _Flight, worker_registry: WorkerRegistry, broker_url: str
+    ) -> frozenset[str]:
+        """Run the attempt on a pool thread, unless its starter gave up before it began."""
+        with self._waiters_lock:
+            if flight.abandoned:
+                return frozenset()
+            flight.started = True
+        try:
+            return self._inspect_and_apply(worker_registry, broker_url)
+        finally:
+            self._mark_flight(flight, thread=True)
 
     async def _wait_for_flight(self, future: asyncio.Future[None]) -> None:
         """Wait for the attempt in flight, at most ``_INSPECT_WAIT_SECONDS``."""
@@ -713,16 +748,30 @@ class _InspectRefresher:
         if isinstance(started, asyncio.Future):
             await self._wait_for_flight(started)
             return
-        if not started:
+        if started is None:
             return
         try:
-            # starlette 1.7.0 run_in_threadpool -> anyio 4.14.2 run_sync defaults to
-            # abandon_on_cancel=False: the thread has finished by the time this returns or raises, so releasing is safe.
             await run_in_threadpool(
-                self._inspect_and_apply, worker_registry, broker_url
+                self._run_flight, started, worker_registry, broker_url
             )
         finally:
-            self._end_flight()
+            with self._waiters_lock:
+                if not started.started:
+                    # Cancelled before the thread began: nothing will run or end it.
+                    started.abandoned = started.thread_done = True
+            self._mark_flight(started, thread=False)
+
+
+class _Flight:
+    """One attempt's progress, shared by the starting request and its pool thread."""
+
+    __slots__ = ("abandoned", "started", "starter_done", "thread_done")
+
+    def __init__(self) -> None:
+        self.started = False
+        self.abandoned = False
+        self.thread_done = False
+        self.starter_done = False
 
 
 def _resolve_waiter(future: asyncio.Future[None]) -> None:
