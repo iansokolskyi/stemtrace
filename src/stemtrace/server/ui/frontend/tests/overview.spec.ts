@@ -695,7 +695,7 @@ test.describe('Overview anomalies', () => {
     await expect(tile).toContainText('1 stuck, 1 unregistered, 1 no workers online')
   })
 
-  test('the Overview reads the anomalies without asking the workers', async ({ page }) => {
+  test('the Overview shares the badge request, which asks the workers', async ({ page }) => {
     const urls: string[] = []
     page.on('request', (r) => {
       if (/\/api\/anomalies(\?|$)/.test(r.url())) urls.push(r.url())
@@ -703,7 +703,7 @@ test.describe('Overview anomalies', () => {
     await openOverview(page, '/', withAnomalies)
     await expect(page.getByTestId('overview-anomaly')).toHaveCount(3)
     expect(urls.length).toBeGreaterThan(0)
-    expect(urls.filter((u) => !u.includes('refresh=false'))).toEqual([])
+    expect(urls.filter((u) => u.includes('refresh=false'))).toEqual([])
   })
 
   test('a fleet item missing from a cut list is fetched without asking the workers', async ({
@@ -728,7 +728,13 @@ test.describe('Overview anomalies', () => {
     await expect
       .poll(() => urls.filter((u) => u.searchParams.get('kind') === 'no_workers_online').length)
       .toBe(1)
-    expect(urls.filter((u) => u.searchParams.get('refresh') !== 'false')).toEqual([])
+    const fleetAsks = urls.filter((u) => u.searchParams.get('kind') === 'no_workers_online')
+    expect(fleetAsks.map((u) => u.searchParams.get('refresh'))).toEqual(
+      fleetAsks.map(() => 'false'),
+    )
+    expect(
+      urls.filter((u) => !u.searchParams.has('kind') && u.searchParams.has('refresh')),
+    ).toEqual([])
   })
 
   test('What is wrong lists the fleet item first, then the items, and counts them', async ({

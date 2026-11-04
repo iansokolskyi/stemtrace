@@ -427,10 +427,10 @@ test.describe('Task page callout', () => {
 test.describe('Anomalies requests', () => {
   const requests = (api: MockApiContext): URL[] => api.anomalyRequests
 
-  test('the sidebar badge asks without refresh, the page asks with it', async ({ page }) => {
+  test('the sidebar badge and the page both ask the workers', async ({ page }) => {
     const api = await open(page, [stuck], '/flows')
     await expect(badge(page)).toHaveText('Anomalies1')
-    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual(['false'])
+    expect(requests(api).map((u) => u.searchParams.get('refresh'))).toEqual([null])
     await page.goto('/anomalies')
     await expect(items(page)).toHaveCount(1)
     expect(requests(api).some((u) => !u.searchParams.has('refresh'))).toBe(true)

@@ -18,8 +18,8 @@ export interface OverviewAnomalies {
 }
 
 /**
- * The anomalies for the Overview. It reads what the server already knows (`refresh=false`, the
- * sidebar badge's own query), so a dead broker cannot block the page. `failed` is true when the
+ * The anomalies for the Overview. It shares the sidebar badge's query, which asks the workers
+ * (the server bounds the inspect, so a dead broker cannot block the page). `failed` is true when the
  * request fails (an older server answers 404): the page then says nothing about anomalies.
  */
 export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; failed: boolean } {

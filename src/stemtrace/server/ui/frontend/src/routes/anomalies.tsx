@@ -24,7 +24,7 @@ function AnomaliesPage(): ReactElement {
   // The fleet item is one banner above the list, whatever its `since` sorts it to.
   // The list is capped and sorted by `since`, so a full list may not hold it: `counts` says
   // whether there is one, and a request of its own fetches it. That request does not ask the
-  // workers again (`refresh=false`): the list request just did.
+  // workers again (`refresh=false`): the list request has just asked them.
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
   const fleet = inList ?? fleetQuery.data?.anomalies[0]

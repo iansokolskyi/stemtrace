@@ -2,9 +2,10 @@ import { useQuery } from '@tanstack/react-query'
 import { registrySnapshot, workersSnapshot } from '@/api/queries'
 import { offlineHostCount } from '@/components/workers/workers'
 
-// Badges never trigger Celery inspect (refresh=false): an inspect blocks the request for a
-// second or more, and much longer while the broker is down. They show what the server already
-// knows; the Workers and Registry pages refresh it.
+// The Workers and Registry badges never trigger Celery inspect (refresh=false): an inspect blocks
+// the request for a second or more, and much longer while the broker is down. They show what the
+// server already knows; the Workers and Registry pages refresh it. The anomaly badge asks,
+// because the server bounds and paces that inspect.
 const BADGE_POLL_MS = 30_000
 
 /** Counts behind the sidebar's problem badges; null while unknown (no badge is shown). */
