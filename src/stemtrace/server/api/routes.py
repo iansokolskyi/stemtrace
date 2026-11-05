@@ -440,6 +440,7 @@ class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no typ
         kombu_ensure = connection.ensure
 
         def ensure(obj: Any, fun: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            """Call kombu's ``ensure`` with ``max_retries=0`` unless the caller sets one."""
             if len(args) < 2:  # max_retries is the 4th positional parameter
                 kwargs.setdefault("max_retries", 0)
             return kombu_ensure(obj, fun, *args, **kwargs)
