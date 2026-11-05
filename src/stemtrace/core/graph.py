@@ -866,6 +866,9 @@ class TaskGraph(BaseModel):
     # Existing tasks whose name or reported parent changed since the last take_renamed(): a
     # task.replace() reuse can re-pick a task's name on another task's event.
     _renamed_ids: set[str] = PrivateAttr(default_factory=set)
+    # Nodes linked under a parent (or as a root) or removed since the last
+    # take_moved(): the nodes whose flow may have changed.
+    _moved_ids: set[str] = PrivateAttr(default_factory=set)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
@@ -1188,6 +1191,19 @@ class TaskGraph(BaseModel):
         renamed, self._renamed_ids = self._renamed_ids, set()
         return renamed
 
+    def take_moved(self) -> set[str]:
+        """IDs of nodes linked, re-linked or removed since the last call, and forget them.
+
+        A node's flow (the root its parent chain reaches) changes only when it
+        or a node above it is linked under another parent or removed, so a
+        cache of flows only needs these IDs.
+
+        Returns:
+            The moved task IDs (removed tasks included).
+        """
+        moved, self._moved_ids = self._moved_ids, set()
+        return moved
+
     def _renamed(self, node: TaskNode, old_name: str) -> None:
         """Re-run what read a task's name after its events gave it another.
 
@@ -1268,6 +1284,7 @@ class TaskGraph(BaseModel):
     def _remove(self, node: TaskNode) -> None:
         """Do the work of ``remove_node`` (``node`` is marked as removing)."""
         task_id = node.task_id
+        self._moved_ids.add(task_id)
         self._unlink(node)
         self._set_awaited(task_id, None)
         chords = self._drop_chord_roles(task_id)
@@ -1553,6 +1570,7 @@ class TaskGraph(BaseModel):
 
         Only call it for a node that isn't listed yet (new or just unlinked).
         """
+        self._moved_ids.add(node.task_id)
         if node.parent_id is None:
             self._roots[node.task_id] = None
             return

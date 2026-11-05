@@ -21,7 +21,7 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.store import GraphStore, WorkerRegistry, _root_of_each
+from stemtrace.server.store import GraphStore, WorkerRegistry
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 HOUR = timedelta(hours=1)
@@ -278,6 +278,7 @@ async def test_graphs_endpoint_within_lists_the_flow_with_a_recent_child(
     assert [g["task_id"] for g in body["graphs"]] == ["a-root", "b-other"]
     assert body["total"] == 2
     # The item still describes the root's own time, not the flow's.
+    assert _time(body["graphs"][0], "first_seen") == NOW - 7 * HOUR
     assert _time(body["graphs"][0], "last_updated") == NOW - 7 * HOUR
 
 
@@ -367,40 +368,17 @@ def test_flow_list_equals_the_oracle_for_random_recorded_flows(chunk: int) -> No
                 else set(rng.sample(names, min(len(names), 2)))
             )
             expected = _oracle(store, from_date, to_date, wanted)
-            roots, _, total = store.get_root_nodes_with_children(
+            listed = store.get_root_nodes_with_children(
                 limit=1000, from_date=from_date, to_date=to_date, task_names=wanted
             )
             where = (seed, from_date, to_date, wanted)
-            assert [r.task_id for r in roots] == expected, where
-            assert total == len(expected), where
-            page, _, _ = store.get_root_nodes_with_children(
+            assert [r.task_id for r in listed.roots] == expected, where
+            assert listed.total == len(expected), where
+            page = store.get_root_nodes_with_children(
                 limit=2,
                 offset=1,
                 from_date=from_date,
                 to_date=to_date,
                 task_names=wanted,
             )
-            assert [r.task_id for r in page] == expected[1:3], where
-
-
-def _node(task_id: str, parent_id: str | None) -> TaskNode:
-    return TaskNode(
-        task_id=task_id, name="t.task", state=TaskState.PENDING, parent_id=parent_id
-    )
-
-
-def test_root_of_each_resolves_chains_in_any_order_and_loops_to_none() -> None:
-    """Children before parents, a missing parent, and a parent loop (no root)."""
-    ids = [("d", "c"), ("b", "a"), ("c", "b"), ("a", None), ("m", "gone")]
-    ids += [("x", "y"), ("y", "x"), ("z", "x")]
-    nodes = {task_id: _node(task_id, parent) for task_id, parent in ids}
-    assert _root_of_each(nodes) == {
-        "a": "a",
-        "b": "a",
-        "c": "a",
-        "d": "a",
-        "m": "m",
-        "x": None,
-        "y": None,
-        "z": None,
-    }
+            assert [r.task_id for r in page.roots] == expected[1:3], where

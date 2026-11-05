@@ -124,21 +124,21 @@ class TestGraphStoreConsistency:
     def test_get_node_with_children_missing_returns_none(self) -> None:
         assert GraphStore().get_node_with_children("missing") is None
 
-    def test_get_root_nodes_with_children_returns_roots_and_children(self) -> None:
+    def test_get_root_nodes_with_children_returns_roots_and_child_types(self) -> None:
         store = GraphStore()
         store.add_event(_task_event("root", TaskState.STARTED, 0))
         store.add_event(_task_event("child", TaskState.SUCCESS, 1, parent_id="root"))
         store.add_event(_task_event("other-root", TaskState.SUCCESS, 2))
 
-        roots, related, total = store.get_root_nodes_with_children(limit=1)
+        page = store.get_root_nodes_with_children(limit=1)
 
-        assert [r.task_id for r in roots] == ["other-root"]
-        assert set(related) == {"other-root"}
-        assert total == 2
-        roots, related, _ = store.get_root_nodes_with_children(limit=1, offset=1)
-        assert [r.task_id for r in roots] == ["root"]
-        assert set(related) == {"root", "child"}
-        assert related["child"].state == TaskState.SUCCESS
+        assert [r.task_id for r in page.roots] == ["other-root"]
+        assert set(page.related) == {"other-root"}
+        assert page.total == 2
+        page = store.get_root_nodes_with_children(limit=1, offset=1)
+        assert [r.task_id for r in page.roots] == ["root"]
+        assert set(page.related) == {"root"}
+        assert page.child_types == {"child": NodeType.TASK}
 
 
 @pytest.fixture

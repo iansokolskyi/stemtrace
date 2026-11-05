@@ -83,40 +83,6 @@ def _snapshot(node: TaskNode) -> TaskNode:
 _MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _root_of_each(nodes: Mapping[str, TaskNode]) -> dict[str, str | None]:
-    """Each node's root: the end of its parent chain, walked once per node.
-
-    A walk stops at a node an earlier walk resolved, so the whole store costs
-    O(nodes). A node on a parent loop has no root (``None``).
-    """
-    root_of: dict[str, str | None] = {}
-    for start, node in nodes.items():
-        parent = node.parent_id
-        if parent is None or parent not in nodes:
-            root_of[start] = start
-            continue
-        if parent in root_of and start not in root_of:
-            root_of[start] = root_of[parent]  # the usual case: parents come first
-            continue
-        if start in root_of:
-            continue
-        path: list[str] = []
-        current = start
-        while current not in root_of:
-            root_of[current] = None  # met again on this walk: a parent loop
-            path.append(current)
-            parent = nodes[current].parent_id
-            if parent is None or parent not in nodes:
-                root_of[current] = current
-                path.pop()
-                break
-            current = parent
-        root = root_of[current]
-        for node_id in path:
-            root_of[node_id] = root
-    return root_of
-
-
 def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     """Sort key for eviction: a task's first event; a group's newest member's.
 
@@ -1096,6 +1062,19 @@ class TaskRunSummary(NamedTuple):
     last_run: datetime | None
 
 
+class FlowListPage(NamedTuple):
+    """A page of the flow list: the roots, what the response reads of them, the total."""
+
+    roots: list[TaskNode]
+    related: dict[str, TaskNode]
+    total: int
+    child_types: dict[str, NodeType]
+
+
+# A flow with no timed node (a hand-built synthetic root): earlier than any time.
+_NO_FLOW_TIME = (_MIN_DATETIME, _MIN_DATETIME)
+
+
 class GraphStore:
     """Thread-safe in-memory store for TaskGraph with LRU eviction."""
 
@@ -1110,6 +1089,13 @@ class GraphStore:
         # event changes its own node's state and events; names can also
         # change on other nodes, which the graph reports (take_renamed).
         self._runs: dict[str, RunRecord] = {}
+        # The flow index, updated under the same lock by ``_index_flows``: each
+        # timed node's (first, latest) time (clamped to when this server got
+        # the event), the root its parent chain reaches, and each root's
+        # (first, latest) over its flow. A root with no timed node has none.
+        self._node_times: dict[str, tuple[datetime, datetime]] = {}
+        self._flow_of: dict[str, str] = {}
+        self._flow_times: dict[str, tuple[datetime, datetime]] = {}
 
     def add_event(self, event: TaskEvent) -> None:
         """Add event to graph and notify listeners.
@@ -1118,12 +1104,14 @@ class GraphStore:
         UTC). Exact duplicate events (e.g. replayed from the broker) are
         ignored and not broadcast.
         """
+        received = _utcnow()
         with self._lock:
             stored = self._graph.add_event(event)
             if stored is None:
                 return
             self._index_run(stored.task_id)
             self._maybe_evict()
+            self._index_flows(stored, received)
             # A task.replace() reuse can rename other tasks (here or while
             # evicting); refresh those records too.
             for task_id in self._graph.take_renamed():
@@ -1263,15 +1251,18 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
-        """Get root nodes and their direct children from one consistent snapshot.
+    ) -> FlowListPage:
+        """Get a page of root nodes with what the graph list reads of their children.
 
         With ``task_names``, only graphs with a task of one of these names
-        (anywhere in the graph, not only the root) are listed.
+        (anywhere in the graph, not only the root) are listed. Only the roots
+        are snapshotted, plus the children of a root with no events of its own
+        (a GROUP/CHORD takes its timing from them); every child's type is
+        listed in ``child_types``.
 
         Returns:
-            Tuple of (filtered root nodes, map of task_id to node for the roots
-            and their direct children, total count matching filters).
+            The roots, a map of task_id to node for them (and those children),
+            the total count matching the filters, and each child's type.
         """
         with self._lock:
             live, total = self._root_nodes_locked(
@@ -1282,14 +1273,17 @@ class GraphStore:
                 task_names=task_names,
             )
             roots = [_snapshot(n) for n in live]
-            related: dict[str, TaskNode] = {}
+            related = {root.task_id: root for root in roots}
+            child_types: dict[str, NodeType] = {}
             for root in roots:
-                related[root.task_id] = root
                 for child_id in root.children:
                     child = self._graph.nodes.get(child_id)
-                    if child is not None and child_id not in related:
+                    if child is None:
+                        continue
+                    child_types[child_id] = child.node_type
+                    if not root.events and child_id not in related:
                         related[child_id] = _snapshot(child)
-            return roots, related, total
+            return FlowListPage(roots, related, total, child_types)
 
     def _root_nodes_locked(
         self,
@@ -1311,7 +1305,10 @@ class GraphStore:
             root_nodes = [n for n in root_nodes if n.task_id in matching]
 
         # A flow's time is over its whole graph, not the root's own events.
-        times = self._flow_times_locked(with_first=to_date is not None)
+        times = {
+            n.task_id: self._flow_times.get(n.task_id, _NO_FLOW_TIME)
+            for n in root_nodes
+        }
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
             root_nodes = [n for n in root_nodes if times[n.task_id][1] >= from_dt]
@@ -1325,60 +1322,144 @@ class GraphStore:
         total = len(root_nodes)
         return root_nodes[offset : offset + limit], total
 
-    def _flow_times_locked(
-        self, *, with_first: bool
-    ) -> dict[str, tuple[datetime, datetime]]:
-        """Each root's flow: its (first, latest) time over every node under it.
+    def _index_flows(self, stored: TaskEvent, received: datetime) -> None:
+        """Bring the flow index up to date after one event. Call with the lock held.
 
-        One pass over the nodes (see ``_root_of_each``). A flow with no timed
-        node is ``_MIN_DATETIME`` in both; ``first`` is only worked out
-        ``with_first``. Call with the lock held.
+        An event moves its own node's times. Links and removals (see
+        ``TaskGraph.take_moved``) move whole subtrees between flows: a leaf
+        linked for the first time is folded into its flow, and any other flow
+        that lost or gained nodes is walked again.
         """
         nodes = self._graph.nodes
-        firsts: dict[str, datetime] = {}
-        lasts: dict[str, datetime] = {}
-        for node_id, root in _root_of_each(nodes).items():
-            node = nodes[node_id]
-            # GROUP/CHORD nodes have no events: their members are nodes of the
-            # flow themselves, so they count through those.
-            last = node.last_updated
-            if root is None or last is None:
-                continue
-            if last > lasts.get(root, _MIN_DATETIME):
-                lasts[root] = last
-            first = node.first_seen if with_first else None
-            if first is not None and first < firsts.get(root, first):
-                firsts[root] = first
-            elif first is not None:
-                firsts.setdefault(root, first)
-        return {
-            root: (firsts.get(root, _MIN_DATETIME), lasts.get(root, _MIN_DATETIME))
-            for root in self._graph.root_ids
-        }
+        moved = self._graph.take_moved()
+        for task_id in moved - nodes.keys():
+            self._node_times.pop(task_id, None)
+        old_times = self._node_times.get(stored.task_id)
+        if stored.task_id in nodes:
+            self._time_node(nodes[stored.task_id], stored, received)
+
+        walked: set[str] = set()
+        lone = next(iter(moved)) if len(moved) == 1 else None
+        if lone is not None and lone in nodes and self._is_unindexed_leaf(lone):
+            root = self._root_above(lone)
+            if root is not None:
+                self._flow_of[lone] = root
+                self._fold(root, self._node_times.get(lone))
+                walked.add(root)
+        else:
+            dirty = {self._flow_of.pop(task_id, None) for task_id in moved}
+            dirty.update(self._root_above(task_id) for task_id in moved & nodes.keys())
+            for root in dirty - {None}:
+                self._walk_flow(root)
+                walked.add(root)
+
+        root = self._flow_of.get(stored.task_id)
+        if root is not None and root not in walked:
+            self._retime_flow(root, old_times, self._node_times[stored.task_id])
+
+    def _time_node(self, node: TaskNode, stored: TaskEvent, received: datetime) -> None:
+        """Fold an event into its node's times, clamped to when it was received.
+
+        Clamping stops a worker clock ahead of this server's from pinning its
+        flows on top. The latest time is the node's last event in lifecycle
+        order, so a late-stamped PENDING doesn't count once the task has run.
+        """
+        clamped = min(stored.timestamp, received)
+        old = self._node_times.get(node.task_id)
+        first = clamped if old is None else min(old[0], clamped)
+        latest = clamped if old is None or node.events[-1] is stored else old[1]
+        self._node_times[node.task_id] = (first, latest)
+
+    def _is_unindexed_leaf(self, task_id: str) -> bool:
+        """Whether a node has no children and no flow yet (just created)."""
+        return task_id not in self._flow_of and not self._graph.nodes[task_id].children
+
+    def _root_above(self, task_id: str) -> str | None:
+        """The root a node's parent chain reaches (None on a loop or a missing parent)."""
+        nodes = self._graph.nodes
+        current = task_id
+        for _ in range(len(nodes)):
+            parent = nodes[current].parent_id
+            if parent is None:
+                return current
+            if parent not in nodes:
+                return None
+            current = parent
+        return None
+
+    def _fold(self, root: str, times: tuple[datetime, datetime] | None) -> None:
+        """Widen a flow's times by one node's."""
+        if times is None:
+            return
+        flow = self._flow_times.get(root)
+        if flow is not None:
+            times = (min(flow[0], times[0]), max(flow[1], times[1]))
+        self._flow_times[root] = times
+
+    def _retime_flow(
+        self,
+        root: str,
+        old: tuple[datetime, datetime] | None,
+        new: tuple[datetime, datetime],
+    ) -> None:
+        """Update a flow for one of its nodes changing times; walk it if an extreme left."""
+        flow = self._flow_times.get(root)
+        if (
+            flow is None
+            or old is None
+            or (old[0] == flow[0] and new[0] > old[0])
+            or (old[1] == flow[1] and new[1] < old[1])
+        ):
+            self._walk_flow(root)
+        else:
+            self._fold(root, new)
+
+    def _walk_flow(self, root: str) -> None:
+        """Work out a flow's times and nodes again from its root down.
+
+        A root that is gone, or now sits under another node, loses its entry.
+        A child counts when its ``parent_id`` is the node it is listed under
+        (a CHORD can still list a callback that moved elsewhere).
+        """
+        nodes = self._graph.nodes
+        top = nodes.get(root)
+        if top is None or top.parent_id is not None:
+            self._flow_times.pop(root, None)
+            return
+        flow: tuple[datetime, datetime] | None = None
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            self._flow_of[current] = root
+            times = self._node_times.get(current)
+            if times is not None:
+                if flow is None:
+                    flow = times
+                else:
+                    flow = (min(flow[0], times[0]), max(flow[1], times[1]))
+            for child_id in nodes[current].children:
+                child = nodes.get(child_id)
+                if child is not None and child.parent_id == current:
+                    stack.append(child_id)
+        if flow is None:
+            self._flow_times.pop(root, None)
+        else:
+            self._flow_times[root] = flow
 
     def _roots_with_task_locked(self, task_names: Collection[str]) -> set[str]:
         """IDs of the roots whose graph has a task named one of ``task_names``.
 
-        Walks up from each accepted task until a root (every node's parent
-        chain ends at one) or a node an earlier walk passed, whose root is
-        already found; so the whole store costs O(nodes). Call with the lock
-        held.
+        Scans the nodes (a name filter is the one list request that does) and
+        reads each task's root from the flow index. Call with the lock held.
         """
-        nodes = self._graph.nodes
-        seen: set[str] = set()
-        found: set[str] = set()
-        for node in nodes.values():
-            if node.node_type != NodeType.TASK or node.name not in task_names:
-                continue
-            current = node
-            while current.task_id not in seen:
-                seen.add(current.task_id)
-                parent = nodes.get(current.parent_id or "")
-                if parent is None:
-                    found.add(current.task_id)
-                    break
-                current = parent
-        return found
+        flow_of = self._flow_of
+        return {
+            flow_of[node.task_id]
+            for node in self._graph.nodes.values()
+            if node.node_type == NodeType.TASK
+            and node.name in task_names
+            and node.task_id in flow_of
+        }
 
     def get_node_with_children(
         self, task_id: str
