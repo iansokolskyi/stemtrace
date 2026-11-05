@@ -412,6 +412,8 @@ def _node_to_graph_response(
 # kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait. A call
 # that times out still costs about 2.5 s on Redis and 3 s on RabbitMQ (its connect, then
 # the read timeout, measured), so a whole attempt ends within about 5 s.
+# The publish retries (kombu 5.6.2 ``Connection.ensure``, ``max_retries=None``) ignore
+# ``transport_options``; ``_FailFastPool`` bounds them.
 _INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
 _INSPECT_IO_TIMEOUT_SECONDS = 1.0
 _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
