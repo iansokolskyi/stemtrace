@@ -1282,9 +1282,9 @@ class GraphStore:
             for root in roots:
                 containers.update(self._containers.intersection(root.children))
                 if not root.events:
-                    for child_id in root.children:
-                        if child_id in nodes and child_id not in related:
-                            related[child_id] = _snapshot(nodes[child_id])
+                    related.update(
+                        {c: _snapshot(nodes[c]) for c in root.children if c in nodes}
+                    )
             return FlowListPage(roots, related, total, containers)
 
     def _root_nodes_locked(

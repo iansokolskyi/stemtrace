@@ -427,6 +427,7 @@ def test_index_tolerates_a_graph_that_breaks_its_own_rules() -> None:
     assert store._root_above("a") == "a"
     assert store._root_above("lost") is None
     assert store._root_above("x") is None
+    assert store._relink({"lost"}) == set()  # a lone new leaf with no root to join
     nodes["group:g"] = TaskNode(
         task_id="group:g",
         name="group",
@@ -435,6 +436,7 @@ def test_index_tolerates_a_graph_that_breaks_its_own_rules() -> None:
         group_id="g",
     )
     store._graph._roots["group:g"] = None
+    assert store._relink({"group:g"}) == {"group:g"}  # no time to fold into its flow
     store._flow_times["group:g"] = (T0, T0)  # as if its timed members had all left
     store._walk_flow("group:g")
     assert "group:g" not in store._flow_times
