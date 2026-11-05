@@ -59,7 +59,24 @@ root task ID.
 
 - `from_date` and `within` keep the flows whose latest time is at or after the bound.
 - `to_date` keeps the flows whose first event is at or before the end of that day.
+- A flow with no task that has an event (only a hand-built group; no recorded workflow makes one)
+  sorts last, is left out by `from_date` and `within`, and is kept by `to_date`.
 - Each graph's own `first_seen` and `last_updated` in the list still describe its root.
+
+### Clock skew
+
+A task's time for the list never counts as later than when the server received the event. A
+worker whose clock runs ahead of the server's can't keep its flows on top: a flow stamped five
+days ahead sorts and filters as of the moment it arrived, and drops below newer flows as time
+passes. A worker whose clock runs behind isn't corrected: its flows sort lower. The clamp applies
+to a flow's first time too, so a fast clock doesn't push a flow past the end of the day it
+started. The graph's own `first_seen` and `last_updated` aren't clamped.
+
+### Limitation: one flow per task
+
+A task counts for the one flow that its parent chain reaches. If a chord lists a callback whose
+own parent is elsewhere (no recorded Celery workflow does this), the callback counts for that
+parent's flow only.
 
 ## Chord callbacks
 

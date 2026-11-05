@@ -1068,7 +1068,7 @@ class FlowListPage(NamedTuple):
     roots: list[TaskNode]
     related: dict[str, TaskNode]
     total: int
-    child_types: dict[str, NodeType]
+    containers: set[str]
 
 
 # A flow with no timed node (a hand-built synthetic root): earlier than any time.
@@ -1096,6 +1096,9 @@ class GraphStore:
         self._node_times: dict[str, tuple[datetime, datetime]] = {}
         self._flow_of: dict[str, str] = {}
         self._flow_times: dict[str, tuple[datetime, datetime]] = {}
+        # IDs of the GROUP/CHORD nodes, so a list finds a root's container
+        # children without looking at every child.
+        self._containers: set[str] = set()
 
     def add_event(self, event: TaskEvent) -> None:
         """Add event to graph and notify listeners.
@@ -1257,12 +1260,12 @@ class GraphStore:
         With ``task_names``, only graphs with a task of one of these names
         (anywhere in the graph, not only the root) are listed. Only the roots
         are snapshotted, plus the children of a root with no events of its own
-        (a GROUP/CHORD takes its timing from them); every child's type is
-        listed in ``child_types``.
+        (a GROUP/CHORD takes its timing from them). ``containers`` holds the
+        children that are GROUP/CHORD nodes, which a response draws after tasks.
 
         Returns:
             The roots, a map of task_id to node for them (and those children),
-            the total count matching the filters, and each child's type.
+            the total count matching the filters, and the container children.
         """
         with self._lock:
             live, total = self._root_nodes_locked(
@@ -1272,18 +1275,17 @@ class GraphStore:
                 to_date=to_date,
                 task_names=task_names,
             )
+            nodes = self._graph.nodes
             roots = [_snapshot(n) for n in live]
             related = {root.task_id: root for root in roots}
-            child_types: dict[str, NodeType] = {}
+            containers: set[str] = set()
             for root in roots:
-                for child_id in root.children:
-                    child = self._graph.nodes.get(child_id)
-                    if child is None:
-                        continue
-                    child_types[child_id] = child.node_type
-                    if not root.events and child_id not in related:
-                        related[child_id] = _snapshot(child)
-            return FlowListPage(roots, related, total, child_types)
+                containers.update(self._containers.intersection(root.children))
+                if not root.events:
+                    for child_id in root.children:
+                        if child_id in nodes and child_id not in related:
+                            related[child_id] = _snapshot(nodes[child_id])
+            return FlowListPage(roots, related, total, containers)
 
     def _root_nodes_locked(
         self,
@@ -1332,8 +1334,13 @@ class GraphStore:
         """
         nodes = self._graph.nodes
         moved = self._graph.take_moved()
-        for task_id in moved - nodes.keys():
-            self._node_times.pop(task_id, None)
+        for task_id in moved:
+            node = nodes.get(task_id)
+            if node is None:  # not ``moved - nodes.keys()``: that copies every node ID
+                self._node_times.pop(task_id, None)
+                self._containers.discard(task_id)
+            elif node.node_type != NodeType.TASK:
+                self._containers.add(task_id)
         old_times = self._node_times.get(stored.task_id)
         if stored.task_id in nodes:
             self._time_node(nodes[stored.task_id], stored, received)
@@ -1347,9 +1354,12 @@ class GraphStore:
                 self._fold(root, self._node_times.get(lone))
                 walked.add(root)
         else:
-            dirty = {self._flow_of.pop(task_id, None) for task_id in moved}
-            dirty.update(self._root_above(task_id) for task_id in moved & nodes.keys())
-            for root in dirty - {None}:
+            dirty: set[str] = set()
+            for task_id in moved:
+                old_root = self._flow_of.pop(task_id, None)
+                new_root = self._root_above(task_id) if task_id in nodes else None
+                dirty.update(r for r in (old_root, new_root) if r is not None)
+            for root in dirty:
                 self._walk_flow(root)
                 walked.add(root)
 

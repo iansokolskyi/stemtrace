@@ -4,17 +4,21 @@ P2 (a worker clock ahead of the server can't pin its flows on top) and P5 (the l
 snapshots the roots, not every child) of the flow-time spec.
 """
 
+import itertools
 import random
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server import store as store_module
-from stemtrace.server.store import GraphStore
+from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.store import GraphStore, WorkerRegistry
 from tests.unit.test_flow_time import _fuzz_events
 
 T0 = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
@@ -124,15 +128,15 @@ def test_list_snapshots_the_roots_and_the_children_of_a_synthetic_root_only(
     assert page[1]["group:g"].node_type == NodeType.GROUP
 
 
-def test_list_names_the_type_of_every_child_of_a_listed_root(clock: Clock) -> None:
+def test_list_names_the_container_children_of_a_listed_root(clock: Clock) -> None:
     store = GraphStore()
     store.add_event(_ev("root", T0 - HOUR))
     store.add_event(_ev("a", T0 - HOUR, parent_id="root", group_id="g"))
     store.add_event(_ev("b", T0 - HOUR, parent_id="root", group_id="g"))
     store.add_event(_ev("c", T0 - HOUR, parent_id="root"))
     page = store.get_root_nodes_with_children(limit=10)
-    assert page[2] == 1
-    assert page[3] == {"group:g": NodeType.GROUP, "c": NodeType.TASK}
+    assert page.total == 1
+    assert page.containers == {"group:g"}
 
 
 # ---- differential fuzz against the #278 one-pass computation --------------
@@ -261,9 +265,7 @@ class CountingStore(GraphStore):
             self.hits["event_node_evicted"] += 1
 
 
-def _check_index(
-    store: GraphStore, received: Received | None, where: object
-) -> None:
+def _check_index(store: GraphStore, received: Received | None, where: object) -> None:
     """The index equals #278's one-pass computation, and holds nothing else."""
     graph = store._graph
     expected = _one_pass(store, received)
@@ -276,6 +278,9 @@ def _check_index(
         if root is not None and root in expected:
             assert store._flow_of.get(node_id) == root, (where, node_id)
     assert set(store._flow_of) <= set(graph.nodes), where
+    assert store._containers == {
+        n.task_id for n in graph.nodes.values() if n.node_type != NodeType.TASK
+    }, where
 
 
 def _ops(rng: random.Random) -> list[TaskEvent]:
@@ -302,7 +307,9 @@ def _run_seed(seed: int, hits: Counter[str], *, clamped: bool) -> int:
                 now = FAR_FUTURE
             store_module._utcnow = lambda now=now: now  # type: ignore[misc]
             node = store._graph.nodes.get(event.task_id)
-            replay = node is not None and event in node.events  # ignored: keeps its receipt
+            replay = (
+                node is not None and event in node.events
+            )  # ignored: keeps its receipt
             store.add_event(event)
             if not replay:
                 received[_key(event)] = now  # an evicted event can come back later
@@ -325,5 +332,84 @@ def test_index_equals_the_one_pass_computation_after_every_op(
         for seed in range(chunk * 40, chunk * 40 + 40)
     )
     assert ops > 1000
-    if chunk == 0:
-        print("hits", clamped, dict(hits))
+    # Every path of the index is taken, or the sweep proves nothing about it.
+    for path in ("new_leaf", "walk", "walk_of_gone_root", "retime_fold", "retime_walk"):
+        assert hits[path] > 0, path
+    assert (hits["clamped_event"] > 0) == clamped
+
+
+@pytest.mark.parametrize("length", [2, 3, 4])
+def test_index_holds_for_every_arrival_order_of_a_chain(length: int) -> None:
+    """A parent can arrive after its children: swept over every order of 2-4 links."""
+    for order in itertools.permutations(range(length)):
+        store = GraphStore()
+        for step, i in enumerate(order):
+            parent = f"c{i - 1}" if i else None
+            store.add_event(
+                _ev(f"c{i}", T0 - timedelta(minutes=10 * (i + 1)), parent_id=parent)
+            )
+            _check_index(store, None, (order, step))
+        assert store._graph.root_ids == ["c0"]
+        assert store._flow_times["c0"] == (
+            T0 - timedelta(minutes=10 * length),
+            T0 - timedelta(minutes=10),
+        )
+
+
+def test_index_holds_when_a_missing_parent_leaves_its_child_a_root() -> None:
+    """A child whose parent never arrives is a flow of its own until the parent does."""
+    store = GraphStore()
+    store.add_event(_ev("kid", T0 - HOUR, parent_id="late"))
+    _check_index(store, None, "orphan")
+    assert store._flow_times == {"kid": (T0 - HOUR, T0 - HOUR)}
+    store.add_event(_ev("late", T0 - 3 * HOUR))
+    _check_index(store, None, "adopted")
+    assert store._flow_times == {"late": (T0 - 3 * HOUR, T0 - HOUR)}
+
+
+def test_index_drops_a_flow_when_its_root_is_evicted() -> None:
+    """The oldest unit goes first; its children, still stored, become roots."""
+    store = GraphStore(max_nodes=4)
+    store.add_event(_ev("r", T0 - 9 * HOUR))
+    for i in range(3):
+        store.add_event(_ev(f"k{i}", T0 - HOUR, parent_id="r"))
+    store.add_event(_ev("x", T0))
+    _check_index(store, None, "evicted")
+    assert "r" not in store._flow_times
+    assert "r" not in store._flow_of
+
+
+def _app(store: GraphStore) -> FastAPI:
+    app = FastAPI()
+    app.include_router(create_api_router(store, worker_registry=WorkerRegistry()))
+    return app
+
+
+@pytest.mark.asyncio
+async def test_graphs_endpoint_draws_tasks_before_containers() -> None:
+    """The child order of a listed root is unchanged by the lighter snapshot."""
+    store = GraphStore()
+    store.add_event(_ev("root", T0 - HOUR))
+    store.add_event(_ev("a", T0 - HOUR, parent_id="root", group_id="g"))
+    store.add_event(_ev("b", T0 - HOUR, parent_id="root", group_id="g"))
+    store.add_event(_ev("c", T0 - HOUR, parent_id="root"))
+    assert store._graph.nodes["root"].children == ["group:g", "c"]
+    transport = httpx.ASGITransport(app=_app(store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        body = (await client.get("/api/graphs")).json()
+    assert body["graphs"][0]["children"] == ["c", "group:g"]
+
+
+@pytest.mark.asyncio
+async def test_graphs_endpoint_item_times_are_the_roots_own_not_clamped(
+    clock: Clock,
+) -> None:
+    """Only the list's order and filters use the clamped time."""
+    store = GraphStore()
+    store.add_event(_ev("fast", T0 + 5 * DAY))
+    transport = httpx.ASGITransport(app=_app(store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        item = (await client.get("/api/graphs")).json()["graphs"][0]
+    stamp = (T0 + 5 * DAY).isoformat().replace("+00:00", "Z")
+    assert item["first_seen"] == stamp
+    assert item["last_updated"] == stamp

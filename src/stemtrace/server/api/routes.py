@@ -64,7 +64,7 @@ from stemtrace.server.inspect_probe import (
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from celery.app.control import Inspect
     from starlette.types import Receive, Scope, Send
@@ -314,7 +314,7 @@ def _node_to_graph_response(
     group_of: Callable[[str], ResolvedGroup],
     not_run_reason: ChordNotRunReason | None = None,
     anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
-    child_types: Mapping[str, NodeType] | None = None,
+    containers: Collection[str] | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -329,7 +329,7 @@ def _node_to_graph_response(
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
         anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
-        child_types: The type of each child, when ``all_nodes`` doesn't hold them all.
+        containers: The GROUP/CHORD children, when ``all_nodes`` doesn't hold them all.
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -360,10 +360,8 @@ def _node_to_graph_response(
     # children and CHORD-linked nodes. Prefer TASK children first so callback
     # branches render before synthetic containers.
     children = node.children
-    if child_types is not None:
-        children = sorted(
-            node.children, key=lambda c: child_types.get(c) != NodeType.TASK
-        )
+    if containers is not None:
+        children = sorted(node.children, key=lambda c: c in containers)
     elif all_nodes is not None:
         children = sorted(
             node.children,
@@ -1244,16 +1242,13 @@ def _add_graph_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
-        # Off the loop: the lock can be held by a long eviction on the consumer thread.
-        page = await run_in_threadpool(
-            functools.partial(
-                store.get_root_nodes_with_children,
-                limit=limit,
-                offset=offset,
-                from_date=start,
-                to_date=to_date,
-                task_names=task_names,
-            )
+        # Roots plus the container children (for their timing) from one snapshot
+        page = store.get_root_nodes_with_children(
+            limit=limit,
+            offset=offset,
+            from_date=start,
+            to_date=to_date,
+            task_names=task_names,
         )
         return GraphListResponse(
             graphs=[
@@ -1263,7 +1258,7 @@ def _add_graph_routes(
                     node_alias_key=node_alias_key,
                     group_of=group_of,
                     anomalies=anomalies,
-                    child_types=page.child_types,
+                    containers=page.containers,
                 )
                 for r in page.roots
             ],

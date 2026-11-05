@@ -156,6 +156,7 @@ def test_group_without_a_timed_node_sorts_last_and_fails_a_from_bound() -> None:
         store._graph._roots["group:g"] = None
     assert _roots(store) == ["x", "group:g"]
     assert _roots(store, from_date=NOW - 100 * HOUR) == ["x"]
+    assert _roots(store, to_date=datetime(2026, 10, 18)) == ["x", "group:g"]
 
 
 def test_root_group_is_as_new_as_its_members() -> None:
