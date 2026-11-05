@@ -1334,6 +1334,18 @@ class GraphStore:
         """
         nodes = self._graph.nodes
         moved = self._graph.take_moved()
+        self._forget_removed(moved)
+        old_times = self._node_times.get(stored.task_id)
+        if stored.task_id in nodes:
+            self._time_node(nodes[stored.task_id], stored, received)
+        walked = self._relink(moved)
+        root = self._flow_of.get(stored.task_id)
+        if root is not None and root not in walked:
+            self._retime_flow(root, old_times, self._node_times[stored.task_id])
+
+    def _forget_removed(self, moved: set[str]) -> None:
+        """Drop the removed nodes among ``moved`` from the index; track new containers."""
+        nodes = self._graph.nodes
         for task_id in moved:
             node = nodes.get(task_id)
             if node is None:  # not ``moved - nodes.keys()``: that copies every node ID
@@ -1341,31 +1353,27 @@ class GraphStore:
                 self._containers.discard(task_id)
             elif node.node_type != NodeType.TASK:
                 self._containers.add(task_id)
-        old_times = self._node_times.get(stored.task_id)
-        if stored.task_id in nodes:
-            self._time_node(nodes[stored.task_id], stored, received)
 
-        walked: set[str] = set()
+    def _relink(self, moved: set[str]) -> set[str]:
+        """Fix the flows the ``moved`` nodes left and joined; return the roots now right."""
+        nodes = self._graph.nodes
         lone = next(iter(moved)) if len(moved) == 1 else None
         if lone is not None and lone in nodes and self._is_unindexed_leaf(lone):
             root = self._root_above(lone)
-            if root is not None:
-                self._flow_of[lone] = root
-                self._fold(root, self._node_times.get(lone))
-                walked.add(root)
-        else:
-            dirty: set[str] = set()
-            for task_id in moved:
-                old_root = self._flow_of.pop(task_id, None)
-                new_root = self._root_above(task_id) if task_id in nodes else None
-                dirty.update(r for r in (old_root, new_root) if r is not None)
-            for root in dirty:
-                self._walk_flow(root)
-                walked.add(root)
-
-        root = self._flow_of.get(stored.task_id)
-        if root is not None and root not in walked:
-            self._retime_flow(root, old_times, self._node_times[stored.task_id])
+            if root is None:
+                return set()
+            self._flow_of[lone] = root
+            if lone in self._node_times:
+                self._fold(root, self._node_times[lone])
+            return {root}
+        dirty: set[str] = set()
+        for task_id in moved:
+            old_root = self._flow_of.pop(task_id, None)
+            new_root = self._root_above(task_id) if task_id in nodes else None
+            dirty.update(r for r in (old_root, new_root) if r is not None)
+        for root in dirty:
+            self._walk_flow(root)
+        return dirty
 
     def _time_node(self, node: TaskNode, stored: TaskEvent, received: datetime) -> None:
         """Fold an event into its node's times, clamped to when it was received.
@@ -1397,10 +1405,8 @@ class GraphStore:
             current = parent
         return None
 
-    def _fold(self, root: str, times: tuple[datetime, datetime] | None) -> None:
+    def _fold(self, root: str, times: tuple[datetime, datetime]) -> None:
         """Widen a flow's times by one node's."""
-        if times is None:
-            return
         flow = self._flow_times.get(root)
         if flow is not None:
             times = (min(flow[0], times[0]), max(flow[1], times[1]))

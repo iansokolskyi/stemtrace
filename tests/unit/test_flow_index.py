@@ -231,7 +231,7 @@ class CountingStore(GraphStore):
         self.hits["walk_of_gone_root" if gone else "walk"] += 1
         super()._walk_flow(root)
 
-    def _fold(self, root: str, times: tuple[datetime, datetime] | None) -> None:
+    def _fold(self, root: str, times: tuple[datetime, datetime]) -> None:
         self.hits["fold"] += 1
         super()._fold(root, times)
 
@@ -413,3 +413,28 @@ async def test_graphs_endpoint_item_times_are_the_roots_own_not_clamped(
     stamp = (T0 + 5 * DAY).isoformat().replace("+00:00", "Z")
     assert item["first_seen"] == stamp
     assert item["last_updated"] == stamp
+
+
+def test_index_tolerates_a_graph_that_breaks_its_own_rules() -> None:
+    """A parent that isn't stored, a parent loop, and a root left with no timed node."""
+    store = GraphStore()
+    store.add_event(_ev("a", T0 - HOUR))
+    nodes = store._graph.nodes
+    for task_id, parent in [("lost", "gone"), ("x", "y"), ("y", "x")]:
+        nodes[task_id] = TaskNode(
+            task_id=task_id, name="t.task", state=TaskState.PENDING, parent_id=parent
+        )
+    assert store._root_above("a") == "a"
+    assert store._root_above("lost") is None
+    assert store._root_above("x") is None
+    nodes["group:g"] = TaskNode(
+        task_id="group:g",
+        name="group",
+        state=TaskState.PENDING,
+        node_type=NodeType.GROUP,
+        group_id="g",
+    )
+    store._graph._roots["group:g"] = None
+    store._flow_times["group:g"] = (T0, T0)  # as if its timed members had all left
+    store._walk_flow("group:g")
+    assert "group:g" not in store._flow_times
