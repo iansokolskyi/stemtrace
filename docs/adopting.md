@@ -97,7 +97,7 @@ You can start the server first, before any worker runs `init_worker`:
   asking. Resolving the broker's host name isn't bounded, so a slow DNS server still delays
   an attempt. Every
   worker that answers is listed, instrumented or not, with the tasks it has registered. Those
-  tasks show **Never Run** until stemtrace receives an event for one of them.
+  tasks show **Never run** until stemtrace receives an event for one of them.
 - **Tasks** and **graphs** stay empty until instrumented processes publish events.
 - The [health endpoint](deployment.md#health-endpoint) tells you whether the server's consumer
   can read from the broker.
@@ -112,8 +112,10 @@ You can keep Flower while you try stemtrace; they read different data:
   [above](#3-know-what-it-writes-to-your-broker). It works the same whether Celery events are on or off.
 - Both ask workers for their state with Celery inspect. stemtrace only sends the `stats`,
   `registered` and `ping` requests described above, whenever Workers or Registry data is
-  requested (page loads, registry search and filter changes, and every 30 seconds while the
-  UI's live connection is down), at most once every 2 seconds per server process.
+  requested (loads of the Workers, Worker and Anomalies pages and the first load of the
+  Registry, every 30 seconds for the Anomalies page and the sidebar's Anomalies badge, and every
+  30 seconds on the Workers page while the UI's live connection is down), at most once every 2
+  seconds per server process.
 - stemtrace is read-only: it has no equivalent of Flower's actions on workers and tasks.
 
 ## Removing stemtrace
