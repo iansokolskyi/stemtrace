@@ -200,6 +200,21 @@ def test_a_flow_stamped_ahead_of_the_server_stays_first_until_it_is_evicted() ->
     assert "fast" not in _roots(store)
 
 
+def test_nodes_on_a_parent_loop_belong_to_no_flow() -> None:
+    """A loop has no root: its times count for no flow and the list still works."""
+    store = GraphStore()
+    store.add_event(_ev("a", 3 * HOUR))
+    store.add_event(_ev("l1", HOUR, parent_id="l2"))
+    store.add_event(_ev("l2", HOUR, parent_id="l1"))
+    with (
+        store._lock
+    ):  # the graph never builds a loop from events; replace() can leave one
+        store._graph.nodes["l2"].parent_id = "l1"
+    assert store._graph.nodes["l1"].parent_id == "l2"
+    assert _roots(store) == ["a", "l2"]
+    assert _roots(store, from_date=NOW - 2 * HOUR) == []
+
+
 def test_listing_snapshots_the_roots_and_not_their_task_children() -> None:
     """The response reads the roots, and only a root with no events needs its children."""
     store = GraphStore()
