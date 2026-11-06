@@ -298,6 +298,16 @@ def _fuzz_events(rng: random.Random) -> list[TaskEvent]:
     return out
 
 
+def _latest(node: TaskNode) -> datetime:
+    """R1: the newest stamp over the events that count (PENDING/RECEIVED stop once it ran)."""
+    later = [
+        e
+        for e in node.events
+        if e.retries > 0 or e.state not in (TaskState.PENDING, TaskState.RECEIVED)
+    ]
+    return max(e.timestamp for e in later or node.events)
+
+
 def _oracle(
     store: GraphStore,
     from_date: datetime | None,
@@ -313,7 +323,7 @@ def _oracle(
         ):
             continue
         firsts = [n.first_seen for n in flow if n.first_seen is not None]
-        lasts = [n.last_updated for n in flow if n.last_updated is not None]
+        lasts = [_latest(n) for n in flow if n.events]
         first = min(firsts, default=NO_TIME)
         last = max(lasts, default=NO_TIME)
         if from_date is not None and last < from_date:

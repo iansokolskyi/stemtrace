@@ -7,7 +7,7 @@ snapshots the roots, not every child) of the flow-time spec.
 import itertools
 import random
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -113,6 +113,51 @@ def test_later_event_of_a_task_is_clamped_by_its_own_receive_time(clock: Clock) 
     assert _roots(store, from_date=T0 + HOUR) == ["y"]
 
 
+def test_retry_on_a_correct_clock_after_a_clock_ahead_still_moves_the_latest_time(
+    clock: Clock,
+) -> None:
+    """X1: worker A (5 days ahead) sends STARTED and RETRY; worker B retries it correctly."""
+    store = GraphStore()
+    store.add_event(_ev("t", T0 + 5 * DAY, state=TaskState.STARTED))
+    store.add_event(_ev("t", T0 + 5 * DAY, state=TaskState.RETRY))
+    clock.now = T0 + 2 * HOUR
+    store.add_event(
+        TaskEvent(
+            task_id="t",
+            name="t.task",
+            state=TaskState.STARTED,
+            timestamp=T0 + 2 * HOUR,
+            retries=1,
+        )
+    )
+    store.add_event(
+        TaskEvent(
+            task_id="t",
+            name="t.task",
+            state=TaskState.SUCCESS,
+            timestamp=T0 + 2 * HOUR,
+            retries=1,
+        )
+    )
+    assert store._flow_times["t"] == (T0, T0 + 2 * HOUR)
+    assert _roots(store, from_date=T0 + HOUR) == ["t"]
+
+
+def test_pending_stamped_after_the_start_does_not_count_once_the_task_ran(
+    clock: Clock,
+) -> None:
+    """X2: a late PENDING (sender's clock ahead) is ignored for the latest time."""
+    store = GraphStore()
+    store.add_event(_ev("t", T0 - 2 * HOUR, state=TaskState.STARTED))
+    store.add_event(_ev("t", T0 - HOUR, state=TaskState.PENDING))
+    assert store._flow_times["t"] == (T0 - 2 * HOUR, T0 - 2 * HOUR)
+    other = GraphStore()
+    other.add_event(_ev("t", T0 - HOUR, state=TaskState.PENDING))
+    assert other._flow_times["t"] == (T0 - HOUR, T0 - HOUR)
+    other.add_event(_ev("t", T0 - 2 * HOUR, state=TaskState.STARTED))
+    assert other._flow_times["t"] == (T0 - 2 * HOUR, T0 - 2 * HOUR)
+
+
 def test_list_snapshots_the_roots_and_the_children_of_a_synthetic_root_only(
     clock: Clock,
 ) -> None:
@@ -141,6 +186,7 @@ def test_list_names_the_container_children_of_a_listed_root(clock: Clock) -> Non
 
 # ---- differential fuzz against the #278 one-pass computation --------------
 
+_BEFORE_START = (TaskState.PENDING, TaskState.RECEIVED)
 NO_TIME = datetime.min.replace(tzinfo=timezone.utc)
 FAR_FUTURE = datetime(2100, 1, 1, tzinfo=timezone.utc)
 
@@ -185,14 +231,24 @@ def _key(event: TaskEvent) -> tuple[str, str]:
 def _node_times(
     node: TaskNode, received: Received | None
 ) -> tuple[datetime | None, datetime | None]:
-    """A node's (first, latest): #278's own times, or each event clamped to its receipt."""
-    if received is None:
-        return node.first_seen, node.last_updated
+    """A node's (first, latest) by the spec's R1, written out from the events.
+
+    Each event counts as ``min(stamp, receipt)`` (just the stamp without receipts).
+    First is the oldest over all events. Latest is the newest over the events that
+    count: once the task has an event past PENDING/RECEIVED, those two stop counting.
+    """
     if not node.events:
         return None, None
-    first = min(min(e.timestamp, received[_key(e)]) for e in node.events)
-    last = node.events[-1]
-    return first, min(last.timestamp, received[_key(last)])
+
+    def clamp(event: TaskEvent) -> datetime:
+        if received is None:
+            return event.timestamp
+        return min(event.timestamp, received[_key(event)])
+
+    later = [e for e in node.events if e.retries > 0 or e.state not in _BEFORE_START]
+    return min(clamp(e) for e in node.events), max(
+        clamp(e) for e in later or node.events
+    )
 
 
 def _one_pass(
@@ -219,11 +275,16 @@ def _one_pass(
 
 
 class CountingStore(GraphStore):
-    """A store that counts which paths of the index an op took."""
+    """A store that counts which paths of the index an op took, and the nodes it visited."""
 
     def __init__(self, max_nodes: int) -> None:
         super().__init__(max_nodes=max_nodes)
         self.hits: Counter[str] = Counter()
+
+    def _flow_nodes(self, root: str) -> Iterator[str]:
+        for task_id in super()._flow_nodes(root):
+            self.hits["visited"] += 1
+            yield task_id
 
     def _walk_flow(self, root: str) -> None:
         top = self._graph.nodes.get(root)
@@ -231,9 +292,9 @@ class CountingStore(GraphStore):
         self.hits["walk_of_gone_root" if gone else "walk"] += 1
         super()._walk_flow(root)
 
-    def _fold(self, root: str, times: tuple[datetime, datetime]) -> None:
+    def _fold(self, root: str, span: tuple[datetime, datetime] | None) -> None:
         self.hits["fold"] += 1
-        super()._fold(root, times)
+        super()._fold(root, span)
 
     def _retime_flow(
         self,
@@ -245,24 +306,21 @@ class CountingStore(GraphStore):
         super()._retime_flow(root, old, new)
         self.hits["retime_walk" if self.hits["walk"] > walks else "retime_fold"] += 1
 
-    def _is_unindexed_leaf(self, task_id: str) -> bool:
-        leaf = super()._is_unindexed_leaf(task_id)
-        self.hits["new_leaf" if leaf else "lone_move_not_new_leaf"] += 1
-        return leaf
+    def _relink(self, moved: set[str]) -> tuple[set[str], set[str]]:
+        merged = len(self._merged)
+        result = super()._relink(moved)
+        self.hits["merged_whole"] += len(self._merged) - merged
+        self.hits["moved"] += len(moved)
+        return result
 
-    def _time_node(self, node: TaskNode, stored: TaskEvent, received: datetime) -> None:
+    def _time_node(self, stored: TaskEvent, received: datetime) -> None:
         if stored.timestamp > received:
             self.hits["clamped_event"] += 1
-        if node.events[-1] is not stored:
-            self.hits["event_not_last"] += 1
-        super()._time_node(node, stored, received)
+        super()._time_node(stored, received)
 
     def _index_flows(self, stored: TaskEvent, received: datetime) -> None:
-        before = len(self._graph.nodes)
         super()._index_flows(stored, received)
         self.hits["ops"] += 1
-        if len(self._graph.nodes) < before + 1 and stored.task_id not in self._flow_of:
-            self.hits["event_node_evicted"] += 1
 
 
 def _check_index(store: GraphStore, received: Received | None, where: object) -> None:
@@ -276,8 +334,9 @@ def _check_index(store: GraphStore, received: Received | None, where: object) ->
     assert set(store._node_times) <= set(graph.nodes), where
     for node_id, root in _root_of_each(graph.nodes).items():
         if root is not None and root in expected:
-            assert store._flow_of.get(node_id) == root, (where, node_id)
-    assert set(store._flow_of) <= set(graph.nodes), where
+            assert store._root_of(node_id) == root, (where, node_id)
+    assert set(store._flow_of) == set(graph.nodes), where
+    assert set(store._merged).isdisjoint(graph.root_ids), where
     assert store._containers == {
         n.task_id for n in graph.nodes.values() if n.node_type != NodeType.TASK
     }, where
@@ -333,7 +392,13 @@ def test_index_equals_the_one_pass_computation_after_every_op(
     )
     assert ops > 1000
     # Every path of the index is taken, or the sweep proves nothing about it.
-    for path in ("new_leaf", "walk", "walk_of_gone_root", "retime_fold", "retime_walk"):
+    for path in (
+        "walk",
+        "walk_of_gone_root",
+        "retime_fold",
+        "retime_walk",
+        "merged_whole",
+    ):
         assert hits[path] > 0, path
     assert (hits["clamped_event"] > 0) == clamped
 
@@ -427,7 +492,7 @@ def test_index_tolerates_a_graph_that_breaks_its_own_rules() -> None:
     assert store._root_above("a") == "a"
     assert store._root_above("lost") is None
     assert store._root_above("x") is None
-    assert store._relink({"lost"}) == set()  # a lone new leaf with no root to join
+    assert store._relink({"lost"}) == (set(), set())  # no root to join
     nodes["group:g"] = TaskNode(
         task_id="group:g",
         name="group",
@@ -436,7 +501,70 @@ def test_index_tolerates_a_graph_that_breaks_its_own_rules() -> None:
         group_id="g",
     )
     store._graph._roots["group:g"] = None
-    assert store._relink({"group:g"}) == {"group:g"}  # no time to fold into its flow
+    assert store._relink({"group:g"}) == (set(), {"group:g"})  # no time to fold
     store._flow_times["group:g"] = (T0, T0)  # as if its timed members had all left
     store._walk_flow("group:g")
     assert "group:g" not in store._flow_times
+
+
+def _visits_per_event(events: list[TaskEvent]) -> float:
+    store = CountingStore(max_nodes=100_000)
+    for event in events:
+        store.add_event(event)
+    _check_index(store, None, "visits")
+    return store.hits["visited"] / len(events)
+
+
+@pytest.mark.parametrize("groups", [100, 400])
+def test_groups_under_one_root_cost_the_same_per_event_at_any_flow_size(
+    groups: int,
+) -> None:
+    """R2: one root launching groups of 2; a group forming moves nodes inside one flow."""
+    events = [_ev("root", T0 - HOUR)]
+    for i in range(groups):
+        events += [
+            _ev(f"a{i}", T0 - HOUR, parent_id="root", group_id=f"g{i}"),
+            _ev(f"b{i}", T0 - HOUR, parent_id="root", group_id=f"g{i}"),
+        ]
+    assert _visits_per_event(events) < 1
+
+
+@pytest.mark.parametrize("length", [100, 400])
+def test_chain_arriving_last_link_first_costs_the_same_per_event_at_any_length(
+    length: int,
+) -> None:
+    """R2: each arrival puts the whole flow so far under a new root, which merges."""
+    events = [
+        _ev(f"c{k}", T0 - HOUR, parent_id=f"c{k - 1}" if k else None)
+        for k in range(length, -1, -1)
+    ]
+    assert _visits_per_event(events) < 1
+
+
+def test_receive_time_is_read_inside_the_store_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R3: so receipts are monotone in the order events apply."""
+    store = GraphStore()
+    held: list[bool] = []
+
+    def reading() -> datetime:
+        held.append(store._lock._is_owned())  # type: ignore[attr-defined]
+        return T0
+
+    monkeypatch.setattr(store_module, "_utcnow", reading)
+    store.add_event(_ev("t", T0 - HOUR))
+    assert held == [True]
+
+
+@pytest.mark.asyncio
+async def test_graphs_endpoint_draws_a_child_the_store_lacks_after_the_tasks() -> None:
+    """A listed ID with no node sorts last, as it did before the lighter snapshot."""
+    store = GraphStore()
+    store.add_event(_ev("root", T0 - HOUR))
+    store.add_event(_ev("c", T0 - HOUR, parent_id="root"))
+    store._graph.nodes["root"].children.insert(0, "ghost")
+    transport = httpx.ASGITransport(app=_app(store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        body = (await client.get("/api/graphs")).json()
+    assert body["graphs"][0]["children"] == ["c", "ghost"]
