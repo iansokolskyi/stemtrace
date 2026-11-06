@@ -102,7 +102,7 @@ the server last saw it. A card opens the worker in the triage panel.
 The table groups runs by [task group](configuration.md#task-groups), with runs, failure rate,
 p50, p95, a trend and the last run. A group opens in the triage panel. Expand it to see its tasks,
 and open a task to see its runs. A group row shows runs, failure rate, p95, a trend and the last
-run; its p50 cell is empty. A task row shows its p50 and has no trend. A group whose failure rate
+run; its p50 cell is empty, and with **All** it has no trend. A task row shows its p50 and has no trend. A group whose failure rate
 is over 1% shows the rate in red and a red trend. A task over 1% is tinted, bold and has an icon,
 so color isn't the only signal.
 
@@ -207,8 +207,12 @@ itself, because this endpoint doesn't send `flow`.
   container. When a chord's callback didn't run, a box says why, for example
   "Chord header failed: 1 of 48 tasks failed". A container of more than 12 members shows the first
   3, the failed ones and a **+N more** block; select the block to expand it. A task block shows its
-  state as an icon, its name, and the exception class of a failure and its runtime. A member of a
-  container shows its icon, name and runtime. A screen reader hears the state word as well.
+  state as an icon, its name, and a second line with the exception class of a failure and the
+  runtime (a task with no runtime yet says "running", "pending" or "received"). A member of a
+  container shows its icon, its name and its runtime. When every member of a container is the same
+  task, the container's title names the task ("Group of 5 send_email") and each member shows the
+  first 8 characters of its task ID instead of the name. A screen reader hears the state word as
+  well.
 - **Inspector.** The task you chose (the first failure, or the root, when you haven't chosen):
   name, ID with a copy button, worker, queue, queue wait, runtime, exception, up to four keyword
   arguments, and **Open full detail**. For a group or chord: members, callback and duration.
@@ -274,8 +278,7 @@ so the list is current when the page loads.
 ### Limits
 
 - The page reads the list when it loads. It reloads every 30 seconds whenever the live
-  connection isn't up (**Connecting**, **Polling** or **Offline**), and never while it is
-  **Live**, so a worker that changes while you watch
+  connection (the WebSocket) isn't connected, and never while it is connected, so a worker that changes while you watch
   doesn't change on the page until you open it again.
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
@@ -287,8 +290,8 @@ so the list is current when the page loads.
 One host.
 
 **Data:** `GET /api/workers` (the page picks its host from the list, so it asks the workers like
-Workers does, and refreshes under the same rule: every 30 seconds whenever the live connection isn't
-up (**Connecting**, **Polling** or **Offline**), never while it is **Live**) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
+Workers does, and refreshes under the same rule: every 30 seconds whenever the live connection (the
+WebSocket) isn't connected, never while it is connected) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
 
 - **Header.** The hostname and status, a note with the last-seen time for an offline host, and
   **All executions on this worker**.
@@ -396,8 +399,10 @@ because it reads the physical key.
 - **Up** and **Down** move, **Enter** opens, **Esc** closes. A task ID opens the task page, a name
   opens Executions for it, a flow opens the flow page and a worker opens the worker page.
 
-**Data:** when it opens, the palette requests `GET /api/tasks/registry?refresh=false`,
-`GET /api/graphs?limit=50` (the first 50 flows) and `GET /api/workers?refresh=false`. A task ID is
+**Data:** the palette uses `GET /api/tasks/registry?refresh=false`,
+`GET /api/graphs?limit=50` (the first 50 flows) and `GET /api/workers?refresh=false`. The first
+and last are the same cached results that the sidebar badges use. The palette requests each one
+again only when its result is older than 5 seconds. A task ID is
 looked up with `GET /api/tasks/{task_id}`.
 
 ### Limits
