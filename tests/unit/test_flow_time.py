@@ -156,6 +156,8 @@ def test_group_without_a_timed_node_sorts_last_and_fails_a_from_bound() -> None:
         store._graph._roots["group:g"] = None
     assert _roots(store) == ["x", "group:g"]
     assert _roots(store, from_date=NOW - 100 * HOUR) == ["x"]
+    # Rule 4: a flow with no timed node is kept by ``to_date``.
+    assert _roots(store, to_date=NOW) == ["x", "group:g"]
 
 
 def test_root_group_is_as_new_as_its_members() -> None:
@@ -232,7 +234,7 @@ def test_equal_flow_times_sort_by_root_id_across_calls_and_pages() -> None:
 
 def test_eviction_of_a_flows_newest_node_lowers_the_flows_time() -> None:
     """F7: the long-running child (earliest start, newest end) is evicted first."""
-    store = GraphStore(max_nodes=20)
+    store = GraphStore(max_nodes=20, flow_cache_interval_s=0)
     store.add_event(_ev("r", 25 * HOUR))
     store.add_event(
         TaskEvent(
@@ -279,6 +281,7 @@ async def test_graphs_endpoint_within_lists_the_flow_with_a_recent_child(
     assert body["total"] == 2
     # The item still describes the root's own time, not the flow's.
     assert _time(body["graphs"][0], "last_updated") == NOW - 7 * HOUR
+    assert _time(body["graphs"][0], "first_seen") == NOW - 7 * HOUR
 
 
 # ---- differential fuzz ----------------------------------------------------
@@ -367,20 +370,20 @@ def test_flow_list_equals_the_oracle_for_random_recorded_flows(chunk: int) -> No
                 else set(rng.sample(names, min(len(names), 2)))
             )
             expected = _oracle(store, from_date, to_date, wanted)
-            roots, _, total = store.get_root_nodes_with_children(
+            listed = store.get_root_nodes_with_children(
                 limit=1000, from_date=from_date, to_date=to_date, task_names=wanted
             )
             where = (seed, from_date, to_date, wanted)
-            assert [r.task_id for r in roots] == expected, where
-            assert total == len(expected), where
-            page, _, _ = store.get_root_nodes_with_children(
+            assert [r.task_id for r in listed.roots] == expected, where
+            assert listed.total == len(expected), where
+            page = store.get_root_nodes_with_children(
                 limit=2,
                 offset=1,
                 from_date=from_date,
                 to_date=to_date,
                 task_names=wanted,
             )
-            assert [r.task_id for r in page] == expected[1:3], where
+            assert [r.task_id for r in page.roots] == expected[1:3], where
 
 
 def _node(task_id: str, parent_id: str | None) -> TaskNode:

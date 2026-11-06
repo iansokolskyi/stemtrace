@@ -60,6 +60,12 @@ root task ID.
 - `from_date` and `within` keep the flows whose latest time is at or after the bound.
 - `to_date` keeps the flows whose first event is at or before the end of that day.
 - Each graph's own `first_seen` and `last_updated` in the list still describe its root.
+- A flow with no task that has a time (only a hand-built group or chord can be one) sorts last, is left out by `from_date` and `within`, and is kept by `to_date`.
+
+### Freshness and clock skew
+
+- The server works out every flow's time at most once a second, and only when an event arrived or an eviction ran since the last time. A list request in that second uses the earlier result, so a change can take up to 1 second to move a flow or to add a new flow to the list. A server that receives no events never works it out again.
+- A worker whose clock runs ahead keeps its flows at the top of the list, and in every `from_date` or `within` window that reaches its times, until the server evicts them.
 
 ## Chord callbacks
 
