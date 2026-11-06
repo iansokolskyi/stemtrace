@@ -114,8 +114,8 @@ You can keep Flower while you try stemtrace; they read different data:
   `registered` and `ping` requests described above, whenever Workers or Registry data is
   requested (loads of the Workers, Worker and Anomalies pages and the first load of the
   Registry, every 30 seconds for the Anomalies page and the sidebar's Anomalies badge, and every
-  30 seconds on the Workers page while the UI's live connection is down), at most once every 2
-  seconds per server process.
+  30 seconds on the Workers and Worker pages while the UI's live connection is down), at most
+  once every 2 seconds per server process.
 - stemtrace is read-only: it has no equivalent of Flower's actions on workers and tasks.
 
 ## Removing stemtrace

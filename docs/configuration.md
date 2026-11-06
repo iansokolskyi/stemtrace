@@ -208,7 +208,9 @@ tasks](features.md#stuck-interrupted-and-unregistered-tasks) for what the flags 
 Every task belongs to one *task group* (a label for related tasks such as `billing` or
 `search`; not Celery's `group()`). The API returns it as `task_group`, with the group's `tags`,
 on tasks, graph nodes and the task registry, and `GET /stemtrace/api/groups` lists the groups.
-The dashboard shows groups in the sidebar with their tags, as filters on [Executions](ui.md#executions), in the Overview's task health table, and on the Registry and task pages.
+The dashboard shows groups in the sidebar with their tags, as filters on
+[Executions](ui.md#executions), in the Overview's task health table, and on the Registry and task
+pages.
 
 `GET /stemtrace/api/tasks` and `GET /stemtrace/api/graphs` filter on them: `?task_group=billing`
 matches the group name exactly (case-sensitive), and `?tag=money` matches when it is one of the

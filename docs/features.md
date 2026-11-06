@@ -22,7 +22,7 @@ What stemtrace records about your Celery tasks, and what the dashboard shows.
 
 **Worker Monitoring & Registry**
 - **Workers page**: See which workers are online/offline and what tasks they have registered ([Workers](ui.md#workers))
-- **Registry**: Quickly spot tasks that are active, never run, or not registered by any current worker, with their runs, failure rate and runtimes ([Registry](ui.md#registry))
+- **Registry**: Spot tasks that are active, never run, or not registered by any current worker, with their runs, failure rate and runtimes ([Registry](ui.md#registry))
 - **Anomalies**: Tasks that are stuck, interrupted or unregistered, and a warning when no worker is online ([Anomalies](ui.md#anomalies))
 - **Task groups**: Every task belongs to a group, taken from its name or from your rules, with tags; groups and tags are in the sidebar, the Overview, the Executions filters and the API ([Task groups](configuration.md#task-groups))
 - **Search**: Jump to a task ID, task name, flow or worker with Ctrl+K ([Command palette](ui.md#command-palette))

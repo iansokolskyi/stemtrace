@@ -65,13 +65,15 @@ Five tiles sit above the chart:
 - A tile compares its value with the window of equal length immediately before it ("earlier: 2.4/min").
   The note says **In baseline**, or how far above or below it the value is. A tile is flagged at
   1.3 times its baseline (1.4 times for runs per minute, up or down) and flagged more strongly at
-  2 times. With **All**, the tiles show no comparison.
+  2 times. When the baseline is 0, **Failures** and **Failure rate** say **Above baseline** for
+  any value over 0, and **Runs / min** has no note. With **All**, the tiles show no comparison.
 - **Workers online** shows online and known worker hosts and links to [Workers](#workers). It
   reads worker state without asking the workers.
 - **Anomalies** counts the flagged items, by kind. It opens the list in the triage panel.
 
 Clicking **Runs / min**, **Failures** or **Failure rate** opens the matching runs in the
-[triage panel](#triage-panel).
+[triage panel](#triage-panel). The **Failures** and **Failure rate** tiles list failures only, so
+that list has no state chips.
 
 ### Runs chart
 
@@ -90,7 +92,7 @@ picks the bucket size. Retry bars are hatched.
 last seen) and, beside or below it, the current anomalies. A row opens in the triage panel. When
 there are neither failures nor anomalies, it says **All clear**.
 
-### Workers
+### Worker strip
 
 The strip shows a card for each worker host with its status, how many tasks it registered and when
 the server last saw it. A card opens the worker in the triage panel.
@@ -99,8 +101,10 @@ the server last saw it. A card opens the worker in the triage panel.
 
 The table groups runs by [task group](configuration.md#task-groups), with runs, failure rate,
 p50, p95, a trend and the last run. A group opens in the triage panel. Expand it to see its tasks,
-and open a task to see its runs. A group over 1% failures is highlighted with an icon, so color
-isn't the only signal.
+and open a task to see its runs. A group row shows runs, failure rate, p95, a trend and the last
+run; its p50 cell is empty. A task row shows its p50 and has no trend. A group whose failure rate
+is over 1% shows the rate in red and a red trend. A task over 1% is tinted, bold and has an icon,
+so color isn't the only signal.
 
 ### Triage panel
 
@@ -113,7 +117,7 @@ the next entry on top of it.
   **Collapse** change its width.
 - The stack is the `panel` URL parameter, so a link, **Back** and a reload restore it.
 - A runs entry shows the counts of its span and a list of runs that you narrow with state chips
-  (failure, retry, started, pending and success). A task entry links to the task page and
+  (failure, retry, started, pending and success), except for the failure tiles. A task entry links to the task page and
   to its flow.
 
 ### Limits
@@ -128,8 +132,8 @@ the next entry on top of it.
 ## Executions
 
 Every run the server holds, newest update first, as a table that loads 200 rows at a time. A
-row opens the [task page](#task-page). The heading counts the runs in the range, for example
-"1,204 runs in the last 6h".
+row opens the [task page](#task-page). The heading counts the tasks that match the filters and
+the range, finished or not, and calls them runs, for example "1,204 runs in the last 6h".
 
 **Data:** `GET /api/tasks` with `compact=1`, `limit=200`, the filters and `within` (the **List**
 view), and `GET /api/tasks` with `limit=50` (the **Timeline** view). The groups for suggestions come from
@@ -202,14 +206,16 @@ itself, because this endpoint doesn't send `flow`.
   or chord is a container with one track for each member. A chord's callback follows the
   container. When a chord's callback didn't run, a box says why, for example
   "Chord header failed: 1 of 48 tasks failed". A container of more than 12 members shows the first
-  3, the failed ones and a **+N more** block; select the block to expand it. A block shows its
-  state as an icon and a word, the exception class of a failure, and the runtime.
+  3, the failed ones and a **+N more** block; select the block to expand it. A task block shows its
+  state as an icon, its name, and the exception class of a failure and its runtime. A member of a
+  container shows its icon, name and runtime. A screen reader hears the state word as well.
 - **Inspector.** The task you chose (the first failure, or the root, when you haven't chosen):
   name, ID with a copy button, worker, queue, queue wait, runtime, exception, up to four keyword
   arguments, and **Open full detail**. For a group or chord: members, callback and duration.
 - **Timeline.** A row for each task on a shared time axis. A grey lead-in is the queue wait, a
   dotted lead-in is a countdown or ETA, and an outlined bar is on the critical path. Bars of
-  running tasks grow every second. A bar that runs past the end of the axis is cut with a slash and
+  running tasks grow every second. A collapsed container is one row for its hidden members. A bar
+  that runs past the end of the axis is cut with a slash and
   says how long it has run. A row chooses its task and scrolls the diagram to it.
 
 While the flow is running, new tasks scroll into view until you scroll, zoom, choose a task, or
@@ -263,10 +269,13 @@ offline host is highlighted. The heading says "2 of 3 online". A row opens the
 [worker page](#worker-page).
 
 **Data:** `GET /api/workers`. The server asks the workers with Celery inspect before it answers,
-so the page is current.
+so the list is current when the page loads.
 
 ### Limits
 
+- The page reads the list when it loads. It reloads every 30 seconds only while the connection
+  status is **Polling**, never while it is **Live**, so a worker that changes while you watch
+  doesn't change on the page until you open it again.
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
   [Workers and registry inspect](features.md#workers-and-registry-inspect).
@@ -277,7 +286,8 @@ so the page is current.
 One host.
 
 **Data:** `GET /api/workers` (the page picks its host from the list, so it asks the workers like
-Workers does) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
+Workers does, and refreshes under the same rule: every 30 seconds while **Polling**, not while
+**Live**) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
 
 - **Header.** The hostname and status, a note with the last-seen time for an offline host, and
   **All executions on this worker**.
@@ -366,7 +376,8 @@ Each badge refreshes every 30 seconds and is hidden at 0 or while unknown.
 
 - The **Workers** and **Registry** badges never ask the workers. They show what the server already
   knows, so they can lag until you open the page, which does ask.
-- The **Anomalies** badge asks the workers on every request, so it can wait for inspect: about 5
+- Every request of the **Anomalies** badge asks the server to inspect the workers. The server
+  paces the inspects, but a request can still wait for one: about 5
   seconds with the broker down, up to 7 seconds when it joins an inspect that is running.
 
 ## Command palette
@@ -384,8 +395,8 @@ because it reads the physical key.
 - **Up** and **Down** move, **Enter** opens, **Esc** closes. A task ID opens the task page, a name
   opens Executions for it, a flow opens the flow page and a worker opens the worker page.
 
-**Data:** the palette reads what the dashboard already loaded: `GET /api/tasks/registry?refresh=false`,
-`GET /api/graphs` (the first 50 flows), and `GET /api/workers?refresh=false`. A task ID is
+**Data:** when it opens, the palette requests `GET /api/tasks/registry?refresh=false`,
+`GET /api/graphs?limit=50` (the first 50 flows) and `GET /api/workers?refresh=false`. A task ID is
 looked up with `GET /api/tasks/{task_id}`.
 
 ### Limits
