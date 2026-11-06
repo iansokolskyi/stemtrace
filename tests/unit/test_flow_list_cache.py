@@ -182,6 +182,24 @@ def test_a_root_that_left_the_store_is_not_listed_before_the_refresh() -> None:
     assert total == 8
 
 
+def test_a_flow_stamped_ahead_of_the_server_stays_first_until_it_is_evicted() -> None:
+    """C4: the clock is not clamped, so a fast worker keeps its flow on top."""
+    clock = FakeClock()
+    store = _store(clock, max_nodes=20)
+    store.add_event(_ev("fast", 2 * HOUR))
+    store.add_event(_ev("fast-child", -5 * 24 * HOUR, parent_id="fast"))
+    for i in range(5):
+        store.add_event(_ev(f"real{i}", timedelta(minutes=i)))
+    clock.advance(FLOW_TIMES_REFRESH_SECONDS)
+    assert _roots(store)[0] == "fast"
+    assert _roots(store, from_date=NOW + 4 * 24 * HOUR) == ["fast"]
+    for i in range(40):
+        store.add_event(_ev(f"later{i}", timedelta(seconds=i)))
+    assert store.get_node("fast") is None
+    clock.advance(FLOW_TIMES_REFRESH_SECONDS)
+    assert "fast" not in _roots(store)
+
+
 def test_listing_snapshots_the_roots_and_not_their_task_children() -> None:
     """The response reads the roots, and only a root with no events needs its children."""
     store = GraphStore()

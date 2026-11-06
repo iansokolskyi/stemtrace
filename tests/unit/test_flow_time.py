@@ -156,6 +156,8 @@ def test_group_without_a_timed_node_sorts_last_and_fails_a_from_bound() -> None:
         store._graph._roots["group:g"] = None
     assert _roots(store) == ["x", "group:g"]
     assert _roots(store, from_date=NOW - 100 * HOUR) == ["x"]
+    # Rule 4: a flow with no timed node is kept by ``to_date``.
+    assert _roots(store, to_date=NOW) == ["x", "group:g"]
 
 
 def test_root_group_is_as_new_as_its_members() -> None:
