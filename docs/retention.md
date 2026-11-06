@@ -41,7 +41,7 @@ How workers publish to RabbitMQ is in [Brokers: RabbitMQ](brokers.md#rabbitmq-fa
 ## Workers and registry
 
 The Workers and Registry pages are filled from Celery inspect on demand, so they work even if
-the server missed `worker_ready` events. See [Workers and registry tabs](features.md#workers-and-registry-tabs).
+the server missed `worker_ready` events. See [Workers and registry inspect](features.md#workers-and-registry-inspect).
 
 ## Durable history across restarts
 
