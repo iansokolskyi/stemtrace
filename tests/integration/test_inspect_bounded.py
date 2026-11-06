@@ -8,12 +8,15 @@ Bounds are generous on purpose; the spec's are 3.5 s per attempt, 4 s per reques
 import contextlib
 import os
 import socket
+import struct
 import threading
 import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlsplit
 
+import kombu.messaging as kombu_messaging
+import kombu.utils.functional as kombu_functional
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -116,6 +119,18 @@ class FaultProxy:
 
     def go_silent(self) -> None:
         self._silent.set()
+
+    def go_dead(self) -> None:
+        """Reset every connection and stop listening, as a broker that went down does."""
+        self._silent.set()
+        linger_zero = struct.pack("ii", 1, 0)  # close() then sends RST, not FIN
+        for sock in [self._server, *self._socks]:
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger_zero)
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)  # a recv in a pump thread holds the fd
+            with contextlib.suppress(OSError):
+                sock.close()
 
     def close(self) -> None:
         self._stop.set()
@@ -251,3 +266,74 @@ def test_i7_a_connection_that_goes_silent_mid_attempt_ends_the_attempt(
     assert refresher._failures == 1
     assert refresher._lock.acquire(blocking=False)
     refresher._lock.release()
+
+
+# --- I8: the connection breaks between a call's last read and its publish write ----------
+
+PUBLISH_SLEEP_BOUND = 2
+BROKEN_PUBLISH_BOUND_S = 6.0
+RETRY_RUNAWAY_SLEEPS = 60
+
+
+class _StopRetrying(Exception):
+    """Raised from the patched sleep so a regression ends the thread instead of leaking it."""
+
+
+@pytest.mark.parametrize("kind", ["redis", "amqp"])
+def test_i8_a_broker_that_goes_down_before_the_publish_write_ends_the_attempt(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Celery's ``Mailbox._publish`` publishes with ``retry=True``: kombu's ``ensure``
+    then reconnects, by default for ever, while the broker stays down."""
+    url = REDIS_URL if kind == "redis" else RABBITMQ_URL
+    if not _reachable(url):
+        message = f"{kind} broker not available at {url}"
+        if os.environ.get(REQUIRE_BROKERS_ENV) == "1":
+            pytest.fail(message)
+        pytest.skip(message)
+    parts = urlsplit(url)
+    proxy = FaultProxy((parts.hostname or "localhost", parts.port or 0))
+    proxied = url.replace(f":{parts.port}", f":{proxy.port}", 1)
+    real_get = routes._get_inspector
+    monkeypatch.setattr(
+        routes, "_get_inspector", lambda u, **kw: real_get(proxied, **kw)
+    )
+    real_declare = kombu_messaging.Producer.maybe_declare
+    broke = threading.Event()
+
+    def declare_then_the_broker_dies(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = real_declare(self, *args, **kwargs)
+        if not broke.is_set():
+            broke.set()
+            proxy.go_dead()  # RST on the live socket, and nothing listens any more
+            time.sleep(0.2)  # let the RST reach the client socket before the write
+        return result
+
+    monkeypatch.setattr(
+        kombu_messaging.Producer, "maybe_declare", declare_then_the_broker_dies
+    )
+    sleeps: list[float] = []
+    stop = threading.Event()
+
+    def counting_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        time.sleep(0.01)  # the count is what matters, not the wait
+        if stop.is_set() or len(sleeps) > RETRY_RUNAWAY_SLEEPS:
+            raise _StopRetrying
+
+    monkeypatch.setattr(kombu_functional, "sleep", counting_sleep)
+    refresher = _InspectRefresher(WorkerRegistry(), url)
+    worker = threading.Thread(target=refresher.refresh_blocking, daemon=True)
+
+    try:
+        worker.start()
+        worker.join(BROKEN_PUBLISH_BOUND_S)
+        finished = not worker.is_alive()
+    finally:
+        stop.set()
+        worker.join(5)
+        proxy.close()
+
+    assert finished, f"attempt still retrying after {len(sleeps)} sleeps"
+    assert len(sleeps) <= PUBLISH_SLEEP_BOUND
+    assert refresher._failures == 1

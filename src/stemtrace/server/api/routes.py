@@ -13,11 +13,14 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from celery import Celery
+from celery.app.amqp import AMQP
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.routing import APIRoute
+from kombu import Connection
+from kombu.connection import ConnectionPool
 
 # Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
 # goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
@@ -409,6 +412,8 @@ def _node_to_graph_response(
 # kombu's ``establish_connection``) bound each read, above the 0.5 s reply wait. A call
 # that times out still costs about 2.5 s on Redis and 3 s on RabbitMQ (its connect, then
 # the read timeout, measured), so a whole attempt ends within about 5 s.
+# The publish retries (kombu 5.6.2 ``Connection.ensure``, ``max_retries=None``) ignore
+# ``transport_options``; ``_FailFastPool`` bounds them.
 _INSPECT_CONNECT_TIMEOUT_SECONDS = 1.5
 _INSPECT_IO_TIMEOUT_SECONDS = 1.0
 _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
@@ -421,6 +426,43 @@ _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
         "write_timeout": _INSPECT_IO_TIMEOUT_SECONDS,
     },
 }
+
+
+class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no types
+    """Connection pool whose connections give up on the first connection error.
+
+    Celery's inspect publishes with ``Producer.publish(retry=True)``, which passes no retry
+    policy: kombu's ``Connection.ensure`` then reconnects for ever (``max_retries=None``
+    in 5.6.2 and 5.2.2) and never reads ``transport_options['max_retries']``.
+    """
+
+    def new(self) -> Any:
+        """Open a pooled connection whose ``ensure`` defaults to ``max_retries=0``."""
+        connection = super().new()
+        kombu_ensure = connection.ensure
+
+        def ensure(obj: Any, fun: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            """Call kombu's ``ensure`` with ``max_retries=0`` unless the caller sets one."""
+            if len(args) < 2:  # max_retries is the 4th positional parameter
+                kwargs.setdefault("max_retries", 0)
+            return kombu_ensure(obj, fun, *args, **kwargs)
+
+        connection.ensure = ensure
+        return connection
+
+
+class _FailFastConnection(Connection):  # type: ignore[misc]  # kombu ships no types
+    """Template connection of the inspect app: Celery builds its pools from this one."""
+
+    def Pool(self, limit: int | None = None, **kwargs: Any) -> _FailFastPool:
+        """Return the pool Celery shares between inspect calls and producers."""
+        return _FailFastPool(self, limit, **kwargs)
+
+
+class _InspectAMQP(AMQP):  # type: ignore[misc]  # celery ships no types
+    """Celery AMQP whose template connection is a ``_FailFastConnection``."""
+
+    Connection = _FailFastConnection
 
 
 def _get_inspector(
@@ -444,7 +486,12 @@ def _get_inspector(
     # accidentally treating this as `loader=...` (which can import stdlib
     # modules like `inspect` and crash during app finalization).
     try:
-        app = Celery("stemtrace", broker=broker_url, changes=_INSPECT_CONNECT_BOUNDS)
+        app = Celery(
+            "stemtrace",
+            broker=broker_url,
+            amqp=_InspectAMQP,
+            changes=_INSPECT_CONNECT_BOUNDS,
+        )
         # Celery's Inspect signature differs by version. Newer versions accept
         # `timeout=...`, older versions raise TypeError.
         with contextlib.suppress(TypeError):

@@ -1,0 +1,1 @@
+- A worker inspect now gives up when the broker drops the connection while Celery publishes the request, instead of retrying with no limit. The attempt ends and backs off like any other failed attempt.
