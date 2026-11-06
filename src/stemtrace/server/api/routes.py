@@ -67,7 +67,7 @@ from stemtrace.server.inspect_probe import (
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from celery.app.control import Inspect
     from starlette.types import Receive, Scope, Send
@@ -317,6 +317,7 @@ def _node_to_graph_response(
     group_of: Callable[[str], ResolvedGroup],
     not_run_reason: ChordNotRunReason | None = None,
     anomalies: Mapping[str, Anomaly] = _NO_ANOMALIES,
+    containers: Collection[str] | None = None,
 ) -> GraphNodeResponse:
     """Convert TaskNode to graph response model.
 
@@ -331,6 +332,7 @@ def _node_to_graph_response(
             when the caller has the chord's whole graph (see
             ``chord_not_run_reasons``).
         anomalies: The flagged tasks by task ID (see ``AnomalyEvaluator``).
+        containers: The children that aren't tasks, when ``all_nodes`` doesn't hold them all.
 
     Returns:
         GraphNodeResponse with timing from children.
@@ -361,7 +363,9 @@ def _node_to_graph_response(
     # children and CHORD-linked nodes. Prefer TASK children first so callback
     # branches render before synthetic containers.
     children = node.children
-    if all_nodes is not None:
+    if containers is not None:
+        children = sorted(node.children, key=lambda c: c in containers)
+    elif all_nodes is not None:
         children = sorted(
             node.children,
             key=lambda c: getattr(all_nodes.get(c), "node_type", None) != "TASK",
@@ -1285,8 +1289,8 @@ def _add_graph_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
-        # Roots plus children (for synthetic node timing) from one snapshot
-        roots, all_nodes, total = store.get_root_nodes_with_children(
+        # Roots plus the children the response reads, from one snapshot
+        page = store.get_root_nodes_with_children(
             limit=limit,
             offset=offset,
             from_date=start,
@@ -1297,14 +1301,15 @@ def _add_graph_routes(
             graphs=[
                 _node_to_graph_response(
                     r,
-                    all_nodes,
+                    page.related,
                     node_alias_key=node_alias_key,
                     group_of=group_of,
                     anomalies=anomalies,
+                    containers=page.containers,
                 )
-                for r in roots
+                for r in page.roots
             ],
-            total=total,
+            total=page.total,
             limit=limit,
             offset=offset,
         )

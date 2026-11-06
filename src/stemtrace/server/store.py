@@ -1096,11 +1096,43 @@ class TaskRunSummary(NamedTuple):
     last_run: datetime | None
 
 
+class _FlowTimes(NamedTuple):
+    """The flow times of one computation, and the store change it saw."""
+
+    changes: int
+    computed_at: float
+    times: dict[str, tuple[datetime, datetime]]
+    order: list[str]
+
+
+class FlowListPage(NamedTuple):
+    """One page of ``get_root_nodes_with_children``."""
+
+    roots: list[TaskNode]
+    related: dict[str, TaskNode]
+    total: int
+    containers: set[str]
+
+
+# Flow times are recomputed at most this often (seconds), and only for a changed store.
+FLOW_TIMES_REFRESH_SECONDS = 1.0
+
+
 class GraphStore:
     """Thread-safe in-memory store for TaskGraph with LRU eviction."""
 
-    def __init__(self, max_nodes: int = 10000) -> None:
-        """Initialize store with optional maximum node limit for LRU eviction."""
+    def __init__(
+        self,
+        max_nodes: int = 10000,
+        *,
+        flow_cache_interval_s: float = FLOW_TIMES_REFRESH_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Initialize store with optional maximum node limit for LRU eviction.
+
+        ``flow_cache_interval_s`` and ``clock`` (a monotonic reading) set how
+        long the graph list may reuse its flow times after a change.
+        """
         self._graph = TaskGraph()
         self._lock = threading.RLock()
         self._max_nodes = max_nodes
@@ -1110,6 +1142,11 @@ class GraphStore:
         # event changes its own node's state and events; names can also
         # change on other nodes, which the graph reports (take_renamed).
         self._runs: dict[str, RunRecord] = {}
+        # Counts stored events and evictions: the flow-time cache's key.
+        self._changes = 0
+        self._flow_cache: _FlowTimes | None = None
+        self._flow_cache_interval_s = flow_cache_interval_s
+        self._clock = clock
 
     def add_event(self, event: TaskEvent) -> None:
         """Add event to graph and notify listeners.
@@ -1122,6 +1159,7 @@ class GraphStore:
             stored = self._graph.add_event(event)
             if stored is None:
                 return
+            self._changes += 1
             self._index_run(stored.task_id)
             self._maybe_evict()
             # A task.replace() reuse can rename other tasks (here or while
@@ -1263,15 +1301,20 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[TaskNode], dict[str, TaskNode], int]:
-        """Get root nodes and their direct children from one consistent snapshot.
+    ) -> FlowListPage:
+        """Get root nodes and what their graph response reads from one consistent snapshot.
 
         With ``task_names``, only graphs with a task of one of these names
         (anywhere in the graph, not only the root) are listed.
 
+        Only the roots are snapshotted, plus the children of a root with no
+        events of its own (a GROUP/CHORD takes its timing from them).
+        ``containers`` holds the children that are not tasks (or are missing),
+        which a response draws after the tasks.
+
         Returns:
-            Tuple of (filtered root nodes, map of task_id to node for the roots
-            and their direct children, total count matching filters).
+            The roots, a map of task_id to node for them (and those children),
+            the total count matching the filters, and the container children.
         """
         with self._lock:
             live, total = self._root_nodes_locked(
@@ -1281,15 +1324,22 @@ class GraphStore:
                 to_date=to_date,
                 task_names=task_names,
             )
+            nodes = self._graph.nodes
             roots = [_snapshot(n) for n in live]
-            related: dict[str, TaskNode] = {}
+            related = {root.task_id: root for root in roots}
+            containers: set[str] = set()
             for root in roots:
-                related[root.task_id] = root
                 for child_id in root.children:
-                    child = self._graph.nodes.get(child_id)
-                    if child is not None and child_id not in related:
+                    child = nodes.get(child_id)
+                    if child is None or child.node_type != NodeType.TASK:
+                        containers.add(child_id)
+                    if (
+                        child is not None
+                        and not root.events
+                        and child_id not in related
+                    ):
                         related[child_id] = _snapshot(child)
-            return roots, related, total
+            return FlowListPage(roots, related, total, containers)
 
     def _root_nodes_locked(
         self,
@@ -1301,38 +1351,50 @@ class GraphStore:
         task_names: Collection[str] | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Filter, sort and page live root nodes. Call with the lock held."""
-        root_nodes = [
-            self._graph.nodes[rid]
-            for rid in self._graph.root_ids
-            if rid in self._graph.nodes
-        ]
+        # A flow's time is over its whole graph, not the root's own events. The
+        # order is the cache's, so a root that appeared or left since is
+        # skipped or missing until the next refresh.
+        flows = self._cached_flow_times_locked()
+        nodes = self._graph.nodes
+        live_roots = set(self._graph.root_ids)
+        root_ids = [rid for rid in flows.order if rid in live_roots and rid in nodes]
         if task_names is not None:
             matching = self._roots_with_task_locked(task_names)
-            root_nodes = [n for n in root_nodes if n.task_id in matching]
-
-        # A flow's time is over its whole graph, not the root's own events.
-        times = self._flow_times_locked(with_first=to_date is not None)
+            root_ids = [rid for rid in root_ids if rid in matching]
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
-            root_nodes = [n for n in root_nodes if times[n.task_id][1] >= from_dt]
+            root_ids = [rid for rid in root_ids if flows.times[rid][1] >= from_dt]
         if to_date is not None:
             to_dt = _ensure_end_of_day(to_date)
-            root_nodes = [n for n in root_nodes if times[n.task_id][0] <= to_dt]
+            root_ids = [rid for rid in root_ids if flows.times[rid][0] <= to_dt]
+        total = len(root_ids)
+        return [nodes[rid] for rid in root_ids[offset : offset + limit]], total
 
-        # Newest first; equal times by root ID (the sort is stable).
-        root_nodes.sort(key=lambda n: n.task_id)
-        root_nodes.sort(key=lambda n: times[n.task_id][1], reverse=True)
-        total = len(root_nodes)
-        return root_nodes[offset : offset + limit], total
+    def _cached_flow_times_locked(self) -> _FlowTimes:
+        """The flow times, recomputed only for a changed store and after the interval.
 
-    def _flow_times_locked(
-        self, *, with_first: bool
-    ) -> dict[str, tuple[datetime, datetime]]:
+        A list inside the interval after a change reads the older result.
+        Call with the lock held.
+        """
+        cache = self._flow_cache
+        now = self._clock()
+        if cache is not None and (
+            cache.changes == self._changes
+            or now - cache.computed_at < self._flow_cache_interval_s
+        ):
+            return cache
+        times = self._flow_times_locked()
+        # Newest latest time first; equal times by root ID.
+        order = sorted(times)
+        order.sort(key=lambda rid: times[rid][1], reverse=True)
+        self._flow_cache = cache = _FlowTimes(self._changes, now, times, order)
+        return cache
+
+    def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
         """Each root's flow: its (first, latest) time over every node under it.
 
         One pass over the nodes (see ``_root_of_each``). A flow with no timed
-        node is ``_MIN_DATETIME`` in both; ``first`` is only worked out
-        ``with_first``. Call with the lock held.
+        node is ``_MIN_DATETIME`` in both. Call with the lock held.
         """
         nodes = self._graph.nodes
         firsts: dict[str, datetime] = {}
@@ -1341,16 +1403,13 @@ class GraphStore:
             node = nodes[node_id]
             # GROUP/CHORD nodes have no events: their members are nodes of the
             # flow themselves, so they count through those.
-            last = node.last_updated
-            if root is None or last is None:
+            if root is None:
                 continue
-            if last > lasts.get(root, _MIN_DATETIME):
-                lasts[root] = last
-            first = node.first_seen if with_first else None
-            if first is not None and first < firsts.get(root, first):
-                firsts[root] = first
-            elif first is not None:
-                firsts.setdefault(root, first)
+            last, first = node.last_updated, node.first_seen
+            if last is not None:
+                lasts[root] = max(last, lasts.get(root, last))
+            if first is not None:
+                firsts[root] = min(first, firsts.get(root, first))
         return {
             root: (firsts.get(root, _MIN_DATETIME), lasts.get(root, _MIN_DATETIME))
             for root in self._graph.root_ids
@@ -1359,26 +1418,18 @@ class GraphStore:
     def _roots_with_task_locked(self, task_names: Collection[str]) -> set[str]:
         """IDs of the roots whose graph has a task named one of ``task_names``.
 
-        Walks up from each accepted task until a root (every node's parent
-        chain ends at one) or a node an earlier walk passed, whose root is
-        already found; so the whole store costs O(nodes). Call with the lock
-        held.
+        Uses the same one-pass walk as the flow times (``_root_of_each``), so
+        the whole store costs O(nodes). Call with the lock held.
         """
         nodes = self._graph.nodes
-        seen: set[str] = set()
-        found: set[str] = set()
-        for node in nodes.values():
-            if node.node_type != NodeType.TASK or node.name not in task_names:
-                continue
-            current = node
-            while current.task_id not in seen:
-                seen.add(current.task_id)
-                parent = nodes.get(current.parent_id or "")
-                if parent is None:
-                    found.add(current.task_id)
-                    break
-                current = parent
-        return found
+        root_of = _root_of_each(nodes)
+        return {
+            root
+            for node_id, node in nodes.items()
+            if node.node_type == NodeType.TASK
+            and node.name in task_names
+            and (root := root_of[node_id]) is not None
+        }
 
     def get_node_with_children(
         self, task_id: str
@@ -1510,3 +1561,4 @@ class GraphStore:
             for node in unit:
                 self._graph.remove_node(node.task_id)
                 self._runs.pop(node.task_id, None)
+            self._changes += 1
