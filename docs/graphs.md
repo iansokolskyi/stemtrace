@@ -72,6 +72,12 @@ passes. A worker whose clock runs behind isn't corrected: its flows sort lower. 
 to a flow's first time too, so a fast clock doesn't push a flow past the end of the day it
 started. The graph's own `first_seen` and `last_updated` aren't clamped.
 
+A task's latest time is the newest of those clamped times over its events, except that the
+`PENDING` and `RECEIVED` events of its first attempt stop counting once the task has any later event. A retry that runs
+on a worker with a correct clock therefore moves the latest time forward even when an earlier
+attempt came from a clock that runs ahead, and a `PENDING` stamped after the task started doesn't
+hold the latest time up.
+
 ### Limitation: one flow per task
 
 A task counts for the one flow that its parent chain reaches. If a chord lists a callback whose

@@ -1442,8 +1442,6 @@ class GraphStore:
         new = self._root_above(task_id)
         if new is None:
             return
-        if new == task_id:
-            self._merged.pop(task_id, None)
         if old is None:
             self._flow_of[task_id] = new
             self._fold(new, self._span(task_id))
