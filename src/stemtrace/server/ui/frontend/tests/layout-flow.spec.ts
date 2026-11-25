@@ -675,3 +675,52 @@ test.describe('trackPath', () => {
     expect(trackPath(100, 0, 0, 40)).toBe('M100,0 H76 C46.9,0 44.8,40 24,40 H0')
   })
 })
+
+test.describe('layoutFlow: the shared task of a container', () => {
+  /** The members of a container that start no other member: the ends of its rows. */
+  function rowEnds(layout: FlowLayout, containerId: string): string[] {
+    const members = layout.tasks.filter((task) => task.containerId === containerId)
+    const ids = new Set(members.map((task) => task.id))
+    // An edge to the callback or a child outside the box doesn't make the task a chain step
+    const starts = new Set(layout.edges.filter((edge) => ids.has(edge.to)).map((edge) => edge.from))
+    return members.filter((task) => !starts.has(task.id)).map((task) => task.id)
+  }
+
+  test('marks the row ends of a container with a shared name and nothing else, in every capture', () => {
+    let named = 0
+    let chained = 0
+    for (const name of Object.keys(allCaptures())) {
+      const { layout } = layoutOf(name)
+      for (const task of layout.tasks) {
+        const box = layout.containers.find((entry) => entry.id === task.containerId)
+        const ends = box ? rowEnds(layout, box.id) : []
+        const expected = Boolean(box?.sharedName) && ends.includes(task.id)
+        expect(task.sharedTask, `${name}: ${task.id}`).toBe(expected)
+        if (task.sharedTask) named++
+        if (box?.sharedName && !expected) chained++
+      }
+    }
+    // The sweep reaches both: shared last tasks, and chain steps in a container with a shared name
+    expect(named).toBeGreaterThan(0)
+    expect(chained).toBeGreaterThan(0)
+  })
+
+  test('marks only the two chain ends of a group of chains', () => {
+    const { layout, root_id } = layoutOf('chain_group_of_chains')
+    const box = layout.containers[0]
+    const members = layout.tasks.filter((task) => task.containerId === box.id)
+    expect(box.sharedName).toBe('add')
+    expect(members).toHaveLength(4)
+    expect(members.filter((task) => task.sharedTask)).toHaveLength(2)
+    expect(layout.tasks.find((task) => task.id === root_id)?.sharedTask).toBe(false)
+  })
+
+  test('marks the shown members of a collapsed container and no "+N more" block', () => {
+    const nodes = group(COLLAPSE_AT + 10)
+    const layout = layoutFlow(nodes, 'g', new Set())
+    const shown = layout.tasks.filter((task) => task.containerId === 'g')
+    expect(layout.more.length).toBeGreaterThan(0)
+    expect(shown.length).toBeLessThan(COLLAPSE_AT + 10)
+    expect(shown.every((task) => task.sharedTask)).toBe(true)
+  })
+})

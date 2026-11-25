@@ -151,13 +151,12 @@ export function FlowDiagram({
           if (item.kind === 'task') {
             const placed = placedTasks.get(item.id)
             if (!placed) return null
-            const container = placed.containerId ? containers.get(placed.containerId) : undefined
             return (
               <TaskBlock
                 key={`t:${item.id}`}
                 placed={placed}
                 node={nodes[item.id]}
-                shortLabel={container?.sharedName ? item.id.slice(0, 8) : null}
+                shortLabel={placed.sharedTask ? item.id.slice(0, 8) : null}
                 shortName={
                   shortNames.get(nodes[item.id].name) ?? lastNameSegment(nodes[item.id].name)
                 }
@@ -358,7 +357,7 @@ function ContainerNode({ box, node, selected, onSelect }: ContainerNodeProps): R
 interface TaskBlockProps {
   placed: { id: string; x: number; y: number; w: number; h: number; containerId: string | null }
   node: GraphNode
-  /** A member of a container whose members share a name: its ID's start tells them apart. */
+  /** The container's shared task: its ID's start tells it apart from the others. */
   shortLabel: string | null
   /** The shortest dotted suffix of the name that no other task in the graph has. */
   shortName: string
