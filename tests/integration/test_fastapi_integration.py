@@ -910,8 +910,7 @@ class TestGraphApiShapes:
     def test_task_before_its_parent_is_listed_as_graph_until_parent_arrives(
         self,
     ) -> None:
-        # No flow-time cache: the test lists, ingests and lists again at once.
-        store = GraphStore(flow_cache_interval_s=0)
+        store = GraphStore()
         app = FastAPI()
         app.include_router(create_router(store=store))
         client = TestClient(app)

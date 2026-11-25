@@ -22,11 +22,14 @@ from stemtrace.server.store import (
     WorkerRegistry,
 )
 from tests.unit.test_flow_time import (
+    _CAPTURES,
     HOUR,
     NOW,
+    _ending,
     _ev,
     _fuzz_events,
     _oracle,
+    _recorded,
     _roots,
 )
 
@@ -48,9 +51,13 @@ class CountingStore(GraphStore):
     """A store that counts how often the flow times are worked out."""
 
     computes = 0
+    cost = 0.0  # seconds a compute takes on ``ticker``
+    ticker: "FakeClock | None" = None
 
     def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
         self.computes += 1
+        if self.ticker is not None:
+            self.ticker.advance(self.cost)
         return super()._flow_times_locked()
 
 
@@ -65,7 +72,8 @@ def test_two_lists_within_a_second_compute_once() -> None:
     store.add_event(_ev("a", 3 * HOUR))
     store.add_event(_ev("b", 2 * HOUR))
     first = _roots(store)
-    store.add_event(_ev("c", HOUR))  # a change inside the second: not listed yet
+    # A change inside the second: it moves "a" up only after the second.
+    store.add_event(_ev("a-kid", timedelta(minutes=1), parent_id="a"))
     clock.advance(FLOW_TIMES_REFRESH_SECONDS - 0.001)
     second = _roots(store)
     assert store.computes == 1
@@ -130,12 +138,13 @@ def test_a_change_inside_the_second_is_not_forgotten() -> None:
     clock = FakeClock()
     store = _store(clock)
     store.add_event(_ev("a", 3 * HOUR))
-    _roots(store)
-    clock.advance(0.5)
-    store.add_event(_ev("b", HOUR))
-    assert _roots(store) == ["a"]
-    clock.advance(0.6)
+    store.add_event(_ev("b", 2 * HOUR))
     assert _roots(store) == ["b", "a"]
+    clock.advance(0.5)
+    store.add_event(_ev("a-kid", timedelta(minutes=1), parent_id="a"))
+    assert _roots(store) == ["b", "a"]
+    clock.advance(0.6)
+    assert _roots(store) == ["a", "b"]
     assert store.computes == 2
 
 
@@ -166,8 +175,8 @@ def test_evicting_inside_add_event_invalidates() -> None:
     assert _roots(store) == ["new", *(f"f{i}" for i in range(9, 1, -1))]
 
 
-def test_a_root_that_left_the_store_is_not_listed_before_the_refresh() -> None:
-    """Inside the second the order is the cache's, but every listed root exists."""
+def test_roots_that_left_or_joined_the_store_are_live_inside_the_second() -> None:
+    """Eviction drops roots at once, a new root is listed, and the total is the live count."""
     clock = FakeClock()
     store = _store(clock, max_nodes=10)
     for i in range(10):
@@ -176,10 +185,10 @@ def test_a_root_that_left_the_store_is_not_listed_before_the_refresh() -> None:
     store.add_event(_ev("new", HOUR))  # evicts f0 and f1
     listed = _roots(store)
     assert store.computes == 1
-    assert listed == [f"f{i}" for i in range(9, 1, -1)]
+    assert listed == ["new", *(f"f{i}" for i in range(9, 1, -1))]
     page, total = store.get_root_nodes(limit=3, offset=1)
-    assert [n.task_id for n in page] == ["f8", "f7", "f6"]
-    assert total == 8
+    assert [n.task_id for n in page] == ["f9", "f8", "f7"]
+    assert total == 9
 
 
 def test_a_flow_stamped_ahead_of_the_server_stays_first_until_it_is_evicted() -> None:
@@ -297,7 +306,9 @@ def test_lists_and_events_from_threads_neither_fail_nor_tear() -> None:
 
 @pytest.mark.parametrize("chunk", range(5))
 def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -> None:
-    """Random recorded flows, with eviction, fed in bursts; the clock moves at random."""
+    """Random recorded flows, with eviction, fed in bursts; the clock moves at random.
+
+    The reference is the same events in an ungated store."""
     fresh_checks = 0
     stale_checks = 0
     for seed in range(chunk * 12, chunk * 12 + 12):
@@ -307,12 +318,15 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
         distinct = len({e.task_id for e in events})
         capacity = max(10, int(distinct * rng.choice([0.5, 0.8, 5])))
         store = _store(clock, max_nodes=capacity)
+        twin = GraphStore(max_nodes=capacity, flow_cache_interval_s=0)
         stamps = sorted(e.timestamp for e in events)
         position = 0
         while position < len(events):
-            for event in events[position : position + rng.randint(1, 6)]:
+            batch = events[position : position + rng.randint(1, 6)]
+            for event in batch:
                 store.add_event(event)
-            position += 6
+                twin.add_event(event)
+            position += len(batch)
             clock.advance(rng.choice([0, 0.3, 0.6, 1.0, 2.5]))
             from_date = rng.choice(
                 [None, rng.choice(stamps), NOW - HOUR * rng.randint(1, 40)]
@@ -320,6 +334,12 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
             to_date = rng.choice(
                 [None, datetime(2026, 10, rng.randint(14, 18), tzinfo=timezone.utc)]
             )
+            # Membership is live even when the times are not.
+            everyone, everyone_total = store.get_root_nodes(limit=1000)
+            assert sorted(r.task_id for r in everyone) == sorted(
+                store._graph.root_ids
+            ), (seed, position)
+            assert everyone_total == len(store._graph.root_ids), (seed, position)
             listed = store.get_root_nodes_with_children(
                 limit=1000, from_date=from_date, to_date=to_date
             )
@@ -329,9 +349,120 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
                 stale_checks += 1
                 continue  # inside the second after a change: allowed to be older
             fresh_checks += 1
-            expected = _oracle(store, from_date, to_date, None)
+            # The uncached list (the same store with no gate), not the oracle:
+            # the oracle walks children, the store walks parent chains, and
+            # they differ while a flow's events are still arriving.
+            plain = twin.get_root_nodes_with_children(
+                limit=1000, from_date=from_date, to_date=to_date
+            )
             where = (seed, position, from_date, to_date)
-            assert [r.task_id for r in listed.roots] == expected, where
-            assert listed.total == len(expected), where
+            assert [r.task_id for r in listed.roots] == [
+                r.task_id for r in plain.roots
+            ], where
+            assert listed.total == plain.total, where
+        clock.advance(FLOW_TIMES_REFRESH_SECONDS)
+        assert _roots(store) == _oracle(store, None, None, None), seed
     assert fresh_checks > 20
     assert stale_checks > 5
+
+
+@pytest.mark.parametrize("flow", sorted(_CAPTURES))
+def test_every_flow_is_listed_after_each_event_of_its_capture(flow: str) -> None:
+    """A GET after each event lists exactly the live roots, inside the gated second."""
+    clock = FakeClock()
+    store = _store(clock)
+    other = _ev("other", 40 * HOUR)
+    store.add_event(other)
+    _roots(store)  # the cache is warm; nothing below moves the clock
+    for event in _recorded(flow, "x-", _ending(flow, timedelta(minutes=5))):
+        store.add_event(event)
+        listed, total = store.get_root_nodes(limit=1000)
+        live = sorted(store._graph.root_ids)
+        assert sorted(r.task_id for r in listed) == live, (flow, event.task_id)
+        assert total == len(live)
+    assert store.computes == 1
+
+
+def test_a_parent_that_arrives_inside_the_second_replaces_its_child_in_the_list() -> (
+    None
+):
+    """The reviewer's PoC: the new root is listed, placed by its own flow's time."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("other", 3 * HOUR))
+    store.add_event(_ev("child", HOUR, parent_id="parent"))
+    assert _roots(store) == ["child", "other"]
+    store.add_event(_ev("parent", 5 * HOUR))
+    assert _roots(store) == ["parent", "other"]
+    assert _roots(store, from_date=NOW - 2 * HOUR) == ["parent"]
+    assert store.computes == 1
+
+
+def test_a_group_that_forms_inside_the_second_is_listed() -> None:
+    """Two members of one group make a GROUP root; the members stop being roots."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("other", 3 * HOUR))
+    store.add_event(_ev("m1", HOUR, group_id="g1"))
+    assert _roots(store) == ["m1", "other"]
+    store.add_event(_ev("m2", 2 * HOUR, group_id="g1"))
+    assert _roots(store) == ["group:g1", "other"]
+    assert store.computes == 1
+
+
+def test_a_root_missing_from_the_cache_is_placed_by_its_whole_flow() -> None:
+    """On-demand time: the new root's latest is its newest node, not its own."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("other", 3 * HOUR))
+    _roots(store)
+    store.add_event(_ev("new", 9 * HOUR))
+    store.add_event(_ev("new-child", HOUR, parent_id="new"))
+    assert _roots(store) == ["new", "other"]
+    assert _roots(store, from_date=NOW - 2 * HOUR) == ["new"]
+    assert _roots(store, to_date=NOW - 8 * HOUR) == ["new"]
+    assert store.get_root_nodes(limit=1, offset=1)[1] == 2
+
+
+def test_the_gate_runs_from_the_end_of_a_compute() -> None:
+    """S3: a compute of 1.2 s keeps the next one at least 1.2 s after it ended."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.cost, store.ticker = 1.2, clock
+    store.add_event(_ev("a", 3 * HOUR))
+    store.add_event(_ev("b", 2 * HOUR))
+    _roots(store)  # computes from t0 to t0 + 1.2
+    assert store.computes == 1
+    store.add_event(_ev("a-kid", HOUR, parent_id="a"))
+    clock.advance(1.19)
+    assert _roots(store) == ["b", "a"]
+    assert store.computes == 1
+    clock.advance(0.02)
+    assert _roots(store) == ["a", "b"]
+    assert store.computes == 2
+
+
+def test_the_gap_after_a_fast_compute_is_still_the_interval() -> None:
+    """S3: the gap is max(interval, duration)."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.cost, store.ticker = 0.1, clock
+    store.add_event(_ev("a", 3 * HOUR))
+    store.add_event(_ev("b", 2 * HOUR))
+    _roots(store)
+    store.add_event(_ev("a-kid", HOUR, parent_id="a"))
+    clock.advance(FLOW_TIMES_REFRESH_SECONDS - 0.01)
+    assert _roots(store) == ["b", "a"]
+    clock.advance(0.02)
+    assert _roots(store) == ["a", "b"]
+
+
+def test_a_root_with_a_missing_child_lists_it_as_a_container() -> None:
+    """A child ID with no node sorts after tasks, as an unknown node always did."""
+    store = GraphStore()
+    store.add_event(_ev("root", HOUR))
+    store.add_event(_ev("kid", HOUR, parent_id="root"))
+    with store._lock:
+        store._graph.nodes["root"].children.append("ghost")
+    page = store.get_root_nodes_with_children(limit=10)
+    assert page.containers == {"ghost"}

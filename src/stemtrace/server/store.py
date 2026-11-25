@@ -1100,7 +1100,7 @@ class _FlowTimes(NamedTuple):
     """The flow times of one computation, and the store change it saw."""
 
     changes: int
-    computed_at: float
+    ready_at: float  # the next compute may start at this clock reading
     times: dict[str, tuple[datetime, datetime]]
     order: list[str]
 
@@ -1352,43 +1352,78 @@ class GraphStore:
     ) -> tuple[list[TaskNode], int]:
         """Filter, sort and page live root nodes. Call with the lock held."""
         # A flow's time is over its whole graph, not the root's own events. The
-        # order is the cache's, so a root that appeared or left since is
-        # skipped or missing until the next refresh.
+        # times may be up to the gate old; which roots exist is always live.
         flows = self._cached_flow_times_locked()
         nodes = self._graph.nodes
-        live_roots = set(self._graph.root_ids)
-        root_ids = [rid for rid in flows.order if rid in live_roots and rid in nodes]
+        times = flows.times
+        live = [rid for rid in self._graph.root_ids if rid in nodes]
+        new = [rid for rid in live if rid not in times]
+        if new:
+            # A root the cache has not seen (a new flow, a group or chord that
+            # formed, a parent that arrived): time that one flow now.
+            times = dict(times)
+            times.update((rid, self._flow_time_of_locked(rid)) for rid in new)
+            root_ids = sorted(live)
+            root_ids.sort(key=lambda rid: times[rid][1], reverse=True)
+        else:
+            alive = set(live)
+            root_ids = [rid for rid in flows.order if rid in alive]
         if task_names is not None:
             matching = self._roots_with_task_locked(task_names)
             root_ids = [rid for rid in root_ids if rid in matching]
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
-            root_ids = [rid for rid in root_ids if flows.times[rid][1] >= from_dt]
+            root_ids = [rid for rid in root_ids if times[rid][1] >= from_dt]
         if to_date is not None:
             to_dt = _ensure_end_of_day(to_date)
-            root_ids = [rid for rid in root_ids if flows.times[rid][0] <= to_dt]
+            root_ids = [rid for rid in root_ids if times[rid][0] <= to_dt]
         total = len(root_ids)
         return [nodes[rid] for rid in root_ids[offset : offset + limit]], total
 
     def _cached_flow_times_locked(self) -> _FlowTimes:
-        """The flow times, recomputed only for a changed store and after the interval.
+        """The flow times, recomputed only for a changed store and after the gate.
 
-        A list inside the interval after a change reads the older result.
+        The gate runs from the end of a compute and lasts the interval or as
+        long as that compute took, whichever is longer, so a slow compute
+        never leaves the lock busy more than half the time.
         Call with the lock held.
         """
         cache = self._flow_cache
-        now = self._clock()
         if cache is not None and (
-            cache.changes == self._changes
-            or now - cache.computed_at < self._flow_cache_interval_s
+            cache.changes == self._changes or self._clock() < cache.ready_at
         ):
             return cache
+        changes, started = self._changes, self._clock()
         times = self._flow_times_locked()
+        ended = self._clock()
+        gap = max(self._flow_cache_interval_s, ended - started)
         # Newest latest time first; equal times by root ID.
         order = sorted(times)
         order.sort(key=lambda rid: times[rid][1], reverse=True)
-        self._flow_cache = cache = _FlowTimes(self._changes, now, times, order)
+        self._flow_cache = cache = _FlowTimes(changes, ended + gap, times, order)
         return cache
+
+    def _flow_time_of_locked(self, root_id: str) -> tuple[datetime, datetime]:
+        """One root's (first, latest) time, walking only its flow. Call with the lock held."""
+        nodes = self._graph.nodes
+        seen = {root_id}
+        stack = [root_id]
+        first = last = None
+        while stack:
+            node = nodes[stack.pop()]
+            if node.first_seen is not None:
+                first = (
+                    node.first_seen if first is None else min(first, node.first_seen)
+                )
+            if node.last_updated is not None:
+                last = (
+                    node.last_updated if last is None else max(last, node.last_updated)
+                )
+            for child_id in node.children:
+                if child_id in nodes and child_id not in seen:
+                    seen.add(child_id)
+                    stack.append(child_id)
+        return (first or _MIN_DATETIME, last or _MIN_DATETIME)
 
     def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
         """Each root's flow: its (first, latest) time over every node under it.
