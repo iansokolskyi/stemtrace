@@ -1445,9 +1445,8 @@ class GraphStore:
             node_id = stack.pop()
             if node_id != root_id and node_id in times:
                 lo, hi = times[node_id]  # a root timed before: its flow joins this one
-                if lo != _MIN_DATETIME:
+                if hi != _MIN_DATETIME:  # a flow with no timed node adds nothing
                     first = lo if first is None else min(first, lo)
-                if hi != _MIN_DATETIME:
                     last = hi if last is None else max(last, hi)
                 continue
             node = nodes[node_id]

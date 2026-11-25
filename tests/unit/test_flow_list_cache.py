@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.core.graph import TaskNode
+from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import (
@@ -539,6 +539,31 @@ def test_the_walk_of_an_unseen_root_folds_a_cached_root_without_entering_it() ->
     assert store._flow_cache is not None
     # The cached child flow ended 5 h ago; the walk didn't see the newer event.
     assert store._flow_cache.times["parent"][1] == NOW - 5 * HOUR
+
+
+def test_folding_a_cached_root_with_no_timed_node_adds_no_time() -> None:
+    """A hand-built group with no events, cached as a root, then claimed by a parent."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("other", 3 * HOUR))
+    with store._lock:
+        store._graph.nodes["group:g"] = TaskNode(
+            task_id="group:g",
+            name="group",
+            state=TaskState.PENDING,
+            node_type=NodeType.GROUP,
+            group_id="g",
+        )
+        store._graph._roots["group:g"] = None
+    assert _roots(store) == ["other", "group:g"]
+    store.add_event(_ev("p", 9 * HOUR))
+    with store._lock:
+        store._graph.nodes["group:g"].parent_id = "p"
+        store._graph.nodes["p"].children.append("group:g")
+        store._graph._roots.pop("group:g")
+    assert _roots(store) == ["other", "p"]
+    assert store._flow_cache is not None
+    assert store._flow_cache.times["p"] == (NOW - 9 * HOUR, NOW - 9 * HOUR)
 
 
 def test_an_unseen_roots_time_follows_the_parent_chain_not_the_child_lists() -> None:
