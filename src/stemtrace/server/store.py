@@ -1366,12 +1366,14 @@ class GraphStore:
         flows = self._cached_flow_times_locked()
         nodes = self._graph.nodes
         times = flows.times
-        live = [rid for rid in self._graph.root_ids if rid in nodes]
-        for rid in live:
-            if rid not in times:
+        roots = self._graph.root_ids
+        if not all(map(times.__contains__, roots)):
+            for rid in sorted(set(roots).difference(times)):
                 self._time_unseen_root_locked(flows, rid)
-        alive = set(live)
-        root_ids = [rid for rid in flows.order if rid in alive]
+        if task_names is None and from_date is None and to_date is None:
+            return self._unfiltered_page_locked(flows, offset, limit), len(roots)
+        live = set(roots)
+        root_ids = [rid for rid in flows.order if rid in live]
         if task_names is not None:
             matching = self._roots_with_task_locked(task_names)
             root_ids = [rid for rid in root_ids if rid in matching]
@@ -1383,6 +1385,27 @@ class GraphStore:
             root_ids = [rid for rid in root_ids if times[rid][0] <= to_dt]
         total = len(root_ids)
         return [nodes[rid] for rid in root_ids[offset : offset + limit]], total
+
+    def _unfiltered_page_locked(
+        self, flows: _FlowTimes, offset: int, limit: int
+    ) -> list[TaskNode]:
+        """The page of live roots in the cached order, reading only the page.
+
+        Roots that left since the compute are skipped. Call with the lock held.
+        """
+        nodes = self._graph.nodes
+        page: list[TaskNode] = []
+        skipped = 0
+        for rid in flows.order:
+            if not self._graph.is_root(rid) or rid not in nodes:
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            if len(page) >= limit:
+                break
+            page.append(nodes[rid])
+        return page
 
     def _cached_flow_times_locked(self) -> _FlowTimes:
         """The flow times, recomputed only for a changed store and after the gate.
