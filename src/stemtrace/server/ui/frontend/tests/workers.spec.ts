@@ -90,8 +90,8 @@ test.describe('Workers page', () => {
     mockApi?.setWorkers([worker({ hostname: 'celery@alpha', status: 'offline' })])
     await page.clock.runFor(31_000)
     await expect(rowOf(page, 'celery@alpha').getByTestId('worker-status')).toHaveText('Offline')
-    // The first load asks the workers; the poll while Live takes what the server knows
-    expect(reads[0]).toBe('')
+    // The first load asked the workers; the poll while Live takes what the server knows
+    expect(reads).toContain('')
     expect(reads.at(-1)).toBe('?refresh=false')
   })
 

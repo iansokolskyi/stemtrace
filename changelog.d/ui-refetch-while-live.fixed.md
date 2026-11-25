@@ -1,0 +1,2 @@
+- The Flows list now catches up after a burst of events. The server can serve the flow list up to 1 second old, so the last change of a burst stayed hidden until the next event. The UI now reloads the list once, 1.2 seconds after the last event.
+- The Workers and Worker pages now refresh every 30 seconds while the live connection (WebSocket) is connected, so a worker that goes offline no longer stays Online until you reopen the page. While connected, these reads use `refresh=false` and don't ask the workers.

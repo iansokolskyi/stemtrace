@@ -60,6 +60,11 @@ const RECONNECT_MAX_DELAY = 60000
 // the next one (a request that never answers must not freeze live updates).
 const REFETCH_ROUND_MAX_MS = 15000
 
+// The server may serve the flow list up to 1 s stale, so a change in the last
+// second of a burst is not in the last round's answer. One more refetch of the
+// flow queries this long after the burst's last round picks it up.
+const TRAILING_REFETCH_MS = 1200
+
 interface WebSocketProviderProps {
   children: ReactNode
 }
@@ -74,6 +79,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const reconnectAttemptsRef = useRef(0)
   const pendingEventsRef = useRef<TaskEvent[]>([])
   const refetchingRef = useRef(false)
+  const trailingTimerRef = useRef<number | null>(null)
 
   // Refetch what the events since the last round touched, one round at a time.
   // Invalidating on every event cancels the fetch already in flight (TanStack
@@ -111,6 +117,14 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       }
     } finally {
       refetchingRef.current = false
+      // Debounced: every round (and every event, below) restarts it, so a burst
+      // gets one trailing refetch, 1.2 s after its last round.
+      if (trailingTimerRef.current !== null) window.clearTimeout(trailingTimerRef.current)
+      trailingTimerRef.current = window.setTimeout(() => {
+        trailingTimerRef.current = null
+        void queryClient.invalidateQueries({ queryKey: ['graphs'] })
+        void queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
+      }, TRAILING_REFETCH_MS)
     }
   }, [queryClient])
 
@@ -159,6 +173,10 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           setEvents((prev) => [data, ...prev].slice(0, 100)) // Keep last 100
 
           pendingEventsRef.current.push(data)
+          if (trailingTimerRef.current !== null) {
+            window.clearTimeout(trailingTimerRef.current)
+            trailingTimerRef.current = null
+          }
           void refetchForEvents()
         } catch (e) {
           console.error('[WebSocket] Failed to parse message:', e)
@@ -188,6 +206,10 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (trailingTimerRef.current !== null) {
+        window.clearTimeout(trailingTimerRef.current)
+        trailingTimerRef.current = null
       }
       const ws = wsRef.current
       wsRef.current = null
