@@ -64,7 +64,11 @@ root task ID.
 
 ### Freshness and clock skew
 
-- The server works out every flow's time at most once a second, and only when an event arrived or an eviction ran since the last time. A list request in that second uses the earlier result, so a change can take up to 1 second to move a flow or to add a new flow to the list. A server that receives no events never works it out again.
+- Which flows are listed is always current: a new flow, a group or chord that forms, or a parent that arrives shows in the next list, and an evicted flow leaves it. Only a flow's time can be older than the store.
+- The server works out the flow times only after an event arrived or an eviction ran, and then waits at least 1 second, or as long as the last computation took, whichever is longer, before the next one. A list request in that wait uses the earlier times, so a change can take up to that long to move a flow. A flow the last computation hadn't seen is placed by its own tasks' times at once. A server that receives no events never works the times out again.
+- Each computation holds the store lock while it runs, which stalls event ingest and other reads: about 0.5 seconds at 100,000 stored tasks, measured on a 2-vCPU host.
+- An eviction during the wait can leave an evicted task's time in its flow's latest time until the next computation.
+- The `task_group` and `tag` filters check every stored task on each request, not the cached times.
 - A worker whose clock runs ahead keeps its flows at the top of the list, and in every `from_date` or `within` window that reaches its times, until the server evicts them.
 
 ## Chord callbacks
