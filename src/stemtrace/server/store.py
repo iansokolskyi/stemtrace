@@ -1389,7 +1389,7 @@ class GraphStore:
     def _unfiltered_page_locked(
         self, flows: _FlowTimes, offset: int, limit: int
     ) -> list[TaskNode]:
-        """The page of live roots in the cached order, reading only the page.
+        """The page of live roots in the cached order; reads only the page's nodes.
 
         Roots that left since the compute are skipped. Call with the lock held.
         """
@@ -1411,8 +1411,8 @@ class GraphStore:
         """The flow times, recomputed only for a changed store and after the gate.
 
         The gate runs from the end of a compute and lasts the interval or as
-        long as that compute took, whichever is longer, so a slow compute
-        never leaves the lock busy more than half the time.
+        long as that compute took, whichever is longer, so computations
+        alone never keep the lock busy more than half the time.
         Call with the lock held.
         """
         cache = self._flow_cache
