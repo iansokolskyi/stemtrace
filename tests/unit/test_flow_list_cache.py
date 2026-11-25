@@ -425,6 +425,22 @@ def test_a_root_missing_from_the_cache_is_placed_by_its_whole_flow() -> None:
     assert store.get_root_nodes(limit=1, offset=1)[1] == 2
 
 
+def test_an_unseen_root_with_a_dangling_or_repeated_child_is_timed_once_per_node() -> (
+    None
+):
+    """The on-demand walk skips a missing child and a child listed twice."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("other", 3 * HOUR))
+    _roots(store)
+    store.add_event(_ev("new", 9 * HOUR))
+    store.add_event(_ev("kid", HOUR, parent_id="new"))
+    with store._lock:
+        store._graph.nodes["new"].children.extend(["ghost", "kid"])
+    assert _roots(store) == ["new", "other"]
+    assert _roots(store, from_date=NOW - 2 * HOUR) == ["new"]
+
+
 def test_the_gate_runs_from_the_end_of_a_compute() -> None:
     """S3: a compute of 1.2 s keeps the next one at least 1.2 s after it ended."""
     clock = FakeClock()
