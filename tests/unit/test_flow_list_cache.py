@@ -15,12 +15,15 @@ import pytest
 from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.graph import TaskNode
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import (
     FLOW_TIMES_REFRESH_SECONDS,
     GraphStore,
     WorkerRegistry,
+    _newest_first_key,
+    _root_of_each,
 )
 from tests.unit.test_flow_time import (
     _CAPTURES,
@@ -305,6 +308,35 @@ def test_lists_and_events_from_threads_neither_fail_nor_tear() -> None:
     assert _roots(store) == _oracle(store, None, None, None)
 
 
+def _check_unseen_times(
+    store: CountingStore,
+    twin: GraphStore,
+    known: set[str],
+    where: tuple[int, int],
+) -> int:
+    """Check the roots timed on demand since ``known`` against the full compute; count them.
+
+    A root timed on demand has the time the full compute gives it, unless a
+    cached root lies inside its flow: that root counts with its cached times,
+    and a node two roots both claim (spec P3) can land in either flow until
+    the next compute.
+    """
+    cache = store._flow_cache
+    if cache is None:
+        return 0
+    fresh = set(cache.times) - known
+    checked = 0
+    with twin._lock:
+        full = twin._flow_times_locked()
+        flow_of = _root_of_each(twin._graph.nodes)
+        for rid in fresh:
+            if any(flow_of.get(o) == rid and o != rid for o in known):
+                continue
+            checked += 1
+            assert cache.times[rid] == full[rid], (*where, rid)
+    return checked
+
+
 @pytest.mark.parametrize("chunk", range(5))
 def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -> None:
     """Random recorded flows, with eviction, fed in bursts; the clock moves at random.
@@ -312,6 +344,7 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
     The reference is the same events in an ungated store."""
     fresh_checks = 0
     stale_checks = 0
+    unseen_checks = 0
     for seed in range(chunk * 12, chunk * 12 + 12):
         rng = random.Random(seed)
         events = _fuzz_events(rng)
@@ -336,7 +369,14 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
                 [None, datetime(2026, 10, rng.randint(14, 18), tzinfo=timezone.utc)]
             )
             # Membership is live even when the times are not.
+            known = set(store._flow_cache.times) if store._flow_cache else set()
             everyone, everyone_total = store.get_root_nodes(limit=1000)
+            unseen_checks += _check_unseen_times(store, twin, known, (seed, position))
+            cached = store._flow_cache
+            if cached is not None:  # the bisect inserts keep the order exact
+                assert cached.order == sorted(
+                    cached.times, key=_newest_first_key(cached.times)
+                ), (seed, position)
             assert sorted(r.task_id for r in everyone) == sorted(
                 store._graph.root_ids
             ), (seed, position)
@@ -365,6 +405,7 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
         assert _roots(store) == _oracle(store, None, None, None), seed
     assert fresh_checks > 20
     assert stale_checks > 5
+    assert unseen_checks > 20
 
 
 @pytest.mark.parametrize("flow", sorted(_CAPTURES))
@@ -439,6 +480,84 @@ def test_an_unseen_root_with_a_dangling_or_repeated_child_is_timed_once_per_node
         store._graph.nodes["new"].children.extend(["ghost", "kid"])
     assert _roots(store) == ["new", "other"]
     assert _roots(store, from_date=NOW - 2 * HOUR) == ["new"]
+
+
+class _ReadCountingNodes(dict[str, TaskNode]):
+    """The graph's node map, counting the node reads a list makes."""
+
+    reads = 0
+
+    def __getitem__(self, key: str) -> TaskNode:
+        self.reads += 1
+        return super().__getitem__(key)
+
+    def get(self, key: str, default: TaskNode | None = None) -> TaskNode | None:  # type: ignore[override]
+        self.reads += 1
+        return super().get(key, default)
+
+
+def _count_reads(store: GraphStore) -> _ReadCountingNodes:
+    counted = _ReadCountingNodes(store._graph.nodes)
+    store._graph.__dict__["nodes"] = counted  # pydantic would copy a plain assignment
+    return counted
+
+
+def test_an_unseen_root_is_timed_once_per_gap() -> None:
+    """S6: the walk of 50 new flows costs once; later lists in the gap read only the page."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("old", 40 * HOUR))
+    _roots(store)
+    for flow in range(50):
+        store.add_event(_ev(f"new{flow}", HOUR))
+        for kid in range(10):
+            store.add_event(_ev(f"new{flow}-{kid}", HOUR, parent_id=f"new{flow}"))
+    nodes = _count_reads(store)
+    first, _ = store.get_root_nodes(limit=5)
+    walked = nodes.reads
+    assert walked >= 50 * 11
+    for _ in range(3):
+        nodes.reads = 0
+        second, _ = store.get_root_nodes(limit=5)
+        assert nodes.reads == 5
+        assert [n.task_id for n in second] == [n.task_id for n in first]
+    assert store.computes == 1
+
+
+def test_the_walk_of_an_unseen_root_folds_a_cached_root_without_entering_it() -> None:
+    """S6: a parent that arrives counts its cached child flow with the cached times."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("kid", 5 * HOUR, parent_id="parent"))
+    store.add_event(_ev("kid-sub", 6 * HOUR, parent_id="kid"))
+    assert _roots(store) == ["kid"]
+    store.add_event(_ev("kid-sub", HOUR, parent_id="kid", state=TaskState.FAILURE))
+    store.add_event(_ev("parent", 9 * HOUR))
+    nodes = _count_reads(store)
+    assert _roots(store) == ["parent"]
+    assert nodes.reads == 3  # the parent, its child kid (not entered), the page
+    assert store._flow_cache is not None
+    # The cached child flow ended 5 h ago; the walk didn't see the newer event.
+    assert store._flow_cache.times["parent"][1] == NOW - 5 * HOUR
+
+
+def test_an_unseen_roots_time_follows_the_parent_chain_not_the_child_lists() -> None:
+    """A node a root lists as a child but whose parent is another root counts for the latter."""
+    clock = FakeClock()
+    plain = GraphStore(flow_cache_interval_s=0)
+    store = _store(clock)
+    store.add_event(_ev("anchor", 40 * HOUR))
+    plain.add_event(_ev("anchor", 40 * HOUR))
+    _roots(store)
+    for target in (store, plain):
+        target.add_event(_ev("x", 9 * HOUR))
+        target.add_event(_ev("y", 5 * HOUR))
+        target.add_event(_ev("k", timedelta(minutes=1), parent_id="y"))
+        with target._lock:
+            target._graph.nodes["x"].children.append("k")
+    assert _roots(store) == _roots(plain) == ["y", "x", "anchor"]
+    assert store._flow_cache is not None
+    assert store._flow_cache.times["x"][1] == NOW - 9 * HOUR
 
 
 def test_the_gate_runs_from_the_end_of_a_compute() -> None:

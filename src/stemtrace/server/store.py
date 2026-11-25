@@ -117,6 +117,16 @@ def _root_of_each(nodes: Mapping[str, TaskNode]) -> dict[str, str | None]:
     return root_of
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _newest_first_key(
+    times: Mapping[str, tuple[datetime, datetime]],
+) -> Callable[[str], tuple[timedelta, str]]:
+    """Sort key for roots: newest latest time first, equal times by root ID."""
+    return lambda rid: (_EPOCH - times[rid][1], rid)
+
+
 def _eviction_age(node: TaskNode, graph: TaskGraph) -> tuple[datetime, int]:
     """Sort key for eviction: a task's first event; a group's newest member's.
 
@@ -1357,17 +1367,11 @@ class GraphStore:
         nodes = self._graph.nodes
         times = flows.times
         live = [rid for rid in self._graph.root_ids if rid in nodes]
-        new = [rid for rid in live if rid not in times]
-        if new:
-            # A root the cache has not seen (a new flow, a group or chord that
-            # formed, a parent that arrived): time that one flow now.
-            times = dict(times)
-            times.update((rid, self._flow_time_of_locked(rid)) for rid in new)
-            root_ids = sorted(live)
-            root_ids.sort(key=lambda rid: times[rid][1], reverse=True)
-        else:
-            alive = set(live)
-            root_ids = [rid for rid in flows.order if rid in alive]
+        for rid in live:
+            if rid not in times:
+                self._time_unseen_root_locked(flows, rid)
+        alive = set(live)
+        root_ids = [rid for rid in flows.order if rid in alive]
         if task_names is not None:
             matching = self._roots_with_task_locked(task_names)
             root_ids = [rid for rid in root_ids if rid in matching]
@@ -1398,19 +1402,32 @@ class GraphStore:
         ended = self._clock()
         gap = max(self._flow_cache_interval_s, ended - started)
         # Newest latest time first; equal times by root ID.
-        order = sorted(times)
-        order.sort(key=lambda rid: times[rid][1], reverse=True)
+        order = sorted(times, key=_newest_first_key(times))
         self._flow_cache = cache = _FlowTimes(changes, ended + gap, times, order)
         return cache
 
-    def _flow_time_of_locked(self, root_id: str) -> tuple[datetime, datetime]:
-        """One root's (first, latest) time, walking only its flow. Call with the lock held."""
+    def _time_unseen_root_locked(self, flows: _FlowTimes, root_id: str) -> None:
+        """Time a root the cache hasn't seen and add it to the cache, once.
+
+        Walks the nodes whose parent chain reaches the root (as the full compute
+        attributes them), and folds in a cached root's times instead of walking
+        into it. Call with the lock held.
+        """
         nodes = self._graph.nodes
+        times = flows.times
         seen = {root_id}
         stack = [root_id]
         first = last = None
         while stack:
-            node = nodes[stack.pop()]
+            node_id = stack.pop()
+            if node_id != root_id and node_id in times:
+                lo, hi = times[node_id]  # a root timed before: its flow joins this one
+                if lo != _MIN_DATETIME:
+                    first = lo if first is None else min(first, lo)
+                if hi != _MIN_DATETIME:
+                    last = hi if last is None else max(last, hi)
+                continue
+            node = nodes[node_id]
             if node.first_seen is not None:
                 first = (
                     node.first_seen if first is None else min(first, node.first_seen)
@@ -1420,10 +1437,18 @@ class GraphStore:
                     node.last_updated if last is None else max(last, node.last_updated)
                 )
             for child_id in node.children:
-                if child_id in nodes and child_id not in seen:
+                child = nodes.get(child_id)
+                if (
+                    child is not None
+                    and child.parent_id == node_id
+                    and child_id not in seen
+                ):
                     seen.add(child_id)
                     stack.append(child_id)
-        return (first or _MIN_DATETIME, last or _MIN_DATETIME)
+        times[root_id] = (first or _MIN_DATETIME, last or _MIN_DATETIME)
+        key = _newest_first_key(times)
+        order = flows.order
+        order.insert(bisect.bisect_left(order, key(root_id), key=key), root_id)
 
     def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
         """Each root's flow: its (first, latest) time over every node under it.
