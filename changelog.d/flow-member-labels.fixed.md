@@ -1,0 +1,1 @@
+- A step in a group of chains (for example `fetch` in `group(chain(fetch, add), chain(parse, add))`) shows its name on the Flow page diagram and timeline. Before, every block of a container whose members end in the same task showed a task ID prefix.

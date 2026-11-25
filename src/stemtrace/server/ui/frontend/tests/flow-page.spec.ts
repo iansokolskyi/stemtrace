@@ -65,6 +65,60 @@ function failedChord(): FlowGraph {
   return { root_id: 'g', nodes }
 }
 
+/** `chain_group_of_chains` with its two chain heads named `flows.fetch` and `flows.parse`. */
+function renamedChainHeads(): { graph: FlowGraph; heads: string[]; ends: string[] } {
+  const { root_id, nodes } = capture('chain_group_of_chains')
+  const container = Object.values(nodes).find((entry) => entry.node_type === 'GROUP')
+  const heads = container?.children ?? []
+  const ends = heads.map((id) => nodes[id].children[0])
+  expect(heads).toHaveLength(2)
+  nodes[heads[0]].name = 'flows.fetch'
+  nodes[heads[1]].name = 'flows.parse'
+  return { graph: { root_id, nodes }, heads, ends }
+}
+
+/** The text a block draws as its label (its first line of text). */
+const blockLabel = (page: Page, id: string) => flowNode(page, id).locator('text').first()
+
+test.describe('member labels', () => {
+  test('shows the name of a chain step and the ID start of the shared last task', async ({
+    page,
+  }) => {
+    const { graph, heads, ends } = renamedChainHeads()
+    await openFlow(page, graph)
+
+    await expect(blockLabel(page, heads[0])).toHaveText('fetch')
+    await expect(blockLabel(page, heads[1])).toHaveText('parse')
+    for (const end of ends) await expect(blockLabel(page, end)).toHaveText(end.slice(0, 8))
+    await expect(page.getByTestId('flow-container-label')).toContainText('Group of 2 add')
+  })
+
+  test('shows the ID start of every member of a group of one task name', async ({ page }) => {
+    const { root_id, nodes } = capture('group')
+    await openFlow(page, { root_id, nodes })
+
+    const members = flowContainerMembers(page)
+    await expect(members).toHaveCount(3)
+    for (const id of await members.evaluateAll((els) =>
+      els.map((el) => el.getAttribute('data-task-id')),
+    )) {
+      await expect(blockLabel(page, id as string)).toHaveText((id as string).slice(0, 8))
+    }
+  })
+
+  test('shows names when the members of a group have different names', async ({ page }) => {
+    const nodes = group(3)
+    nodes.m0.name = 'app.fetch'
+    nodes.m1.name = 'app.parse'
+    nodes.m2.name = 'app.save'
+    await openFlow(page, { root_id: 'g', nodes })
+
+    await expect(blockLabel(page, 'm0')).toHaveText('fetch')
+    await expect(blockLabel(page, 'm1')).toHaveText('parse')
+    await expect(blockLabel(page, 'm2')).toHaveText('save')
+  })
+})
+
 test.describe('selection', () => {
   test('chooses the first failure on open and leaves the view at the root', async ({ page }) => {
     await openFlow(page, longChain(10, [9]))

@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { flowNode, flowNodes } from './fixtures/flow'
 import {
+  capture,
   chain,
   type FlowGraph,
   group,
@@ -439,5 +440,28 @@ test.describe('narrow screens', () => {
       .locator('text')
       .evaluateAll((els) => els.map((el) => Number.parseFloat(getComputedStyle(el).fontSize)))
     expect(Math.min(...sizes)).toBeGreaterThanOrEqual(12)
+  })
+})
+
+test.describe('row labels in a container of chains', () => {
+  test('names a chain step and shows the ID start of the shared last task', async ({ page }) => {
+    const { root_id, nodes } = capture('chain_group_of_chains')
+    const heads =
+      nodes[Object.values(nodes).find((n) => n.node_type === 'GROUP')?.task_id as string].children
+    const ends = heads.map((id) => nodes[id].children[0])
+    nodes[heads[0]].name = 'flows.fetch'
+    nodes[heads[1]].name = 'flows.parse'
+    await openFlow(page, { root_id, nodes })
+
+    await expect(row(page, heads[0])).toHaveAttribute('aria-label', /^flows\.fetch, /)
+    await expect(row(page, heads[0]).locator('text').first()).toHaveText('fetch')
+    await expect(row(page, heads[1]).locator('text').first()).toHaveText('parse')
+    for (const end of ends) {
+      await expect(row(page, end)).toHaveAttribute(
+        'aria-label',
+        new RegExp(`^flows\\.add ${end.slice(0, 8)}, `),
+      )
+      await expect(row(page, end).locator('text').first()).toHaveText(end.slice(0, 8))
+    }
   })
 })

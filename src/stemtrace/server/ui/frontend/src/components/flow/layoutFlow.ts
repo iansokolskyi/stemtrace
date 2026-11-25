@@ -42,6 +42,8 @@ export interface PlacedTask {
   h: number
   /** The container the task is a member (or a cell of a member row) of. */
   containerId: string | null
+  /** The task every member of its container ends in, which the container's title names. */
+  sharedTask: boolean
   /** Draw order and tab order: the order the layout reached it. */
   seq: number
 }
@@ -358,7 +360,16 @@ export function layoutFlow(
     }
     const height = Math.max(TASK_H, drawn > 0 ? bottom - GAP_Y - y : 0)
     const top = y + (height - TASK_H) / 2
-    tasks.push({ id, x, y: top, w: TASK_W, h: TASK_H, containerId: null, seq: mySeq })
+    tasks.push({
+      id,
+      x,
+      y: top,
+      w: TASK_W,
+      h: TASK_H,
+      containerId: null,
+      sharedTask: false,
+      seq: mySeq,
+    })
     anchors.set(id, { x, y: top + TASK_H / 2 })
     for (const kid of kids) {
       pending.push({
@@ -414,6 +425,7 @@ export function layoutFlow(
     // The members, row by row
     const tracks = new Map<number, PlacedTrack>()
     const memberEdges: Array<{ last: string; cy: number }> = []
+    const rowEnds: PlacedTask[] = []
     const shownCells: Array<{ cell: string; next: string | undefined }> = []
     items.forEach((item, index) => {
       const column = index % columns
@@ -426,15 +438,18 @@ export function layoutFlow(
         item.row.forEach((cell, k) => {
           placed.add(cell)
           const cx = ix + k * (MEMBER_W + GAP_X)
-          tasks.push({
+          const mark: PlacedTask = {
             id: cell,
             x: cx,
             y: iy,
             w: MEMBER_W,
             h: MEMBER_H,
             containerId: id,
+            sharedTask: false,
             seq: seq++,
-          })
+          }
+          tasks.push(mark)
+          if (k === item.row.length - 1) rowEnds.push(mark)
           anchors.set(cell, { x: cx, y: cy })
           track.ids.push(cell)
           if (isFailedState(nodes[cell].state)) track.failed = true
@@ -496,6 +511,8 @@ export function layoutFlow(
       lastNames.length > 0 && lastNames.every((name) => name === lastNames[0])
         ? lastNameSegment(lastNames[0])
         : null
+    // Only the end of each row is the shared task; a chain's earlier steps keep their own names
+    if (sharedName) for (const end of rowEnds) end.sharedTask = true
     const failedCount = memberStates.filter(isFailedState).length
     const succeeded = memberStates.filter((state) => state === 'SUCCESS').length
 

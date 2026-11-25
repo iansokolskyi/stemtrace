@@ -94,7 +94,6 @@ export function Gantt({
   const hatchTries = useId()
   const [boxRef, boxWidth] = useBoxWidth()
   const shortNames = useMemo(() => shortNamesOf(nodes), [nodes])
-  const containers = new Map(layout.containers.map((box) => [box.id, box]))
   const placed = new Map(layout.tasks.map((task) => [task.id, task]))
   const { axis, rows } = timeline
 
@@ -202,8 +201,8 @@ export function Gantt({
                 labelW={labelW}
                 x={x}
                 node={nodes[row.id]}
-                label={rowLabel(row, detailOf(row, layout), nodes, containers, placed, shortNames)}
-                mono={rowMono(row, containers, placed)}
+                label={rowLabel(row, detailOf(row, layout), nodes, placed, shortNames)}
+                mono={rowMono(row, placed)}
                 detail={detailOf(row, layout)}
                 selected={row.kind !== 'more' && selectedId === row.id}
                 hatchRun={hatchRun}
@@ -236,30 +235,24 @@ export function Gantt({
   )
 }
 
-/** A task's row text: its short name, or the start of its ID inside a container of one task name. */
-function rowMono(
-  row: TimelineRow,
-  containers: Map<string, { sharedName: string | null }>,
-  placed: Map<string, { containerId: string | null }>,
-): boolean {
-  if (row.kind !== 'task') return false
-  const owner = placed.get(row.id)?.containerId
-  return Boolean(owner && containers.get(owner)?.sharedName)
+/** Whether the row is a container's shared task, which reads as the start of its ID. */
+function rowMono(row: TimelineRow, placed: Map<string, { sharedTask: boolean }>): boolean {
+  return row.kind === 'task' && Boolean(placed.get(row.id)?.sharedTask)
 }
 
+/** A task's row text: its short name, or the start of its ID when it is the shared task. */
 function rowLabel(
   row: TimelineRow,
   detail: string,
   nodes: Record<string, GraphNode>,
-  containers: Map<string, { sharedName: string | null }>,
-  placed: Map<string, { containerId: string | null }>,
+  placed: Map<string, { sharedTask: boolean }>,
   shortNames: Map<string, string>,
 ): string {
   if (row.kind === 'more') return `+${row.hidden} more: ${detail}`
   if (row.kind === 'notRun') return 'Callback'
   const node = nodes[row.id]
   if (!node) return row.id
-  if (rowMono(row, containers, placed)) return row.id.slice(0, 8)
+  if (rowMono(row, placed)) return row.id.slice(0, 8)
   return shortNames.get(node.name) ?? lastNameSegment(node.name)
 }
 
