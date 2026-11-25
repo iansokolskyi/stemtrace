@@ -274,9 +274,11 @@ so the list is current when the page loads.
 
 ### Limits
 
-- The page reads the list when it loads. It reloads every 30 seconds whenever the live
-  connection (the WebSocket) isn't connected, and never while it is connected, so a worker that changes while you watch
-  doesn't change on the page until you open it again.
+- The page reloads the list every 30 seconds, whether or not the live connection (the WebSocket)
+  is connected, and each reload asks the workers. The WebSocket carries no worker events. Once the
+  server marks a worker offline, the page shows it within 30 seconds. When the server marks it
+  offline depends on how the worker stopped: see
+  [when a worker shows offline](features.md#workers-and-registry-inspect).
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
   [Workers and registry inspect](features.md#workers-and-registry-inspect).
@@ -287,8 +289,8 @@ so the list is current when the page loads.
 One host.
 
 **Data:** `GET /api/workers` (the page picks its host from the list, so it asks the workers like
-Workers does, and refreshes under the same rule: every 30 seconds whenever the live connection (the
-WebSocket) isn't connected, never while it is connected) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
+Workers does, and refreshes under the same rule: every 30 seconds, with or without the live connection (the
+WebSocket)) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
 
 - **Header.** The hostname and status, a note with the last-seen time for an offline host, and
   **All executions on this worker**.

@@ -72,6 +72,28 @@ test.describe('Workers page', () => {
     await expect(page.getByText('Failed to load workers')).toHaveCount(0)
   })
 
+  test('a worker that goes offline while Live shows on the next poll', async ({ page }) => {
+    test.skip(isRealMode, 'Mock-only test')
+    await page.clock.install()
+    // The socket stays open and carries no worker events
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const reads: string[] = []
+    page.on('request', (request) => {
+      const url = new URL(request.url())
+      if (/\/api\/workers$/.test(url.pathname)) reads.push(url.search)
+    })
+    mockApi?.setWorkers([worker({ hostname: 'celery@alpha' })])
+    await loadWorkersPage(page, () => page.goto('/workers'))
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(rowOf(page, 'celery@alpha').getByTestId('worker-status')).toHaveText('Online')
+
+    mockApi?.setWorkers([worker({ hostname: 'celery@alpha', status: 'offline' })])
+    await page.clock.runFor(31_000)
+    await expect(rowOf(page, 'celery@alpha').getByTestId('worker-status')).toHaveText('Offline')
+    // The load and the poll while Live each asked the workers (no `refresh=false`)
+    expect(reads.filter((search) => search === '')).toHaveLength(2)
+  })
+
   test('shows the heading and how many workers are online', async ({ page }) => {
     await loadWorkersPage(page, () => page.goto('/workers'))
     await expect(page.getByRole('heading', { name: 'Workers', level: 1 })).toBeVisible()

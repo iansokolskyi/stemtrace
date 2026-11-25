@@ -213,13 +213,13 @@ export function useRegistryPage(within: string) {
 
 /** Every worker, refreshed from Celery; the Workers list and each Worker page share it. */
 export function useWorkers() {
-  const { isConnected } = useWebSocketContext()
-
   return useQuery<WorkerListResponse>({
     queryKey: ['workers'],
+    // Every read asks the workers (the server paces and bounds the inspect). A read that only
+    // took what the server knows would miss a killed worker, and the socket carries no worker
+    // events, so the poll is the only refresh.
     queryFn: () => fetchWorkers(),
-    // Workers refresh less frequently
-    refetchInterval: isConnected ? false : 30000,
+    refetchInterval: 30000,
   })
 }
 
