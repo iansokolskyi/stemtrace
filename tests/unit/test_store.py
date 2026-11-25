@@ -130,15 +130,17 @@ class TestGraphStoreConsistency:
         store.add_event(_task_event("child", TaskState.SUCCESS, 1, parent_id="root"))
         store.add_event(_task_event("other-root", TaskState.SUCCESS, 2))
 
-        roots, related, total = store.get_root_nodes_with_children(limit=1)
+        page = store.get_root_nodes_with_children(limit=1)
 
-        assert [r.task_id for r in roots] == ["other-root"]
-        assert set(related) == {"other-root"}
-        assert total == 2
-        roots, related, _ = store.get_root_nodes_with_children(limit=1, offset=1)
-        assert [r.task_id for r in roots] == ["root"]
-        assert set(related) == {"root", "child"}
-        assert related["child"].state == TaskState.SUCCESS
+        assert [r.task_id for r in page.roots] == ["other-root"]
+        assert set(page.related) == {"other-root"}
+        assert page.total == 2
+        page = store.get_root_nodes_with_children(limit=1, offset=1)
+        assert [r.task_id for r in page.roots] == ["root"]
+        # A root with events of its own is not timed from its children.
+        assert set(page.related) == {"root"}
+        assert page.roots[0].children == ["child"]
+        assert page.containers == set()
 
 
 @pytest.fixture
@@ -1147,10 +1149,9 @@ class TestGraphStoreSyntheticNodes:
         assert root_ids[1] == f"group:{old_group_id}"
         assert root_ids[2] == "old-task"
 
-    def test_newly_updated_synthetic_node_appears_first(
-        self, store: GraphStore
-    ) -> None:
+    def test_newly_updated_synthetic_node_appears_first(self) -> None:
         """When a group member gets updated, the group should move to the top."""
+        store = GraphStore(flow_cache_interval_s=0)
         base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         # Create a group
