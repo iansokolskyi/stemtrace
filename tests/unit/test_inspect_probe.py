@@ -20,6 +20,7 @@ from stemtrace.server.inspect_probe import (
     InspectProbe,
 )
 
+STRICT_PROBE_LEAKS = True
 INTERVAL_S = 2.0
 BOUND_S = 5.0
 

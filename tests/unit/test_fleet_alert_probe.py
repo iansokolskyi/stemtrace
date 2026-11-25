@@ -28,6 +28,7 @@ from tests.unit.test_inspect_probe_rows import (
     take,
 )
 
+STRICT_PROBE_LEAKS = True
 REAL_INSPECT_PROBE = True
 JOINED = datetime(2026, 11, 3, 2, 0, tzinfo=timezone.utc)
 HOURS_LATER = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
