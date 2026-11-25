@@ -56,7 +56,16 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
               {runs.map((run) => (
                 <tr key={run.task_id} className="relative border-t border-rule hover:bg-hover">
                   {columns.map((column) => (
-                    <td key={column.id} className={clsx(TD, column.align === 'right' && NUM)}>
+                    <td
+                      key={column.id}
+                      className={clsx(
+                        TD,
+                        column.align === 'right' && NUM,
+                        // The name takes the room the other columns leave, 260 px at least (like
+                        // Executions' minmax(260px, 1fr)); max-w-0 lets it shrink below its text
+                        column.id === 'name' && 'w-full max-w-0 min-w-[260px]',
+                      )}
+                    >
                       {column.id === 'state' ? (
                         <StatusChip state={run.state} title={run.exception_type ?? undefined} />
                       ) : column.id === 'name' ? (
@@ -64,7 +73,7 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
                           to="/tasks/$taskId"
                           params={{ taskId: run.task_id }}
                           aria-label={run.name}
-                          className="block max-w-[46ch] after:absolute after:inset-0"
+                          className="block after:absolute after:inset-0"
                         >
                           <TaskName name={run.name} />
                         </Link>

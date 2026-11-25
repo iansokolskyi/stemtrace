@@ -186,6 +186,22 @@ test.describe('Worker page', () => {
     await expect(headers).toHaveText(['State', 'Task', 'Queue', 'Queue wait', 'Runtime', 'Started'])
   })
 
+  test('a long recent-run name takes the room the table has', async ({ page }) => {
+    // Longer than the old 46ch cap (about 370 px), so the cap, not the room, set the width
+    const name = 'billing.invoices.reconciliation.nightly.ledger_close_and_archive_job_run_01'
+    api.addTask(run(name))
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWorker(page)
+    const link = panel(page, 'Recent executions').getByRole('link', { name })
+    await expect(link).toBeVisible()
+    const cell = link.locator('xpath=ancestor::td')
+    const linkWidth = (await link.boundingBox())?.width ?? 0
+    const cellWidth = (await cell.boundingBox())?.width ?? 0
+    expect(cellWidth).toBeGreaterThan(400)
+    // The link fills the cell (its 12 px padding each side)
+    expect(linkWidth).toBeGreaterThanOrEqual(cellWidth - 24 - 1)
+  })
+
   test('a recent-runs column nothing has a value for is hidden', async ({ page }) => {
     api.addTask(run('app.billing.send', { queue: null, queue_wait_ms: null }))
     await openWorker(page)

@@ -8,8 +8,10 @@ import { createAnomaly, type MockWorker } from './fixtures/mock-data'
  * `/api/workers` for the Workers page while the badge's inspect is still running. Each must read
  * the state the inspect found.
  *
- * The mock models the server's `refresh=true` handling. By default a request that arrives during
- * an inspect waits for it (the current server, `_InspectRefresher`). With `OLD_SERVER_MOCK=1` it
+ * The mock models one thing: whether a request that arrives during an inspect joins it. The
+ * wait bound, pacing and backoff are not modelled (`tests/unit/test_inspect_wait.py` and
+ * `test_inspect_pacing.py` cover them). By default the request waits for the inspect (the current
+ * server, `_InspectRefresher`). With `OLD_SERVER_MOCK=1` it
  * answers at once with the state from before the inspect (the old server, which lost the
  * single-flight race): this spec must fail then, which shows it can detect the bug.
  */

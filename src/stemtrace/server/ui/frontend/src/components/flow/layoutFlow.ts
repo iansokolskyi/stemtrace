@@ -261,13 +261,15 @@ export function layoutFlow(
   /** A member: the head child, then single TASK children until the group's own member. */
   const rowFrom = (headId: string, groupId: string | null): string[] => {
     const row = [headId]
+    const inRow = new Set(row)
     let current = nodes[headId]
     while (current && current.group_id !== groupId) {
       const next = childrenOf(row[row.length - 1])
       const nextId = next.length === 1 ? next[0] : undefined
       // Only tasks continue a row: a group or chord child is drawn as its own container
-      if (nextId === undefined || typeOf(nodes[nextId]) !== 'TASK' || row.includes(nextId)) break
+      if (nextId === undefined || typeOf(nodes[nextId]) !== 'TASK' || inRow.has(nextId)) break
       row.push(nextId)
+      inRow.add(nextId)
       current = nodes[nextId]
     }
     return row
