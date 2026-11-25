@@ -191,6 +191,9 @@ class TestTaskGraphParentChild:
         assert "parent-1" in graph.root_ids
         assert "child-1" not in graph.root_ids
         assert "child-1" in graph.nodes["parent-1"].children
+        assert graph.is_root("parent-1") is True
+        assert graph.is_root("child-1") is False
+        assert graph.is_root("never-seen") is False
 
     def test_child_before_parent_is_root_until_parent_arrives(self) -> None:
         graph = TaskGraph()
