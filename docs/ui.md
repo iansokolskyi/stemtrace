@@ -206,9 +206,9 @@ itself, because this endpoint doesn't send `flow`.
   or chord is a container with one track for each member. A chord's callback follows the
   container. When a chord's callback didn't run, a box says why, for example
   "Chord header failed: 1 of 48 tasks failed". A container of more than 12 members shows the first
-  3, the failed ones and a **+N more** block; select the block to expand it. A task block shows its
-  state as an icon, its name, and a second line with the exception class of a failure and the
-  runtime (a running, pending or received task with no runtime yet says so); a member of a
+  3, the failed ones and a **+N more** block; select the block to expand it. A task block outside a
+  container shows its state as an icon, its name, and a second line with the exception class of
+  a failure and the runtime (a running, pending or received task with no runtime yet says so); a member of a
   container shows its icon, name and runtime. When every row of a
   container ends in the same task (the task the container's title names), that last task of each
   row shows the first 8 characters of its task ID in place of its name; its icon and runtime stay.
@@ -279,8 +279,12 @@ so the list is current when the page loads.
 ### Limits
 
 - The page reloads the list every 30 seconds, whether or not the live connection (the WebSocket)
-  is connected, and each reload asks the workers. The WebSocket carries no worker events. Once the
-  server marks a worker offline, the page shows it within 30 seconds. When the server marks it
+  is connected. Each reload asks the server to ask the workers, but the server paces that: it
+  doesn't inspect again within 2 seconds of a successful inspect, and after failures it waits
+  longer (see [Workers and registry inspect](features.md#workers-and-registry-inspect)). The
+  WebSocket carries no worker events. Once the server marks a worker offline, the page shows it
+  at its next reload: within 30 seconds, plus up to 7 seconds when that reload waits for an
+  inspect that is already running. When the server marks it
   offline depends on how the worker stopped: see
   [when a worker shows offline](features.md#workers-and-registry-inspect).
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
