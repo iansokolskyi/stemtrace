@@ -208,9 +208,11 @@ itself, because this endpoint doesn't send `flow`.
   "Chord header failed: 1 of 48 tasks failed". A container of more than 12 members shows the first
   3, the failed ones and a **+N more** block; select the block to expand it. A task block shows its
   state as an icon, its name, and a second line with the exception class of a failure and the
-  runtime (a running, pending or received task with no runtime yet says so). A member of a
-  container shows its icon, name and runtime; when it is the container's shared task (the
-  container's title names it), it shows the first 8 characters of its task ID instead. A screen
+  runtime (a running, pending or received task with no runtime yet says so); a member of a
+  container shows its icon, name and runtime. When every row of a
+  container ends in the same task (the task the container's title names), that last task of each
+  row shows the first 8 characters of its task ID in place of its name; its icon and runtime stay.
+  Every other member shows its name. A screen
   reader hears the state word as well.
 - **Inspector.** The task you chose (the first failure, or the root, when you haven't chosen):
   name, ID with a copy button, worker, queue, queue wait, runtime, exception, up to four keyword

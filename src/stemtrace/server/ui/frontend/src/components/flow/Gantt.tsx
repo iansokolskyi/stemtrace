@@ -235,11 +235,12 @@ export function Gantt({
   )
 }
 
-/** A task's row text: its short name, or the start of its ID inside a container of one task name. */
+/** Whether the row is a container's shared task, which reads as the start of its ID. */
 function rowMono(row: TimelineRow, placed: Map<string, { sharedTask: boolean }>): boolean {
   return row.kind === 'task' && Boolean(placed.get(row.id)?.sharedTask)
 }
 
+/** A task's row text: its short name, or the start of its ID when it is the shared task. */
 function rowLabel(
   row: TimelineRow,
   detail: string,

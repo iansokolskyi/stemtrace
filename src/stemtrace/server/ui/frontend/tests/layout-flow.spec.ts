@@ -715,6 +715,15 @@ test.describe('layoutFlow: the shared task of a container', () => {
     expect(layout.tasks.find((task) => task.id === root_id)?.sharedTask).toBe(false)
   })
 
+  test('marks the last task of each row, not its same-named head, in group_of_chains', () => {
+    const { layout } = layoutOf('group_of_chains')
+    const box = layout.containers[0]
+    const members = layout.tasks.filter((task) => task.containerId === box.id)
+    expect(box.sharedName).toBe('add')
+    expect(members.filter((task) => task.sharedTask)).toHaveLength(box.memberCount)
+    expect(members).toHaveLength(box.memberCount * 2)
+  })
+
   test('marks the shown members of a collapsed container and no "+N more" block', () => {
     const nodes = group(COLLAPSE_AT + 10)
     const layout = layoutFlow(nodes, 'g', new Set())
