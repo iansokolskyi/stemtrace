@@ -367,13 +367,13 @@ def test_flow_list_equals_the_oracle_for_random_recorded_flows(chunk: int) -> No
                 else set(rng.sample(names, min(len(names), 2)))
             )
             expected = _oracle(store, from_date, to_date, wanted)
-            roots, _, total = store.get_root_nodes_with_children(
+            roots, _, _, total = store.get_root_flows(
                 limit=1000, from_date=from_date, to_date=to_date, task_names=wanted
             )
             where = (seed, from_date, to_date, wanted)
             assert [r.task_id for r in roots] == expected, where
             assert total == len(expected), where
-            page, _, _ = store.get_root_nodes_with_children(
+            page, _, _, _ = store.get_root_flows(
                 limit=2,
                 offset=1,
                 from_date=from_date,
