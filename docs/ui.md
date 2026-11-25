@@ -208,11 +208,8 @@ itself, because this endpoint doesn't send `flow`.
   "Chord header failed: 1 of 48 tasks failed". A container of more than 12 members shows the first
   3, the failed ones and a **+N more** block; select the block to expand it. A task block shows its
   state as an icon, its name, and a second line with the exception class of a failure and the
-  runtime (a task with no runtime yet says "running", "pending" or "received"). A member of a
-  container shows its icon, its name and its runtime. When every member of a container is the same
-  task, the container's title names the task ("Group of 5 send_email") and each member shows the
-  first 8 characters of its task ID instead of the name. A screen reader hears the state word as
-  well.
+  runtime (a running, pending or received task with no runtime yet says so). A screen reader
+  hears the state word as well.
 - **Inspector.** The task you chose (the first failure, or the root, when you haven't chosen):
   name, ID with a copy button, worker, queue, queue wait, runtime, exception, up to four keyword
   arguments, and **Open full detail**. For a group or chord: members, callback and duration.
@@ -401,8 +398,8 @@ because it reads the physical key.
 
 **Data:** the palette uses `GET /api/tasks/registry?refresh=false`,
 `GET /api/graphs?limit=50` (the first 50 flows) and `GET /api/workers?refresh=false`. The first
-and last are the same cached results that the sidebar badges use. The palette requests each one
-again only when its result is older than 5 seconds. A task ID is
+and last are the same cached results that the sidebar badges use; when the palette opens, it
+requests those two again only when they are older than 5 seconds. A task ID is
 looked up with `GET /api/tasks/{task_id}`.
 
 ### Limits
