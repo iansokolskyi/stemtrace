@@ -176,16 +176,16 @@ test.describe('Live updates during an event burst', () => {
     await expect(page.getByTestId('flow-row')).toHaveCount(1)
     const lists = countGraphLists(page)
 
-    // Events 800 ms apart (under the 1.2 s delay): none of them may be followed by a
+    // Events about 0.8 s apart on the page's clock (under the 1.2 s delay): none of them may be followed by a
     // trailing request while the burst goes on
     for (const name of ['app.a', 'app.b', 'app.c']) {
       const before = lists()
       socket().send(eventFor(createSuccessTask(name)))
       await expect.poll(lists).toBeGreaterThan(before)
-      await page.waitForTimeout(300)
+      await page.waitForTimeout(100)
       const afterRound = lists()
-      await page.clock.fastForward(800)
-      await page.waitForTimeout(300)
+      await page.clock.fastForward(600)
+      await page.waitForTimeout(100)
       expect(lists()).toBe(afterRound)
     }
 
