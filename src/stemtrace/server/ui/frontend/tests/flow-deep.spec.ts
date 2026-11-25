@@ -209,3 +209,28 @@ test.describe('flow code on deep flows', () => {
     }
   }
 })
+
+test.describe('a long chain inside one group member', () => {
+  test.setTimeout(120_000)
+
+  // `group(chain(a0 ... aN, m), ...)`: Celery marks only the last step `m` as a member, so the
+  // row walk climbs N steps. A walk that rescans the row for every step is quadratic: 20,000
+  // steps took 15 s with `includes` (measured here), 0.3 s with a set.
+  test('lays out a 20,000-step member chain in under 2 s', () => {
+    const steps = 20_000
+    const nodes = graphOf(
+      node({ task_id: 'g', node_type: 'GROUP', group_id: 'g', children: ['a0'] }),
+      ...Array.from({ length: steps }, (_, i) =>
+        timed(i, { task_id: `a${i}`, children: [i + 1 < steps ? `a${i + 1}` : 'm'] }),
+      ),
+      timed(steps, { task_id: 'm', group_id: 'g' }),
+    )
+
+    const started = performance.now()
+    const layout = layoutFlow(nodes, 'g', new Set())
+    const elapsedMs = performance.now() - started
+
+    expect(layout.tasks).toHaveLength(steps + 1)
+    expect(elapsedMs).toBeLessThan(2000)
+  })
+})

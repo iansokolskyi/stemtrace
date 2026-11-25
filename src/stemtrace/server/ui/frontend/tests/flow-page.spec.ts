@@ -600,6 +600,12 @@ test.describe('live updates keep the view', () => {
     return { graph: { root_id: 'g', nodes }, last: 'k7' }
   }
   const actions: Record<string, { wide?: boolean; act: (page: Page) => Promise<void> }> = {
+    // Fit with nothing zoomed changes no state but the reader's lock
+    'Fit alone': {
+      act: async (page) => {
+        await page.getByRole('button', { name: 'Fit' }).click()
+      },
+    },
     'Zoom in, then Fit': {
       act: async (page) => {
         await page.getByRole('button', { name: 'Zoom in' }).click()
@@ -646,6 +652,38 @@ test.describe('live updates keep the view', () => {
       expect(await scrollLeft(page)).toBe(0)
     })
   }
+
+  test('does not move the view after: Jump to failure alone', async ({ page }) => {
+    const graph = longChain(12, [11])
+    await setupMockApi(page, { useDefaults: false })
+    await serveFlow(page, graph)
+    await page.routeWebSocket(/\/ws$/, (ws) => ws.close())
+    await page.goto('/flows/c0')
+    await flowNodes(page).first().waitFor({ state: 'attached' })
+    expect(await scrollLeft(page)).toBe(0)
+
+    await page.getByRole('button', { name: 'Jump to failure' }).click()
+    // The jump scrolls the box to the failure; wait until it has come to rest
+    let scrolled = -1
+    await expect
+      .poll(
+        async () => {
+          const now = await scrollLeft(page)
+          const rested = now === scrolled && now > 0
+          scrolled = now
+          return rested
+        },
+        { intervals: [250] },
+      )
+      .toBe(true)
+
+    // A new task far to the right of the failure, out of the box
+    graph.nodes.c11.children.push('tail')
+    graph.nodes.tail = node({ task_id: 'tail', name: 'app.tail' })
+    await expect(flowNode(page, 'tail')).toHaveCount(1, { timeout: 15_000 })
+
+    expect(await scrollLeft(page)).toBe(scrolled)
+  })
 
   test('scrolls a new node into the box while nobody has moved the view', async ({ page }) => {
     const graph = longChain(3)
