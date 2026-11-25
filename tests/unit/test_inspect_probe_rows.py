@@ -98,6 +98,7 @@ class FakeInspect:
         if fleet.mode == "silent":
             return None
         answer = {name: tasks for name, (_, tasks) in self._snapshot.items()}
+        fleet.answered.append(frozenset(self._snapshot))
         fleet.attempt_done.release()
         return answer
 
@@ -126,6 +127,9 @@ class FakeFleet:
         self.first_attempt_gate.set()
         self.attempt_started = threading.Semaphore(0)
         self.attempt_done = threading.Semaphore(0)
+        # The nodes each ``registered()`` answer named, in order: a token from
+        # attempt_done says an attempt ended, not that it saw a given node.
+        self.answered: list[frozenset[str]] = []
 
     def block_first_attempt(self) -> None:
         self.first_attempt_gate.clear()
@@ -215,7 +219,15 @@ def test_p1_create_router_with_a_consumer_passed_in_probes_when_a_worker_joins(
         take(fleet.attempt_done)
         fleet.nodes = {NODE_B: (22, ["app.b"])}
         registry.register_worker(NODE_B, 22, [])
-        take(fleet.attempt_done)
+        # An attempt owed by the first empty answer (the confirm) can run before
+        # NODE_B is added and end here: wait for the one that answered with it.
+        while NODE_B not in fleet.answered[-1]:
+            take(fleet.attempt_done)
+        # attempt_done is released before the registry applies the answer.
+        deadline = time.monotonic() + BOUND_S
+        while not registry.get_registered_tasks(NODE_B, 22):
+            assert time.monotonic() < deadline, "the answer was not applied"
+            time.sleep(0.01)
 
     assert registry.get_registered_tasks(NODE_B, 22) == ["app.b"]
 

@@ -237,15 +237,15 @@ async def test_r3_two_hundred_waiters_hold_no_threads_and_other_routes_answer(
     waiters = [asyncio.create_task(server.get()) for _ in range(200)]
     await asyncio.sleep(0.5)
     threads_with_waiters = threading.active_count()
-    began = time.monotonic()
-    other = await server.get("/api/tasks")
-    elapsed = time.monotonic() - began
+    # Wall time says nothing here (a loaded host makes any route slow); what shows
+    # the loop isn't blocked is that the route answers, bounded only against a hang,
+    # while the gate is still shut and every waiter is still waiting.
+    other = await asyncio.wait_for(server.get("/api/tasks"), BOUND_S)
     pending = [w for w in waiters if not w.done()]
     broker.gate.set()
     responses = await asyncio.gather(first, *waiters)
 
     assert other.status_code == 200
-    assert elapsed < 0.2
     assert len(pending) == 200
     assert threads_with_waiters - threads_before <= 5
     assert {r.status_code for r in responses} == {200}
