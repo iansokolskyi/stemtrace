@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import (
@@ -466,3 +467,43 @@ def test_a_root_with_a_missing_child_lists_it_as_a_container() -> None:
         store._graph.nodes["root"].children.append("ghost")
     page = store.get_root_nodes_with_children(limit=10)
     assert page.containers == {"ghost"}
+
+
+def test_an_eviction_inside_the_gap_keeps_the_flows_old_times_until_the_next_compute() -> (
+    None
+):
+    """S4: the evicted newest node still counts, for up to the gap."""
+    clock = FakeClock()
+    store = _store(clock, max_nodes=20)
+    store.add_event(_ev("r", 25 * HOUR))
+    # The earliest start and the newest end: the oldest node, evicted first.
+    started = TaskEvent(
+        task_id="long",
+        name="t.task",
+        state=TaskState.STARTED,
+        timestamp=NOW - 60 * HOUR,
+        parent_id="r",
+    )
+    store.add_event(started)
+    store.add_event(_ev("long", timedelta(minutes=1), parent_id="r"))
+    store.add_event(_ev("mid", 10 * HOUR))
+    assert _roots(store, from_date=NOW - HOUR) == ["r"]
+    for i in range(18):
+        store.add_event(_ev(f"f{i}", 30 * HOUR - timedelta(minutes=i)))
+    assert store.get_node("long") is None
+    assert _roots(store, from_date=NOW - HOUR) == ["r"]
+    clock.advance(FLOW_TIMES_REFRESH_SECONDS)
+    assert _roots(store, from_date=NOW - HOUR) == []
+
+
+def test_the_task_name_filter_reads_live_nodes_inside_the_gap() -> None:
+    """S5: the filter is not part of the cache: a task added inside the gap matches."""
+    clock = FakeClock()
+    store = _store(clock)
+    store.add_event(_ev("a", 3 * HOUR, name="t.one"))
+    store.add_event(_ev("b", 2 * HOUR, name="t.one"))
+    assert store.get_root_nodes_with_children(task_names={"t.two"}).total == 0
+    store.add_event(_ev("a-kid", HOUR, parent_id="a", name="t.two"))
+    page = store.get_root_nodes_with_children(task_names={"t.two"})
+    assert [r.task_id for r in page.roots] == ["a"]
+    assert store.computes == 1
