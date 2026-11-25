@@ -9,4 +9,4 @@
   own duration), then dropped, so a nodename that never answers costs one inspect plus at most
   five more. A new nodename is inspected within one interval even while another waits for its
   owed time. With `create_router()` and no `StemtraceExtension`, the app's startup event
-  starts the first inspect. See [Workers and registry tabs](docs/features.md#workers-and-registry-tabs).
+  starts the first inspect. See [Workers and registry inspect](docs/features.md#workers-and-registry-inspect).

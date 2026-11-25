@@ -22,23 +22,20 @@ It records each task's lifecycle (sent, started, retried, finished) with its arg
 and exception, and sends these events through the Redis or RabbitMQ broker you already run. The
 dashboard runs as its own server or inside your FastAPI app. No database is needed.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/iansokolskyi/stemtrace/main/docs/screenshots/workflow.png" width="900" alt="Chord visualization in the workflow graph" />
-</p>
-
 ## What it helps you debug
 
 | Question | Where stemtrace answers it |
 |----------|----------------------------|
-| What called this task? | The flow graph links each task to the task that started it, and draws groups and chords as containers. |
+| What called this task? | The flow page links each task to the task that started it, and draws groups and chords as containers. |
 | Why did it retry, and which attempt worked? | The task page lists every attempt, with the reason for each retry and the exception and traceback of a failure. |
-| Was it slow to start, or slow to run? | The task page shows how long the task spent in each state. |
-| Why didn't my chord callback run? | The chord shows each header task's state. A chord whose body never ran (e.g. a header failed) shows no callback. |
-| Why is this task stuck in PENDING? | The registry flags tasks that no current worker has registered. |
+| Was it slow to start, or slow to run? | The task page shows how long the task spent in each state, and the flow page's timeline shows each task's queue wait and runtime. |
+| Why didn't my chord callback run? | The flow page shows each header task's state. When a header failed, was revoked or ignored, a box in place of the callback says why it didn't run. |
+| Why is this task stuck in PENDING? | The registry flags tasks that no current worker has registered, and the Anomalies page lists PENDING tasks that no online worker knows. |
 | What did this attempt print or log? | With `capture_output` turned on (opt-in), each attempt's output is on its task page. |
 
-The [features page](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md) shows
-each dashboard view with screenshots.
+[The dashboard](https://github.com/iansokolskyi/stemtrace/blob/main/docs/ui.md) describes each page:
+the Overview, Executions, Flows, Workers, Registry and Anomalies, plus the search palette that Ctrl+K
+opens.
 
 ## Is it ready for production?
 
@@ -164,7 +161,8 @@ for Docker, auth, reverse proxies and health checks.
 | Page | What's in it |
 |------|--------------|
 | [Adopting stemtrace](https://github.com/iansokolskyi/stemtrace/blob/main/docs/adopting.md) | What changes in workers, senders and the broker; running next to Flower |
-| [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md) | What the dashboard shows, with screenshots; workers and registry; summary API endpoints |
+| [The dashboard](https://github.com/iansokolskyi/stemtrace/blob/main/docs/ui.md) | Each page of the dashboard, the API endpoints behind it and its limits |
+| [Features](https://github.com/iansokolskyi/stemtrace/blob/main/docs/features.md) | What stemtrace records; workers and registry inspect; stuck, interrupted and unregistered tasks; summary API endpoints |
 | [Graphs](https://github.com/iansokolskyi/stemtrace/blob/main/docs/graphs.md) | How chains, groups, chords and `task.replace()` are drawn, and the limitations |
 | [Configuration](https://github.com/iansokolskyi/stemtrace/blob/main/docs/configuration.md) | Worker and server options, task output, RECEIVED events, task groups, environment variables |
 | [Deployment](https://github.com/iansokolskyi/stemtrace/blob/main/docs/deployment.md) | Standalone server, Docker, FastAPI embedding, reverse proxies, health endpoint |
