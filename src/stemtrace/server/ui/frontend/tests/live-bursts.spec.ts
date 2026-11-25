@@ -142,4 +142,83 @@ test.describe('Live updates during an event burst', () => {
     await page.clock.fastForward(1500)
     await expect(page.getByTestId('flow-row')).toHaveCount(2)
   })
+
+  /** The event for `task`, as the socket delivers it. */
+  const eventFor = (task: MockTask): string =>
+    JSON.stringify({
+      task_id: task.task_id,
+      name: task.name,
+      state: task.state,
+      timestamp: new Date().toISOString(),
+      parent_id: null,
+      root_id: task.root_id,
+      group_id: null,
+      trace_id: null,
+      retries: 0,
+    })
+
+  /** The number of GET /api/graphs list requests so far. */
+  function countGraphLists(page: Page): () => number {
+    let seen = 0
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/graphs') seen++
+    })
+    return () => seen
+  }
+
+  test('a burst gets one trailing flow list request, after its last round', async ({ page }) => {
+    await page.clock.install()
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    mockApi.addTask(createSuccessTask('app.first'))
+    const socket = await liveSocket(page)
+    await page.goto('/flows')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('flow-row')).toHaveCount(1)
+    const lists = countGraphLists(page)
+
+    // Events 800 ms apart (under the 1.2 s delay): none of them may be followed by a
+    // trailing request while the burst goes on
+    for (const name of ['app.a', 'app.b', 'app.c']) {
+      const before = lists()
+      socket().send(eventFor(createSuccessTask(name)))
+      await expect.poll(lists).toBeGreaterThan(before)
+      await page.waitForTimeout(300)
+      const afterRound = lists()
+      await page.clock.fastForward(800)
+      await page.waitForTimeout(300)
+      expect(lists()).toBe(afterRound)
+    }
+
+    // After the last event: exactly one trailing request, and no second one later
+    const afterBurst = lists()
+    await page.clock.fastForward(1500)
+    await expect.poll(lists).toBe(afterBurst + 1)
+    await page.clock.fastForward(5000)
+    await page.waitForTimeout(300)
+    expect(lists()).toBe(afterBurst + 1)
+  })
+
+  test('the palette flow list catches up after the last round', async ({ page }) => {
+    await page.clock.install()
+    const mockApi = await setupMockApi(page, { useDefaults: false })
+    mockApi.addTask(createSuccessTask('app.first'))
+    const socket = await liveSocket(page)
+    await page.goto('/executions')
+    await expect(page.getByText('Live', { exact: true })).toBeVisible()
+    await page.keyboard.press('Control+k')
+    const flows = page.getByRole('dialog', { name: 'Search' }).locator('[data-kind="flow"]')
+    await expect(flows).toHaveCount(1)
+
+    // The round is answered before the list has the new flow; no further event arrives
+    const added = createSuccessTask('app.added')
+    const round = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/graphs',
+    )
+    socket().send(eventFor(added))
+    await round
+    await expect(flows).toHaveCount(1)
+    mockApi.addTask(added)
+    await page.clock.fastForward(1500)
+    await expect(flows).toHaveCount(2)
+  })
 })

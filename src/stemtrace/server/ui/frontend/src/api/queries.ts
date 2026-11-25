@@ -213,18 +213,12 @@ export function useRegistryPage(within: string) {
 
 /** Every worker, refreshed from Celery; the Workers list and each Worker page share it. */
 export function useWorkers() {
-  const { isConnected } = useWebSocketContext()
-  const queryClient = useQueryClient()
-
   return useQuery<WorkerListResponse>({
     queryKey: ['workers'],
-    // The first load asks the workers (Celery inspect). While Live, later reads take what
-    // the server already knows (`refresh=false`): the socket carries no worker events, so
-    // a worker that goes offline shows only through this poll.
-    queryFn: () => {
-      const hasData = queryClient.getQueryData(['workers']) !== undefined
-      return fetchWorkers({ refresh: !(isConnected && hasData) })
-    },
+    // Every read asks the workers (the server paces and bounds the inspect). A read that only
+    // took what the server knows would miss a killed worker, and the socket carries no worker
+    // events, so the poll is the only refresh.
+    queryFn: () => fetchWorkers(),
     refetchInterval: 30000,
   })
 }

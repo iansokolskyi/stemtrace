@@ -270,15 +270,15 @@ offline host is highlighted. The heading says "2 of 3 online". A row opens the
 [worker page](#worker-page).
 
 **Data:** `GET /api/workers`. The server asks the workers with Celery inspect before it answers,
-so the list is current the first time the page loads.
+so the list is current when the page loads.
 
 ### Limits
 
-- The page reloads the list every 30 seconds. While the live connection (the WebSocket) is
-  connected, a reload reads what the server already knows (`GET /api/workers?refresh=false`)
-  and doesn't ask the workers, because the WebSocket carries no worker events. When the
-  connection isn't connected, each reload asks the workers. A worker that goes offline while
-  you watch changes on the page within about 30 seconds.
+- The page reloads the list every 30 seconds, whether or not the live connection (the WebSocket)
+  is connected, and each reload asks the workers. The WebSocket carries no worker events. Once the
+  server marks a worker offline, the page shows it within 30 seconds. When the server marks it
+  offline depends on how the worker stopped: see
+  [when a worker shows offline](features.md#workers-and-registry-inspect).
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
   [Workers and registry inspect](features.md#workers-and-registry-inspect).
@@ -289,8 +289,8 @@ so the list is current the first time the page loads.
 One host.
 
 **Data:** `GET /api/workers` (the page picks its host from the list, so it asks the workers like
-Workers does, and refreshes under the same rule: every 30 seconds, asking the workers only when the live
-connection (the WebSocket) isn't connected) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
+Workers does, and refreshes under the same rule: every 30 seconds, with or without the live connection (the
+WebSocket)) and `GET /api/tasks?hostname=<host>&limit=25&compact=1`.
 
 - **Header.** The hostname and status, a note with the last-seen time for an offline host, and
   **All executions on this worker**.

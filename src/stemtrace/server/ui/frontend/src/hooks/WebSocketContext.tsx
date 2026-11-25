@@ -60,9 +60,9 @@ const RECONNECT_MAX_DELAY = 60000
 // the next one (a request that never answers must not freeze live updates).
 const REFETCH_ROUND_MAX_MS = 15000
 
-// The server may serve the flow list up to 1 s stale, so a change in the last
-// second of a burst is not in the last round's answer. One more refetch of the
-// flow queries this long after the burst's last round picks it up.
+// The server serves the flow list up to FLOW_TIMES_REFRESH_SECONDS (1 s, PR #283) stale, so a
+// change in the last second of a burst is not in the last round's answer. One more refetch of
+// the flow lists this long after the burst's last round picks it up; keep it above that constant.
 const TRAILING_REFETCH_MS = 1200
 
 interface WebSocketProviderProps {
@@ -80,6 +80,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const pendingEventsRef = useRef<TaskEvent[]>([])
   const refetchingRef = useRef(false)
   const trailingTimerRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
 
   // Refetch what the events since the last round touched, one round at a time.
   // Invalidating on every event cancels the fetch already in flight (TanStack
@@ -120,11 +121,18 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       // Debounced: every round (and every event, below) restarts it, so a burst
       // gets one trailing refetch, 1.2 s after its last round.
       if (trailingTimerRef.current !== null) window.clearTimeout(trailingTimerRef.current)
-      trailingTimerRef.current = window.setTimeout(() => {
-        trailingTimerRef.current = null
-        void queryClient.invalidateQueries({ queryKey: ['graphs'] })
-        void queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
-      }, TRAILING_REFETCH_MS)
+      if (mountedRef.current) {
+        trailingTimerRef.current = window.setTimeout(() => {
+          trailingTimerRef.current = null
+          // The lists only: ['graphs', rootId] is an open flow's graph, which has no server cache
+          void queryClient.invalidateQueries({
+            queryKey: ['graphs'],
+            predicate: (query) =>
+              query.queryKey[1] === undefined || typeof query.queryKey[1] === 'object',
+          })
+          void queryClient.invalidateQueries({ queryKey: ['graphs-infinite'] })
+        }, TRAILING_REFETCH_MS)
+      }
     }
   }, [queryClient])
 
@@ -201,9 +209,11 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   }, [refetchForEvents])
 
   useEffect(() => {
+    mountedRef.current = true
     connect()
 
     return () => {
+      mountedRef.current = false
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
