@@ -40,6 +40,7 @@ from tests.unit.test_inspect_probe_rows import BOUND_S, FakeClock
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+STRICT_PROBE_LEAKS = True
 BROKER = "redis://broker:6379/0"
 # Past the stale window, so only the two-miss rule can keep the fleet online.
 FIRST_MISS_AT = T0 + 10 * MINUTE
