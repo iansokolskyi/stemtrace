@@ -442,7 +442,8 @@ with evidence** when all of these hold:
    after the previous counted one (back-to-back page loads) doesn't add a miss.
 3. The worker didn't answer either call. Any answer (`stats()` or ping) starts the count over.
    A `worker_ready` or task event stamped after a miss moves the worker's last sign of life past
-   it and drops that miss. A replayed event stamped earlier drops nothing.
+   it and drops that miss. A replayed event stamped earlier, a `worker_ready` included, drops
+   nothing and never moves the last sign of life back.
 4. Its last sign of life, a `worker_ready`, a task event or an `inspect` reply, is more than 3
    minutes old.
 
@@ -643,7 +644,8 @@ The task list also takes:
 
 - `state=FAILURE,RETRY`: any of several states, in any case. An unknown state is a `422` that
   lists the valid ones.
-- `within=1h` (also on `GET /api/graphs`), as above.
+- `within=1h` (also on `GET /api/graphs`), as above. On `GET /api/graphs` it, `from_date` and
+  `to_date` apply to the whole flow (see [Graph list time](graphs.md#graph-list-time)).
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.
 

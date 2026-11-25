@@ -141,6 +141,69 @@ def silent_listener() -> Iterator[_Listener]:
     listener.close()
 
 
+# A default-interval kombu connect to a refused port retries once and sleeps 2s:
+# sleep(1.0) twice, then the 0.0 remainder.
+_DEFAULT_RETRY_SLEEPS = [1.0, 1.0, 0.0]
+
+
+def _default_connect() -> None:
+    with contextlib.suppress(OSError):
+        Connection(_refused_url(), connect_timeout=1).connect()
+
+
+class _LeakedConnect:
+    """A thread that exists from construction and connects, with kombu's retries, on release."""
+
+    def __init__(self) -> None:
+        self._go = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="leaked-connect")
+        self._thread.start()
+
+    def _run(self) -> None:
+        self._go.wait(timeout=30)
+        _default_connect()
+
+    def release(self) -> None:
+        self._go.set()
+        self._thread.join(timeout=10)
+        assert not self._thread.is_alive()
+
+
+@pytest.fixture
+def leaked_connect() -> Iterator[_LeakedConnect]:
+    leaked = _LeakedConnect()
+    yield leaked
+    leaked.release()
+
+
+class _KombuSleeps:
+    """kombu ``retry_over_time`` sleeps, split by whether the thread predates the test."""
+
+    def __init__(self) -> None:
+        self._before = set(threading.enumerate())
+        self.own: list[float] = []
+        self.other_threads: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        # Own: the test thread and any thread started since, the publisher's helper
+        # threads included. Gap: a leaked object that starts a new thread during
+        # the test counts as own.
+        is_leaked = threading.current_thread() in self._before
+        (self.other_threads if is_leaked else self.own).append(seconds)
+
+
+@pytest.fixture
+def kombu_sleeps(monkeypatch: pytest.MonkeyPatch) -> _KombuSleeps:
+    """Record kombu's retry sleeps instead of sleeping.
+
+    ``kombu.utils.functional.sleep`` is read by every ``retry_over_time`` in the
+    process, so a thread another test left running would land in the list.
+    """
+    sleeps = _KombuSleeps()
+    monkeypatch.setattr(kombu_functional, "sleep", sleeps)
+    return sleeps
+
+
 def _declare_queue(prefix: str) -> None:
     """Declare the consumer queue for ``prefix`` straight on the real broker."""
     RabbitMQTransport(RABBITMQ_URL, prefix=prefix, ttl=60)._declare_exchange_and_queue()
@@ -173,7 +236,10 @@ class TestRabbitMQPublishFailFastNoBroker:
     """publish() returns quickly and stops connecting while the broker is down."""
 
     def test_publish_refused_port_fails_fast_then_skips(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        kombu_sleeps: _KombuSleeps,
     ) -> None:
         transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
         publisher = transport._publisher
@@ -186,9 +252,8 @@ class TestRabbitMQPublishFailFastNoBroker:
 
         monkeypatch.setattr(publisher, "publish", counting_publish)
         # kombu 5.6.2 (uv.lock) retry_over_time calls its module-level ``sleep`` between
-        # connect attempts; record those calls instead of timing the publish.
-        sleeps: list[float] = []
-        monkeypatch.setattr(kombu_functional, "sleep", sleeps.append)
+        # connect attempts; the kombu_sleeps fixture records those instead of timing
+        # the publish.
 
         # Fast failures drop only their own event until three in a row open
         # the breaker.
@@ -200,7 +265,7 @@ class TestRabbitMQPublishFailFastNoBroker:
         # A refused connect returns at once; kombu's own retry would sleep 2s.
         # Wall time can't tell that from a preempted process (the first publish
         # also imports kombu lazily: 635 ms under load), a sleep call can.
-        assert sleeps == []
+        assert kombu_sleeps.own == []
         # Skipped events never reach the connection. Counting the attempts
         # replaces a per-publish time bound, which any scheduler pause beat
         # (19-65ms against 10ms under CPU load, ~7us otherwise).
@@ -208,6 +273,37 @@ class TestRabbitMQPublishFailFastNoBroker:
         assert transport._publish_breaker.is_open is True
         # One line for the first failure, one when the breaker opens.
         assert len(_warnings(caplog)) == 2
+
+    def test_kombu_sleeps_fixture_files_other_threads_apart(
+        self, leaked_connect: _LeakedConnect, kombu_sleeps: _KombuSleeps
+    ) -> None:
+        transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
+        transport.publish(_event("t-0"))
+
+        leaked_connect.release()
+
+        assert kombu_sleeps.other_threads == _DEFAULT_RETRY_SLEEPS
+        assert kombu_sleeps.own == []
+
+    def test_kombu_sleeps_fixture_counts_threads_started_by_publish_as_own(
+        self, monkeypatch: pytest.MonkeyPatch, kombu_sleeps: _KombuSleeps
+    ) -> None:
+        transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
+        publisher = transport._publisher
+        real_connect = publisher._connect
+
+        def connect_in_helper_thread(proc: Any) -> None:
+            helper = threading.Thread(target=_default_connect)
+            helper.start()
+            helper.join(timeout=10)
+            real_connect(proc)
+
+        monkeypatch.setattr(publisher, "_connect", connect_in_helper_thread)
+
+        transport.publish(_event("t-0"))
+
+        assert kombu_sleeps.own == _DEFAULT_RETRY_SLEEPS
+        assert kombu_sleeps.other_threads == []
 
     def test_publish_silent_listener_bounded_by_connect_timeout(
         self,

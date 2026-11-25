@@ -18,6 +18,7 @@ from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.inspect_probe import InspectProbe
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
+STRICT_PROBE_LEAKS = True
 REAL_INSPECT_PROBE = True
 BROKER = "redis://broker:6379/0"
 NODE = "w1@host"
@@ -465,9 +466,19 @@ def test_reading8_registered_failure_after_empty_stats_skips_ping_stamps_and_bac
 
 
 def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
-    broker: Broker, clock: Clock
+    broker: Broker, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     probe = InspectProbe(clock=clock.now, wait=lambda _e, _s: False)
+    # The listener reads the pacing synchronously, so the order is observed, not
+    # raced; and no probe thread starts to race the test's own attempts.
+    ready_in_at_trigger: list[float] = []
+
+    def spying_trigger(nodename: str | None = None) -> None:
+        target = probe.target
+        assert target is not None
+        ready_in_at_trigger.append(target.ready_in())
+
+    monkeypatch.setattr(probe, "trigger", spying_trigger)
     registry = WorkerRegistry()
     app = FastAPI()
     app.include_router(
@@ -488,6 +499,5 @@ def test_i10_the_router_wires_the_clear_before_the_probe_trigger(
     assert shared.ready_in() == 60.0
 
     registry.register_worker("w9@host", 9, ["app.t"])
-    probe.stop()
 
-    assert shared.ready_in() == routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS
+    assert ready_in_at_trigger == [routes._INSPECT_REFRESH_MIN_INTERVAL_SECONDS]
