@@ -166,6 +166,9 @@ def _json_response(model: BaseModel) -> Response:
     """Encode ``model`` as the JSON body FastAPI would send, in the calling thread.
 
     Returning a model makes FastAPI validate and encode it on the event loop.
+    The JSON values are the same; on FastAPI before its ``dump_json`` path a float
+    with an exponent prints as ``1e-7``, not ``1e-07``. The response also bypasses
+    a host app's ``default_response_class``.
     """
     return Response(model.model_dump_json(by_alias=True), media_type="application/json")
 
@@ -1185,8 +1188,8 @@ def _add_task_routes(
                 description=(
                     "Slowest first by runtime or queue wait: the samples the "
                     "overview's p95 tiles use. Runs the tiles leave out (not "
-                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
-                    "come last. Default: newest update first."
+                    "finished, IGNORED, celery.* tasks, and REVOKED or REJECTED "
+                    "for runtime) come last. Default: newest update first."
                 )
             ),
         ] = None,

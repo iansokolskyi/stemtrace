@@ -778,6 +778,23 @@ def test_record_message_keeps_only_the_first_line() -> None:
     assert _failed_message(failure) == "ValueError: first"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ValueError: \nreal cause", "real cause"),
+        ("\nreal cause", "real cause"),
+        ("ValueError:\n\n  real cause\nmore", "real cause"),
+        ("ValueError: ", None),
+        ("\n\n", None),
+    ],
+)
+def test_record_message_skips_blank_lines_and_a_bare_class_prefix(
+    text: str, expected: str | None
+) -> None:
+    failure = _event("t", TaskState.FAILURE, 5, exception=text)
+    assert _failed_message(failure) == expected
+
+
 def test_record_message_of_ten_kilobytes_is_cut_to_the_cap() -> None:
     long = "E: " + "x" * 10_000 + "\nsecond line"
     message = _failed_message(_event("t", TaskState.FAILURE, 5, exception=long))

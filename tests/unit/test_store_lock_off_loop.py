@@ -19,9 +19,11 @@ import httpx
 import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
 
+from stemtrace.core.anomalies import DEFAULT_SETTINGS
 from stemtrace.core.events import TaskEvent, TaskState
-from stemtrace.server.api import params
+from stemtrace.server.api import anomaly_routes, params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
@@ -67,15 +69,10 @@ QUERIES: dict[str, list[str]] = {
     "/api/anomalies": [""],
 }
 FILL = {"task_id": "root", "root_id": "root", "hostname": "w1@host"}
-# Routes that answer 404 on the seeded store (no worker with that name).
-ALLOWED_404 = {"/api/workers/{hostname}"}
+# Routes that answer 404 on the seeded store (none now: it has a live worker).
+ALLOWED_404: set[str] = set()
 # Routes that never touch the store, so they have nothing to record.
-NO_STORE_READ = {
-    "/api/health",
-    "/api/health/live",
-    "/api/workers",
-    "/api/workers/{hostname}",
-}
+NO_STORE_READ = {"/api/health", "/api/health/live"}
 
 
 class RecordingLock:
@@ -130,8 +127,15 @@ def _seeded() -> GraphStore:
     return store
 
 
+def _live_worker() -> WorkerRegistry:
+    """A registry with ``w1@host`` online: its ``active`` reads the run records."""
+    registry = WorkerRegistry()
+    registry.register_worker("w1@host", 1, [], event_timestamp=NOW)
+    return registry
+
+
 def _router(store: GraphStore) -> APIRouter:
-    return create_api_router(store, worker_registry=WorkerRegistry())
+    return create_api_router(store, worker_registry=_live_worker())
 
 
 def _app(store: GraphStore) -> FastAPI:
@@ -175,6 +179,25 @@ async def test_route_takes_the_store_lock_off_the_loop(template: str) -> None:
         assert recorder.acquirers, f"{template} never took the lock: vacuous check"
     on_loop = [t for t in recorder.acquirers if t == threading.get_ident()]
     assert on_loop == [], f"{template}: {len(on_loop)} store lock acquires on the loop"
+
+
+async def test_anomaly_evaluation_takes_one_thread_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hops: list[str] = []
+
+    async def counting(func: Any, *args: Any, **kwargs: Any) -> Any:
+        hops.append(func.__name__)
+        return await run_in_threadpool(func, *args, **kwargs)
+
+    monkeypatch.setattr(anomaly_routes, "run_in_threadpool", counting)
+    evaluator = anomaly_routes.AnomalyEvaluator(
+        _seeded(), None, DEFAULT_SETTINGS, _live_worker()
+    )
+
+    await evaluator.evaluate()
+
+    assert hops == ["_classify"]
 
 
 async def test_loop_keeps_ticking_while_a_thread_holds_the_store_lock() -> None:
@@ -225,12 +248,20 @@ async def test_loop_keeps_ticking_while_a_thread_holds_the_store_lock() -> None:
     assert worst < MAX_LOOP_GAP_S, f"loop gap {worst:.3f}s during a {HOLD_S}s hold"
 
 
+def canonical(body: Any) -> bytes:
+    return json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+
+
 async def test_responses_match_the_bodies_recorded_before_the_change() -> None:
     app = _app(_seeded())
-    got: dict[str, Any] = {}
+    golden = json.loads(GOLDEN.read_text())
+    assert set(golden) == set(GOLDEN_URLS)
     for url in GOLDEN_URLS:
-        body = (await _get(app, url)).json()
+        body = json.loads((await _get(app, url)).content)
         if isinstance(body, dict):
-            body.pop("version", None)
-        got[url] = body
-    assert got == json.loads(GOLDEN.read_text())
+            body.pop("version", None)  # moves with each release
+        # The file is stored key-sorted, so compare the canonical text: unlike
+        # ``==`` it tells 10000 from 10000.0.
+        assert canonical(body) == canonical(golden[url]), url

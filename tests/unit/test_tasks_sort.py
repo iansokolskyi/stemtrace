@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +14,11 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from stemtrace.server.stats import RunRecord
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -351,3 +357,60 @@ def test_sort_page_one_changes_when_a_slower_run_arrives(
 
     assert before == ["t4", "t3", "t2"]
     assert after == ["newcomer", "t4", "t3"]
+
+
+def _mutate_once(action: Callable[[], None]) -> Callable[[RunRecord], int]:
+    """A ``sort_key`` that runs ``action`` on its first call, outside the store lock."""
+    calls: list[int] = []
+
+    def key(record: RunRecord) -> int:
+        if not calls:
+            action()
+        calls.append(1)
+        return 1
+
+    return key
+
+
+def test_sorted_page_drops_a_row_that_left_the_state_filter_meanwhile() -> None:
+    store = GraphStore()
+    for i, tid in enumerate(["a", "b", "c"]):
+        at = NOW + timedelta(seconds=i)
+        store.add_event(_ev(tid, TaskState.STARTED, at, "app.work"))
+    finish = _mutate_once(
+        lambda: store.add_event(
+            _ev("b", TaskState.SUCCESS, NOW + timedelta(minutes=1), "app.work")
+        )
+    )
+
+    page, total = store.get_nodes(state=TaskState.STARTED, sort_key=finish)
+
+    assert sorted(n.task_id for n in page) == ["a", "c"]
+    assert total == 3
+
+
+def test_sorted_page_drops_a_row_evicted_meanwhile() -> None:
+    store = GraphStore(max_nodes=10)
+    for i in range(9):
+        at = NOW + timedelta(seconds=i)
+        store.add_event(_ev(f"old{i}", TaskState.STARTED, at, "app.work"))
+
+    def flood() -> None:
+        for i in range(4):
+            at = NOW + timedelta(minutes=1, seconds=i)
+            store.add_event(_ev(f"new{i}", TaskState.STARTED, at, "app.work"))
+
+    page, _ = store.get_nodes(sort_key=_mutate_once(flood))
+
+    live = {n.task_id for n in store.get_nodes(limit=500)[0]}
+    assert len(live) < 13
+    assert {n.task_id for n in page} <= live
+    assert len(page) == len(live & {f"old{i}" for i in range(9)})
+
+
+@pytest.mark.parametrize(("limit", "status"), [(500, 200), (501, 422)])
+def test_task_list_limit_is_capped_at_500(
+    limit: int, status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(GraphStore(), monkeypatch)
+    assert client.get(f"/api/tasks?limit={limit}").status_code == status

@@ -32,7 +32,7 @@ pytestmark = pytest.mark.integration
 
 ATTEMPT_BOUND_S = 3.5
 REQUEST_BOUND_S = 4.0
-BACKOFF_WINDOW_BOUND_S = 0.2
+BACKOFF_WINDOW_BOUND_S = 1.5
 
 
 def _refused_port() -> int:
@@ -71,8 +71,16 @@ def test_i1_i2_one_inspect_attempt_ends_within_the_bound(broker_url: str) -> Non
 
 
 def test_i1_i2_requests_return_within_the_bound_and_fast_inside_the_backoff(
-    broker_url: str,
+    broker_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    attempts: list[str] = []
+    real_get_inspector = routes._get_inspector
+
+    def counting(url: str, **kwargs: Any) -> Any:
+        attempts.append(url)
+        return real_get_inspector(url, **kwargs)
+
+    monkeypatch.setattr(routes, "_get_inspector", counting)
     app = FastAPI()
     app.include_router(
         create_api_router(
@@ -84,6 +92,7 @@ def test_i1_i2_requests_return_within_the_bound_and_fast_inside_the_backoff(
     started = time.monotonic()
     first = client.get("/api/anomalies")
     first_elapsed = time.monotonic() - started
+    attempts_after_first = len(attempts)
     durations = []
     for path in ("/api/anomalies", "/api/workers", "/api/tasks/registry"):
         started = time.monotonic()
@@ -93,6 +102,11 @@ def test_i1_i2_requests_return_within_the_bound_and_fast_inside_the_backoff(
 
     assert first.status_code == 200
     assert first_elapsed < REQUEST_BOUND_S
+    # Inside the backoff window no request attempts another inspect. The time
+    # bound only has to stay under an attempt at a blackholed broker (about 3 s):
+    # a refused port fails instantly, so the count is what shows a new attempt.
+    assert attempts_after_first >= 1
+    assert len(attempts) == attempts_after_first
     assert max(durations) < BACKOFF_WINDOW_BOUND_S
 
 
