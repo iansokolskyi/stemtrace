@@ -6,8 +6,12 @@ export type PanelKind = (typeof PANEL_KINDS)[number]
 /** The state chips of a runs entry, in the order the panel lists them. */
 export const STATE_CHIPS = ['FAILURE', 'RETRY', 'STARTED', 'PENDING', 'SUCCESS'] as const
 
-/** The most "Show more" clicks an entry keeps in the URL; a larger value is the default. */
-export const MAX_MORE = 50
+/**
+ * The most "Show more" clicks an entry keeps in the URL; a larger value is the default. The list
+ * asks for `initial + 40 x more` rows and the API takes at most 500, so 13 reaches it from any
+ * `initial` of 10 or more.
+ */
+export const MAX_MORE = 13
 
 /**
  * One level of the panel's stack: what it shows (`kind`) and which one (`id`, any text), and the
@@ -50,7 +54,7 @@ function parseView(keys: readonly string[]): Pick<PanelEntry, 'states' | 'more'>
     if (name === 's') {
       const states = parseChips(value)
       if (states.length) view.states = states
-    } else if (name === 'm' && /^[1-9]\d{0,2}$/.test(value) && Number(value) <= MAX_MORE) {
+    } else if (name === 'm' && /^[1-9]\d?$/.test(value) && Number(value) <= MAX_MORE) {
       view.more = Number(value)
     }
   }
@@ -68,7 +72,8 @@ export function parsePanel(value: string | undefined): PanelEntry[] {
   if (!value) return []
   const entries: PanelEntry[] = []
   for (const part of value.split('/')) {
-    const [head, ...viewKeys] = part.split('@')
+    // Only `@s=` and `@m=` start a view key; any other `@` (a hand-typed link) stays in the id
+    const [head, ...viewKeys] = part.split(/@(?=[sm]=)/)
     // Only the first `:` separates: an encoded id holds none, but a stray one is kept in the id
     const cut = head.indexOf(':')
     if (cut < 0) continue

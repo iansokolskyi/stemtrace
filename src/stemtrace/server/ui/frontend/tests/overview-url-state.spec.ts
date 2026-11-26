@@ -57,14 +57,24 @@ test.describe('panel entry view: parse and format', () => {
     expect(parsePanel('runs:a@s=')).toStrictEqual([{ kind: 'runs', id: 'a' }])
   })
 
-  for (const bad of ['x', '', '0', '-1', '1.5', '51', '1e1', '99999999999999999999', ' 2']) {
+  for (const bad of ['x', '', '0', '-1', '1.5', '14', '100', '1e1', '99999999999999999999', ' 2']) {
     test(`a Show more count of ${JSON.stringify(bad)} is the default`, () => {
       expect(parsePanel(`runs:a@m=${bad}`)).toStrictEqual([{ kind: 'runs', id: 'a' }])
     })
   }
 
-  test('the largest Show more count is 50', () => {
-    expect(parsePanel('runs:a@m=50')).toStrictEqual([{ kind: 'runs', id: 'a', more: 50 }])
+  test('an at sign that does not start a view key stays in the id', () => {
+    expect(parsePanel('worker:celery@host1')).toStrictEqual([
+      { kind: 'worker', id: 'celery@host1' },
+    ])
+    expect(parsePanel('worker:celery@host1@m=2/runs:a@s2')).toStrictEqual([
+      { kind: 'worker', id: 'celery@host1', more: 2 },
+      { kind: 'runs', id: 'a@s2' },
+    ])
+  })
+
+  test('the largest Show more count is 13', () => {
+    expect(parsePanel('runs:a@m=13')).toStrictEqual([{ kind: 'runs', id: 'a', more: 13 }])
   })
 
   test('an unknown or repeated view key is ignored, the first of a key wins', () => {
@@ -337,6 +347,88 @@ test.describe('Overview view state in the URL', () => {
       await expect(page.getByTestId('chart-bar')).toHaveCount(12)
     })
   }
+
+  const barPanel = (scenario: OverviewScenario, view: string): string => {
+    const id = encodeScope({
+      kind: 'bar',
+      from: new Date(bucketStart(scenario, 8)).toISOString(),
+      to: new Date(bucketStart(scenario, 9)).toISOString(),
+    })
+    return `/?panel=${encodeURIComponent(`${formatPanel([{ kind: 'runs', id }])}${view}`)}`
+  }
+
+  const addMany: Setup = (api, scenario) => {
+    for (let i = 0; i < 540; i++) {
+      const task = createFailedTask('tests.flow.step_2', 'ValueError: x', 'Traceback')
+      task.last_updated = new Date(bucketStart(scenario, 8) + 60_000 + i * 100).toISOString()
+      api.addTask(task)
+    }
+  }
+
+  for (const more of [12, 13]) {
+    test(`Show more at @m=${more} asks for at most 500 runs and says it stops there`, async ({
+      page,
+    }) => {
+      const rejected: string[] = []
+      page.on('response', (r) => {
+        if (/\/api\/tasks\?/.test(r.url()) && r.status() === 422) rejected.push(r.url())
+      })
+      const { scenario } = await openOverview(page, '/', addMany)
+      await page.goto(barPanel(scenario, `@m=${more}`))
+      await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(500)
+      await expect(panelOf(page).getByText(/Showing the first 500 of 5\d\d runs/)).toBeVisible()
+      await expect(showMore(page)).toHaveCount(0)
+      expect(rejected).toEqual([])
+    })
+  }
+
+  test('opening the entry that is already open keeps its chips and adds no history entry', async ({
+    page,
+  }) => {
+    await openOverview(page)
+    await clickBar(page, 8)
+    await chip(page, 'Failure').click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    const before = await historyLength(page)
+    const url = page.url()
+    await panelOf(page).getByRole('button', { name: 'Expand' }).click()
+    await clickBar(page, 8)
+    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+    expect(page.url()).toBe(url)
+    expect(await historyLength(page)).toBe(before)
+  })
+
+  test('a tile that fixes a state ignores the chips in the link', async ({ page }) => {
+    const urls: string[] = []
+    page.on('request', (r) => {
+      if (/\/api\/tasks\?/.test(r.url())) urls.push(r.url())
+    })
+    await openOverview(page)
+    const id = encodeScope({ kind: 'kpi', state: 'FAILURE', within: '6h', label: 'Failures' })
+    await page.goto(
+      `/?panel=${encodeURIComponent(`${formatPanel([{ kind: 'runs', id }])}@s=SUCCESS`)}`,
+    )
+    await expect(panelOf(page).getByTestId('panel-run').first()).toBeVisible()
+    await expect(panelOf(page).getByRole('group', { name: 'Filter by state' })).toHaveCount(0)
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.filter((u) => u.includes('SUCCESS'))).toEqual([])
+  })
+
+  test('two chips picked in one tick are both kept', async ({ page }) => {
+    await openOverview(page)
+    await clickBar(page, 8)
+    await expect(chip(page, 'Failure')).toBeVisible()
+    await page.evaluate(() => {
+      const group = document.querySelector('[aria-label="Filter by state"]')
+      const press = (name: string) =>
+        [...(group?.querySelectorAll('button') ?? [])].find((b) => b.textContent === name)?.click()
+      press('Failure')
+      press('Retry')
+    })
+    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+    await expect(chip(page, 'Retry')).toHaveAttribute('aria-pressed', 'true')
+    expect(search(page).get('panel')).toMatch(/@s=FAILURE,RETRY$/)
+  })
 
   test('invalid chips and Show more fall back to the defaults', async ({ page }) => {
     const { scenario } = await openOverview(page)

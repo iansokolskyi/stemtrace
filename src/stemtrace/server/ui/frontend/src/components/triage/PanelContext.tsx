@@ -16,8 +16,8 @@ export interface PanelApi {
   /** Keep the first `length` entries (a crumb). */
   popTo: (length: number) => void
   close: () => void
-  /** Set the view (chips, "Show more") of the entry at `index`, in place in the history. */
-  refine: (index: number, view: EntryView) => void
+  /** Change the view (chips, "Show more") of the entry at `index`, in place in the history. `update` gets the view as the URL has it now, so two quick changes both land. */
+  refine: (index: number, update: (now: EntryView) => EntryView) => void
 }
 
 /** The key an opener carries in `data-tk`, so the panel can mark it and return focus to it. */
@@ -50,11 +50,11 @@ export type EntryView = Pick<PanelEntry, 'states' | 'more'>
  * `panel` URL value, so a reload, a shared link, Esc and Back restore it. A change replaces the
  * history entry: the chips and "Show more" refine a view, they are not steps to go back through.
  */
-export function useEntryView(): [EntryView, (view: EntryView) => void] {
+export function useEntryView(): [EntryView, (update: (now: EntryView) => EntryView) => void] {
   const panel = usePanel()
   const index = useContext(EntryIndex)
   const entry = panel.stack[index]
-  return [{ states: entry?.states, more: entry?.more }, (view) => panel.refine(index, view)]
+  return [{ states: entry?.states, more: entry?.more }, (update) => panel.refine(index, update)]
 }
 
 const PanelContext = createContext<PanelApi | null>(null)
@@ -71,7 +71,11 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
     return {
       stack,
       activeKey: stack[0] && openerKey(stack[0]),
-      open: (entry) => go([entry]),
+      open: (entry) => {
+        // Opening what is already open keeps its view and adds no history entry
+        if (stack.length === 1 && openerKey(stack[0]) === openerKey(entry)) return
+        go([entry])
+      },
       push: (entry) => {
         const top = stack[stack.length - 1]
         if (top && openerKey(top) === openerKey(entry)) return
@@ -80,14 +84,22 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
       pop: () => go(stack.slice(0, -1)),
       popTo: (length) => go(stack.slice(0, length)),
       close: () => go([]),
-      refine: (index, view) => {
-        if (!stack[index]) return
-        const { states: _s, more: _m, ...rest } = stack[index]
-        go(
-          stack.map((entry, i) => (i === index ? { ...rest, ...view } : entry)),
-          true,
-        )
-      },
+      refine: (index, update) =>
+        navigate({
+          to: '/',
+          // The latest URL, not the render's stack: a second change before a render sees the first
+          search: (prev) => {
+            const now = parsePanel(prev.panel)
+            if (!now[index]) return prev
+            const { states: _s, more: _m, ...rest } = now[index]
+            const next = {
+              ...rest,
+              ...update({ states: now[index].states, more: now[index].more }),
+            }
+            return { ...prev, panel: formatPanel(now.map((e, i) => (i === index ? next : e))) }
+          },
+          replace: true,
+        }),
     }
   }, [navigate, stack])
 

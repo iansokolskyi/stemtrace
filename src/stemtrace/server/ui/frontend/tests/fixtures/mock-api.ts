@@ -608,6 +608,15 @@ export async function setupMockApi(
     const tag = url.searchParams.get('tag')
     const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10)
     const offset = Number.parseInt(url.searchParams.get('offset') || '0', 10)
+    // The real API validates `limit` as 1..500 (routes.py list_tasks) and answers 422 outside it
+    if (!(limit >= 1 && limit <= 500)) {
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'limit must be between 1 and 500' }),
+      })
+      return
+    }
     // compact=1 leaves out each task's events (`events: null`), as the real API does
     const compact = new Set(['1', 'true']).has(url.searchParams.get('compact') ?? '')
 

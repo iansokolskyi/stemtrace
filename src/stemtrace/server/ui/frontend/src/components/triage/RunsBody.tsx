@@ -20,8 +20,11 @@ interface RunsBodyProps {
 export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
   const scope = decodeScope(id)
   const [view, setView] = useEntryView()
-  const chosen = view.states ?? []
-  const setChosen = (states: string[]) => setView({ ...view, states })
+  // A tile fixes its state: the URL's chips do not apply to it
+  const scopeState = scope?.state
+  const chosen = scopeState ? [] : (view.states ?? [])
+  const setChosen = (next: (now: string[]) => string[]) =>
+    setView((now) => ({ ...now, states: next(now.states ?? []) }))
   if (!scope)
     return <p className="m-0 pt-4 text-xs text-muted">This link does not name any runs.</p>
 
@@ -78,7 +81,7 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
             aria-label="Filter by state"
             className="m-0 mb-2 flex min-w-0 flex-wrap gap-1.5 border-0 p-0"
           >
-            <Chip pressed={chosen.length === 0} onClick={() => setChosen([])}>
+            <Chip pressed={chosen.length === 0} onClick={() => setChosen(() => [])}>
               All
             </Chip>
             {STATE_CHIPS.map((state) => (
@@ -86,8 +89,8 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
                 key={state}
                 pressed={chosen.includes(state)}
                 onClick={() =>
-                  setChosen(
-                    chosen.includes(state) ? chosen.filter((s) => s !== state) : [...chosen, state],
+                  setChosen((now) =>
+                    now.includes(state) ? now.filter((s) => s !== state) : [...now, state],
                   )
                 }
               >
