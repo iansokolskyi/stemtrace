@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+from collections.abc import Coroutine
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -228,6 +230,19 @@ async def _wait_for_send(ws: MagicMock) -> None:
     await asyncio.wait_for(_until(), _RECEIVE_TIMEOUT_S)
 
 
+def _run_in_new_loop(coro: Coroutine[Any, Any, None]) -> None:
+    """Run ``coro`` on a fresh loop without asyncio.run().
+
+    asyncio.run() resets the thread's current loop to None, which leaks unclosed
+    loops into later tests under the lowest pinned pytest-asyncio.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _broadcast_logs(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [r for r in caplog.records if r.name == "stemtrace.server.websocket"]
 
@@ -274,12 +289,12 @@ class TestSecondLifespan:
                 manager.disconnect(ws)
 
         first, second = _fake_ws(), _fake_ws()
-        asyncio.run(lifespan(first))
+        _run_in_new_loop(lifespan(first))
         log = _BoundedLog()
         ws_logger = logging.getLogger("stemtrace.server.websocket")
         ws_logger.addHandler(log)
         try:
-            asyncio.run(lifespan(second))
+            _run_in_new_loop(lifespan(second))
         except asyncio.TimeoutError:
             pass
         finally:
@@ -307,12 +322,12 @@ class TestSecondLifespan:
                 ext.ws_manager.disconnect(ws)
 
         first, second = _fake_ws(), _fake_ws()
-        asyncio.run(lifespan(first, "t1"))
+        _run_in_new_loop(lifespan(first, "t1"))
         log = _BoundedLog()
         ws_logger = logging.getLogger("stemtrace.server.websocket")
         ws_logger.addHandler(log)
         try:
-            asyncio.run(lifespan(second, "t2"))
+            _run_in_new_loop(lifespan(second, "t2"))
         except asyncio.TimeoutError:
             pass
         finally:
