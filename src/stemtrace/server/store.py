@@ -283,7 +283,7 @@ class WorkerTimeline:
 
     def record(self, event: WorkerEvent) -> None:
         """Add a worker event (any type) to its nodename's timeline."""
-        # A naive timestamp (older worker) can't be compared with aware ones.
+        # A naive timestamp (a non-stemtrace producer) can't be compared with aware ones.
         entry = WorkerTimelineEntry(
             ensure_tz_aware(event.timestamp), event.event_type, event.pid
         )
@@ -434,7 +434,7 @@ class WorkerRegistry:
     ) -> None:
         """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
-            # A worker_ready is a new process (D4d reading 7): it can owe a confirm again.
+            # A registration (a worker_ready, or a stats reply naming a pid) can owe a confirm again (D4d reading 7).
             self._confirm_spent.discard(hostname)
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
@@ -451,7 +451,7 @@ class WorkerRegistry:
                 self._workers[worker_id].pid = pid
                 # Never back: older counted misses would count again (D4d reading 2).
                 self._workers[worker_id].last_seen = max(
-                    self._workers[worker_id].last_seen, ensure_tz_aware(timestamp)
+                    self._workers[worker_id].last_seen, timestamp
                 )
                 self._workers[worker_id].status = WorkerStatus.ONLINE
                 self._workers[worker_id].shutdown_reported = False
