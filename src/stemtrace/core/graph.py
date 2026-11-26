@@ -531,6 +531,7 @@ class _GroupTally:
     """
 
     __slots__ = (
+        "chained",
         "direct_parents",
         "firsts",
         "headers",
@@ -538,6 +539,7 @@ class _GroupTally:
         "members",
         "parent_votes",
         "read_parent",
+        "reporters",
         "rootish",
         "stamps",
         "state_counts",
@@ -561,6 +563,11 @@ class _GroupTally:
         self.direct_parents: Counter[str] = Counter()
         self.rootish = 0
         self.unparented: set[str] = set()
+        # What a flip of ``chains_allowed`` can change: the members whose
+        # chain isn't empty, and each reported parent's members (by the
+        # parent the node reports, which ``status`` can lag behind).
+        self.chained: dict[str, None] = {}
+        self.reporters: dict[str, dict[str, None]] = {}
         # The ``chord_callback_id`` and ``chord_body_first_id`` values the
         # headers' events carry, each with the headers that carried it. Kept
         # here, not only on the CHORD node: removing the node keeps the
@@ -1656,6 +1663,8 @@ class TaskGraph(BaseModel):
         changed = False
         if node.task_id not in tally.members:
             tally.members[node.task_id] = None
+            if node.reported_parent_id is not None:
+                _add_to(tally.reporters, node.reported_parent_id, node.task_id)
             changed = True
             if not was_chord:
                 self._count_member(tally, node)
@@ -1756,11 +1765,24 @@ class TaskGraph(BaseModel):
         was_allowed = tally.chains_allowed()
         tally.set_status(node.task_id, status)
         if tally.chains_allowed() != was_allowed:
-            self._rechain_group(tally)
+            self._rechain_on_flip(tally)
 
-    def _rechain_group(self, tally: _GroupTally) -> None:
-        """Recompute every counted member's chain (the evidence changed)."""
-        for member_id in tally.counted():
+    def _rechain_on_flip(self, tally: _GroupTally) -> None:
+        """Recompute the chains ``chains_allowed`` just gated.
+
+        Blocked now: only members with a chain lose it. Allowed now: only a
+        member that is its parent's single reporter can gain one. Every other
+        member's chain stays empty and its vote its own parent.
+        """
+        if tally.chains_allowed():
+            members = [
+                child
+                for parent, reporters in tally.reporters.items()
+                if (child := self._single_child(parent)) in reporters
+            ]
+        else:
+            members = list(tally.chained)
+        for member_id in members:
             self._rechain(self.nodes[member_id])
 
     def _member_vote(self, node: TaskNode) -> str | None:
@@ -1842,6 +1864,8 @@ class TaskGraph(BaseModel):
         if parent_id is None:
             return
         _add_to(self._reported_children, parent_id, node.task_id)
+        if (tally := self._group_of_member(node)) is not None:
+            _add_to(tally.reporters, parent_id, node.task_id)
         self._on_children_changed(parent_id)
         # A chain whose first task this is can now extend upwards.
         self._extend_chain_through(node.task_id)
@@ -1849,8 +1873,15 @@ class TaskGraph(BaseModel):
     def _forget_reported_child(self, task_id: str, parent_id: str) -> None:
         """A task no longer reports ``parent_id`` (an earlier event said else)."""
         _drop_from(self._reported_children, parent_id, task_id)
+        if (tally := self._group_of_member(self.nodes[task_id])) is not None:
+            _drop_from(tally.reporters, parent_id, task_id)
         self._on_children_changed(parent_id)
         self._rechain_owner_of(task_id)
+
+    def _group_of_member(self, node: TaskNode) -> _GroupTally | None:
+        """The tally whose members include this task, if any."""
+        tally = self._groups.get(node.group_id) if node.group_id else None
+        return tally if tally is not None and node.task_id in tally.members else None
 
     def _single_child(self, parent_id: str) -> str | None:
         """The only task that reported ``parent_id`` as parent, if just one did."""
@@ -1960,6 +1991,7 @@ class TaskGraph(BaseModel):
             return []
         if not chain:
             chain = self._chain_of[member_id] = []
+            self._note_chained(member_id, chained=True)
         for link_id in new_links:
             self._link_owner[link_id] = member_id
             self._link_pos[link_id] = len(chain)
@@ -1984,7 +2016,16 @@ class TaskGraph(BaseModel):
             self._chain_of[member_id] = chain
         else:
             self._chain_of.pop(member_id, None)
+        self._note_chained(member_id, chained=bool(chain))
         return [*reversed(chain), *previous, member_id]
+
+    def _note_chained(self, member_id: str, *, chained: bool) -> None:
+        """Keep the member's group tally listing exactly the chained members."""
+        tally = self._groups[self.nodes[member_id].group_id or ""]  # a counted member
+        if chained:
+            tally.chained[member_id] = None
+        else:
+            tally.chained.pop(member_id, None)
 
     def _refresh_vote(self, member: TaskNode, tally: _GroupTally | None) -> bool:
         """Update a counted member's vote (its chain's first task's parent).
@@ -2002,7 +2043,10 @@ class TaskGraph(BaseModel):
 
     def _drop_chain(self, member_id: str) -> None:
         """Release a task's chain links (it stopped being a counted member)."""
-        for link_id in self._chain_of.pop(member_id, []):
+        chain = self._chain_of.pop(member_id, [])
+        if chain:
+            self._note_chained(member_id, chained=False)
+        for link_id in chain:
             del self._link_owner[link_id]
             del self._link_pos[link_id]
             self._place(self.nodes[link_id])
@@ -2047,6 +2091,8 @@ class TaskGraph(BaseModel):
         was_allowed = tally.chains_allowed()
         tally.clear_status(node.task_id)
         del tally.members[node.task_id]
+        if node.reported_parent_id is not None:
+            _drop_from(tally.reporters, node.reported_parent_id, node.task_id)
         was_header = node.task_id in tally.headers
         tally.headers.pop(node.task_id, None)
         tally.marked.pop(node.task_id, None)
@@ -2055,7 +2101,7 @@ class TaskGraph(BaseModel):
                 _drop_from(evidence, value, node.task_id)
         peers = self._refresh_stamp_index(group_id, tally)
         if tally.chains_allowed() != was_allowed:
-            self._rechain_group(tally)
+            self._rechain_on_flip(tally)
         group_node = self.nodes.get(_group_node_id(group_id))
         if was_header and not tally.headers:
             self._stop_being_chord(group_id, tally, group_node)
