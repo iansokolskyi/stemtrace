@@ -43,18 +43,18 @@ TASK_SORT_PATHS = [
     "/api/tasks?sort=runtime&limit=100",
     "/api/tasks?sort=queue_wait&limit=100&state=SUCCESS,FAILURE",
 ]
-# Default order (no sort=): the filters each scan every node, some reading every event;
-# the graph list scans every root and its children.
+# Task and graph lists at their largest page, over the realistic store (see _add_realistic).
+# Every filter value matches nodes: a scan that matches nothing builds no response.
 TASK_LIST_PATHS = [
-    "/api/tasks?limit=100",
-    "/api/tasks?limit=100&state=FAILURE",
-    "/api/tasks?limit=100&name=task7",
-    "/api/tasks?limit=100&name_exact=app.task7",
-    "/api/tasks?limit=100&hostname=w1@host",
-    "/api/tasks?limit=100&queue=default",
-    "/api/tasks?limit=100&exception_type=Err3",
-    "/api/tasks?limit=100&within=1h",
-    "/api/tasks?limit=100&from_date=2026-10-18T11:00:00Z",
+    "/api/tasks?limit=500",
+    "/api/tasks?limit=500&state=FAILURE",
+    "/api/tasks?limit=500&name=task7",
+    "/api/tasks?limit=500&name_exact=app.task7",
+    "/api/tasks?limit=500&hostname=worker3@host3",
+    "/api/tasks?limit=500&queue=queue2",
+    "/api/tasks?limit=500&exception_type=Err3",
+    "/api/tasks?limit=500&within=1h",
+    "/api/tasks?limit=500&from_date=2026-10-18T11:00:00Z",
     "/api/graphs?limit=100",
     "/api/graphs?limit=100&within=1h",
 ]
@@ -93,6 +93,52 @@ def _add(store: GraphStore, i: int, *, seconds_ago: int, shape: str = "mix") -> 
     )
 
 
+def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
+    """One run of 10 events (2 retries) with worker, queue and exception set.
+
+    Every third run is a root and the next two its children, so graphs have
+    children to read. The attempts follow Celery's received, started, retry
+    order, then the last one ends in FAILURE or SUCCESS.
+    """
+    name = f"app.task{i % 50}"
+    base = {
+        "task_id": f"t{i}",
+        "name": name,
+        "hostname": f"worker{i % 5}@host{i % 5}",
+        "queue": f"queue{i % 4}",
+    }
+    if i % 3:
+        base["parent_id"] = f"t{i - i % 3}"
+        base["root_id"] = f"t{i - i % 3}"
+    steps = [(TaskState.PENDING, 0, 0)]
+    for attempt in range(3):
+        steps.append((TaskState.RECEIVED, attempt, 0))
+        steps.append((TaskState.STARTED, attempt, 0))
+        if attempt < 2:
+            steps.append((TaskState.RETRY, attempt, attempt + 1))
+    final = TaskState.FAILURE if i % 4 == 0 else TaskState.SUCCESS
+    steps.append((final, 2, 2))
+    for n, (state, _attempt, retries) in enumerate(steps):
+        failed = state in (TaskState.FAILURE, TaskState.RETRY)
+        store.add_event(
+            TaskEvent(
+                state=state,
+                timestamp=NOW - timedelta(seconds=seconds_ago + len(steps) - n),
+                retries=retries,
+                exception_type=f"Err{i % 7}" if failed else None,
+                exception="boom" if failed else None,
+                **base,
+            )
+        )
+
+
+def _populated_realistic(count: int) -> GraphStore:
+    store = GraphStore(max_nodes=count + 5_000)
+    for i in range(count):
+        _add_realistic(store, i, seconds_ago=(i * 7) % 7200)
+    return store
+
+
 def _populated(count: int, shape: str = "mix") -> GraphStore:
     store = GraphStore(max_nodes=count + 5_000)
     for i in range(count):
@@ -119,7 +165,11 @@ def big_stores() -> dict[str, GraphStore]:
 def _big_store(cache: dict[str, GraphStore], shape: str) -> GraphStore:
     """The 30k-node store of ``shape``, built once per shape for the module."""
     if shape not in cache:
-        cache[shape] = _populated(MAX_NODES, shape)
+        cache[shape] = (
+            _populated_realistic(MAX_NODES)
+            if shape == "realistic"
+            else _populated(MAX_NODES, shape)
+        )
     return cache[shape]
 
 
@@ -200,17 +250,34 @@ async def test_sorted_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("cache", ["cold", "warm"])
 @pytest.mark.parametrize("path", TASK_LIST_PATHS)
-async def test_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
-    path: str, big_stores: dict[str, GraphStore]
+async def test_task_and_graph_lists_at_30k_nodes_keep_loop_lag_within_budget(
+    path: str, cache: str, big_stores: dict[str, GraphStore]
 ) -> None:
-    """Filtering and ordering every node for the default list runs off the loop."""
-    app = _app(_big_store(big_stores, "mix"))
+    """Scanning and building the largest page of a list runs off the loop."""
+    store = _big_store(big_stores, "realistic")
+    app = _app(store)
     assert (await _get(app, "/api/health")).status_code == 200
+    if cache == "cold":
+        store._flow_cache = None  # the first graph list rebuilds the flow times
+    else:
+        assert (await _get(app, path)).status_code == 200
     longest = await _longest_loop_hold(app, path)
     assert longest <= MAX_LOOP_WORK, (
         f"loop did {longest} events between turns (max {MAX_LOOP_WORK})"
     )
+
+
+@pytest.mark.parametrize("path", TASK_LIST_PATHS)
+async def test_task_and_graph_lists_at_30k_nodes_return_matches(
+    path: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """Each list case matches nodes, so the loop test builds a real response."""
+    response = await _get(_app(_big_store(big_stores, "realistic")), path)
+    body = response.json()
+    assert body["total"] > 0
+    assert len(body.get("tasks", body.get("graphs"))) > 0
 
 
 @pytest.mark.parametrize("shape", SHAPES)

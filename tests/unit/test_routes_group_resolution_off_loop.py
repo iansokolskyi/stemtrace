@@ -111,18 +111,10 @@ def test_resolving_all_names_leaves_the_loop_free(
     assert waits == [True]
 
 
-@pytest.mark.parametrize(
-    ("module", "path", "filtered", "work"),
-    [
-        (routes, "/api/tasks", "task_group=billing", "_group_task_names"),
-        (routes, "/api/graphs", "task_group=billing", "_group_task_names"),
-        (summary_routes, "/api/stats/timeseries", "group_by=task_group", "time_series"),
-    ],
-)
-def test_unfiltered_lists_never_wait_for_a_worker_thread(
-    module: Any, path: str, filtered: str, work: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With the host app's sync handlers holding every thread, they'd stall."""
+def _client_counting_pool(
+    module: Any, monkeypatch: pytest.MonkeyPatch
+) -> tuple[TestClient, list[str]]:
+    """A client over one stored task, and the names `module` hands to its thread pool."""
     store = GraphStore()
     store.add_event(
         TaskEvent(
@@ -139,9 +131,34 @@ def test_unfiltered_lists_never_wait_for_a_worker_thread(
     monkeypatch.setattr(module, "run_in_threadpool", counting)
     app = FastAPI()
     app.include_router(create_api_router(store, worker_registry=WorkerRegistry()))
+    return TestClient(app), calls
 
-    with TestClient(app) as client:
+
+def test_unfiltered_time_series_never_waits_for_a_worker_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the host app's sync handlers holding every thread, it would stall."""
+    client, calls = _client_counting_pool(summary_routes, monkeypatch)
+    path = "/api/stats/timeseries"
+    with client:
         assert client.get(path).status_code == 200
         assert calls == []
-        assert client.get(f"{path}?{filtered}").status_code == 200
-        assert calls == [work]
+        assert client.get(f"{path}?group_by=task_group").status_code == 200
+        assert calls == ["time_series"]
+
+
+@pytest.mark.parametrize("path", ["/api/tasks", "/api/graphs"])
+def test_lists_wait_for_a_worker_thread_whatever_the_store_size(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scan and response building share one thread hop, even on a one-task store.
+
+    The accepted trade: where the host app's sync handlers fill the thread
+    limiter, the lists wait for a thread, so no store size can hold the loop.
+    """
+    client, calls = _client_counting_pool(routes, monkeypatch)
+    with client:
+        assert client.get(path).status_code == 200
+        assert calls == ["build"]
+        assert client.get(f"{path}?task_group=billing").status_code == 200
+        assert calls == ["build", "_group_task_names", "build"]

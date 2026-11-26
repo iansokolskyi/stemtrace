@@ -13,7 +13,7 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple
 
 from celery import Celery
 from celery.app.amqp import AMQP
@@ -157,21 +157,6 @@ def _group_of(
         return None, []
     group = group_of(node.name)
     return group.name, list(group.tags)
-
-
-_T = TypeVar("_T")
-
-# Up to this many stored nodes a list scan costs under ~30k profile events at the
-# worst filter, so it stays on the loop; a worker thread isn't free when the host
-# app's sync handlers hold every thread.
-_INLINE_SCAN_MAX_NODES = 1_000
-
-
-async def _run_sized(store: GraphStore, scan: Callable[[], _T]) -> _T:
-    """Run a store scan on the loop for a small store, in a worker thread otherwise."""
-    if store.node_count <= _INLINE_SCAN_MAX_NODES:
-        return scan()
-    return await run_in_threadpool(scan)
 
 
 async def _filter_task_names(
@@ -1172,28 +1157,34 @@ def _add_task_routes(
             exception_type=exception_type,
             task_names=task_names,
         )
-        if sort is None:
-            nodes, total = await _run_sized(store, find)
-        else:
-            # The sort touches every match with a Python key: off the loop.
-            sort_key = (
-                runtime_sort_value if sort == "runtime" else queue_wait_sort_value
-            )
-            nodes, total = await run_in_threadpool(find, sort_key=sort_key)
-        return TaskListResponse(
-            tasks=[
-                _node_to_response(
-                    n,
-                    include_events=not compact,
-                    group_of=group_of,
-                    anomalies=anomalies,
-                )
-                for n in nodes
-            ],
-            total=total,
-            limit=limit,
-            offset=offset,
+        sort_key = (
+            None
+            if sort is None
+            else runtime_sort_value
+            if sort == "runtime"
+            else queue_wait_sort_value
         )
+
+        def build() -> TaskListResponse:
+            nodes, total = find(sort_key=sort_key)
+            return TaskListResponse(
+                tasks=[
+                    _node_to_response(
+                        n,
+                        include_events=not compact,
+                        group_of=group_of,
+                        anomalies=anomalies,
+                    )
+                    for n in nodes
+                ],
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
+
+        # Scan and response building are O(nodes) and O(limit x events): one
+        # worker-thread hop, whatever the store size.
+        return await run_in_threadpool(build)
 
     @router.get(
         "/tasks/registry",
@@ -1338,33 +1329,33 @@ def _add_graph_routes(
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
         # Roots plus the children the response reads, from one snapshot
-        page = await _run_sized(
-            store,
-            functools.partial(
-                store.get_root_nodes_with_children,
+        def build() -> GraphListResponse:
+            page = store.get_root_nodes_with_children(
                 limit=limit,
                 offset=offset,
                 from_date=start,
                 to_date=to_date,
                 task_names=task_names,
-            ),
-        )
-        return GraphListResponse(
-            graphs=[
-                _node_to_graph_response(
-                    r,
-                    page.related,
-                    node_alias_key=node_alias_key,
-                    group_of=group_of,
-                    anomalies=anomalies,
-                    containers=page.containers,
-                )
-                for r in page.roots
-            ],
-            total=page.total,
-            limit=limit,
-            offset=offset,
-        )
+            )
+            return GraphListResponse(
+                graphs=[
+                    _node_to_graph_response(
+                        r,
+                        page.related,
+                        node_alias_key=node_alias_key,
+                        group_of=group_of,
+                        anomalies=anomalies,
+                        containers=page.containers,
+                    )
+                    for r in page.roots
+                ],
+                total=page.total,
+                limit=limit,
+                offset=offset,
+            )
+
+        # Scan and response building in one worker-thread hop, whatever the store size.
+        return await run_in_threadpool(build)
 
     @router.get(
         "/graphs/{root_id}",
