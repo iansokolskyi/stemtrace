@@ -232,11 +232,34 @@ def _broadcast_logs(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]
     return [r for r in caplog.records if r.name == "stemtrace.server.websocket"]
 
 
+class _Flooded(Exception):
+    """Raised from the log handler to end a runaway loop instead of hanging."""
+
+
+class _BoundedLog(logging.Handler):
+    """Collects records and aborts the logging caller once the flood limit is hit.
+
+    A spinning broadcast loop never yields, so no timeout can stop it; raising from
+    the handler escapes its ``except`` block and ends the task.
+    """
+
+    LIMIT = 50
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+        if len(self.records) > self.LIMIT:
+            raise _Flooded
+
+
 class TestSecondLifespan:
     """A queue binds to the first loop that awaits it; each lifespan needs its own."""
 
     def test_second_event_loop_delivers_broadcast_with_bounded_logs(
-        self, sample_event: TaskEvent, caplog: pytest.LogCaptureFixture
+        self, sample_event: TaskEvent
     ) -> None:
         manager = WebSocketManager()
 
@@ -251,20 +274,23 @@ class TestSecondLifespan:
                 manager.disconnect(ws)
 
         first, second = _fake_ws(), _fake_ws()
-        with caplog.at_level(logging.DEBUG, logger="stemtrace.server.websocket"):
-            asyncio.run(lifespan(first))
-            caplog.clear()
-            try:
-                asyncio.run(lifespan(second))
-            except asyncio.TimeoutError:
-                pass
+        asyncio.run(lifespan(first))
+        log = _BoundedLog()
+        ws_logger = logging.getLogger("stemtrace.server.websocket")
+        ws_logger.addHandler(log)
+        try:
+            asyncio.run(lifespan(second))
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            ws_logger.removeHandler(log)
 
         assert first.send_text.await_count == 1
         assert second.send_text.await_count == 1
-        assert len(_broadcast_logs(caplog)) <= 4
+        assert len(log.records) <= 4
 
     def test_extension_second_lifespan_delivers_store_event(
-        self, sample_event: TaskEvent, caplog: pytest.LogCaptureFixture
+        self, sample_event: TaskEvent
     ) -> None:
         ext = StemtraceExtension(
             broker_url="memory://", embedded_consumer=False, serve_ui=False
@@ -279,16 +305,19 @@ class TestSecondLifespan:
                 ext.ws_manager.disconnect(ws)
 
         first, second = _fake_ws(), _fake_ws()
-        with caplog.at_level(logging.DEBUG, logger="stemtrace.server.websocket"):
-            asyncio.run(lifespan(first, "t1"))
-            caplog.clear()
-            try:
-                asyncio.run(lifespan(second, "t2"))
-            except asyncio.TimeoutError:
-                pass
+        asyncio.run(lifespan(first, "t1"))
+        log = _BoundedLog()
+        ws_logger = logging.getLogger("stemtrace.server.websocket")
+        ws_logger.addHandler(log)
+        try:
+            asyncio.run(lifespan(second, "t2"))
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            ws_logger.removeHandler(log)
 
         assert second.send_text.await_count == 1
-        assert len(_broadcast_logs(caplog)) <= 4
+        assert len(log.records) <= 4
 
     @pytest.mark.asyncio
     async def test_queue_event_after_stop_is_dropped(
