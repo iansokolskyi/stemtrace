@@ -131,7 +131,7 @@ restore it.
 | `panel` | The panel stack. After an entry, `@s=` lists its state chips and `@m=` counts how many times you chose **Show more** in it. | `panel=runs:...@s=FAILURE,RETRY@m=2` |
 | `brush` | The span you dragged on the chart, as two epoch-second instants, `<from>-<to>`. | `brush=1764151500-1764152400` |
 
-- Opening the entry that is already open keeps its chips and adds no history entry. A tile that fixes a state, such as **Failures**, ignores `@s=`. Each panel entry keeps its own chips and **Show more** count. An entry with no chips and no
+- Opening the entry at the bottom of the stack again, such as clicking the same bar, keeps its chips and **Show more** count. With only that entry open it adds no history entry. With entries above it, it closes them and adds one history entry. A tile that fixes a state, such as **Failures**, ignores `@s=`. Each panel entry keeps its own chips and **Show more** count. An entry with no chips and no
   **Show more** writes neither.
 - Choosing a chip, choosing **Show more**, brushing and clearing the brush replace the current
   history entry, also while a panel is open. Opening or closing a panel entry adds one, so **Back** from the runs of a brushed

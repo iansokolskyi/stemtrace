@@ -5,6 +5,7 @@ import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { formatAgo, formatCount, formatSpan, shortHost } from '@/utils/format'
 import { useEntryView, usePanel } from './PanelContext'
+import { MAX_MORE } from './panelState'
 
 /** Rows added by each "Show more". */
 const PAGE = 40
@@ -115,10 +116,13 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
       {data.total > data.tasks.length && !capped && (
         <button
           type="button"
-          onClick={() => setView((now) => ({ ...now, more: (now.more ?? 0) + 1 }))}
+          onClick={() =>
+            setView((now) => ({ ...now, more: Math.min(MAX_MORE, (now.more ?? 0) + 1) }))
+          }
           className="mt-2 inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press"
         >
-          Show {Math.min(PAGE, data.total - data.tasks.length)} more of {formatCount(data.total)}
+          Show {Math.min(PAGE, data.total - data.tasks.length, MAX_LIMIT - data.tasks.length)} more
+          of {formatCount(data.total)}
         </button>
       )}
     </>

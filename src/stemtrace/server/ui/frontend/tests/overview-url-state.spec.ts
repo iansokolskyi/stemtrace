@@ -382,25 +382,55 @@ test.describe('Overview view state in the URL', () => {
     })
   }
 
-  test('opening the entry that is already open keeps its chips and adds no history entry', async ({
-    page,
-  }) => {
-    await openOverview(page)
-    const chart = page.locator('[data-testid="runs-chart"] svg')
-    // Enter opens the runs of the last bar, which the open panel leaves reachable by keyboard
-    await chart.focus()
-    await page.keyboard.press('Enter')
-    await chip(page, 'Failure').click()
-    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
-    const before = await historyLength(page)
-    const url = page.url()
-    expect(search(page).get('panel')).toContain('@s=FAILURE')
+  for (const depth of [1, 2, 3]) {
+    test(`opening the bottom entry again keeps its chips at depth ${depth}`, async ({ page }) => {
+      await openOverview(page)
+      const chart = page.locator('[data-testid="runs-chart"] svg')
+      // Enter opens the runs of the last bar, which the open panel leaves reachable by keyboard
+      await chart.focus()
+      await page.keyboard.press('Enter')
+      await chip(page, 'Failure').click()
+      await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+      const panelValue = search(page).get('panel') ?? ''
+      expect(panelValue).toContain('@s=FAILURE')
+      if (depth > 1) {
+        // Entries above it, as a click on a run (and a run inside it) pushes them
+        const above = Array.from({ length: depth - 1 }, (_, i) => `/task:t${i}`).join('')
+        await page.goto(`/?panel=${encodeURIComponent(panelValue + above)}`)
+        await expect(panelOf(page)).toBeVisible()
+      }
+      const before = await historyLength(page)
 
-    await chart.focus()
-    await page.keyboard.press('Enter')
-    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
-    expect(page.url()).toBe(url)
-    expect(await historyLength(page)).toBe(before)
+      await chart.focus()
+      await page.keyboard.press('Enter')
+      await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
+      expect(search(page).get('panel')).toBe(panelValue)
+      expect(await historyLength(page)).toBe(before + (depth > 1 ? 1 : 0))
+    })
+  }
+
+  test('the Show more label counts only the rows the 500 cap allows', async ({ page }) => {
+    const { scenario } = await openOverview(page, '/', addMany)
+    await page.goto(barPanel(scenario, '@m=11'))
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(480)
+    await expect(showMore(page)).toHaveText(/^Show 20 more of 5\d\d$/)
+  })
+
+  test('two Show more clicks in one tick stop at the last step', async ({ page }) => {
+    const { scenario } = await openOverview(page, '/', addMany)
+    await page.goto(barPanel(scenario, '@m=12'))
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(500)
+    await page.goto(barPanel(scenario, '@m=11'))
+    await expect(showMore(page)).toBeVisible()
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll('button')].find((b) =>
+        /^Show \d+ more/.test(b.textContent ?? ''),
+      )
+      button?.click()
+      button?.click()
+    })
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(500)
+    expect(decodeURIComponent(search(page).get('panel') ?? '')).toMatch(/@m=13$/)
   })
 
   test('a tile that fixes a state ignores the chips in the link', async ({ page }) => {

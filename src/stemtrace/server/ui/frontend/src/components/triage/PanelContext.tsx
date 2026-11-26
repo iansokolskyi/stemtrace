@@ -72,8 +72,12 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
       stack,
       activeKey: stack[0] && openerKey(stack[0]),
       open: (entry) => {
-        // Opening what is already open keeps its view and adds no history entry
-        if (stack.length === 1 && openerKey(stack[0]) === openerKey(entry)) return
+        // Opening the entry at the bottom keeps its view: nothing at depth 1, else the entries
+        // above it close (one history entry)
+        if (stack[0] && openerKey(stack[0]) === openerKey(entry)) {
+          if (stack.length > 1) go(stack.slice(0, 1))
+          return
+        }
         go([entry])
       },
       push: (entry) => {
