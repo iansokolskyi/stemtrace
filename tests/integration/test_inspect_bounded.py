@@ -268,7 +268,7 @@ def test_i7_a_connection_that_goes_silent_mid_attempt_ends_the_attempt(
     refresher._lock.release()
 
 
-# --- I8: the connection breaks between a call's last read and its publish write ----------
+# --- I11: the connection breaks between a call's last read and its publish write ----------
 
 PUBLISH_SLEEP_BOUND = 2
 BROKEN_PUBLISH_BOUND_S = 6.0
@@ -280,7 +280,7 @@ class _StopRetrying(Exception):
 
 
 @pytest.mark.parametrize("kind", ["redis", "amqp"])
-def test_i8_a_broker_that_goes_down_before_the_publish_write_ends_the_attempt(
+def test_i11_a_broker_that_goes_down_before_the_publish_write_ends_the_attempt(
     kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Celery's ``Mailbox._publish`` publishes with ``retry=True``: kombu's ``ensure``
