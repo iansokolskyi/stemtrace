@@ -15,6 +15,7 @@ import {
   type MockWorker,
 } from './fixtures/mock-data'
 import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
+import { emptySummaryEndpoints, failSummaryEndpoints } from './fixtures/overview-states'
 
 /**
  * Visual snapshots of the Signal box frame. Runs only in the `visual` project (PW_VISUAL=1),
@@ -659,6 +660,33 @@ for (const theme of ['light', 'dark'] as const) {
         )
       })
     }
+  }
+}
+
+// The Overview when its requests fail, and when the server holds nothing yet (G3).
+for (const theme of ['light', 'dark'] as const) {
+  for (const state of ['error', 'empty'] as const) {
+    test(`overview ${state}, ${theme}, 1280px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const now = new Date('2026-10-17T12:00:00Z')
+      const api = await setupMockApi(page, { useDefaults: false })
+      api.setBroker('redis')
+      await mockOverview(page, spikeScenario(now.getTime()))
+      await (state === 'error' ? failSummaryEndpoints : emptySummaryEndpoints)(page)
+      await page.clock.setFixedTime(now)
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await page.goto('/')
+      await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+      await expect(
+        state === 'error' ? page.getByRole('alert').first() : page.getByTestId('workers-tile'),
+      ).toBeVisible()
+      await page.waitForLoadState('networkidle')
+      await page.evaluate(() => document.fonts.ready)
+      await expect(page).toHaveScreenshot(`overview-${state}-${theme}-1280.png`, {
+        fullPage: true,
+      })
+    })
   }
 }
 
