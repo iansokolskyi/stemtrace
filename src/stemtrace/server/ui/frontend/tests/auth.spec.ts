@@ -117,3 +117,36 @@ test.describe('Unauthorized API responses', () => {
     await expect(page).toHaveURL(/\/login\?next=%2Fworkers$/)
   })
 })
+
+test.describe('Session mismatch notice: design tokens', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  for (const theme of ['light', 'dark'] as const) {
+    test(`is a surface card with failure-tinted text and an ink link, ${theme}`, async ({
+      page,
+    }) => {
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await enableFormLogin(page)
+      await mockUnauthorizedApi(page, 'session_secret_mismatch')
+      await page.goto('/workers')
+
+      const colour = (name: string) =>
+        page.evaluate((n) => {
+          const probe = document.createElement('div')
+          probe.style.color = `var(--${n})`
+          document.body.append(probe)
+          const value = getComputedStyle(probe).color
+          probe.remove()
+          return value
+        }, name)
+      const notice = mismatchNotice(page)
+      await expect(notice).toHaveCSS('background-color', await colour('surface'))
+      await expect(notice).toHaveCSS('border-top-left-radius', '8px')
+      await expect(notice.locator('p').first()).toHaveCSS('color', await colour('failure-t'))
+      await expect(page.getByRole('link', { name: 'Sign in again' })).toHaveCSS(
+        'color',
+        await colour('ink'),
+      )
+    })
+  }
+})

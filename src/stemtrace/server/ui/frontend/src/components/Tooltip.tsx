@@ -3,7 +3,7 @@
  * Placements keep it inside the viewport next to edges.
  */
 
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 type TooltipPlacement = 'top' | 'top-start' | 'bottom' | 'bottom-end' | 'left' | 'right'
 
@@ -11,6 +11,9 @@ interface TooltipProps {
   content: string
   placement?: TooltipPlacement
   children: ReactNode
+  /** Classes for the wrapper, for a trigger that sits in a plot or a flex row. */
+  className?: string
+  style?: CSSProperties
 }
 
 const placementStyles: Record<TooltipPlacement, string> = {
@@ -24,12 +27,18 @@ const placementStyles: Record<TooltipPlacement, string> = {
   right: 'left-full top-1/2 -translate-y-1/2 ml-2',
 }
 
-export function Tooltip({ content, placement = 'bottom', children }: TooltipProps) {
+export function Tooltip({
+  content,
+  placement = 'bottom',
+  children,
+  className,
+  style,
+}: TooltipProps) {
   return (
-    <div className="relative group">
+    <div className={`relative group${className ? ` ${className}` : ''}`} style={style}>
       {children}
       <div
-        className={`absolute ${placementStyles[placement]} pointer-events-none invisible z-50 w-max max-w-64 rounded-lg bg-raised px-2.5 py-1.5 text-xs font-normal text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover:visible group-hover:opacity-100`}
+        className={`absolute ${placementStyles[placement]} pointer-events-none invisible z-50 w-max max-w-64 rounded-[3px] bg-raised px-2.5 py-1.5 text-xs font-normal text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100`}
       >
         {content}
       </div>

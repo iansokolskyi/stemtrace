@@ -234,8 +234,24 @@ range.
 
 ### Timeline view
 
-**Timeline** draws the latest 50 tasks that match the filters as bars from their first event to
-their last update. A bar opens the task. The view doesn't page.
+**Timeline** draws the latest 50 tasks that match the filters, one row each, on a shared time axis.
+The view doesn't page.
+
+- The axis shows UTC times in 24-hour format. When it spans a day or more, the labels and the
+  tooltip times add the date.
+- A row's bars use the same look as the [flow page](#flow-page) timeline: a grey bar for the wait
+  before the first start, a hatched bar for earlier attempts, and a block in the state's color for
+  the last run.
+- A run that is still going runs to the current time, as on the flow page. Its last column and its
+  tooltip show how long it has run (or waited), for example "Running for 20m". When it has run far
+  longer than the other rows, its bar stops at a cut mark instead of stretching the axis. If your
+  browser clock is behind the run's start, the tooltip says "Running" with no time.
+- Point to a bar to see its state, how long it lasted and its UTC start. Each row has two tab
+  stops: the task link, then its last bar, which shows the same tooltip when it has focus.
+- The legend lists the state of every row, **Pending** and **Received** included, plus **Waiting**
+  when a row draws a grey wait bar. A hatched bar is **Retry**, whether it is a retrying run or an
+  earlier attempt, and the legend shows **Retry** once when any row draws one.
+- The task name opens the task. The last column shows the task's duration.
 
 ### Limits
 
