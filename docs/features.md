@@ -692,6 +692,12 @@ The task list also takes:
   lists the valid ones.
 - `within=1h` (also on `GET /api/graphs`), as above. On `GET /api/graphs` it, `from_date` and
   `to_date` apply to the whole flow (see [Graph list time](graphs.md#graph-list-time)).
+- `sort=runtime` or `sort=queue_wait`: slowest first, by each task's `runtime_ms` or
+  `queue_wait_ms`, the per-run values behind the overview's p95 tiles. A task that hasn't
+  finished, or whose value can't be measured, comes after all the others. Equal values
+  sort by newest update, then task ID, so while no event arrives, consecutive pages neither
+  overlap nor skip a task. The filters apply first, and `total` counts the matches. Any
+  other value is a `422`. Without `sort`, the order is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.
 

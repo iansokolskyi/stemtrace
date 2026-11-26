@@ -1284,19 +1284,19 @@ class GraphStore:
                     if n.first_seen is not None and n.first_seen <= to_dt
                 ]
 
-            if sort is not None:
-                nodes = self._slowest_first(nodes, sort)
-            else:
-                nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+            nodes = self._ordered(nodes, sort)
             total = len(nodes)
             page = [_snapshot(n) for n in nodes[offset : offset + limit]]
         return page, total
 
-    def _slowest_first(self, nodes: list[TaskNode], field: str) -> list[TaskNode]:
-        """Order ``nodes`` by their run record's ``field``, largest first. Hold the lock.
+    def _ordered(self, nodes: list[TaskNode], field: str | None) -> list[TaskNode]:
+        """Newest update first, or by the run record's ``field`` largest first.
 
-        Stable passes make the order total: value, then newest update, then task id.
+        Hold the lock. The ``field`` order is total (value, newest update, task id).
         """
+        if field is None:
+            nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+            return nodes
         nodes.sort(key=lambda n: n.task_id)
         nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
         keyed: list[tuple[int, TaskNode]] = []
