@@ -1030,8 +1030,9 @@ class WorkerRegistry:
     def snapshot_workers(self, hostname: str | None = None) -> list[WorkerSnapshot]:
         """Copy the workers (newest ``last_seen`` first) with whether each is its node's live pid.
 
-        Live means the node's newest pid, online and not superseded. Rows and
-        flags come from one locked step, so a concurrent event can't split them.
+        Live means online and not superseded, which only a nodename's newest pid
+        can be. Rows and flags come from one locked step, so a concurrent event
+        can't split them.
 
         Args:
             hostname: Keep only this nodename's rows; None keeps all.
@@ -1040,9 +1041,7 @@ class WorkerRegistry:
             rows = [
                 WorkerSnapshot(
                     w.model_copy(),
-                    self._newest_by_node.get(w.hostname) == f"{w.hostname}:{w.pid}"
-                    and w.status == WorkerStatus.ONLINE
-                    and not w.superseded,
+                    w.status == WorkerStatus.ONLINE and not w.superseded,
                 )
                 for w in self._workers.values()
                 if hostname is None or w.hostname == hostname
