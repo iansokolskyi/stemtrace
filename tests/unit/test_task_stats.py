@@ -76,6 +76,25 @@ def _oracle_nearest_rank(samples: list[int], percent: int) -> int:
 # --- percentiles ---------------------------------------------------------
 
 
+@pytest.mark.parametrize("percent", [0, -1, 101])
+def test_percentile_outside_one_to_a_hundred_raises(percent: int) -> None:
+    with pytest.raises(ValueError, match="percent must be in 1..100"):
+        percentile([1, 2, 3], percent)
+
+
+def test_last_run_and_state_on_an_exact_tie_come_from_the_larger_task_id() -> None:
+    records = [
+        _run("app.a", TaskState.SUCCESS, task_id="a-1"),
+        _run("app.a", TaskState.FAILURE, task_id="a-2"),
+    ]
+
+    for order in (records, records[::-1]):
+        tasks, _ = _stats(order)
+
+        assert tasks["app.a"].last_state == TaskState.FAILURE
+        assert tasks["app.a"].last_run == NOW
+
+
 def test_percentile_property_matches_the_nearest_rank_definition() -> None:
     """10k seeded cases, n from 1 to 500, with many ties, vs a naive oracle."""
     rng = random.Random(20261101)
