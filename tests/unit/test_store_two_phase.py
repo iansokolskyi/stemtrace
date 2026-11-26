@@ -255,6 +255,23 @@ def test_run_rows_carry_the_nodes_latest_facts_after_every_event(seed: int) -> N
             assert got == want
 
 
+@pytest.mark.parametrize("hosts", [("w1@a", "w2@a"), ("w2@a", "w1@a")])
+def test_run_row_hostname_on_an_exact_rank_tie_is_the_scans_whatever_the_arrival_order(
+    hosts: tuple[str, str],
+) -> None:
+    """Two events with one state, attempt and stamp rank alike; the first in lifecycle order wins."""
+    store = GraphStore()
+    for host in hosts:
+        store.add_event(_ev("t", TaskState.STARTED, 5, hostname=host))
+
+    node = store.get_node("t")
+    assert node is not None
+    (record,) = store.run_records()
+    assert record.hostname == node.hostname
+    page, _ = store.get_nodes(hostname=node.hostname)
+    assert [n.task_id for n in page] == ["t"]
+
+
 # -- phase 2 under concurrent ingestion --------------------------------------
 
 
