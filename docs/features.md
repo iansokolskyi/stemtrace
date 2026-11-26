@@ -103,7 +103,7 @@ pages work even if the server missed `worker_ready` events.
   `stats()` reply that names the worker's pid, and later reads return them without asking
   Celery again. `pool` is the last module segment of the pool's `implementation`
   (`celery.concurrency.prefork:TaskPool` gives `prefork`; the `thread` pool shows as
-  `threads`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
+  `threads`; a module named just `pool` gives `null`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
   autoscaler's `max`, because Celery then reports the minimum as `max-concurrency`. Both are
   `null` for a worker the server knows only from events, and for a reply that has no pool
   dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery

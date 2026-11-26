@@ -855,6 +855,21 @@ def test_record_message_is_none_when_the_typed_event_has_no_text() -> None:
     assert _failed_message(*events) == None  # noqa: E711 - the value is the point
 
 
+def test_record_message_of_a_typed_retry_beats_a_later_untyped_failures_text() -> None:
+    """Mixed worker versions: the one typed event decides, as the class does."""
+    events = [
+        _event(
+            "t",
+            TaskState.RETRY,
+            1,
+            exception_type="TimeoutError",
+            exception="TimeoutError: slow",
+        ),
+        _event("t", TaskState.FAILURE, 5, retries=1, exception="ValueError: final"),
+    ]
+    assert _failed_message(*events) == "TimeoutError: slow"
+
+
 def test_record_message_without_a_type_uses_the_furthest_events_text() -> None:
     """Older workers send no exception_type."""
     events = [

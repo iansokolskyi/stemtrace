@@ -378,3 +378,13 @@ def test_worker_ready_for_a_pid_with_stored_values_keeps_them_until_the_next_rep
         NODE, 10, ["app.t"], event_timestamp=T + timedelta(minutes=1)
     )
     assert row(registry, 10) == ("prefork", 8)
+
+
+@pytest.mark.parametrize(
+    "implementation", ["pool", "my.pool:TaskPool", "pool:TaskPool"]
+)
+def test_pool_from_stats_with_a_module_named_pool_returns_null_name(
+    implementation: str,
+) -> None:
+    payload = pool_payload(implementation=implementation, **{"max-concurrency": 4})
+    assert pool_from_stats_payload(payload) == PoolInfo(None, 4)
