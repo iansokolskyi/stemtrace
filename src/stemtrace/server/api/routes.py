@@ -27,6 +27,7 @@ from kombu.connection import ConnectionPool
 # asyncio.iscoroutinefunction (uvloop 0.22.1). anyio's worker threads don't.
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 
 from stemtrace.core.anomalies import DEFAULT_SETTINGS, AnomalySettings
 from stemtrace.core.graph import ChordNotRunReason, NodeType, chord_not_run_reasons
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
 
     from celery.app.control import Inspect
+    from pydantic import BaseModel
     from starlette.types import Receive, Scope, Send
 
     from stemtrace.core.anomalies import Anomaly
@@ -157,6 +159,14 @@ def _group_of(
         return None, []
     group = group_of(node.name)
     return group.name, list(group.tags)
+
+
+def _json_response(model: BaseModel) -> Response:
+    """Encode ``model`` as the JSON body FastAPI would send, in the calling thread.
+
+    Returning a model makes FastAPI validate and encode it on the event loop.
+    """
+    return Response(model.model_dump_json(by_alias=True), media_type="application/json")
 
 
 async def _filter_task_names(
@@ -1127,7 +1137,7 @@ def _add_task_routes(
                 )
             ),
         ] = None,
-    ) -> TaskListResponse:
+    ) -> Response:
         """List tasks with optional filtering by state, name, date range and more.
 
         ``name`` is a case-insensitive substring match (the search box);
@@ -1157,28 +1167,37 @@ def _add_task_routes(
             exception_type=exception_type,
             task_names=task_names,
         )
-        if sort is None:
-            nodes, total = find()
-        else:
-            # The sort touches every match with a Python key: off the loop.
-            sort_key = (
-                runtime_sort_value if sort == "runtime" else queue_wait_sort_value
-            )
-            nodes, total = await run_in_threadpool(find, sort_key=sort_key)
-        return TaskListResponse(
-            tasks=[
-                _node_to_response(
-                    n,
-                    include_events=not compact,
-                    group_of=group_of,
-                    anomalies=anomalies,
-                )
-                for n in nodes
-            ],
-            total=total,
-            limit=limit,
-            offset=offset,
+        sort_key = (
+            None
+            if sort is None
+            else runtime_sort_value
+            if sort == "runtime"
+            else queue_wait_sort_value
         )
+
+        def build() -> Response:
+            """Scan the store and encode the task page (runs in a worker thread)."""
+            nodes, total = find(sort_key=sort_key)
+            return _json_response(
+                TaskListResponse(
+                    tasks=[
+                        _node_to_response(
+                            n,
+                            include_events=not compact,
+                            group_of=group_of,
+                            anomalies=anomalies,
+                        )
+                        for n in nodes
+                    ],
+                    total=total,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+
+        # Scan, response building and JSON encoding (O(nodes), O(limit x events),
+        # O(bytes)) share one worker-thread hop, whatever the store size.
+        return await run_in_threadpool(build)
 
     @router.get(
         "/tasks/registry",
@@ -1310,7 +1329,7 @@ def _add_graph_routes(
             str | None,
             Query(description="Updated within this long (30s, 15m, 6h, 7d)"),
         ] = None,
-    ) -> GraphListResponse:
+    ) -> Response:
         """List task execution graphs (root tasks) with pagination and filtering.
 
         ``task_group`` and ``tag`` list the graphs with at least one task that
@@ -1322,30 +1341,38 @@ def _add_graph_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
+
         # Roots plus the children the response reads, from one snapshot
-        page = store.get_root_nodes_with_children(
-            limit=limit,
-            offset=offset,
-            from_date=start,
-            to_date=to_date,
-            task_names=task_names,
-        )
-        return GraphListResponse(
-            graphs=[
-                _node_to_graph_response(
-                    r,
-                    page.related,
-                    node_alias_key=node_alias_key,
-                    group_of=group_of,
-                    anomalies=anomalies,
-                    containers=page.containers,
+        def build() -> Response:
+            """Scan the store and encode the graph page (runs in a worker thread)."""
+            page = store.get_root_nodes_with_children(
+                limit=limit,
+                offset=offset,
+                from_date=start,
+                to_date=to_date,
+                task_names=task_names,
+            )
+            return _json_response(
+                GraphListResponse(
+                    graphs=[
+                        _node_to_graph_response(
+                            r,
+                            page.related,
+                            node_alias_key=node_alias_key,
+                            group_of=group_of,
+                            anomalies=anomalies,
+                            containers=page.containers,
+                        )
+                        for r in page.roots
+                    ],
+                    total=page.total,
+                    limit=limit,
+                    offset=offset,
                 )
-                for r in page.roots
-            ],
-            total=page.total,
-            limit=limit,
-            offset=offset,
-        )
+            )
+
+        # Scan, response building and JSON encoding share one worker-thread hop.
+        return await run_in_threadpool(build)
 
     @router.get(
         "/graphs/{root_id}",
