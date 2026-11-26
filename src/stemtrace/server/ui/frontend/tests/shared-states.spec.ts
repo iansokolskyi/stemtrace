@@ -725,6 +725,8 @@ test.describe('Sessions and missing items', () => {
     // The workers list never answers
     await page.route(/\/api\/workers(\?|$)/, () => {})
     await page.goto('/flows')
+    // The shortcut is bound once the app has rendered
+    await expect(page.getByRole('heading', { level: 1, name: 'Flows' })).toBeVisible()
     await page.keyboard.press('Control+k')
     const dialog = page.getByRole('dialog', { name: 'Search' })
     await dialog.getByRole('combobox').fill('zzz-no-such-thing')
