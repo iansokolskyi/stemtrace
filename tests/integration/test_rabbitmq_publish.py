@@ -186,8 +186,9 @@ class _KombuSleeps:
 
     def __call__(self, seconds: float) -> None:
         # Own: the test thread and any thread started since, the publisher's helper
-        # threads included. Gap: a leaked object that starts a new thread during
-        # the test counts as own.
+        # threads included. Other: any thread that existed before the test, whatever
+        # it does (a pre-existing thread doing publisher work counts as other).
+        # Gap: a leaked object that starts a new thread during the test counts as own.
         is_leaked = threading.current_thread() in self._before
         (self.other_threads if is_leaked else self.own).append(seconds)
 
@@ -275,6 +276,8 @@ class TestRabbitMQPublishFailFastNoBroker:
         assert len(_warnings(caplog)) == 2
 
     def test_kombu_sleeps_fixture_files_other_threads_apart(
+        # Order matters: pytest builds fixtures left to right, and ``kombu_sleeps``
+        # must snapshot the threads after ``leaked_connect`` has started its thread.
         self, leaked_connect: _LeakedConnect, kombu_sleeps: _KombuSleeps
     ) -> None:
         transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)

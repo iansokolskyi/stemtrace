@@ -1,4 +1,7 @@
-"""Rows I1 and I2 of D7a against real connection failures (no broker is running).
+"""Rows I1, I2, I6, I7 and I11 of D7a against real connection failures.
+
+I1, I2 and I6 need no broker. I7 and I11 put a fault proxy in front of a real Redis or
+RabbitMQ; they skip when none is reachable and fail when ``STEMTRACE_REQUIRE_BROKERS=1``.
 
 Real kombu, real sockets: a closed local port refuses at once, a non-routable
 address (``10.255.255.1``) never answers, so only our own bounds end the attempt.
