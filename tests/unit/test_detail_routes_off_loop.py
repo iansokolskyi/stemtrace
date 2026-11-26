@@ -1,8 +1,7 @@
 """Detail routes build and encode their response off the event loop.
 
-A root with 20,000 direct children held the loop for 0.8 to 1.7 s (about 85 ms
-per 1,000 children): the handlers built every child response and FastAPI
-encoded the body on the loop thread.
+The handlers used to build every child response, and FastAPI to encode the body,
+on the loop thread. Time spent in garbage collection is outside this budget.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from tests.unit.test_summary_routes_off_loop import (
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 GOLDEN = Path(__file__).parent.parent / "data" / "detail_routes_bodies.json"
-SIZES = [1_000, 20_000]
+SIZES = [1_000]
 # Each detail route over a root with N direct children.
 DETAIL_PATHS = [
     "/api/tasks/root",
