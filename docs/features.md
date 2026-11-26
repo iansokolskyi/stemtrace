@@ -107,7 +107,7 @@ pages work even if the server missed `worker_ready` events.
   autoscaler's `max`, because Celery then reports the minimum as `max-concurrency`. Both are
   `null` for a worker the server knows only from events, and for a reply that has no pool
   dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery
-  5.2.2 doesn't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
+  5.2 releases don't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
   new pid on the same nodename starts with `null` and doesn't inherit its predecessor's values.
   When a `worker_ready` with a later time arrives for a pid the server already saw ready (a restart
   that reuses the pid number), the values are cleared until the next inspect reply. Limitation: if
@@ -683,8 +683,9 @@ tasks stamped later by a worker whose clock is ahead.
   bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
   `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
   last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
-  these keys. The first bucket starts on an edge before the window, so a bucket's samples need not
-  match the overview's samples at the window's edges. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
+  these keys. The first bucket starts on an edge at or before the window, so a bucket's samples
+  need not match the overview's samples at the window's edges. Combined with `group_by`, or with a
+  value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of
