@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -296,6 +296,7 @@ class TestSecondLifespan:
         try:
             _run_in_new_loop(lifespan(second))
         except asyncio.TimeoutError:
+            # Before the fix the broadcast never arrives; the asserts below report it.
             pass
         finally:
             ws_logger.removeHandler(log)
@@ -329,6 +330,7 @@ class TestSecondLifespan:
         try:
             _run_in_new_loop(lifespan(second, "t2"))
         except asyncio.TimeoutError:
+            # Before the fix the broadcast never arrives; the asserts below report it.
             pass
         finally:
             ws_logger.removeHandler(log)
@@ -337,7 +339,7 @@ class TestSecondLifespan:
         assert [r.getMessage() for r in log.records if r.levelno >= logging.ERROR] == []
 
     @pytest.mark.asyncio
-    async def test_queue_event_after_stop_is_dropped(
+    async def test_queue_event_after_stop_is_not_delivered_on_next_start(
         self, sample_event: TaskEvent
     ) -> None:
         manager = WebSocketManager()
@@ -346,7 +348,15 @@ class TestSecondLifespan:
 
         manager.queue_event(sample_event)
 
-        assert manager._queue is None
+        ws = _fake_ws()
+        await manager.connect(ws)
+        await manager.start_broadcast_loop()
+        try:
+            for _ in range(20):  # let anything stale reach the new loop
+                await asyncio.sleep(0)
+        finally:
+            await manager.stop_broadcast_loop()
+        assert ws.send_text.await_count == 0
 
 
 class _FlakyManager(WebSocketManager):
@@ -400,6 +410,58 @@ class TestBroadcastLoopErrors:
             "Broadcast loop recovered after 3 errors",
         ]
         assert errors[0].exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_loop_error_state_resets_after_each_recovery(
+        self, sample_event: TaskEvent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sleeps: list[float] = []
+        manager = self._manager(1, sleeps, [0.0])
+        ws = _fake_ws()
+        await manager.connect(ws)
+        await manager.start_broadcast_loop()
+
+        async def until(done: Callable[[], bool]) -> None:
+            for _ in range(1000):  # bounded: a missing step fails, not hangs
+                if done():
+                    return
+                await asyncio.sleep(0)
+
+        async def push(*, delivered: int, slept: int) -> None:
+            manager.queue_event(sample_event)
+            await until(
+                lambda: ws.send_text.await_count >= delivered and len(sleeps) >= slept
+            )
+
+        def errors() -> list[str]:
+            return [
+                r.getMessage()
+                for r in _broadcast_logs(caplog)
+                if r.levelno >= logging.ERROR
+            ]
+
+        try:
+            with caplog.at_level(logging.DEBUG, logger="stemtrace.server.websocket"):
+                # fail, succeed, fail, succeed, succeed
+                await push(delivered=0, slept=1)
+                await push(delivered=1, slept=1)
+                manager.failures = 1
+                await push(delivered=1, slept=2)
+                await push(delivered=2, slept=2)
+                before_last = errors()
+                await push(delivered=3, slept=2)
+                after_last = errors()
+        finally:
+            await manager.stop_broadcast_loop()
+
+        assert sleeps == [LOOP_ERROR_BACKOFF_INITIAL_S, LOOP_ERROR_BACKOFF_INITIAL_S]
+        assert before_last == [
+            "Error in broadcast loop",
+            "Broadcast loop recovered after 1 errors",
+            "Error in broadcast loop",
+            "Broadcast loop recovered after 1 errors",
+        ]
+        assert after_last == before_last
 
     @pytest.mark.asyncio
     async def test_loop_error_summaries_are_rate_limited_and_backoff_is_capped(

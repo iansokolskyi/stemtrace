@@ -40,12 +40,18 @@ class WebSocketManager:
             clock: Monotonic clock used to rate-limit error logs.
         """
         self._connections: set[WebSocket] = set()
-        # Created per lifespan: an asyncio.Queue binds to the first loop that awaits it.
-        self._queue: asyncio.Queue[TaskEvent] | None = None
+        # (loop, queue) built per lifespan: an asyncio.Queue binds to the first loop
+        # that awaits it. One tuple so a reader never mixes two lifespans.
+        self._target: (
+            tuple[asyncio.AbstractEventLoop, asyncio.Queue[TaskEvent]] | None
+        ) = None
         self._sleep = sleep
         self._clock = clock
         self._broadcast_task: asyncio.Task[None] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def _loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._target[0] if self._target else None
 
     @property
     def connection_count(self) -> int:
@@ -67,10 +73,10 @@ class WebSocketManager:
 
     def queue_event(self, event: TaskEvent) -> None:
         """Queue event for broadcast. Thread-safe, called from consumer thread."""
-        loop = self._loop
-        queue = self._queue
-        if loop is None or queue is None:
+        target = self._target
+        if target is None:
             return
+        loop, queue = target
 
         def _put_event() -> None:
             queue.put_nowait(event)
@@ -105,9 +111,9 @@ class WebSocketManager:
 
     async def start_broadcast_loop(self) -> None:
         """Start background task. Call during lifespan startup."""
-        self._loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue()
-        self._broadcast_task = asyncio.create_task(self._broadcast_loop(self._queue))
+        queue: asyncio.Queue[TaskEvent] = asyncio.Queue()
+        self._target = (asyncio.get_running_loop(), queue)
+        self._broadcast_task = asyncio.create_task(self._broadcast_loop(queue))
         logger.debug("WebSocket broadcast loop started")
 
     async def stop_broadcast_loop(self) -> None:
@@ -117,8 +123,7 @@ class WebSocketManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._broadcast_task
             self._broadcast_task = None
-        self._loop = None
-        self._queue = None
+        self._target = None
         logger.debug("WebSocket broadcast loop stopped")
 
     async def _broadcast_loop(self, queue: asyncio.Queue[TaskEvent]) -> None:
