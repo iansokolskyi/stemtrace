@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
 import { Icon } from '@/components/Icon'
+import { poolUsage } from '@/components/workers/slots'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { type Host, registeredTasks } from '@/components/workers/workers'
 import { formatAgo, formatDateTime, shortHost } from '@/utils/format'
@@ -28,22 +29,30 @@ function AllWorkers({ hosts }: { hosts: Host[] | undefined }): ReactElement {
           <p className="m-0 text-xs text-muted">No workers registered.</p>
         ) : (
           <ul className="m-0 list-none overflow-hidden rounded-[3px] p-0">
-            {byTriage(hosts).map(({ hostname, leading }) => (
-              <li
-                key={hostname}
-                className="relative flex items-center gap-3 border-t border-rule px-2.5 py-2.5 first:border-t-0 hover:bg-hover"
-              >
-                <button
-                  type="button"
-                  title={hostname}
-                  onClick={() => panel.push({ kind: 'worker', id: hostname })}
-                  className="min-w-0 flex-1 truncate text-left text-[13px] font-bold after:absolute after:inset-0"
+            {byTriage(hosts).map(({ hostname, leading }) => {
+              const { count } = poolUsage(leading)
+              return (
+                <li
+                  key={hostname}
+                  className="relative flex items-center gap-3 border-t border-rule px-2.5 py-2.5 first:border-t-0 hover:bg-hover"
                 >
-                  {shortHost(hostname)}
-                </button>
-                <WorkerStatus status={leading.status} />
-              </li>
-            ))}
+                  <button
+                    type="button"
+                    title={hostname}
+                    onClick={() => panel.push({ kind: 'worker', id: hostname })}
+                    className="min-w-0 flex-1 truncate text-left text-[13px] font-bold after:absolute after:inset-0"
+                  >
+                    {shortHost(hostname)}
+                  </button>
+                  {count && (
+                    <span data-testid="slot-count" className="font-mono text-xs text-muted">
+                      {count}
+                    </span>
+                  )}
+                  <WorkerStatus status={leading.status} />
+                </li>
+              )
+            })}
           </ul>
         )}
       </Section>

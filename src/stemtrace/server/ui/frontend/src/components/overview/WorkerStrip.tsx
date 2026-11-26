@@ -2,14 +2,15 @@ import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import type { ReactElement } from 'react'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
+import { poolUsage } from '@/components/workers/slots'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { type Host, registeredTasks } from '@/components/workers/workers'
 import { formatAgo, shortHost } from '@/utils/format'
 
 /**
  * A cell per worker host: name, status (offline is the loud one) and what the server knows of
- * it. A cell opens the worker in the triage panel. The pool size and active slots are not in
- * the API, so they are not shown.
+ * it, with its pool line and slot meter when the server sends them. A cell opens the worker in
+ * the triage panel.
  */
 export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElement {
   const panel = usePanel()
@@ -36,6 +37,7 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
         >
           {(hosts ?? []).map(({ hostname, processes, leading }) => {
             const offline = leading.status === 'offline'
+            const { line, fill } = poolUsage(leading)
             return (
               <button
                 key={hostname}
@@ -54,6 +56,20 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
                   {registeredTasks(processes).length} registered tasks, seen{' '}
                   {formatAgo(leading.last_seen)}
                 </span>
+                {line && (
+                  <span data-testid="pool-line" className="text-xs text-muted">
+                    {line}
+                  </span>
+                )}
+                {fill !== null && (
+                  <span
+                    data-testid="slot-meter"
+                    aria-hidden="true"
+                    className="mt-0.5 block h-1.5 w-full overflow-hidden rounded-[2px] bg-ground"
+                  >
+                    <i className="block h-full bg-running" style={{ width: `${fill * 100}%` }} />
+                  </span>
+                )}
               </button>
             )
           })}
