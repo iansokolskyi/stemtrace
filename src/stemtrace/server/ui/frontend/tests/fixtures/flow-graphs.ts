@@ -12,6 +12,8 @@ import type { GraphNode } from '../../src/api/client'
 export interface FlowGraph {
   root_id: string
   nodes: Record<string, GraphNode>
+  /** What the flows list sends for the root: the server's side of the title rule. */
+  member_fields?: { member_count: number | null; member_name: string | null }
 }
 
 const CAPTURES = JSON.parse(

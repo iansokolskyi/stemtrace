@@ -5,7 +5,8 @@ Run from the repository root:
     PYTHONPATH=src python tests/data/export_flow_graphs.py
 
 Each capture is replayed into a store and read back through ``GET /api/graphs/{root_id}``, so the
-JSON holds the nodes exactly as the server sends them. A capture with several roots gets one
+JSON holds the nodes exactly as the server sends them, and ``member_fields``, the root's
+``flow.member_count`` and ``flow.member_name`` from the list. A capture with several roots gets one
 entry per root (``name``, ``name#2``, ...).
 """
 
@@ -39,7 +40,14 @@ def main() -> None:
         graphs = client.get("/api/graphs").json()["graphs"]
         for index, graph in enumerate(sorted(graphs, key=lambda g: g["task_id"])):
             key = name if index == 0 else f"{name}#{index + 1}"
-            out[key] = client.get(f"/api/graphs/{graph['task_id']}").json()
+            detail = client.get(f"/api/graphs/{graph['task_id']}").json()
+            # What the flows list says about this root, to be matched by layoutFlow
+            flow = graph["flow"]
+            detail["member_fields"] = {
+                "member_count": flow["member_count"],
+                "member_name": flow["member_name"],
+            }
+            out[key] = detail
     OUT.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
     print(f"wrote {len(out)} graphs to {OUT}")
 

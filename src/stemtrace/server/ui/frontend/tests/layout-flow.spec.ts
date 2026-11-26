@@ -733,3 +733,41 @@ test.describe('layoutFlow: the shared task of a container', () => {
     expect(shown.every((task) => task.sharedTask)).toBe(true)
   })
 })
+
+test.describe('layoutFlow: flows list title fields', () => {
+  test('every capture has the server fields to compare with', () => {
+    const missing = Object.entries(allCaptures())
+      .filter(([, graph]) => graph.member_fields === undefined)
+      .map(([name]) => name)
+
+    expect(missing).toEqual([])
+    expect(Object.keys(allCaptures()).length).toBeGreaterThan(100)
+  })
+
+  // The server computes member_count and member_name in flow_summary (src/stemtrace/core/graph.py,
+  // tests/unit/test_flow_member_fields.py); the flows list title must equal the page's container.
+  for (const [name, { root_id, nodes, member_fields }] of Object.entries(allCaptures())) {
+    test(`the server's member fields equal the root container of ${name}`, () => {
+      const root = layoutFlow(nodes, root_id, new Set()).containers.find((c) => c.id === root_id)
+
+      expect(member_fields).toEqual({
+        member_count: root ? root.memberCount : null,
+        member_name: root ? root.sharedName : null,
+      })
+    })
+  }
+})
+
+test.describe('layoutFlow: empty shared name', () => {
+  for (const name of ['app.', '']) {
+    test(`members named ${JSON.stringify(name)} have no shared name`, () => {
+      const nodes = group(3)
+      for (const id of ['m0', 'm1', 'm2']) nodes[id].name = name
+
+      const box = layoutFlow(nodes, 'g', new Set()).containers.find((c) => c.id === 'g')
+
+      expect(box?.memberCount).toBe(3)
+      expect(box?.sharedName).toBeNull()
+    })
+  }
+})

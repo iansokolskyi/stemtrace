@@ -509,10 +509,11 @@ export function layoutFlow(
       return nodes[failedCell ?? row[row.length - 1]].state
     })
     const lastNames = rows.map((row) => nodes[row[row.length - 1]].name)
+    // An empty last segment ("app.") is no name: the title falls back to "N tasks"
     const sharedName =
-      lastNames.length > 0 && lastNames.every((name) => name === lastNames[0])
+      (lastNames.length > 0 && lastNames.every((name) => name === lastNames[0])
         ? lastNameSegment(lastNames[0])
-        : null
+        : null) || null
     // Only the end of each row is the shared task; a chain's earlier steps keep their own names
     if (sharedName) for (const end of rowEnds) end.sharedTask = true
     const failedCount = memberStates.filter(isFailedState).length
