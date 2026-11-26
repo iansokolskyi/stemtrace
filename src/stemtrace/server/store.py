@@ -110,7 +110,7 @@ class RootFlows(NamedTuple):
     # Children of the roots that are not tasks (or are missing).
     containers: set[str]
     # Root ID -> copies of its members' last tasks (only when asked for).
-    member_ends: dict[str, list[TaskNode]] | None = None
+    member_ends: dict[str, list[NodeNaming]] | None = None
 
 
 def _snapshot(node: TaskNode) -> TaskNode:
@@ -121,6 +121,23 @@ def _snapshot(node: TaskNode) -> TaskNode:
     API response see duplicated or skipped events. Call with the lock held.
     """
     return node.snapshot()
+
+
+class NodeNaming(NamedTuple):
+    """What naming a node from its task arguments reads (see ``_naming_view``)."""
+
+    task_id: str
+    name: str
+    events: list[TaskEvent]
+
+
+def _naming_view(node: TaskNode) -> NodeNaming:
+    """A cheap copy of a node's name and events (``_snapshot`` costs ~35 us a node).
+
+    The events list is copied (the consumer inserts into the live one); the
+    events themselves are immutable. Call with the lock held.
+    """
+    return NodeNaming(node.task_id, node.name, list(node.events))
 
 
 # Fallback for nodes with no events (synthetic nodes)
@@ -1403,13 +1420,13 @@ class GraphStore:
                     ):
                         related[child_id] = _snapshot(child)
             summaries: dict[str, FlowSummary] = {}
-            member_ends: dict[str, list[TaskNode]] = {}
+            member_ends: dict[str, list[NodeNaming]] = {}
             for n in live:
                 graph = self._graph_locked(n.task_id)
                 ends = member_row_ends(graph, n.task_id) if with_member_ends else None
                 summaries[n.task_id] = flow_summary(graph, n.task_id, ends)
                 if ends is not None:
-                    member_ends[n.task_id] = [_snapshot(end) for end in ends]
+                    member_ends[n.task_id] = [_naming_view(end) for end in ends]
             return RootFlows(roots, related, summaries, total, containers, member_ends)
 
     def _root_nodes_locked(

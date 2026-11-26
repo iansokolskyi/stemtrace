@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.store import (
         GraphStore,
+        NodeNaming,
         RootFlows,
         WorkerRegistry,
         WorkerTimeline,
@@ -285,7 +286,7 @@ def _node_to_response(
     )
 
 
-def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
+def _resolve_node_alias(node: TaskNode | NodeNaming, key: str | None) -> str:
     """Resolve display name for a graph node from task arguments.
 
     When a key is configured, extracts a value from the args (if key is a
