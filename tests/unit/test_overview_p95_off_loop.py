@@ -59,8 +59,10 @@ async def test_p95_sorts_off_the_event_loop(
 
     def probe(samples: list[int]) -> Any:
         threads.add(threading.get_ident())
-        # Blocks this thread until the event loop, still running, sets the flag.
-        waited.append(released.wait(timeout=5))
+        # The first call blocks this thread until the event loop, still running, sets
+        # the flag; later ones (one per bucket) pass at once.
+        if not waited:
+            waited.append(released.wait(timeout=2))
         return p95(samples)
 
     monkeypatch.setattr(summary_routes, "p95", probe)
