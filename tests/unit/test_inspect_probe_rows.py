@@ -523,8 +523,12 @@ def test_p5_shutdown_during_a_blocked_probe_returns_within_the_stop_bound(
     began = time.monotonic()
     client.__exit__(None, None, None)
     elapsed = time.monotonic() - began
+    gate_was_open = fleet.first_attempt_gate.is_set()
+    # The probe thread was abandoned on purpose: let it finish while this test's fakes are
+    # still installed, so it can't consume a later test's.
+    fleet.first_attempt_gate.set()
 
-    assert not fleet.first_attempt_gate.is_set()
+    assert not gate_was_open
     assert elapsed < 2.0
 
 

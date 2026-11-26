@@ -433,7 +433,7 @@ _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
 
 
 class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no types
-    """Connection pool whose connections give up on the first connection error.
+    """Connection pool whose connections call ``ensure`` with ``max_retries=0`` by default.
 
     Celery's inspect publishes with ``Producer.publish(retry=True)``, which passes no retry
     policy: kombu's ``Connection.ensure`` then reconnects for ever (``max_retries=None``
@@ -447,6 +447,8 @@ class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no typ
 
         def ensure(obj: Any, fun: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
             """Call kombu's ``ensure`` with ``max_retries=0`` unless the caller sets one."""
+            # kombu 5.2.2 (the floor) still makes one reconnect and sleeps 1 s before it
+            # raises with max_retries=0; 5.6.2 raises at once.
             if len(args) < 2:  # max_retries is the 4th positional parameter
                 kwargs.setdefault("max_retries", 0)
             return kombu_ensure(obj, fun, *args, **kwargs)

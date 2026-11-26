@@ -532,9 +532,11 @@ completed since) is remembered until a completed call it doesn't answer proves i
 
 An unregistered item can carry `similar_name`, a live task you might have renamed it from. It
 is the one live name in the same module whose last segment, with a trailing `_v<N>` removed
-from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio, and no
+from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio (the
+unregistered name is the first argument, and the ratio can differ when you swap them), and no
 other live name scores the same. Names that differ only in case are compared as written. It's
-`null` when no name qualifies, when two names tie, and for a name with no module (no dot).
+`null` when no name qualifies, when two or more names tie for the best score, and for a name
+with no module (no dot).
 `celery.*` names and the names of stopped workers are never suggested. The hint is a guess:
 `send_email` gets `send_emails` even when they are different tasks.
 

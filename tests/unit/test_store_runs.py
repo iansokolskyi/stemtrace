@@ -193,10 +193,10 @@ def test_record_follows_a_rename_on_another_tasks_event() -> None:
     for event in order[:at]:
         graph.add_event(event)
         store.add_event(event)
-    graph.take_renamed()
+    graph.take_changed()
 
     graph.add_event(order[at])
-    renamed = graph.take_renamed() - {order[at].task_id}
+    renamed = graph.take_changed() - {order[at].task_id}
     store.add_event(order[at])
 
     assert renamed  # the premise: another task was renamed

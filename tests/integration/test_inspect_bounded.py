@@ -1,4 +1,7 @@
-"""Rows I1 and I2 of D7a against real connection failures (no broker is running).
+"""Rows I1, I2, I6, I7 and I11 of D7a against real connection failures.
+
+I1, I2 and I6 need no broker. I7 and I11 put a fault proxy in front of a real Redis or
+RabbitMQ; they skip when none is reachable and fail when ``STEMTRACE_REQUIRE_BROKERS=1``.
 
 Real kombu, real sockets: a closed local port refuses at once, a non-routable
 address (``10.255.255.1``) never answers, so only our own bounds end the attempt.
@@ -268,7 +271,7 @@ def test_i7_a_connection_that_goes_silent_mid_attempt_ends_the_attempt(
     refresher._lock.release()
 
 
-# --- I8: the connection breaks between a call's last read and its publish write ----------
+# --- I11: the connection breaks between a call's last read and its publish write ----------
 
 PUBLISH_SLEEP_BOUND = 2
 BROKEN_PUBLISH_BOUND_S = 6.0
@@ -280,7 +283,7 @@ class _StopRetrying(Exception):
 
 
 @pytest.mark.parametrize("kind", ["redis", "amqp"])
-def test_i8_a_broker_that_goes_down_before_the_publish_write_ends_the_attempt(
+def test_i11_a_broker_that_goes_down_before_the_publish_write_ends_the_attempt(
     kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Celery's ``Mailbox._publish`` publishes with ``retry=True``: kombu's ``ensure``

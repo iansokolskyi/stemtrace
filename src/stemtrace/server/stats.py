@@ -1,4 +1,4 @@
-"""Aggregates over the store's run records: KPIs, time series, failure groups.
+"""Aggregates over the store's run records: KPIs, time series, failure groups, task stats.
 
 Pure functions over :class:`RunRecord` lists. The store hands out a copy of its
 records (see ``GraphStore.run_records``), so everything here runs outside the
@@ -392,7 +392,12 @@ def percentile(sorted_samples: Sequence[int], percent: int) -> int | None:
 
     The value at rank ``ceil(percent * n / 100)``, counted from 1. The rank is
     computed in integers: ``0.95 * n`` is not exact in floats for every ``n``.
+
+    Raises:
+        ValueError: If ``percent`` is not in 1..100.
     """
+    if not 1 <= percent <= 100:
+        raise ValueError(f"percent must be in 1..100, got {percent}")
     if not sorted_samples:
         return None
     rank = -(-percent * len(sorted_samples) // 100)

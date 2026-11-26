@@ -863,9 +863,9 @@ class TaskGraph(BaseModel):
     # Root IDs in the order they became roots: a dict used as an ordered set,
     # so adding and removing a root is O(1). Exposed as ``root_ids``.
     _roots: dict[str, None] = PrivateAttr(default_factory=dict)
-    # Existing tasks whose name or reported parent changed since the last take_renamed(): a
+    # Existing tasks whose name or reported parent changed since the last take_changed(): a
     # task.replace() reuse can re-pick a task's name on another task's event.
-    _renamed_ids: set[str] = PrivateAttr(default_factory=set)
+    _changed_ids: set[str] = PrivateAttr(default_factory=set)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
@@ -1171,14 +1171,14 @@ class TaskGraph(BaseModel):
         if node.name != old_name:
             self._renamed(node, old_name)
         if parent_changed:
-            self._renamed_ids.add(task_id)  # its reported parent is on its record
+            self._changed_ids.add(task_id)  # its reported parent is on its record
             self._reported_parent_changed(node, old_parent)
             self._place(node)
             self._retrigger(task_id)
             if not node._is_reused():
                 self._recheck_walkers(task_id)
 
-    def take_renamed(self) -> set[str]:
+    def take_changed(self) -> set[str]:
         """IDs of existing tasks renamed or re-parented since the last call, and forget them.
 
         Every rename of an existing task goes through ``_renamed`` and every
@@ -1187,10 +1187,10 @@ class TaskGraph(BaseModel):
         when a node is removed, so a cache keyed by the event's task ID misses it.
 
         Returns:
-            The renamed task IDs (removed tasks included).
+            The changed task IDs (removed tasks included).
         """
-        renamed, self._renamed_ids = self._renamed_ids, set()
-        return renamed
+        changed, self._changed_ids = self._changed_ids, set()
+        return changed
 
     def _renamed(self, node: TaskNode, old_name: str) -> None:
         """Re-run what read a task's name after its events gave it another.
@@ -1199,7 +1199,7 @@ class TaskGraph(BaseModel):
         a chord's body (``_refresh_unlock``) and is never a chain link
         (``_can_link``). A ``task.replace()`` reuse can rename a task.
         """
-        self._renamed_ids.add(node.task_id)
+        self._changed_ids.add(node.task_id)
         if (old_name == _CHORD_UNLOCK_TASK) == (node.name == _CHORD_UNLOCK_TASK):
             return
         self._rechain_owner_of(node.task_id)  # it may stop being a link
