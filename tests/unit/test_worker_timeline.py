@@ -266,13 +266,18 @@ def test_record_node_bound_holds_when_a_naive_node_is_present() -> None:
 
 def test_consumer_naive_shutdown_after_aware_ready_still_marks_worker_offline() -> None:
     registry = WorkerRegistry()
-    consumer = _consumer(WorkerTimeline(), registry)
+    timeline = WorkerTimeline()
+    consumer = _consumer(timeline, registry)
     # _handle_event runs the wall-clock stale check, so stamp the events now.
     now = datetime.now(timezone.utc)
     consumer._handle_event(_event(READY, base=now))
     consumer._handle_event(_naive_event(SHUTDOWN, seconds=10, base=now))
 
     assert [w.status for w in registry.get_all_workers()] == [WorkerStatus.OFFLINE]
+    assert [e.timestamp.utcoffset() for e in timeline.events_for("celery@w1")] == [
+        timedelta(0),
+        timedelta(0),
+    ]
 
 
 class _FailingTimeline(WorkerTimeline):

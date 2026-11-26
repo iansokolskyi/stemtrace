@@ -8,6 +8,7 @@ through an ASGI transport, so a waiter's cost in threads is observable.
 """
 
 import asyncio
+import statistics
 import threading
 import time
 import uuid
@@ -29,6 +30,8 @@ BROKER = "redis://broker:6379/0"
 NODE = "w1@host"
 BOUND_S = 5.0
 SHORT_WAIT_S = 0.4
+LOOP_FACTOR = 20
+LOOP_SLACK_S = 0.3
 
 
 class GatedBroker:
@@ -105,8 +108,13 @@ class Server:
     ) -> None:
         self.client = client
         self.refresher = refresher
+        # A one-off process pause (CI recorded 0.35 s on a request in a test with
+        # no waiters): the next request freezes the loop this long, once.
+        self.stall_next_s = 0.0
 
     async def get(self, path: str = "/api/workers?refresh=true") -> httpx.Response:
+        stall, self.stall_next_s = self.stall_next_s, 0.0
+        time.sleep(stall)
         return await self.client.get(path)
 
 
@@ -128,6 +136,21 @@ async def server(broker: GatedBroker) -> AsyncIterator[Server]:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield Server(client, refresher)
+
+
+async def timed_get(server: Server, path: str) -> float:
+    began = time.monotonic()
+    await server.get(path)
+    return time.monotonic() - began
+
+
+async def fastest_get(server: Server, path: str, stall_s: float = 0.0) -> float:
+    """Fastest of 3 requests: waiters that starve the loop slow every one, a pause one."""
+    server.stall_next_s = stall_s
+    return min([await timed_get(server, path) for _ in range(3)])
+
+
+STALLS = pytest.mark.parametrize("stall_s", [0.0, 0.5], ids=["steady", "one_stall"])
 
 
 async def started(broker: GatedBroker) -> None:
@@ -182,15 +205,15 @@ async def test_r1_a_waiter_returns_only_after_the_attempt_finishes(
     assert broker.attempts == 1
 
 
+@STALLS
 async def test_r1_refresh_false_does_not_wait(
-    server: Server, broker: GatedBroker
+    server: Server, broker: GatedBroker, stall_s: float
 ) -> None:
     first = asyncio.create_task(server.get())
     await started(broker)
 
-    began = time.monotonic()
+    elapsed = await fastest_get(server, "/api/workers?refresh=false", stall_s)
     response = await server.get("/api/workers?refresh=false")
-    elapsed = time.monotonic() - began
     broker.gate.set()
     await first
 
@@ -227,25 +250,32 @@ def test_r2_the_bound_is_below_the_clients_timeout() -> None:
 # --- R3: waiting costs no threads and doesn't block the loop -----------------------------
 
 
+@STALLS
 async def test_r3_two_hundred_waiters_hold_no_threads_and_other_routes_answer(
-    server: Server, broker: GatedBroker
+    server: Server, broker: GatedBroker, stall_s: float
 ) -> None:
     first = asyncio.create_task(server.get())
     await started(broker)
     threads_before = threading.active_count()
+    # The same route with nobody waiting: host load slows it as much as the loaded
+    # request below, so the comparison holds on a busy host.
+    baseline = statistics.median(
+        [await timed_get(server, "/api/tasks") for _ in range(5)]
+    )
 
     waiters = [asyncio.create_task(server.get()) for _ in range(200)]
     await asyncio.sleep(0.5)
     threads_with_waiters = threading.active_count()
-    began = time.monotonic()
+    elapsed = await asyncio.wait_for(
+        fastest_get(server, "/api/tasks", stall_s), 3 * BOUND_S
+    )
     other = await server.get("/api/tasks")
-    elapsed = time.monotonic() - began
     pending = [w for w in waiters if not w.done()]
     broker.gate.set()
     responses = await asyncio.gather(first, *waiters)
 
     assert other.status_code == 200
-    assert elapsed < 0.2
+    assert elapsed < LOOP_FACTOR * baseline + LOOP_SLACK_S
     assert len(pending) == 200
     assert threads_with_waiters - threads_before <= 5
     assert {r.status_code for r in responses} == {200}

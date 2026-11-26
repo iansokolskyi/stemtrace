@@ -11,13 +11,10 @@ import pytest
 from stemtrace.core.anomalies import (
     SIMILAR_NAME_MIN_SCORE,
     AnomalyKind,
-    RegistryFacts,
     _live_by_module,
     _similar_name,
 )
-from tests.unit.anomaly_pipeline import at
 from tests.unit.test_anomalies_unregistered import (
-    FRESH,
     OLD,
     pending,
     registry,
@@ -129,17 +126,13 @@ def test_hint_is_on_the_per_name_item_and_its_task_node() -> None:
     assert nodes["t1"].similar_name == "app.sync_invoices"
 
 
-def test_hint_candidates_are_the_registry_live_names() -> None:
-    facts = RegistryFacts(
-        live_names=frozenset({"app.other"}),
-        any_live=True,
-        authority_at=at(FRESH),
-        broker_configured=True,
-    )
+def test_score_takes_the_unregistered_name_first() -> None:
+    # SequenceMatcher's ratio is not symmetric: 0.75 one way, 0.667 the other.
+    assert ratio("create_user", "create_report") == pytest.approx(0.75)
+    assert ratio("create_report", "create_user") == pytest.approx(2 / 3)
 
-    items, _, _ = run([pending("t1", OLD, "app.sync_invoices_v2")], facts)
-
-    assert unregistered(items)[0].similar_name is None
+    assert hint("app.create_user", ("app.create_report",)) == "app.create_report"
+    assert hint("app.create_report", ("app.create_user",)) is None
 
 
 def test_builtin_names_are_never_candidates() -> None:

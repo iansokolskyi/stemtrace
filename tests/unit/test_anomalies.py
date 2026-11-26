@@ -20,6 +20,7 @@ from stemtrace.core.anomalies import (
     Anomaly,
     AnomalyEvidence,
     AnomalyKind,
+    AnomalyReport,
     AnomalySettings,
     NodeFacts,
     RuntimeStats,
@@ -97,6 +98,10 @@ def test_counts_has_every_kind_even_with_no_anomaly() -> None:
         "unregistered",
         "no_workers_online",
     ]
+
+
+def test_counts_default_has_every_kind_at_zero() -> None:
+    assert dict(AnomalyReport(anomalies={}).counts) == dict.fromkeys(AnomalyKind, 0)
 
 
 def test_counts_tally_each_flagged_kind() -> None:

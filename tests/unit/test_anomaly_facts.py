@@ -88,6 +88,17 @@ def test_runtime_facts_for_some_names_equal_the_same_rows_of_all_names() -> None
     assert some == {name: everything[name] for name in some}
 
 
+def test_runtime_facts_count_runs_older_than_a_year() -> None:
+    store = GraphStore()
+    for event in completed_runs("app.old", 5, 2):
+        store.add_event(event)
+
+    stats = runtime_facts(store.run_records(), at(400 * 86400))
+
+    assert stats["app.old"].runtime_samples == 5
+    assert stats["app.old"].p95_ms == 2000
+
+
 def test_cancelled_retry_gets_full_facts_and_its_name_no_runtime_stats() -> None:
     store = GraphStore()
     for event in [

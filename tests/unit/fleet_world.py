@@ -428,7 +428,8 @@ class World:
     def late_ready(self, name: str) -> None:
         """A re-announce of the listed pid stamped after its ready but before its ``last_seen``.
 
-        Not stale, so it is a new process for the registry, but ``last_seen`` stays (D4e reading 15).
+        It is not older than the stored ready, so it registers again, but ``last_seen`` never moves
+        back (D4e reading 16).
         """
         node = self.nodes.get(name)
         listed = self.reg.get(name)

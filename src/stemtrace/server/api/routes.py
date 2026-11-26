@@ -13,7 +13,7 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple
 
 from celery import Celery
 from celery.app.amqp import AMQP
@@ -69,6 +69,9 @@ from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
 )
+from stemtrace.server.stats import queue_wait_sort_value, runtime_sort_value
+from stemtrace.server.worker_active import count_active_by_node
+from stemtrace.server.worker_pool import pool_from_stats_payload
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
@@ -81,8 +84,14 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
-    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
+    from stemtrace.server.store import (
+        GraphStore,
+        WorkerRegistry,
+        WorkerSnapshot,
+        WorkerTimeline,
+    )
     from stemtrace.server.websocket import WebSocketManager
+    from stemtrace.server.worker_pool import PoolInfo
 
 logger = logging.getLogger(__name__)
 
@@ -441,7 +450,7 @@ _INSPECT_CONNECT_BOUNDS: dict[str, object] = {
 
 
 class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no types
-    """Connection pool whose connections give up on the first connection error.
+    """Connection pool whose connections call ``ensure`` with ``max_retries=0`` by default.
 
     Celery's inspect publishes with ``Producer.publish(retry=True)``, which passes no retry
     policy: kombu's ``Connection.ensure`` then reconnects for ever (``max_retries=None``
@@ -455,6 +464,8 @@ class _FailFastPool(ConnectionPool):  # type: ignore[misc]  # kombu ships no typ
 
         def ensure(obj: Any, fun: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
             """Call kombu's ``ensure`` with ``max_retries=0`` unless the caller sets one."""
+            # kombu 5.2.2 (the floor) still makes one reconnect and sleeps 1 s before it
+            # raises with max_retries=0; 5.6.2 raises at once.
             if len(args) < 2:  # max_retries is the 4th positional parameter
                 kwargs.setdefault("max_retries", 0)
             return kombu_ensure(obj, fun, *args, **kwargs)
@@ -599,11 +610,13 @@ def _refresh_worker_registry_from_inspect(
     # worker_shutdown, then restarted). A node that answers without a pid is
     # treated like a ping reply.
     replies: dict[str, tuple[int | None, list[str] | None]] = {}
+    pools: dict[str, PoolInfo] = {}
     for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
         tasks = _tasks_for_worker_key(registered, nodename) if pid else None
         replies[nodename] = (pid, tasks)
-    worker_registry.apply_stats_reply(seen, replies)
+        pools[nodename] = pool_from_stats_payload(payload)
+    worker_registry.apply_stats_reply(seen, replies, pools=pools)
     return _InspectOutcome(frozenset(replies), complete)
 
 
@@ -1119,6 +1132,17 @@ def _add_task_routes(
         compact: Annotated[
             bool, Query(description="Leave out each task's events (events: null)")
         ] = False,
+        sort: Annotated[
+            Literal["runtime", "queue_wait"] | None,
+            Query(
+                description=(
+                    "Slowest first by runtime or queue wait: the samples the "
+                    "overview's p95 tiles use. Runs the tiles leave out (not "
+                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
+                    "come last. Default: newest update first."
+                )
+            ),
+        ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -1137,7 +1161,8 @@ def _add_task_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
-        nodes, total = store.get_nodes(
+        find = functools.partial(
+            store.get_nodes,
             limit=limit,
             offset=offset,
             state=states,
@@ -1151,6 +1176,14 @@ def _add_task_routes(
             exception_type=exception_type,
             task_names=task_names,
         )
+        if sort is None:
+            nodes, total = find()
+        else:
+            # The sort touches every match with a Python key: off the loop.
+            sort_key = (
+                runtime_sort_value if sort == "runtime" else queue_wait_sort_value
+            )
+            nodes, total = await run_in_threadpool(find, sort_key=sort_key)
         return TaskListResponse(
             tasks=[
                 _node_to_response(
@@ -1411,9 +1444,31 @@ def _add_group_routes(
         )
 
 
+async def _worker_responses(
+    store: GraphStore, snapshots: list[WorkerSnapshot]
+) -> list[WorkerResponse]:
+    """Worker rows with ``active`` from one scan of the run records, off the loop.
+
+    The scan runs only when some row is live, and covers all of them at once.
+    """
+    since = {s.info.hostname: s.info.ready_at for s in snapshots if s.live}
+    counts: dict[str, int] = {}
+    if since:
+        counts = await run_in_threadpool(
+            lambda: count_active_by_node(store.run_records(), since)
+        )
+    return [
+        WorkerResponse.model_validate(s.info).model_copy(
+            update={"active": counts[s.info.hostname] if s.live else None}
+        )
+        for s in snapshots
+    ]
+
+
 def _add_worker_routes(
     router: APIRouter,
     *,
+    store: GraphStore,
     worker_registry: WorkerRegistry | None,
     refresher: _InspectRefresher,
 ) -> None:
@@ -1443,11 +1498,8 @@ def _add_worker_routes(
         if refresh:
             await refresher.maybe_refresh()
 
-        workers = worker_registry.get_all_workers()
-        return WorkerListResponse(
-            workers=[WorkerResponse.model_validate(w) for w in workers],
-            total=len(workers),
-        )
+        workers = await _worker_responses(store, worker_registry.snapshot_workers())
+        return WorkerListResponse(workers=workers, total=len(workers))
 
     @router.get(
         "/workers/{hostname}",
@@ -1462,11 +1514,10 @@ def _add_worker_routes(
         if worker_registry is None:
             return WorkerListResponse(workers=[], total=0)
 
-        workers = worker_registry.get_workers_by_hostname(hostname)
-        return WorkerListResponse(
-            workers=[WorkerResponse.model_validate(w) for w in workers],
-            total=len(workers),
+        workers = await _worker_responses(
+            store, worker_registry.snapshot_workers(hostname)
         )
+        return WorkerListResponse(workers=workers, total=len(workers))
 
 
 class _ApiRoute(APIRoute):
@@ -1601,7 +1652,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     add_summary_routes(
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
-    _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    _add_worker_routes(
+        router, store=store, worker_registry=worker_registry, refresher=refresher
+    )
     add_anomaly_routes(router, evaluator=evaluator, refresher=refresher)
     _serve_head_on_get_routes(router)
     return router

@@ -5,25 +5,53 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from fastapi import WebSocket
 
     from stemtrace.core.events import TaskEvent
 
 logger = logging.getLogger(__name__)
 
+# Backoff after an unexpected broadcast-loop error, and the gap between
+# summary log lines while the failure continues.
+LOOP_ERROR_BACKOFF_INITIAL_S = 0.5
+LOOP_ERROR_BACKOFF_MAX_S = 30.0
+LOOP_ERROR_LOG_INTERVAL_S = 60.0
+
 
 class WebSocketManager:
     """Thread-safe WebSocket manager that broadcasts events to connected clients."""
 
-    def __init__(self) -> None:
-        """Initialize WebSocket manager with empty connection set."""
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Initialize WebSocket manager with empty connection set.
+
+        Args:
+            sleep: Awaitable sleep used to back off after a loop error.
+            clock: Monotonic clock used to rate-limit error logs.
+        """
         self._connections: set[WebSocket] = set()
-        self._queue: asyncio.Queue[TaskEvent] = asyncio.Queue()
+        # (loop, queue) built per lifespan: an asyncio.Queue binds to the first loop
+        # that awaits it. One tuple so a reader never mixes two lifespans.
+        self._target: (
+            tuple[asyncio.AbstractEventLoop, asyncio.Queue[TaskEvent]] | None
+        ) = None
+        self._sleep = sleep
+        self._clock = clock
         self._broadcast_task: asyncio.Task[None] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def _loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._target[0] if self._target else None
 
     @property
     def connection_count(self) -> int:
@@ -45,14 +73,16 @@ class WebSocketManager:
 
     def queue_event(self, event: TaskEvent) -> None:
         """Queue event for broadcast. Thread-safe, called from consumer thread."""
-        if self._loop is None:
+        target = self._target
+        if target is None:
             return
+        loop, queue = target
 
         def _put_event() -> None:
-            self._queue.put_nowait(event)
+            queue.put_nowait(event)
 
         with contextlib.suppress(RuntimeError):
-            self._loop.call_soon_threadsafe(_put_event)
+            loop.call_soon_threadsafe(_put_event)
 
     async def broadcast(self, event: TaskEvent) -> None:
         """Send event to all connected clients."""
@@ -81,8 +111,9 @@ class WebSocketManager:
 
     async def start_broadcast_loop(self) -> None:
         """Start background task. Call during lifespan startup."""
-        self._loop = asyncio.get_running_loop()
-        self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        queue: asyncio.Queue[TaskEvent] = asyncio.Queue()
+        self._target = (asyncio.get_running_loop(), queue)
+        self._broadcast_task = asyncio.create_task(self._broadcast_loop(queue))
         logger.debug("WebSocket broadcast loop started")
 
     async def stop_broadcast_loop(self) -> None:
@@ -92,15 +123,38 @@ class WebSocketManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._broadcast_task
             self._broadcast_task = None
-        self._loop = None
+        self._target = None
         logger.debug("WebSocket broadcast loop stopped")
 
-    async def _broadcast_loop(self) -> None:
+    async def _broadcast_loop(self, queue: asyncio.Queue[TaskEvent]) -> None:
+        failures = 0
+        last_log: float | None = None
+        delay = LOOP_ERROR_BACKOFF_INITIAL_S
         while True:
             try:
-                event = await self._queue.get()
+                event = await queue.get()
                 await self.broadcast(event)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                logger.exception("Error in broadcast loop")
+            except Exception as exc:  # the loop must outlive any one failure
+                failures += 1
+                now = self._clock()
+                if last_log is None:
+                    logger.exception("Error in broadcast loop")
+                    last_log = now
+                elif now - last_log >= LOOP_ERROR_LOG_INTERVAL_S:
+                    logger.error(
+                        "Broadcast loop still failing (%d errors, last: %s)",
+                        failures,
+                        exc,
+                    )
+                    last_log = now
+                # Back off so a persistent error cannot spin the event loop.
+                await self._sleep(delay)
+                delay = min(delay * 2, LOOP_ERROR_BACKOFF_MAX_S)
+            else:
+                if last_log is not None:
+                    logger.error("Broadcast loop recovered after %d errors", failures)
+                failures = 0
+                last_log = None
+                delay = LOOP_ERROR_BACKOFF_INITIAL_S

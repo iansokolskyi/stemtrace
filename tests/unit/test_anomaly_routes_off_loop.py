@@ -11,7 +11,14 @@ from stemtrace.server.api import anomaly_routes
 from tests.unit.anomaly_api import freeze_clock, get, make_app, seeded
 from tests.unit.anomaly_pipeline import READY, task_event, worker_event
 
-PATHS = ["/api/anomalies", "/api/tasks", "/api/graphs", "/api/tasks/s1"]
+PATHS = [
+    "/api/anomalies",
+    "/api/tasks",
+    "/api/graphs",
+    "/api/tasks/s1",
+    "/api/tasks/s1/children",
+    "/api/graphs/s1",
+]
 LOCK_WAIT_S = 3
 LOOP_WAIT_S = 5
 

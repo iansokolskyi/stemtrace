@@ -233,11 +233,14 @@ class AnomalyReport:
 
     ``anomalies`` maps a task ID to the item that covers it (an unregistered
     task maps to its name's item). ``items`` is the list: each stuck or
-    interrupted task, one item per unregistered name, at most one fleet item. ``counts`` tallies ``items`` and has every kind (0 included).
+    interrupted task, one item per unregistered name, at most one fleet item.
+    ``counts`` tallies ``items`` and has every kind (0 included).
     """
 
     anomalies: Mapping[str, Anomaly]
-    counts: Mapping[AnomalyKind, int] = field(default_factory=dict)
+    counts: Mapping[AnomalyKind, int] = field(
+        default_factory=lambda: dict.fromkeys(AnomalyKind, 0)
+    )
     items: Sequence[Anomaly] = ()
 
 
@@ -390,6 +393,8 @@ def _unregistered(
     for task in waiting:
         if task.name not in registry.live_names:
             by_name[task.name].append(task)
+    if not by_name:
+        return {}, []
     by_module = _live_by_module(registry.live_names)
     by_task: dict[str, Anomaly] = {}
     items: list[Anomaly] = []
@@ -416,14 +421,13 @@ def _split(name: str) -> tuple[str, str]:
 def _live_by_module(live_names: Iterable[str]) -> dict[str, list[tuple[str, str]]]:
     """Live names grouped by module as (name, version-stripped last segment).
 
-    Skips built-ins, names with no module and names whose segment is only a
-    version suffix.
+    Skips built-ins and names with no module.
     """
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for name in live_names:
         module, last = _split(name)
         stem = _VERSION_SUFFIX.sub("", last)
-        if module and stem and not name.startswith(_BUILTIN_PREFIX):
+        if module and not name.startswith(_BUILTIN_PREFIX):
             grouped[module].append((name, stem))
     return grouped
 
@@ -499,13 +503,14 @@ def _threshold(stats: RuntimeStats, settings: AnomalySettings) -> timedelta:
     """``max(k x p95, floor)`` with enough samples, else ``max(ceiling, floor)``."""
     if stats.p95_ms is not None and stats.runtime_samples >= settings.stuck_min_samples:
         scaled_ms = settings.stuck_factor * stats.p95_ms
-        # Total for any factor: timedelta raises OverflowError above ~8.6e16 ms,
-        # and inf x 0 is nan, which fails the comparison and takes the cap too.
-        scaled = (
-            timedelta(milliseconds=scaled_ms)
-            if scaled_ms < MAX_STUCK_THRESHOLD / _MILLISECOND
-            else MAX_STUCK_THRESHOLD
-        )
+        # Total for any factor: timedelta raises OverflowError beyond about +-8.6e16 ms.
+        # inf takes the cap; negative and nan (inf x 0) fall to the floor.
+        if scaled_ms >= MAX_STUCK_THRESHOLD / _MILLISECOND:
+            scaled = MAX_STUCK_THRESHOLD
+        elif scaled_ms >= 0:
+            scaled = timedelta(milliseconds=scaled_ms)
+        else:
+            scaled = timedelta(0)
         return max(scaled, settings.stuck_floor)
     return max(settings.stuck_ceiling, settings.stuck_floor)
 
