@@ -1,12 +1,14 @@
 """``active`` against an oracle built from the raw events (B4b).
 
-A seeded script of worker events (ready, a replayed ready with an older stamp, stats
-naming a pid and its pool, stop, silence) and task lifecycles (stuck, finished, retried,
+A seeded script of worker events (ready, a replayed or same-stamp ready, stats
+naming a pid and its pool, stop, silence, a reply naming an unlisted pid) and task lifecycles (stuck, finished, retried,
 retried and started again, cancelled, no hostname, late delivery) is fed to a real
 ``GraphStore`` (small ``max_nodes`` on some seeds) and ``WorkerRegistry`` (task events
 call ``mark_seen``). The oracle never reads a ``RunRecord``: it keeps each nodename's
 live pid, ``worker_ready`` stamp (the newest one) and pool from the worker events, and
-counts a task when the events the store still holds end at STARTED, on that nodename, at
+counts a task when the events the store still holds end at STARTED (it reads the
+store to learn which tasks survived eviction: re-deriving the eviction policy would
+restate it, and ``test_store_runs.py`` covers that policy), on that nodename, at
 or after the live pid's ``worker_ready``.
 ``STEMTRACE_FUZZ_SEEDS=a:b`` widens the range for a sweep.
 """
@@ -46,12 +48,13 @@ POOLS = [
     PoolInfo("prefork", None),
 ]
 SMALL_STORE = 12
+UNLISTED_PID = 99  # not in PIDS: no worker_ready or stats reply names it
 
 
 @dataclass
 class Op:
     at: datetime
-    kind: str  # ready | stats | stop | silent | task
+    kind: str  # ready | stats | stop | silent | unlisted | task
     node: str = ""
     pid: int = 0
     events: list[TaskEvent] = field(default_factory=list)
@@ -68,6 +71,7 @@ class Oracle:
     ready: dict[tuple[str, int], datetime] = field(default_factory=dict)
     pool: dict[tuple[str, int], PoolInfo] = field(default_factory=dict)
     stopped: dict[str, bool] = field(default_factory=dict)
+    superseded: dict[str, bool] = field(default_factory=dict)
     events: Counter[str] = field(default_factory=Counter)
 
     def apply(self, op: Op) -> None:
@@ -80,6 +84,10 @@ class Oracle:
                         self.pool.get(key, NO_POOL_INFO) != NO_POOL_INFO
                     )
                     self.pool[key] = NO_POOL_INFO
+                if earlier is not None and op.at == earlier:
+                    self.events["same-stamp-ready-keeps-pool"] += (
+                        self.pool.get(key, NO_POOL_INFO) != NO_POOL_INFO
+                    )
                 if earlier is not None and op.at < earlier:
                     self.events["replayed-ready-keeps-newest-stamp"] += 1
                     self.events["replayed-ready-keeps-pool"] += (
@@ -88,12 +96,21 @@ class Oracle:
                 self.newest[op.node] = op.pid
                 self.alive[op.node] = True
                 self.stopped[op.node] = False
+                self.superseded[op.node] = False
                 self.ready[key] = max(earlier or op.at, op.at)
             case "stats":
                 self.newest[op.node] = op.pid
                 self.alive[op.node] = True
                 self.stopped[op.node] = False
+                self.superseded[op.node] = False
                 self.pool[key] = op.pool
+            case "unlisted":
+                # A reply naming a pid the registry doesn't list: every listed
+                # pid of the node is superseded (offline, and never live again
+                # until a ready or stats reply names one).
+                if op.node in self.newest:
+                    self.superseded[op.node] = True
+                    self.alive[op.node] = False
             case "stop" | "silent":
                 if self.newest.get(op.node) == op.pid:
                     self.alive[op.node] = False
@@ -104,11 +121,12 @@ class Oracle:
         recent = min(at, now) >= now - timedelta(minutes=WORKER_STALE_TIMEOUT_MINUTES)
         if node in self.newest and recent and not self.stopped[node]:
             self.events["revived-by-task-event"] += not self.alive[node]
+            self.events["superseded-pid-marked-online"] += self.superseded[node]
             self.alive[node] = True
 
     def live(self, node: str) -> tuple[int, datetime | None] | None:
         pid = self.newest.get(node)
-        if pid is None or not self.alive[node]:
+        if pid is None or not self.alive[node] or self.superseded[node]:
             return None
         return pid, self.ready.get((node, pid))
 
@@ -131,8 +149,10 @@ def make_script(seed: int) -> list[Op]:
             known[node].add(pid)
             at = now
             if (node, pid) in readied and rng.random() < 0.5:
-                # A replayed ready (Redis stream) is old news: stamped before the last.
-                at = readied[node, pid] - timedelta(seconds=rng.randint(1, 60))
+                # A replayed ready (Redis stream) is old news: stamped before the
+                # last, or at the very same second (the stream replays it twice).
+                gap = rng.choice([0, 0, rng.randint(1, 60)])
+                at = readied[node, pid] - timedelta(seconds=gap)
             readied[node, pid] = max(at, readied.get((node, pid), at))
             script.append(Op(at, "ready", node, pid))
         elif roll < 0.26:
@@ -145,6 +165,8 @@ def make_script(seed: int) -> list[Op]:
             script.append(Op(now, "stop", node, rng.choice(sorted(known[node]))))
         elif roll < 0.35 and known[node]:
             script.append(Op(now, "silent", node, rng.choice(sorted(known[node]))))
+        elif roll < 0.39 and known[node]:
+            script.append(Op(now, "unlisted", node))
         else:
             # Sometimes stamped exactly at a worker_ready of this nodename.
             stamps = [at for (n, _), at in readied.items() if n == node]
@@ -301,6 +323,21 @@ def held_events(store: GraphStore, delivered: list[Op]) -> dict[str, list[TaskEv
     return held
 
 
+def feed_task(
+    op: Op,
+    store: GraphStore,
+    registry: WorkerRegistry,
+    oracle: Oracle,
+    clock: datetime,
+) -> None:
+    """Ingest a task's events, as the consumer does (``mark_seen`` per hostname)."""
+    for event in op.events:
+        store.add_event(event)
+        if (host := event.hostname) is not None:
+            registry.mark_seen(host, event.timestamp, now=clock)
+            oracle.seen(host, event.timestamp, clock)
+
+
 def replay(
     delivered: list[Op], max_nodes: int
 ) -> tuple[Oracle, dict[tuple[str, int], Row], dict[str, list[TaskEvent]]]:
@@ -324,12 +361,10 @@ def replay(
                 registry.mark_shutdown(op.node, op.pid, op.at, now=op.at)
             case "silent":
                 registry.mark_offline(op.node, op.pid)
+            case "unlisted":
+                registry.mark_node_alive(op.node, UNLISTED_PID, now=op.at)
             case "task":
-                for event in op.events:
-                    store.add_event(event)
-                    if (host := event.hostname) is not None:
-                        registry.mark_seen(host, event.timestamp, now=clock)
-                        oracle.seen(host, event.timestamp, clock)
+                feed_task(op, store, registry, oracle, clock)
         if op.kind != "task":
             oracle.apply(op)
     return oracle, read_rows(store, registry), held_events(store, delivered)
@@ -422,14 +457,14 @@ def test_generator_reaches_every_cell_over_the_default_seeds() -> None:
     for seed in SEEDS:
         total.update(run_seed(seed)[2])
     wanted = [
-        "op:ready", "op:stats", "op:stop", "op:silent", "op:task",
+        "op:ready", "op:stats", "op:stop", "op:silent", "op:task", "op:unlisted",
         "active>0", "live-zero", "null-row", "host-none", "late", "pid-reuse",
         "stuck-on-offline-node", "live-no-bound-counts", "bound-excludes-older-run",
         "bound-keeps-newer-run", "other-node-runs-present", "pool-in-row",
         "replayed-ready-keeps-newest-stamp", "replayed-ready-keeps-pool",
         "pool-cleared-by-newer-ready", "revived-by-task-event",
         "retried-started-counts", "eviction-dropped-a-stuck-run",
-        "started-exactly-at-ready",
-        "started-exactly-at-ready",
+        "started-exactly-at-ready", "same-stamp-ready-keeps-pool",
+        "superseded-pid-marked-online",
     ]  # fmt: skip
     assert {cell: total[cell] for cell in wanted if total[cell] == 0} == {}

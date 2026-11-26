@@ -68,19 +68,8 @@ def ensure_tz_aware(dt: datetime) -> datetime:
     return dt
 
 
-def _within(
-    nodes: list[TaskNode], from_date: datetime | None, to_date: datetime | None
-) -> list[TaskNode]:
-    """Keep the nodes updated at or after ``from_date`` and first seen by ``to_date``."""
-    if from_date is not None:
-        from_dt = ensure_tz_aware(from_date)
-        nodes = [
-            n for n in nodes if n.last_updated is not None and n.last_updated >= from_dt
-        ]
-    if to_date is not None:
-        to_dt = _ensure_end_of_day(to_date)
-        nodes = [n for n in nodes if n.first_seen is not None and n.first_seen <= to_dt]
-    return nodes
+def _state_set(state: TaskState | Collection[TaskState]) -> set[TaskState]:
+    return {state} if isinstance(state, TaskState) else set(state)
 
 
 class _Ranked(NamedTuple):
@@ -1331,34 +1320,38 @@ class GraphStore:
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
+        wanted = None if state is None else _state_set(state)
+        name_lower = None if name_contains is None else name_contains.lower()
+        to_dt = None if to_date is None else _ensure_end_of_day(to_date)
+        from_dt = None if from_date is None else ensure_tz_aware(from_date)
+
+        def matches(n: TaskNode) -> bool:
+            """Whether the task passes every filter; the cheap ones are checked first."""
+            return (
+                n.node_type == NodeType.TASK
+                and (wanted is None or n.state in wanted)
+                and (name_lower is None or name_lower in n.name.lower())
+                and (name_exact is None or n.name == name_exact)
+                and (task_names is None or n.name in task_names)
+                and (
+                    from_dt is None
+                    or (n.last_updated is not None and n.last_updated >= from_dt)
+                )
+                and (
+                    to_dt is None
+                    or (n.first_seen is not None and n.first_seen <= to_dt)
+                )
+                and (hostname is None or n.hostname == hostname)
+                and (queue is None or n.queue == queue)
+                and (exception_type is None or n.exception_type == exception_type)
+            )
+
         # Without a sort key, filter and copy in one critical section: the
         # consumer thread mutates live nodes, so a node could otherwise change
         # state between passing the filter and being copied. The sorted path
-        # copies in a second section and re-checks the state there.
-        wanted: set[TaskState] | None = None
+        # copies in a second section and applies the whole filter again there.
         with self._lock:
-            # Exclude synthetic nodes (GROUP, CHORD) - they're for graphs, not task list
-            nodes = [
-                n for n in self._graph.nodes.values() if n.node_type == NodeType.TASK
-            ]
-
-            if state is not None:
-                wanted = {state} if isinstance(state, TaskState) else set(state)
-                nodes = [n for n in nodes if n.state in wanted]
-            if name_contains is not None:
-                name_lower = name_contains.lower()
-                nodes = [n for n in nodes if name_lower in n.name.lower()]
-            if name_exact is not None:
-                nodes = [n for n in nodes if n.name == name_exact]
-            if hostname is not None:
-                nodes = [n for n in nodes if n.hostname == hostname]
-            if queue is not None:
-                nodes = [n for n in nodes if n.queue == queue]
-            if exception_type is not None:
-                nodes = [n for n in nodes if n.exception_type == exception_type]
-            if task_names is not None:
-                nodes = [n for n in nodes if n.name in task_names]
-            nodes = _within(nodes, from_date, to_date)
+            nodes = [n for n in self._graph.nodes.values() if matches(n)]
 
             if sort_key is None:
                 nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
@@ -1378,14 +1371,13 @@ class GraphStore:
         ]
         ordered = _slowest_first(ranked)
         with self._lock:
-            # Events were ingested while the sort ran: a page row may have left
-            # the state filter or been evicted. ``total`` still counts the
+            # Events were ingested while the sort ran: a page row may have
+            # stopped matching or been evicted. ``total`` still counts the
             # matches of the first section.
             page = [
                 _snapshot(n)
                 for n in ordered[offset : offset + limit]
-                if self._graph.nodes.get(n.task_id) is n
-                and (wanted is None or n.state in wanted)
+                if self._graph.nodes.get(n.task_id) is n and matches(n)
             ]
         return page, len(ordered)
 

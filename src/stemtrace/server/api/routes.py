@@ -166,9 +166,10 @@ def _json_response(model: BaseModel) -> Response:
     """Encode ``model`` as the JSON body FastAPI would send, in the calling thread.
 
     Returning a model makes FastAPI validate and encode it on the event loop.
-    The JSON values are the same; on FastAPI before its ``dump_json`` path a float
-    with an exponent prints as ``1e-7``, not ``1e-07``. The response also bypasses
-    a host app's ``default_response_class``.
+    The JSON values are the same; on FastAPI before its ``dump_json`` path only
+    floats from 1e-5 to 1e-9 print differently (``1e-05`` becomes ``0.00001``,
+    ``1e-07`` becomes ``1e-7``). The response also bypasses a host app's
+    ``default_response_class``.
     """
     return Response(model.model_dump_json(by_alias=True), media_type="application/json")
 
