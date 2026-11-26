@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi import FastAPI
@@ -414,3 +414,56 @@ def test_task_list_limit_is_capped_at_500(
 ) -> None:
     client = _client(GraphStore(), monkeypatch)
     assert client.get(f"/api/tasks?limit={limit}").status_code == status
+
+
+def _seed_page_of_three() -> GraphStore:
+    store = GraphStore()
+    for i, tid in enumerate(["a", "b", "c"]):
+        store.add_event(
+            TaskEvent(
+                task_id=tid,
+                name="app.work",
+                state=TaskState.FAILURE,
+                timestamp=NOW + timedelta(seconds=i),
+                hostname="w1@h",
+                queue="q1",
+                exception_type="E1",
+            )
+        )
+    return store
+
+
+def _add_later_event_to_b(store: GraphStore, **changes: str) -> None:
+    fields: dict[str, Any] = {
+        "task_id": "b",
+        "name": "app.work",
+        "state": TaskState.FAILURE,
+        "timestamp": NOW + timedelta(minutes=5),
+        "hostname": "w1@h",
+        "queue": "q1",
+        "exception_type": "E1",
+    }
+    fields.update(changes)
+    store.add_event(TaskEvent(**fields))
+
+
+@pytest.mark.parametrize(
+    ("filter_", "change"),
+    [
+        ({"hostname": "w1@h"}, {"hostname": "w2@h"}),
+        ({"queue": "q1"}, {"queue": "q2"}),
+        ({"exception_type": "E1"}, {"exception_type": "E2"}),
+    ],
+    ids=["hostname", "queue", "exception_type"],
+)
+def test_sorted_page_drops_a_row_that_stopped_matching_a_filter_meanwhile(
+    filter_: dict[str, str], change: dict[str, str]
+) -> None:
+    store = _seed_page_of_three()
+    page, total = store.get_nodes(
+        sort_key=_mutate_once(lambda: _add_later_event_to_b(store, **change)),
+        **filter_,
+    )
+
+    assert sorted(n.task_id for n in page) == ["a", "c"]
+    assert total == 3
