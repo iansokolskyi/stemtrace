@@ -1,0 +1,48 @@
+{
+  "broker": {
+    "alternates": [],
+    "connect_timeout": 4,
+    "credential_provider": null,
+    "failover_strategy": "round-robin",
+    "heartbeat": 120.0,
+    "hostname": "127.0.0.1",
+    "insist": false,
+    "login_method": null,
+    "port": 16390,
+    "ssl": false,
+    "transport": "redis",
+    "transport_options": {},
+    "uri_prefix": null,
+    "userid": null,
+    "virtual_host": "0"
+  },
+  "clock": "1",
+  "pid": 504626,
+  "pool": {
+    "free-threads": 6,
+    "implementation": "celery.concurrency.eventlet:TaskPool",
+    "max-concurrency": 6,
+    "running-threads": 0
+  },
+  "prefetch_count": 24,
+  "rusage": {
+    "idrss": 0,
+    "inblock": 6080,
+    "isrss": 0,
+    "ixrss": 0,
+    "majflt": 3,
+    "maxrss": 77856,
+    "minflt": 17113,
+    "msgrcv": 0,
+    "msgsnd": 0,
+    "nivcsw": 121,
+    "nsignals": 0,
+    "nswap": 0,
+    "nvcsw": 241,
+    "oublock": 0,
+    "stime": 0.10897799999999999,
+    "utime": 1.409042
+  },
+  "total": {},
+  "uptime": 2
+}
