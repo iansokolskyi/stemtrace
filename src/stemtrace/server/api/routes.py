@@ -1250,7 +1250,7 @@ def _add_task_routes(
     )
     async def get_task(task_id: str) -> TaskDetailResponse:
         """Get detailed information for a specific task including children."""
-        found = store.get_node_with_children(task_id)
+        found = await run_in_threadpool(store.get_node_with_children, task_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
@@ -1281,7 +1281,7 @@ def _add_task_routes(
         ] = False,
     ) -> list[TaskNodeResponse]:
         """Get child tasks for a specific task."""
-        found = store.get_node_with_children(task_id)
+        found = await run_in_threadpool(store.get_node_with_children, task_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
@@ -1381,7 +1381,7 @@ def _add_graph_routes(
     )
     async def get_graph(root_id: str) -> GraphResponse:
         """Get complete task graph starting from a root task."""
-        graph = store.get_graph_from_root(root_id)
+        graph = await run_in_threadpool(store.get_graph_from_root, root_id)
         if not graph:
             raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
 

@@ -118,7 +118,7 @@ class AnomalyEvaluator:
         now = params.utcnow()
         # Copies under three locks, microseconds apart: a worker event that
         # lands between them only adds evidence, which the next poll sees.
-        records = self._store.run_records()
+        records = await run_in_threadpool(self._store.run_records)
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}
         registry = (
             self._registry.registry_facts(

@@ -68,7 +68,7 @@ FILL = {"task_id": "root", "root_id": "root", "hostname": "w1@host"}
 # Routes that answer 404 on the seeded store (no worker with that name).
 ALLOWED_404 = {"/api/workers/{hostname}"}
 # Routes that never touch the store, so they have nothing to record.
-NO_STORE_READ = {"/api/health/live", "/api/workers", "/api/workers/{hostname}"}
+NO_STORE_READ = {"/api/health", "/api/health/live", "/api/workers", "/api/workers/{hostname}"}
 
 
 class RecordingLock:
@@ -176,6 +176,16 @@ async def test_loop_keeps_ticking_while_a_thread_holds_the_store_lock() -> None:
     store = _seeded()
     app = _app(store)
     holding = threading.Event()
+    urls = [
+        "/api/health",
+        "/api/tasks/root",
+        "/api/tasks/root/children",
+        "/api/graphs/root",
+        "/api/overview?within=1h",
+        "/api/tasks",
+    ]
+    for url in urls:  # first requests build response models: not the lock's stall
+        assert (await _get(app, url)).status_code == 200
     release = threading.Event()
 
     def hold() -> None:
@@ -198,14 +208,6 @@ async def test_loop_keeps_ticking_while_a_thread_holds_the_store_lock() -> None:
             last = now
 
     tick = asyncio.create_task(ticker())
-    urls = [
-        "/api/health",
-        "/api/tasks/root",
-        "/api/tasks/root/children",
-        "/api/graphs/root",
-        "/api/overview?within=1h",
-        "/api/tasks",
-    ]
     requests = [asyncio.create_task(_get(app, u)) for u in urls]
     await asyncio.sleep(HOLD_S)
     release.set()
