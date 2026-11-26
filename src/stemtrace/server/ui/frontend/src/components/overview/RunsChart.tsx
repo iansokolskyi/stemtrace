@@ -16,6 +16,7 @@ import {
   spanLabel,
 } from '@/components/triage/runsScope'
 import { formatCount, formatPercent } from '@/utils/format'
+import { LoadError } from './LoadError'
 import { type Bucket, sameInstant } from './model'
 
 /** A brushed span of the chart, as ISO times. */
@@ -61,6 +62,10 @@ const brushScope = (brush: Brush): RunsScope => ({
 })
 
 interface RunsChartProps {
+  /** `loading` until the series answers; `error` when it failed (not the same as no runs). */
+  status: 'loading' | 'error' | 'ready'
+  error: unknown
+  onRetry: () => unknown
   buckets: Bucket[]
   /** The bucket size in seconds, for the title ("Runs per 5 min"). */
   bucketSeconds: number | undefined
@@ -82,6 +87,9 @@ function bucketWord(seconds: number | undefined): string {
  * same from the keyboard, and Table lists the same numbers. Retry is hatched at 45 degrees.
  */
 export function RunsChart({
+  status,
+  error,
+  onRetry,
   buckets,
   bucketSeconds,
   brush,
@@ -244,7 +252,11 @@ export function RunsChart({
       </div>
 
       <div ref={boxRef} className="relative px-3 pt-1.5 pb-3" data-testid="runs-chart">
-        {view === 'table' ? (
+        {status === 'error' ? (
+          <LoadError what="the runs" error={error} onRetry={onRetry} />
+        ) : status === 'loading' ? (
+          <p className="m-0 px-4 py-10 text-center text-xs text-muted">Loading runs…</p>
+        ) : view === 'table' ? (
           <ChartTable buckets={buckets} />
         ) : n === 0 ? (
           <p className="m-0 px-4 py-10 text-center text-xs text-muted">No runs in this window.</p>

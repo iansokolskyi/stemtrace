@@ -36,6 +36,8 @@ export function useOverview(within: string) {
     queryKey: ['overview', 'kpis', within],
     queryFn: () => fetchOverview(within),
     refetchInterval: OVERVIEW_POLL_MS,
+    // The page polls anyway; a failure shows at once with Retry, not after backoff retries
+    retry: false,
   })
 }
 
@@ -59,6 +61,7 @@ export function useFailures(within: string | undefined) {
     queryKey: ['overview', 'failures', within],
     queryFn: () => fetchFailures(within),
     refetchInterval: OVERVIEW_POLL_MS,
+    retry: false,
   })
 }
 
@@ -68,6 +71,7 @@ export function useWindowTaskStats(within: string | undefined) {
     queryKey: ['overview', 'task-stats', within],
     queryFn: () => fetchTaskStats(within),
     refetchInterval: OVERVIEW_POLL_MS,
+    retry: false,
   })
 }
 
@@ -84,7 +88,7 @@ export function useGroupSeries(within: string | undefined, enabled: boolean) {
 
 /** What the server knows of the workers (no Celery inspect), refreshed for the strip. */
 export function useWorkersStrip() {
-  return useQuery({ ...workersSnapshot, refetchInterval: OVERVIEW_POLL_MS })
+  return useQuery({ ...workersSnapshot, refetchInterval: OVERVIEW_POLL_MS, retry: false })
 }
 
 /** The first `limit` rows of the filtered, compact run list behind a panel entry. */

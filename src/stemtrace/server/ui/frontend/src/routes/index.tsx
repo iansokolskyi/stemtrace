@@ -15,6 +15,7 @@ import { useOverviewAnomalies } from '@/components/overview/anomalyData'
 import { formatBrush, parseBrush } from '@/components/overview/brushSpan'
 import { HealthTable } from '@/components/overview/HealthTable'
 import { KpiTiles } from '@/components/overview/KpiTiles'
+import { LoadError } from '@/components/overview/LoadError'
 import { bucketsOf } from '@/components/overview/model'
 import { type Brush, RunsChart } from '@/components/overview/RunsChart'
 import { WhatsWrong } from '@/components/overview/WhatsWrong'
@@ -84,26 +85,41 @@ function OverviewPage() {
     within,
   }
 
-  const ending = overview.data ? ` ending ${clock(overview.data.window.end)} UTC` : ''
+  // The window's end is known only once the overview answers; until then the subtitle is just the span
+  const subtitle = isAll
+    ? 'All runs held'
+    : [
+        windowWords.replace('the last', 'Last'),
+        overview.data && `ending ${clock(overview.data.window.end)} UTC`,
+      ]
+        .filter(Boolean)
+        .join(', ')
 
   return (
     <PanelProvider>
       <div>
         <div className="mb-4">
           <h1 className="text-2xl font-bold text-ink">Overview</h1>
-          <p className="mt-1 min-h-5 text-sm text-muted">
-            {isAll ? 'All runs held' : `${windowWords.replace('the last', 'Last')},${ending}`}
-          </p>
+          <p className="mt-1 min-h-5 text-sm text-muted">{subtitle}</p>
         </div>
-        <KpiTiles
-          overview={overview.data}
-          buckets={buckets}
-          hosts={hosts}
-          within={within}
-          anomalies={anomalies}
-          anomaliesFailed={anomaliesFailed}
-        />
+        {overview.isError ? (
+          <div className="mb-4 rounded-lg bg-surface">
+            <LoadError what="the overview" error={overview.error} onRetry={overview.refetch} />
+          </div>
+        ) : (
+          <KpiTiles
+            overview={overview.data}
+            buckets={buckets}
+            hosts={hosts}
+            within={within}
+            anomalies={anomalies}
+            anomaliesFailed={anomaliesFailed}
+          />
+        )}
         <RunsChart
+          status={series.isError ? 'error' : series.data ? 'ready' : 'loading'}
+          error={series.error}
+          onRetry={series.refetch}
           buckets={buckets}
           bucketSeconds={series.data?.bucket_seconds}
           brush={brush}
@@ -111,11 +127,16 @@ function OverviewPage() {
         />
         <WhatsWrong
           groups={failures.data?.groups}
+          failed={failures.isError ? { error: failures.error, retry: failures.refetch } : undefined}
           windowWords={windowWords}
           anomalies={anomalies}
         />
-        <WorkerStrip hosts={hosts} />
+        <WorkerStrip
+          hosts={hosts}
+          failed={workers.isError ? { error: workers.error, retry: workers.refetch } : undefined}
+        />
         <HealthTable
+          failed={stats.isError ? { error: stats.error, retry: stats.refetch } : undefined}
           stats={stats.data}
           series={groupSeries.data}
           within={within}

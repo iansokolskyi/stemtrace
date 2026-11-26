@@ -11,6 +11,7 @@ import { TaskName } from '@/components/TaskName'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
 import { encodeScope } from '@/components/triage/runsScope'
 import { formatAgo, formatCount, formatPercent, formatSpan } from '@/utils/format'
+import { LoadError } from './LoadError'
 import { Sparkline } from './Sparkline'
 
 /** A failure rate above this tints the row and makes the figure loud (the prototype's `prob`). */
@@ -25,6 +26,8 @@ const ms = (value: number | null | undefined): string => (value == null ? '' : f
 
 interface HealthTableProps {
   stats: TaskStatsResponse | undefined
+  /** Set when the stats request failed; the section says so instead of showing headers. */
+  failed: { error: unknown; retry: () => unknown } | undefined
   /** Runs per bucket by state for each group; none for All or when the server cannot split. */
   series: GroupTimeseriesResponse | undefined
   within: string | undefined
@@ -46,6 +49,7 @@ function groupSpark(series: GroupTimeseriesResponse | undefined, group: string):
  */
 export function HealthTable({
   stats,
+  failed,
   series,
   within,
   windowWords,
@@ -76,7 +80,11 @@ export function HealthTable({
         </h2>
         <span className="min-h-4 text-xs text-muted">{windowWords ?? 'all runs held'}</span>
       </div>
-      {stats && groups.length === 0 ? (
+      {failed ? (
+        <LoadError what="the task health" error={failed.error} onRetry={failed.retry} />
+      ) : !stats ? (
+        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading task health…</p>
+      ) : groups.length === 0 ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">
           No runs{windowWords ? ` in ${windowWords}` : ''}.
         </p>

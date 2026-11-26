@@ -8,9 +8,12 @@ import { failureLine } from '@/utils/failureMessage'
 import { formatAgo, formatCount } from '@/utils/format'
 import { AnomalyList } from './AnomalyList'
 import type { OverviewAnomalies } from './anomalyData'
+import { LoadError } from './LoadError'
 
 interface WhatsWrongProps {
   groups: FailureGroup[] | undefined
+  /** Set when the failures request failed; the section says so instead of showing headers. */
+  failed: { error: unknown; retry: () => unknown } | undefined
   /** "the last 6h"; none for All. */
   windowWords: string | undefined
   /** Undefined while loading and when the server has no anomalies endpoint. */
@@ -25,7 +28,12 @@ const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
  * Failures grouped by exception class and the anomalies now, each row opening in the triage
  * panel. Always present: with neither it says "All clear" (only once the anomalies are known).
  */
-export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps): ReactElement {
+export function WhatsWrong({
+  groups,
+  failed,
+  windowWords,
+  anomalies,
+}: WhatsWrongProps): ReactElement {
   const panel = usePanel()
   const scope = windowWords ? ` in ${windowWords}` : ''
   const count = groups?.length ?? 0
@@ -62,7 +70,11 @@ export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps):
         >
           <div className="min-w-0">
             <h3 className="px-4 pt-2 pb-1.5 text-[13px] font-bold">Failures by exception</h3>
-            {failuresNone ? (
+            {failed ? (
+              <LoadError what="the failures" error={failed.error} onRetry={failed.retry} />
+            ) : groups === undefined ? (
+              <p className="m-0 px-4 py-3 text-xs text-muted">Loading failures…</p>
+            ) : failuresNone ? (
               <p className="m-0 flex items-center gap-2 px-4 py-3 text-xs text-muted">
                 <Icon name="check" size={16} />
                 No failures{scope}.

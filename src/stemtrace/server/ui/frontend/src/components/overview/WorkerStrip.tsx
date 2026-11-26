@@ -6,13 +6,21 @@ import { poolUsage } from '@/components/workers/slots'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { type Host, registeredTasks } from '@/components/workers/workers'
 import { formatAgo, shortHost } from '@/utils/format'
+import { LoadError } from './LoadError'
 
 /**
  * A cell per worker host: name, status (offline is the loud one) and what the server knows of
  * it. With a live slot count the pool line and meter replace the registered/seen line; with pool
  * info but no count the line goes below it. A cell opens the worker in the triage panel.
  */
-export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElement {
+export function WorkerStrip({
+  hosts,
+  failed,
+}: {
+  hosts: Host[] | undefined
+  /** Set when the workers request failed; the strip says so instead of drawing nothing. */
+  failed: { error: unknown; retry: () => unknown } | undefined
+}): ReactElement {
   const panel = usePanel()
   return (
     <section aria-labelledby="h-workers" className="mb-4 min-w-0 rounded-lg bg-surface">
@@ -28,7 +36,9 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
           All workers
         </Link>
       </div>
-      {hosts && hosts.length === 0 ? (
+      {failed ? (
+        <LoadError what="the workers" error={failed.error} onRetry={failed.retry} />
+      ) : hosts && hosts.length === 0 ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">No workers registered.</p>
       ) : (
         <div
