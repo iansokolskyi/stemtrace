@@ -671,6 +671,36 @@ test.describe('Sessions and missing items', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Workers' })).toBeFocused()
   })
 
+  test('the stale line clears once the fleet query is no longer asked for', async ({ page }) => {
+    await page.clock.install()
+    const api = await setupMockApi(page, { useDefaults: false })
+    const since = new Date().toISOString()
+    const fleet = createAnomaly('no_workers_online', { since, task_count: 14 })
+    // A full list (500) cut before the fleet item, which is the newest: its own query fetches it
+    const many = Array.from({ length: 501 }, (_, i) =>
+      createAnomaly('unregistered', {
+        name: `bulk.t${i}`,
+        since: new Date(Date.now() - (600 - i) * 60_000).toISOString(),
+      }),
+    )
+    api.setAnomalies([...many, fleet])
+    await page.goto('/anomalies')
+    await expect(page.getByTestId('fleet-banner')).toBeVisible()
+
+    await page.route(/\/api\/anomalies\?.*kind=no_workers_online/, (route) =>
+      route.fulfill({ status: 503, body: 'x' }),
+    )
+    await page.clock.runFor(31_000)
+    const line = page.getByTestId('stale-line')
+    await expect(line).toContainText("Couldn't refresh. Showing data from")
+
+    // The list now holds no fleet item and counts none: the fleet query is not asked for
+    api.setAnomalies(many.slice(0, 3))
+    await page.clock.runFor(31_000)
+    await expect(line).toHaveCount(0)
+    await expect(page.getByTestId('anomaly-item')).toHaveCount(3)
+  })
+
   test('a held 503 and a 401 without form login show both lines', async ({ page }) => {
     await page.clock.install()
     const api = await setupMockApi(page, { useDefaults: false })

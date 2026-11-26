@@ -68,13 +68,13 @@ function OverviewPage() {
 
   // One rule decides each part (useViewState); the stale line covers every query rendered here
   const views = {
-    overview: useViewState(overview),
-    series: useViewState(series),
-    failures: useViewState(failures),
-    stats: useViewState(stats),
-    workers: useViewState(workers),
+    overview: useViewState(overview, `overview/overview/${effective}`),
+    series: useViewState(series, `overview/series/${effective}`),
+    failures: useViewState(failures, `overview/failures/${effective}`),
+    stats: useViewState(stats, `overview/stats/${effective}`),
+    workers: useViewState(workers, `overview/workers/${effective}`),
     // Only while it is asked for (not on All): a disabled query has nothing to fail
-    groupSeries: useViewState(groupSeries),
+    groupSeries: useViewState(groupSeries, `overview/group-series/${effective}`),
   }
   const seriesStatus = series.data ? 'ready' : views.series.phase === 'error' ? 'failed' : 'loading'
   const buckets = useMemo(() => (series.data ? bucketsOf(series.data) : []), [series.data])

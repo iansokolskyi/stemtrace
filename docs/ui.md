@@ -55,6 +55,7 @@ Every page sits in the same frame:
     more.** with **Retry** appears below the list.
   - On the Task and Flow pages, a 404 says that the task or flow is no longer stored and may have
     left the retention window, with a link back and no **Retry**. A 404 isn't retried.
+  - A page's stale line covers the queries that page renders, not the sidebar badges.
   - A 401 with the built-in login shows nothing, because the browser goes to the login page.
     Without it, the page says **The server needs a valid API key.** with no **Retry**.
 - **Old links.** `/?state=FAILURE` and other task-list links at `/` open Executions with the same

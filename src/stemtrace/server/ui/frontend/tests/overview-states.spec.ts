@@ -141,6 +141,33 @@ test.describe('Overview states', () => {
     await expect(page.getByTestId('chart-bar')).toHaveCount(12)
   })
 
+  test('an error box that remounts while it retries keeps its reason', async ({ page }) => {
+    await open(page, (p) => failSummaryEndpoints(p, { endpoints: [SERIES_ENDPOINT] }))
+    const chart = page.getByRole('region', { name: 'Runs' })
+    await expect(chart.getByRole('alert')).toContainText(
+      /Couldn't load the runs\.\s*The server answered 500\./,
+      AFTER_RETRIES,
+    )
+    await expect(chart.getByRole('button', { name: 'Retry', exact: true })).toBeVisible(
+      AFTER_RETRIES,
+    )
+
+    // The next request is held, so the retry is still running when the box is remounted
+    await page.route(SERIES_ENDPOINT, () => {})
+    await chart.getByRole('button', { name: 'Retry' }).click()
+    await expect(chart.getByRole('button', { name: 'Retrying…' })).toBeVisible()
+    const sections = page.getByRole('navigation', { name: 'Sections' })
+    await sections.getByRole('link', { name: 'Workers' }).click()
+    await expect(page.getByRole('heading', { level: 1, name: 'Workers' })).toBeVisible()
+    await sections.getByRole('link', { name: 'Overview' }).click()
+
+    const again = page.getByRole('region', { name: 'Runs' })
+    await expect(again.getByRole('button', { name: 'Retrying…' })).toBeVisible()
+    await expect(again.getByRole('alert')).toContainText(
+      /Couldn't load the runs\.\s*The server answered 500\./,
+    )
+  })
+
   test('Retry that fails again leaves focus on the Retry button of the same box', async ({
     page,
   }) => {

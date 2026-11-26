@@ -74,7 +74,11 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   const workers = useQuery(workersSnapshot)
   const flows = useGraphs(undefined, { retry: false })
   // A source with no data that is retrying has failed, not "no results" (useViewState)
-  const sources = [useViewState(names), useViewState(workers), useViewState(flows)]
+  const sources = [
+    useViewState(names, 'palette/names'),
+    useViewState(workers, 'palette/workers'),
+    useViewState(flows, 'palette/flows'),
+  ]
 
   const text = query.trim()
   const [rested, setRested] = useState('')
