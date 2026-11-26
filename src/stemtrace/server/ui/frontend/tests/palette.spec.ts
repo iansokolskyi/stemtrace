@@ -372,7 +372,8 @@ test.describe('lookups and failures', () => {
     await page.keyboard.type('zzzqqq')
     await expect(dialog(page).getByRole('status')).toHaveText(
       "Couldn't load task names, flows and workers",
-      { timeout: 2_000 },
+      // The workers key is shared with the sidebar and the Overview, which retry (1 s, 2 s, 4 s)
+      { timeout: 15_000 },
     )
   })
 

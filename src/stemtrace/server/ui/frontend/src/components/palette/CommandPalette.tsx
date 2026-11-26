@@ -69,7 +69,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   }, [opener])
 
   const names = useQuery({ ...registrySnapshot, retry: false })
-  const workers = useQuery({ ...workersSnapshot, retry: false })
+  // Default retries: the key is shared with the sidebar and the Overview (one request)
+  const workers = useQuery(workersSnapshot)
   const flows = useGraphs(undefined, { retry: false })
 
   const text = query.trim()
