@@ -341,6 +341,15 @@ def _flow_response(
     return flow
 
 
+def _flow_responses(
+    page: RootFlows, node_alias_key: str | None
+) -> dict[str, FlowSummaryResponse]:
+    """Each listed root's flow summary (see ``_flow_response``)."""
+    return {
+        r.task_id: _flow_response(page, r.task_id, node_alias_key) for r in page.roots
+    }
+
+
 def _node_to_graph_response(
     node: TaskNode,
     all_nodes: dict[str, TaskNode] | None = None,
@@ -1370,6 +1379,12 @@ def _add_graph_routes(
             task_names=task_names,
             with_member_ends=node_alias_key is not None,
         )
+        # Naming members from task arguments is per-member work: off the loop
+        flows = (
+            await run_in_threadpool(_flow_responses, page, node_alias_key)
+            if node_alias_key is not None
+            else {r.task_id: _flow_response(page, r.task_id, None) for r in page.roots}
+        )
         return GraphListResponse(
             graphs=[
                 _node_to_graph_response(
@@ -1377,7 +1392,7 @@ def _add_graph_routes(
                     page.related,
                     node_alias_key=node_alias_key,
                     group_of=group_of,
-                    flow=_flow_response(page, r.task_id, node_alias_key),
+                    flow=flows[r.task_id],
                     anomalies=anomalies,
                     containers=page.containers,
                 )
