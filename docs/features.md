@@ -109,8 +109,29 @@ pages work even if the server missed `worker_ready` events.
   dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery
   5.2.2 doesn't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
   new pid on the same nodename starts with `null` and doesn't inherit its predecessor's values.
-  Limitation: a new process that reuses the same pid keeps the old values until an inspect reply
-  names it.
+  When a `worker_ready` with a later time arrives for a pid the server already saw ready (a restart
+  that reuses the pid number), the values are cleared until the next inspect reply. Limitation: if
+  the server first learned the pid from an inspect reply and not from `worker_ready`, a restart
+  that reuses the pid keeps the old values until the next reply.
+- `GET /api/workers` and `GET /api/workers/{hostname}` return `active`, the number of busy slots.
+  The server counts the run records in state `STARTED` whose worker nodename is the worker's and
+  that started at or after the `worker_ready` time of the worker's current pid. It doesn't call
+  Celery, so the number is as fresh as the events the server has received, and one scan of the
+  records serves every worker in a request. Internal `celery.*` tasks count, because they hold a
+  slot. `active` is `0` for a live worker with nothing running, and `null` for a pid that isn't
+  its nodename's online, current process: stopped, silent past the stale window, replaced by a
+  newer pid, or a nodename that only came back through task events. A task event with no
+  nodename (an old worker) counts for no worker. Both times come from the worker host's clock.
+  Limitations:
+  - The number can read high. A run whose final event never reached the server, for example after
+    a `kill -9`, stays `STARTED` and counts until a new `worker_ready` for that nodename.
+  - The number can read low. Tasks that started before the server saw the worker have no record,
+    and when the server drops the oldest flows at its node limit, their running tasks stop
+    counting.
+  - A pid the server knows only from an inspect reply has no `worker_ready` time, so every
+    `STARTED` run on its nodename counts, including a previous process's.
+  - If the host clock steps back across a restart, runs of the previous process can count.
+  - The number can exceed `concurrency`.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
   nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's

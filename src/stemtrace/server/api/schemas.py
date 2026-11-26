@@ -452,6 +452,9 @@ class WorkerResponse(BaseModel):
     last_seen: datetime
     pool: str | None = None
     concurrency: int | None = None
+    # STARTED runs on the live pid since its worker_ready, counted from run
+    # records; null for a pid that isn't its nodename's live, online process.
+    active: int | None = None
 
 
 class WorkerListResponse(BaseModel):
