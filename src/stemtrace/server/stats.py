@@ -131,11 +131,21 @@ class RunRecord:
         )
 
 
+# A line that is only the class prefix, as in ``ValueError("\nreal cause")``.
+_BARE_PREFIX = re.compile(r"[\w.]+:")
+
+
 def _first_line(text: str | None) -> str | None:
-    """The first line of ``text``, cut to ``MAX_MESSAGE_LENGTH`` characters."""
-    if not text:
-        return None
-    return text.splitlines()[0][:MAX_MESSAGE_LENGTH]
+    """The first line with content, cut to ``MAX_MESSAGE_LENGTH`` characters.
+
+    Blank lines and a line holding only the ``Class:`` prefix are skipped;
+    ``None`` when no line is left.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not _BARE_PREFIX.fullmatch(line):
+            return line[:MAX_MESSAGE_LENGTH]
+    return None
 
 
 def parse_duration(text: str) -> timedelta:

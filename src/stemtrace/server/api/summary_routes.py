@@ -389,6 +389,9 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
         of the latest task IDs and ``latest_message``: the newest failure's
         message, first line only; it may contain task arguments. Tasks without
         an exception class form one group with ``exception_type`` null.
+
+        Without ``within`` or ``from_date``, from the oldest run held, at most
+        3650 days back.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
