@@ -1,0 +1,10 @@
+{
+ "/api/graphs/g": "7fb3f9d836b798012ea77c898c4bb09025a3f045dcc4bfd7af1c5325f35e15b4",
+ "/api/graphs/root": "2381a6e21f93dbf3dd23c1dadc498e13c2989cdea510107799d2722d80fa2dbf",
+ "/api/tasks/g": "f9acb806e0287030c1a6cdf7ec111fba2c6013a1055b6ab15c826c98e2a0ff45",
+ "/api/tasks/g/children": "8180a3f155f1b4622d747e0e44fbf9f500190621106779f7dfca263b9eacf0c3",
+ "/api/tasks/g/children?compact=true": "c9bfe92db5dcac6b3c77a663f088f7808086a87c408fc2c4fa9860e7c990ce6d",
+ "/api/tasks/root": "1c8ff3476cf76a329f2ed91e0b2f88ee4ac5c0a270f66159fdcb35a5f83c3b4a",
+ "/api/tasks/root/children": "f38844fd18304b4f6cdf3fa0b9a0df7c41bc85618128bb429360585458e675ce",
+ "/api/tasks/root/children?compact=true": "be887ad78bc2442452329d342dc32cd5bfed51e2333620f95bd508fbab584912"
+}

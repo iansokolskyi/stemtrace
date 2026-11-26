@@ -1771,7 +1771,7 @@ class TaskGraph(BaseModel):
         """Recompute the chains ``chains_allowed`` just gated.
 
         Blocked now: only members with a chain lose it. Allowed now: only a
-        member that is its parent's single reporter can gain one. Every other
+        member that is its parent's only reported child can gain one. Every other
         member's chain stays empty and its vote its own parent.
         """
         if tally.chains_allowed():

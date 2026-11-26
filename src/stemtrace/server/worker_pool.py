@@ -28,7 +28,7 @@ def _pool_name(implementation: object) -> str | None:
         return None
     module = implementation.partition(":")[0]
     name = module.rpartition(".")[2]
-    if not name:
+    if not name or name == "pool":  # "pool" alone says nothing about the pool type
         return None
     return "threads" if name == "thread" else name
 

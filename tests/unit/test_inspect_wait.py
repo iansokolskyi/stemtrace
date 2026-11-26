@@ -32,6 +32,8 @@ BOUND_S = 5.0
 SHORT_WAIT_S = 0.4
 LOOP_FACTOR = 20
 LOOP_SLACK_S = 0.3
+# Far below the 7 s wait bound, far above a pause CI recorded (0.5 s).
+NO_WAIT_S = 3.0
 
 
 class GatedBroker:
@@ -212,13 +214,22 @@ async def test_r1_refresh_false_does_not_wait(
     first = asyncio.create_task(server.get())
     await started(broker)
 
-    elapsed = await fastest_get(server, "/api/workers?refresh=false", stall_s)
-    response = await server.get("/api/workers?refresh=false")
+    # A request that waited for the flight would sit here until the wait bound
+    # (7 s) while the gate stays shut: the budget only has to beat a host pause,
+    # not measure speed. Every one of the 3 must return, not just the fastest.
+    server.stall_next_s = stall_s
+    responses = [
+        await asyncio.wait_for(server.get("/api/workers?refresh=false"), NO_WAIT_S)
+        for _ in range(3)
+    ]
+
+    # The flight is still running: nothing opened the gate for them.
+    assert not first.done()
+    assert not broker.gate.is_set()
+    assert server.refresher._waiters == []
     broker.gate.set()
     await first
-
-    assert response.json()["total"] == 0
-    assert elapsed < 0.2
+    assert [r.json()["total"] for r in responses] == [0, 0, 0]
 
 
 # --- R2: the wait is bounded ----------------------------------------------------------

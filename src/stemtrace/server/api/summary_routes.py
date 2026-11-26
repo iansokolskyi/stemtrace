@@ -201,7 +201,7 @@ def _add_overview_route(
         now = params.utcnow()
         window = Window(now - params.parse_within(within), now, open_end=True)
         baseline = window.previous()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         current, previous = WindowStats(0, 0, 0.0), WindowStats(0, 0, 0.0)
         current_samples, previous_samples = WindowSamples(), WindowSamples()
         async for part in _slices(records):
@@ -317,7 +317,7 @@ def _add_timeseries_route(
         """
         _check_split_options(group_by, percentiles)
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
@@ -386,14 +386,14 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
         """Tasks whose current state is FAILURE, grouped by exception class.
 
         Each group lists its count, first and last failure, task names, up to 5
-        of the latest task IDs and ``latest_message``: the newest failure's
-        message, first line only; it may contain task arguments. Tasks without
-        an exception class form one group with ``exception_type`` null.
+        latest task IDs and ``latest_message`` (newest failure, first line only;
+        may contain task arguments). No exception class: one group, type null.
+        Default window: the oldest run held, at most 3650 days back.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
@@ -440,7 +440,7 @@ def _add_task_stats_route(
         reads the server's own records and never asks the workers.
         """
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
