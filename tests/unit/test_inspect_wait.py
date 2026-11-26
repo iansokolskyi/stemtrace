@@ -8,6 +8,7 @@ through an ASGI transport, so a waiter's cost in threads is observable.
 """
 
 import asyncio
+import statistics
 import threading
 import time
 import uuid
@@ -29,6 +30,8 @@ BROKER = "redis://broker:6379/0"
 NODE = "w1@host"
 BOUND_S = 5.0
 SHORT_WAIT_S = 0.4
+LOOP_FACTOR = 20
+LOOP_SLACK_S = 0.3
 
 
 class GatedBroker:
@@ -128,6 +131,12 @@ async def server(broker: GatedBroker) -> AsyncIterator[Server]:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield Server(client, refresher)
+
+
+async def timed_get(server: Server, path: str) -> float:
+    began = time.monotonic()
+    await server.get(path)
+    return time.monotonic() - began
 
 
 async def started(broker: GatedBroker) -> None:
@@ -233,19 +242,24 @@ async def test_r3_two_hundred_waiters_hold_no_threads_and_other_routes_answer(
     first = asyncio.create_task(server.get())
     await started(broker)
     threads_before = threading.active_count()
+    # The same route with nobody waiting: host load slows it as much as the loaded
+    # request below, so the comparison holds on a busy host.
+    baseline = statistics.median(
+        [await timed_get(server, "/api/tasks") for _ in range(5)]
+    )
 
     waiters = [asyncio.create_task(server.get()) for _ in range(200)]
     await asyncio.sleep(0.5)
     threads_with_waiters = threading.active_count()
-    # Wall time says nothing here (a loaded host makes any route slow); what shows
-    # the loop isn't blocked is that the route answers, bounded only against a hang,
-    # while the gate is still shut and every waiter is still waiting.
+    began = time.monotonic()
     other = await asyncio.wait_for(server.get("/api/tasks"), BOUND_S)
+    elapsed = time.monotonic() - began
     pending = [w for w in waiters if not w.done()]
     broker.gate.set()
     responses = await asyncio.gather(first, *waiters)
 
     assert other.status_code == 200
+    assert elapsed < LOOP_FACTOR * baseline + LOOP_SLACK_S
     assert len(pending) == 200
     assert threads_with_waiters - threads_before <= 5
     assert {r.status_code for r in responses} == {200}
