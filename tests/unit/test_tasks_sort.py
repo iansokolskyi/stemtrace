@@ -305,3 +305,49 @@ def test_sort_combines_with_hostname_queue_and_exception_type_filters(
     ids = _ids(_client(store, monkeypatch), f"&sort=runtime&{query}")
 
     assert ids == expected
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [
+        # Tail is newest first: nostart (no STARTED: no runtime, no wait) beats nosent (no PENDING: no wait).
+        ("runtime", ["big", "nosent", "zero", "nostart"]),
+        ("queue_wait", ["big", "zero", "nostart", "nosent"]),
+    ],
+)
+def test_sort_finished_runs_with_no_measurable_value_come_after_a_zero(
+    sort: str, expected: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GraphStore()
+    _run(store, "big", wait=50, runtime=50, end=NOW - timedelta(seconds=9))
+    _run(store, "zero", wait=0, runtime=0, end=NOW - timedelta(seconds=8))
+    # Finished, newer than "zero", but its value can't be measured.
+    store.add_event(
+        _ev("nostart", TaskState.PENDING, NOW - timedelta(seconds=5), "app.work")
+    )
+    store.add_event(
+        _ev("nostart", TaskState.SUCCESS, NOW - timedelta(seconds=2), "app.work")
+    )
+    _run(store, "nosent", wait=None, runtime=20, end=NOW - timedelta(seconds=3))
+    client = _client(store, monkeypatch)
+
+    ids = _ids(client, f"&sort={sort}")
+
+    assert ids == expected
+
+
+def test_sort_page_one_changes_when_a_slower_run_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GraphStore()
+    for i in range(5):
+        _run(store, f"t{i}", wait=1, runtime=100 + i)
+    client = _client(store, monkeypatch)
+    url = "/api/tasks?sort=runtime&limit=3"
+
+    before = [t["task_id"] for t in client.get(url).json()["tasks"]]
+    _run(store, "newcomer", wait=1, runtime=10_000)
+    after = [t["task_id"] for t in client.get(url).json()["tasks"]]
+
+    assert before == ["t4", "t3", "t2"]
+    assert after == ["newcomer", "t4", "t3"]
