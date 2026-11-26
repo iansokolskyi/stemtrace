@@ -77,14 +77,7 @@ function OverviewPage() {
     groupSeries: useViewState(groupSeries),
   }
   const stale = staleOf([...Object.values(views), ...anomalyViews])
-  // A span list waits on the series, so it stops waiting at the first failed attempt rather
-  // than after the retries; the chart itself keeps saying "Loading…" until they are spent
-  const seriesStatus = series.data
-    ? 'ready'
-    : views.series.phase === 'error' || series.failureCount > 0
-      ? 'failed'
-      : 'loading'
-
+  const seriesStatus = series.data ? 'ready' : views.series.phase === 'error' ? 'failed' : 'loading'
   const buckets = useMemo(() => (series.data ? bucketsOf(series.data) : []), [series.data])
   const hosts = useMemo(
     () => (workers.data ? hostsOf(workers.data.workers) : undefined),
@@ -126,8 +119,13 @@ function OverviewPage() {
           </h1>
           <p className="mt-1 min-h-5 text-sm text-muted">{subtitle}</p>
         </div>
-        {stale && (
+        {stale?.kind === 'stale' && (
           <StaleNotice since={stale.since} retrying={stale.retrying} onRetry={stale.retry} />
+        )}
+        {stale?.kind === 'key' && (
+          <p role="status" className="m-0 mb-4 text-xs text-muted">
+            The server needs a valid API key.
+          </p>
         )}
         {views.overview.phase === 'error' && showsError(views.overview.error) && (
           <div data-testid="overview-error" className="mb-4 rounded-lg bg-surface">

@@ -13,6 +13,7 @@ import {
 import { fetchTask, HttpError } from '@/api/client'
 import { registrySnapshot, useGraphs, workersSnapshot } from '@/api/queries'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { useViewState } from '@/hooks/useViewState'
 import { type PaletteItem, type PaletteKind, paletteItems, TASK_ID_SHAPE } from './paletteItems'
 
 /** How long the query rests before a task ID is looked up, so typing sends one request. */
@@ -72,6 +73,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   // Default retries: the key is shared with the sidebar and the Overview (one request)
   const workers = useQuery(workersSnapshot)
   const flows = useGraphs(undefined, { retry: false })
+  // A source with no data that is retrying has failed, not "no results" (useViewState)
+  const sources = [useViewState(names), useViewState(workers), useViewState(flows)]
 
   const text = query.trim()
   const [rested, setRested] = useState('')
@@ -184,12 +187,13 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
     else groups.push({ kind: item.kind, heading: item.group, items: [{ item, index }] })
   })
 
-  const loading = names.isPending || workers.isPending || flows.isPending
+  const [namesView, workersView, flowsView] = sources
+  const loading = sources.some((view) => view.phase === 'loading')
   const failed = [
     // A refetch that fails under data already shown is not a source that did not load
-    names.isError && !names.data && 'task names',
-    flows.isError && !flows.data && 'flows',
-    workers.isError && !workers.data && 'workers',
+    namesView.phase === 'error' && 'task names',
+    flowsView.phase === 'error' && 'flows',
+    workersView.phase === 'error' && 'workers',
     lookupFailed && 'that task ID',
   ].filter(Boolean)
   let emptyText = ''

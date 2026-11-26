@@ -105,6 +105,11 @@ test.describe('Overview states', () => {
     // Nothing loaded, so there is nothing stale to show
     await expect(staleLine(page)).toHaveCount(0)
 
+    // The retries are spent (the boxes show "Retrying…" until then); now the server recovers
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(
+      5,
+      AFTER_RETRIES,
+    )
     state.failing = false
     await page.getByRole('region', { name: 'Runs' }).getByRole('button', { name: 'Retry' }).click()
     await expect(page.getByTestId('chart-bar')).toHaveCount(12)
@@ -120,6 +125,9 @@ test.describe('Overview states', () => {
     })
     const chart = page.getByRole('region', { name: 'Runs' })
     await expect(chart.getByRole('alert')).toBeVisible(AFTER_RETRIES)
+    await expect(chart.getByRole('button', { name: 'Retry', exact: true })).toBeVisible(
+      AFTER_RETRIES,
+    )
     const box = await chart.getByRole('alert').elementHandle()
 
     state.failing = false
@@ -139,6 +147,9 @@ test.describe('Overview states', () => {
     await open(page, (p) => failSummaryEndpoints(p, { endpoints: [SERIES_ENDPOINT] }))
     const chart = page.getByRole('region', { name: 'Runs' })
     await expect(chart.getByRole('alert')).toBeVisible(AFTER_RETRIES)
+    await expect(chart.getByRole('button', { name: 'Retry', exact: true })).toBeVisible(
+      AFTER_RETRIES,
+    )
     const box = await chart.getByRole('alert').elementHandle()
 
     await chart.getByRole('button', { name: 'Retry' }).click()
@@ -195,6 +206,38 @@ test.describe('Overview states', () => {
     await expect(wrong).toContainText('The server needs a valid API key.')
     await expect(wrong.getByRole('button', { name: 'Retry' })).toHaveCount(0)
     await expect(page.getByText("Couldn't load")).toHaveCount(0)
+  })
+
+  test('401 on held data without form login shows one API-key line, no Retry, and no "All clear"', async ({
+    page,
+  }) => {
+    await open(page, emptySummaryEndpoints, { clock: true })
+    const wrong = page.getByRole('region', { name: 'What’s wrong' })
+    await expect(wrong).toContainText('All clear: no failures or anomalies in the last 6h.')
+
+    await failSummaryEndpoints(page, { mode: 'unauthorized' })
+    await advance(page, 45_000)
+
+    const line = page.getByRole('status').filter({ hasText: 'The server needs a valid API key.' })
+    await expect(line).toHaveCount(1)
+    await expect(line.getByRole('button')).toHaveCount(0)
+    await expect(staleLine(page)).toHaveCount(0)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(wrong).not.toContainText('All clear')
+  })
+
+  test('401 on held data with form login shows no line: the redirect handles it', async ({
+    page,
+  }) => {
+    await open(page, emptySummaryEndpoints, { clock: true, loginPath: true })
+    await expect(page.getByRole('region', { name: 'What’s wrong' })).toContainText('All clear')
+
+    await failSummaryEndpoints(page, { mode: 'unauthorized' })
+    await advance(page, 45_000)
+
+    await expect(page.getByText('valid API key')).toHaveCount(0)
+    await expect(staleLine(page)).toHaveCount(0)
+    await expect(page.getByRole('alert')).toHaveCount(0)
   })
 
   test('a server with no runs or workers says so plainly, not as an error', async ({ page }) => {

@@ -377,6 +377,30 @@ test.describe('lookups and failures', () => {
     )
   })
 
+  test('a workers source that never loaded stays failed across the sidebar polls, never "No results"', async ({
+    page,
+  }) => {
+    // The workers key is polled every 30 s with retries (1 s, 2 s, 4 s); between and during
+    // them the query has no data and no error, which must not read as "no results"
+    await page.clock.install()
+    await page.route(/\/api\/workers(\?|$)/, (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
+    )
+    await page.goto('/executions')
+    await expect(page.getByRole('heading', { name: 'Executions', level: 1 })).toBeVisible()
+    await openPalette(page)
+    await page.keyboard.type('zzzqqq')
+
+    // Two sidebar polls: sample the status every second of fake time
+    for (let second = 0; second < 80; second++) {
+      await expect(dialog(page).getByRole('status')).toHaveText("Couldn't load workers", {
+        timeout: 2_000,
+      })
+      await page.clock.runFor(1_000)
+      await page.waitForTimeout(40)
+    }
+  })
+
   test('a refresh that fails under a list already loaded is not a failed source', async ({
     page,
   }) => {
