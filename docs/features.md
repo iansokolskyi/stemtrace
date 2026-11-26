@@ -81,6 +81,39 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- `GET /api/workers` returns `pool` and `concurrency` for each worker. They come from the newest
+  `stats()` reply that names the worker's pid, and later reads return them without asking
+  Celery again. `pool` is the last module segment of the pool's `implementation`
+  (`celery.concurrency.prefork:TaskPool` gives `prefork`; the `thread` pool shows as
+  `threads`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
+  autoscaler's `max`, because Celery then reports the minimum as `max-concurrency`. Both are
+  `null` for a worker the server knows only from events, and for a reply that has no pool
+  dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery
+  5.2.2 doesn't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
+  new pid on the same nodename starts with `null` and doesn't inherit its predecessor's values.
+  When a `worker_ready` with a later time arrives for a pid the server already saw ready (a restart
+  that reuses the pid number), the values are cleared until the next inspect reply. Limitation: if
+  the server first learned the pid from an inspect reply and not from `worker_ready`, a restart
+  that reuses the pid keeps the old values until the next reply.
+- `GET /api/workers` and `GET /api/workers/{hostname}` return `active`, the number of busy slots.
+  The server counts the run records in state `STARTED` whose worker nodename is the worker's and
+  that started at or after the `worker_ready` time of the worker's current pid. It doesn't call
+  Celery, so the number is as fresh as the events the server has received, and one scan of the
+  records serves every worker in a request. Internal `celery.*` tasks count, because they hold a
+  slot. `active` is `0` for a live worker with nothing running, and `null` for a pid that isn't
+  its nodename's online, current process: stopped, silent past the stale window, replaced by a
+  newer pid, or a nodename that only came back through task events. A task event with no
+  nodename (an old worker) counts for no worker. Both times come from the worker host's clock.
+  Limitations:
+  - The number can read high. A run whose final event never reached the server, for example after
+    a `kill -9`, stays `STARTED` and counts until a new `worker_ready` for that nodename.
+  - The number can read low. Tasks that started before the server saw the worker have no record,
+    and when the server drops the oldest flows at its node limit, their running tasks stop
+    counting.
+  - A pid the server knows only from an inspect reply has no `worker_ready` time, so every
+    `STARTED` run on its nodename counts, including a previous process's.
+  - If the host clock steps back across a restart, runs of the previous process can count.
+  - The number can exceed `concurrency`.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
   nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
@@ -514,9 +547,11 @@ completed since) is remembered until a completed call it doesn't answer proves i
 
 An unregistered item can carry `similar_name`, a live task you might have renamed it from. It
 is the one live name in the same module whose last segment, with a trailing `_v<N>` removed
-from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio, and no
+from both sides, scores at least 0.75 with Python's `difflib.SequenceMatcher` ratio (the
+unregistered name is the first argument, and the ratio can differ when you swap them), and no
 other live name scores the same. Names that differ only in case are compared as written. It's
-`null` when no name qualifies, when two names tie, and for a name with no module (no dot).
+`null` when no name qualifies, when two or more names tie for the best score, and for a name
+with no module (no dot).
 `celery.*` names and the names of stopped workers are never suggested. The hint is a guess:
 `send_email` gets `send_emails` even when they are different tasks.
 
@@ -601,6 +636,24 @@ tasks stamped later by a worker whose clock is ahead.
   REVOKED or REJECTED. IGNORED tasks chose not to run (for example a deduplicated task), so they
   are left out, and a burst of them doesn't hide failures; the time series counts them by state.
   `workers` counts online and known workers from worker events, without asking the workers.
+  - **p95 runtime and queue wait.** `p95_runtime_ms` and `p95_queue_wait_ms` each have `value`,
+    `baseline` (the same value for the window before), and `samples` and `baseline_samples`, the
+    number of runs each value comes from. `value` and `baseline` are `null` with no samples. A p95
+    over a few runs is close to the slowest run, so compare `samples` before you compare values.
+    The p95 is the nearest rank over all the window's samples together, as in the task stats.
+  - **Which runs give a sample.** Runtime: runs that ended SUCCESS or FAILURE with a paired
+    start, the same runs as the task stats. Queue wait (the [rule above](#queue-wait-and-runtime)):
+    runs that ended SUCCESS, FAILURE, REVOKED or REJECTED and have a wait, so a task revoked after
+    it started did wait. A task that is still running gives neither sample until it ends, and
+    IGNORED tasks and `celery.*` tasks give none. A sample sits at its run's last event, like the
+    run counts. The runtime p95 equals the p95 of all `GET /api/stats/tasks` rows' samples together
+    for the same window.
+  - **Limits.** A task retried after a long countdown, or through a long retry chain, puts its
+    first attempt's wait in the window of its last event, so an old wait can show in today's
+    window. A late event on a finished task (a redelivery, or a PENDING or STARTED that arrives
+    late) can change its wait or runtime, and the values show the latest. The server keeps a
+    bounded number of tasks and drops the oldest first, so the baseline window can be cut short
+    and read like a quiet one; compare `baseline_samples` before you trust a baseline.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket
   size since the Unix epoch, so they don't move between requests; the first bucket starts on
@@ -608,11 +661,19 @@ tasks stamped later by a worker whose clock is ahead.
   Without `within` or `from_date` it covers the last 3,650 days. Without `bucket` it
   uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
   that needs more is a `422`. `group_by=task_group` adds the same counts per
-  [task group](configuration.md#task-groups).
+  [task group](configuration.md#task-groups). `percentiles=p95` adds four arrays with one entry per
+  bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
+  `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
+  last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
+  these keys. The first bucket starts on an edge before the window, so a bucket's samples need not
+  match the overview's samples at the window's edges. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
-  names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
-  class form one group with `exception_type: null`.
+  names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of
+  its newest failure, cut to the first line and 300 characters (`null` when that failure has no
+  message). Failure messages can contain task arguments; see
+  [Security](security.md#sensitive-data-scrubbing). Tasks from workers that don't report the
+  exception class form one group with `exception_type: null`.
 - `GET /api/stats/tasks?within=1h&name=`: one row per task name and one rollup per
   [task group](configuration.md#task-groups), for the Registry and health views. Each row has
   `runs`, `failures`, `failure_rate` (`null` with no runs), `runtime_samples`, `p50_ms`, `p95_ms`,
@@ -646,6 +707,16 @@ The task list also takes:
   lists the valid ones.
 - `within=1h` (also on `GET /api/graphs`), as above. On `GET /api/graphs` it, `from_date` and
   `to_date` apply to the whole flow (see [Graph list time](graphs.md#graph-list-time)).
+- `sort=runtime` or `sort=queue_wait`: slowest first, by the same per-run samples as the
+  overview's p95 tiles (see [Summary endpoints](#summary-endpoints)). Runs a tile leaves out
+  have no value and come after all the others: runs that haven't finished, `celery.*` tasks,
+  IGNORED runs, REVOKED and REJECTED runs for `runtime`, and runs with no measurable value.
+  A task's `runtime_ms` and `queue_wait_ms` fields still show their own values, so a running
+  task can show a queue wait and sort last. Equal values sort by newest update, then task ID, so
+  while no event arrives, consecutive pages neither overlap nor skip a task. While events arrive,
+  a page can shift; load more rows with a larger `limit` instead of paging. The filters apply
+  first, and `total` counts the matches. Any other value is a `422`. Without `sort`, the order
+  is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.
 

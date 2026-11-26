@@ -4,7 +4,7 @@ Each request copies the store's run records once (``GraphStore.run_records``,
 references only) and aggregates outside the store lock: O(n) in the records
 held (at most the store's ``max_nodes``), plus O(buckets) for time series.
 The aggregation runs in slices that yield to the event loop between them; the
-task stats sort runtimes, so they run in a worker thread instead.
+task stats and the p95 values sort samples, so the sorts run in a worker thread.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from stemtrace.server.api.schemas import (
     FailureGroupResponse,
     GroupStatsResponse,
     KpiCountResponse,
+    KpiPercentileResponse,
     KpiResponse,
     OverviewResponse,
     TaskStatsListResponse,
@@ -39,11 +40,15 @@ from stemtrace.server.stats import (
     FailureTally,
     TimeSeries,
     Window,
+    WindowSamples,
     WindowStats,
     auto_bucket,
     bucket_starts,
+    collect_bucket_samples,
     collect_failures,
+    collect_samples,
     count_runs,
+    p95,
     parse_duration,
     summarize_failures,
     task_stats,
@@ -138,6 +143,39 @@ def _add_stats(total: WindowStats, part: WindowStats) -> WindowStats:
     )
 
 
+def _overview_percentile(
+    current: list[int], previous: list[int]
+) -> KpiPercentileResponse:
+    """The window's and the baseline's p95 (sorts both lists in place)."""
+    return KpiPercentileResponse(
+        value=p95(current),
+        baseline=p95(previous),
+        samples=len(current),
+        baseline_samples=len(previous),
+    )
+
+
+def _overview_percentiles(
+    current: WindowSamples, previous: WindowSamples
+) -> tuple[KpiPercentileResponse, KpiPercentileResponse]:
+    return (
+        _overview_percentile(current.runtime, previous.runtime),
+        _overview_percentile(current.queue_wait, previous.queue_wait),
+    )
+
+
+def _bucket_percentiles(
+    buckets: list[WindowSamples],
+) -> tuple[list[int | None], list[int | None], list[int], list[int]]:
+    """Per bucket: p95 runtime, p95 wait, and the two sample counts (sorts in place)."""
+    return (
+        [p95(b.runtime) for b in buckets],
+        [p95(b.queue_wait) for b in buckets],
+        [len(b.runtime) for b in buckets],
+        [len(b.queue_wait) for b in buckets],
+    )
+
+
 def _add_overview_route(
     router: APIRouter, *, store: GraphStore, worker_registry: WorkerRegistry | None
 ) -> None:
@@ -165,9 +203,16 @@ def _add_overview_route(
         baseline = window.previous()
         records = store.run_records()
         current, previous = WindowStats(0, 0, 0.0), WindowStats(0, 0, 0.0)
+        current_samples, previous_samples = WindowSamples(), WindowSamples()
         async for part in _slices(records):
             current = _add_stats(current, window_stats(part, window))
             previous = _add_stats(previous, window_stats(part, baseline))
+            collect_samples(current_samples, part, window)
+            collect_samples(previous_samples, part, baseline)
+        # Sorts the samples: off the event loop, like the task stats.
+        p95_runtime, p95_queue_wait = await run_in_threadpool(
+            _overview_percentiles, current_samples, previous_samples
+        )
         workers = worker_registry.get_all_workers() if worker_registry else []
         return OverviewResponse(
             window=_window_response(window),
@@ -182,11 +227,40 @@ def _add_overview_route(
             failure_rate=KpiResponse(
                 value=current.failure_rate, baseline=previous.failure_rate
             ),
+            p95_runtime_ms=p95_runtime,
+            p95_queue_wait_ms=p95_queue_wait,
             workers=WorkerCountsResponse(
                 online=sum(w.status == WorkerStatus.ONLINE for w in workers),
                 total=len(workers),
             ),
         )
+
+
+def _check_split_options(group_by: str | None, percentiles: str | None) -> None:
+    if group_by not in (None, "task_group"):
+        raise _unprocessable("group_by must be task_group")
+    if percentiles not in (None, "p95"):
+        raise _unprocessable("percentiles must be p95")
+    if percentiles is not None and group_by is not None:
+        # No caller needs it, and the group series stays free of the sorts.
+        raise _unprocessable("percentiles can't be combined with group_by")
+
+
+async def _add_percentiles(
+    response: TimeSeriesResponse, series: TimeSeries, records: list[RunRecord]
+) -> None:
+    """Set the p95 fields of ``response`` (setting them is what puts them in the output)."""
+    buckets = [WindowSamples() for _ in series.starts]
+    async for part in _slices(records):
+        collect_bucket_samples(series, buckets, part)
+    # Sorts every bucket's samples: off the event loop.
+    runtime, queue_wait, runtime_n, queue_wait_n = await run_in_threadpool(
+        _bucket_percentiles, buckets
+    )
+    response.p95_runtime_ms = runtime
+    response.p95_queue_wait_ms = queue_wait
+    response.runtime_samples = runtime_n
+    response.queue_wait_samples = queue_wait_n
 
 
 def _add_timeseries_route(
@@ -195,7 +269,16 @@ def _add_timeseries_route(
     @router.get(
         "/stats/timeseries",
         response_model=TimeSeriesResponse,
-        responses={422: {"description": "Bad bucket/window, or too many buckets"}},
+        # Only what the response sets: without ``percentiles`` the p95 fields
+        # are absent, not null, so existing callers see the same keys.
+        response_model_exclude_unset=True,
+        responses={
+            422: {
+                "description": (
+                    "Bad bucket/window, too many buckets, or percentiles with group_by"
+                )
+            }
+        },
     )
     async def stats_timeseries(
         bucket: Annotated[
@@ -215,6 +298,15 @@ def _add_timeseries_route(
         group_by: Annotated[
             str | None, Query(description="Also split by task_group")
         ] = None,
+        percentiles: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "p95: add the p95 runtime and queue wait per bucket, with their "
+                    "sample counts (not with group_by)"
+                )
+            ),
+        ] = None,
     ) -> TimeSeriesResponse:
         """Runs by current state per bucket, from ``within`` or ``from_date`` to now.
 
@@ -223,8 +315,7 @@ def _add_timeseries_route(
         multiples of the bucket size, and the last bucket also takes runs
         stamped after now. At most 1440 buckets.
         """
-        if group_by not in (None, "task_group"):
-            raise _unprocessable("group_by must be task_group")
+        _check_split_options(group_by, percentiles)
         now = params.utcnow()
         records = store.run_records()
         window = _recent_window(
@@ -265,7 +356,7 @@ def _add_timeseries_route(
         except ValueError as exc:
             raise _unprocessable(str(exc)) from exc
         # Buckets start on edges, so the series covers from the first edge.
-        return TimeSeriesResponse(
+        response = TimeSeriesResponse(
             window=TimeWindowResponse(start=series.starts[0], end=now),
             bucket_seconds=int(size.total_seconds()),
             starts=series.starts,
@@ -276,6 +367,9 @@ def _add_timeseries_route(
             if group_by
             else None,
         )
+        if percentiles is not None:
+            await _add_percentiles(response, series, records)
+        return response
 
 
 def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
@@ -291,10 +385,10 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
     ) -> FailureGroupListResponse:
         """Tasks whose current state is FAILURE, grouped by exception class.
 
-        Each group lists its count, first and last failure, task names and up
-        to 5 of the latest task IDs; tasks without an exception class form one
-        group with ``exception_type`` null. Without ``within`` or ``from_date``,
-        from the oldest run held, at most 3650 days back.
+        Each group lists its count, first and last failure, task names, up to 5
+        of the latest task IDs and ``latest_message``: the newest failure's
+        message, first line only; it may contain task arguments. Tasks without
+        an exception class form one group with ``exception_type`` null.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
@@ -319,6 +413,7 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
                     last_seen=g.last_seen,
                     task_names=list(g.task_names),
                     sample_task_ids=list(g.sample_task_ids),
+                    latest_message=g.latest_message,
                 )
                 for g in groups_
             ],

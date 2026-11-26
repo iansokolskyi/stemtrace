@@ -1,0 +1,50 @@
+{
+  "broker": {
+    "alternates": [],
+    "connect_timeout": 4,
+    "failover_strategy": "round-robin",
+    "heartbeat": 120.0,
+    "hostname": "127.0.0.1",
+    "insist": false,
+    "login_method": null,
+    "port": 16390,
+    "ssl": false,
+    "transport": "redis",
+    "transport_options": {},
+    "uri_prefix": null,
+    "userid": null,
+    "virtual_host": "0"
+  },
+  "clock": "1",
+  "pid": 507515,
+  "pool": {
+    "max-concurrency": 1,
+    "max-tasks-per-child": null,
+    "processes": [
+      507515
+    ],
+    "put-guarded-by-semaphore": true,
+    "timeouts": []
+  },
+  "prefetch_count": 8,
+  "rusage": {
+    "idrss": 0,
+    "inblock": 0,
+    "isrss": 0,
+    "ixrss": 0,
+    "majflt": 0,
+    "maxrss": 52232,
+    "minflt": 15074,
+    "msgrcv": 0,
+    "msgsnd": 0,
+    "nivcsw": 75,
+    "nsignals": 0,
+    "nswap": 0,
+    "nvcsw": 19,
+    "oublock": 0,
+    "stime": 0.075366,
+    "utime": 1.255642
+  },
+  "total": {},
+  "uptime": 2
+}

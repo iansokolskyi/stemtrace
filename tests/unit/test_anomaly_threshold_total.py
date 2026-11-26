@@ -22,10 +22,21 @@ def test_the_threshold_cap_is_the_retention_cap() -> None:
     assert MAX_STUCK_THRESHOLD == MAX_DURATION
 
 
-P95S = [1, 3_600_000, MAX_MS]
+P95S = [0, 1, 3_600_000, MAX_MS]
 # 1: the smallest; 100_000: the largest the settings accept; the rest only reach
 # the classifier through a hand-built ``AnomalySettings`` (public in core/).
-FACTORS = [1, 100_000, 100_001, 1e15, 1e308, float("inf")]
+FACTORS = [
+    1,
+    100_000,
+    100_001,
+    1e15,
+    1e308,
+    float("inf"),
+    -1,
+    -1e20,
+    float("-inf"),
+    float("nan"),
+]
 
 
 def _running(task_id: str = "run") -> NodeFacts:
@@ -54,6 +65,22 @@ def test_classifier_with_any_factor_and_p95_does_not_raise(
     for anomaly in report.anomalies.values():
         assert anomaly.threshold_ms is not None
         assert anomaly.threshold_ms <= MAX_MS
+
+
+@pytest.mark.parametrize("factor", [-1, -1e20, float("-inf"), float("nan")])
+def test_classifier_with_a_negative_or_nan_factor_uses_the_floor(factor: float) -> None:
+    settings = AnomalySettings(stuck_factor=factor)
+    report = classify_anomalies(
+        [_running()],
+        now=at(100 * 86400),
+        runtime_stats={"app.work": RuntimeStats(3_600_000, 5)},
+        timeline={},
+        settings=settings,
+    )
+
+    assert [a.threshold_ms for a in report.anomalies.values()] == [
+        int(settings.stuck_floor.total_seconds() * 1000)
+    ]
 
 
 @pytest.mark.parametrize("p95_ms", P95S)

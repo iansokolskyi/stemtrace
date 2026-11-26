@@ -1,0 +1,1 @@
+- `GET /api/failures` groups have `latest_message`: the first line, up to 300 characters, of the newest failure's message. Failure messages can contain task arguments and aren't scrubbed, as on the task page. See [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md#sensitive-data-scrubbing).

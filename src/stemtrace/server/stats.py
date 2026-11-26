@@ -1,4 +1,4 @@
-"""Aggregates over the store's run records: KPIs, time series, failure groups.
+"""Aggregates over the store's run records: KPIs, time series, failure groups, task stats.
 
 Pure functions over :class:`RunRecord` lists. The store hands out a copy of its
 records (see ``GraphStore.run_records``), so everything here runs outside the
@@ -39,6 +39,9 @@ MAX_BUCKETS: Final[int] = 1440
 #: Most sample task IDs listed per failure group.
 FAILURE_SAMPLES: Final[int] = 5
 
+#: Longest failure message a run record keeps, after the cut to its first line.
+MAX_MESSAGE_LENGTH: Final[int] = 300
+
 #: Longest window or bucket (10 years). Summary windows start at most this far
 #: back, so even the largest automatic bucket (7d) fits in ``MAX_BUCKETS`` and
 #: bucket edges stay within the dates Python can represent.
@@ -69,6 +72,12 @@ class RunRecord:
     # Milliseconds of the last run of a terminal task; None before it ends or
     # when its STARTED is missing (see ``TaskNode.runtime_ms``).
     runtime_ms: int | None = None
+    # Milliseconds the first attempt waited before starting; set on the same
+    # terminal-only gate as ``runtime_ms`` (see ``TaskNode.queue_wait_ms``).
+    queue_wait_ms: int | None = None
+    # First line (at most ``MAX_MESSAGE_LENGTH`` characters) of the exception text
+    # of the event that gave ``exception_type``; FAILURE runs only.
+    exception_message: str | None = None
     # The state-deciding event's time and nodename (None for an eager task or
     # an old worker), whether it is a cold-stop cancelled RETRY, and the parent
     # the task's events reported.
@@ -93,16 +102,23 @@ class RunRecord:
             name=node.name,
             state=node.state,
             last_updated=last_updated,
-            # Only failure groups read it. Reading it scans all of the node's
+            # Only failure groups read these. Reading them scans all of the node's
             # events, and this runs under the store lock on every event, so a
             # task retrying thousands of times would make ingest quadratic.
             exception_type=node.exception_type
+            if node.state == TaskState.FAILURE
+            else None,
+            exception_message=_first_line(node.exception_text)
             if node.state == TaskState.FAILURE
             else None,
             # Same reason: run_times() scans and sorts every event, so only a
             # terminal task reads it: no calls while it runs, then one per event
             # that arrives after the terminal one (usually none).
             runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
+            # The wait scans the events too, and a late sent event moves it, so it
+            # is read on every event of a terminal task and never carried forward
+            # from STARTED.
+            queue_wait_ms=node.queue_wait_ms if node.state in TERMINAL_STATES else None,
             # The rest is O(1): the node keeps the state event and per-attempt
             # and per-parent times as it ingests, so no event scan.
             state_since=current.timestamp,
@@ -113,6 +129,13 @@ class RunRecord:
             attempt_started=node.attempt_started,
             replaced_progress=node.replaced_progress,
         )
+
+
+def _first_line(text: str | None) -> str | None:
+    """The first line of ``text``, cut to ``MAX_MESSAGE_LENGTH`` characters."""
+    if not text:
+        return None
+    return text.splitlines()[0][:MAX_MESSAGE_LENGTH]
 
 
 def parse_duration(text: str) -> timedelta:
@@ -264,6 +287,23 @@ def time_series(
     return series
 
 
+def bucket_placer(series: TimeSeries) -> Callable[[RunRecord], int | None]:
+    """A function giving a record's bucket in ``series``; None before the first bucket.
+
+    The last bucket takes everything after it, so a run stamped in the future lands there.
+    """
+    first = series.starts[0].timestamp()
+    size = series.bucket.total_seconds()
+    last = len(series.starts) - 1
+
+    def place(record: RunRecord) -> int | None:
+        """The bucket of ``record``'s ``last_updated``."""
+        offset = record.last_updated.timestamp() - first
+        return None if offset < 0 else min(int(offset // size), last)
+
+    return place
+
+
 def count_runs(
     series: TimeSeries,
     records: Iterable[RunRecord],
@@ -271,14 +311,12 @@ def count_runs(
     key_of: Callable[[RunRecord], str] | None = None,
 ) -> None:
     """Add ``records`` to ``series``, so a long list can be counted in slices."""
-    size = series.bucket.total_seconds()
-    first = series.starts[0].timestamp()
+    place = bucket_placer(series)
     width = len(series.starts)
     for record in records:
-        offset = record.last_updated.timestamp() - first
-        if offset < 0:
+        index = place(record)
+        if index is None:
             continue
-        index = min(int(offset // size), width - 1)
         series.counts.setdefault(record.state, [0] * width)[index] += 1
         if key_of is not None:
             per_key = series.by_key.setdefault(key_of(record), {})
@@ -295,6 +333,8 @@ class FailureGroup:
     last_seen: datetime
     task_names: tuple[str, ...]
     sample_task_ids: tuple[str, ...]
+    # Message of the newest run by (last_updated, task_id), the order of the samples.
+    latest_message: str | None = None
 
 
 class FailureTally:
@@ -304,7 +344,15 @@ class FailureTally:
     the runs: summarizing is O(types), whatever the number of failures.
     """
 
-    __slots__ = ("_names", "_newest", "count", "first_seen", "last_seen")
+    __slots__ = (
+        "_latest_entry",
+        "_latest_message",
+        "_names",
+        "_newest",
+        "count",
+        "first_seen",
+        "last_seen",
+    )
 
     def __init__(self, first: RunRecord) -> None:
         """Start a tally with its first run."""
@@ -314,6 +362,8 @@ class FailureTally:
         # Min-heap of the newest runs by (last_updated, task_id): the root is
         # the next to drop.
         self._newest = [(first.last_updated, first.task_id)]
+        self._latest_entry = self._newest[0]
+        self._latest_message = first.exception_message
 
     def add(self, record: RunRecord) -> None:
         """Count one more FAILURE run."""
@@ -323,6 +373,10 @@ class FailureTally:
         self.last_seen = max(self.last_seen, stamp)
         self._names.add(record.name)
         entry = (stamp, record.task_id)
+        # The heap root is its smallest entry, so the newest is tracked apart.
+        if entry > self._latest_entry:
+            self._latest_entry = entry
+            self._latest_message = record.exception_message
         if len(self._newest) < FAILURE_SAMPLES:
             heapq.heappush(self._newest, entry)
         elif entry > self._newest[0]:
@@ -339,6 +393,7 @@ class FailureTally:
             sample_task_ids=tuple(
                 task_id for _, task_id in sorted(self._newest, reverse=True)
             ),
+            latest_message=self._latest_message,
         )
 
 
@@ -392,11 +447,102 @@ def percentile(sorted_samples: Sequence[int], percent: int) -> int | None:
 
     The value at rank ``ceil(percent * n / 100)``, counted from 1. The rank is
     computed in integers: ``0.95 * n`` is not exact in floats for every ``n``.
+
+    Raises:
+        ValueError: If ``percent`` is not in 1..100.
     """
+    if not 1 <= percent <= 100:
+        raise ValueError(f"percent must be in 1..100, got {percent}")
     if not sorted_samples:
         return None
     rank = -(-percent * len(sorted_samples) // 100)
     return sorted_samples[rank - 1]
+
+
+def runtime_sample(record: RunRecord) -> int | None:
+    """The record's runtime sample: SUCCESS or FAILURE runs with a paired start."""
+    return record.runtime_ms if record.state in RUNTIME_SAMPLE_STATES else None
+
+
+def queue_wait_sample(record: RunRecord) -> int | None:
+    """The record's queue-wait sample: runs with an outcome that waited before starting.
+
+    A run revoked after it started did wait, so REVOKED counts here and not above.
+    """
+    return record.queue_wait_ms if record.state in OUTCOME_STATES else None
+
+
+def runtime_sort_value(record: RunRecord) -> int | None:
+    """What a task list sorted by runtime ranks the run by: the p95 tile's sample, or None."""
+    return (
+        None if record.name.startswith(EXCLUDED_NAME_PREFIX) else runtime_sample(record)
+    )
+
+
+def queue_wait_sort_value(record: RunRecord) -> int | None:
+    """What a task list sorted by queue wait ranks the run by: the p95 tile's sample, or None."""
+    return (
+        None
+        if record.name.startswith(EXCLUDED_NAME_PREFIX)
+        else queue_wait_sample(record)
+    )
+
+
+def p95(samples: list[int]) -> int | None:
+    """Sort ``samples`` in place and return their nearest-rank p95; None when empty."""
+    samples.sort()
+    return percentile(samples, P95)
+
+
+@dataclass(slots=True)
+class WindowSamples:
+    """The runtime and queue-wait samples of one window, in arrival order."""
+
+    runtime: list[int] = field(default_factory=list)
+    queue_wait: list[int] = field(default_factory=list)
+
+
+def collect_samples(
+    samples: WindowSamples, records: Iterable[RunRecord], window: Window
+) -> None:
+    """Add the samples of the ``window``'s runs to ``samples``, so slices can be collected.
+
+    ``celery.*`` tasks give none, as in the task stats, so the runtime samples are
+    the union of the Registry rows' samples.
+    """
+    for record in records:
+        if record.name.startswith(EXCLUDED_NAME_PREFIX):
+            continue
+        if not window.contains(record.last_updated):
+            continue
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            samples.runtime.append(runtime)
+        wait = queue_wait_sample(record)
+        if wait is not None:
+            samples.queue_wait.append(wait)
+
+
+def collect_bucket_samples(
+    series: TimeSeries, buckets: list[WindowSamples], records: Iterable[RunRecord]
+) -> None:
+    """Add ``records``' samples to the ``series``' ``buckets``, placed as ``count_runs`` does.
+
+    ``buckets`` has one entry per bucket; a long list can be added in slices.
+    """
+    place = bucket_placer(series)
+    for record in records:
+        if record.name.startswith(EXCLUDED_NAME_PREFIX):
+            continue
+        index = place(record)
+        if index is None:
+            continue
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            buckets[index].runtime.append(runtime)
+        wait = queue_wait_sample(record)
+        if wait is not None:
+            buckets[index].queue_wait.append(wait)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -454,8 +600,9 @@ class _NameTally:
             return
         self.runs += 1
         self.failures += record.state in FAILURE_STATES
-        if record.state in RUNTIME_SAMPLE_STATES and record.runtime_ms is not None:
-            self.samples.append(record.runtime_ms)
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            self.samples.append(runtime)
 
 
 def task_stats(

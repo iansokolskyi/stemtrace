@@ -25,6 +25,7 @@ from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.consumer import AsyncEventConsumer, EventConsumer
 from stemtrace.server.fastapi.extension import StemtraceExtension
 from stemtrace.server.fastapi.router import create_router
+from stemtrace.server.inspect_probe import InspectProbe
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
 STRICT_PROBE_LEAKS = True
@@ -43,6 +44,9 @@ class FakeClock:
     def __init__(self) -> None:
         self._now = 1000.0
         self._lock = threading.Lock()
+        # Set while the probe thread waits with nothing owed: it has run every
+        # attempt it was asked for, including the answer's registry apply.
+        self.idle = threading.Event()
 
     def now(self) -> float:
         with self._lock:
@@ -50,7 +54,15 @@ class FakeClock:
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
         if seconds is None:
-            return event.wait(BOUND_S)
+            self.idle.set()
+            try:
+                # A trigger that landed before the set owes an attempt: not idle.
+                if event.is_set():
+                    self.idle.clear()
+                    return True
+                return event.wait(BOUND_S)
+            finally:
+                self.idle.clear()
         if event.is_set():
             return True
         with self._lock:
@@ -98,6 +110,9 @@ class FakeInspect:
         if fleet.mode == "silent":
             return None
         answer = {name: tasks for name, (_, tasks) in self._snapshot.items()}
+        with fleet.answers:
+            fleet.answered.append(frozenset(self._snapshot))
+            fleet.answers.notify_all()
         fleet.attempt_done.release()
         return answer
 
@@ -126,6 +141,16 @@ class FakeFleet:
         self.first_attempt_gate.set()
         self.attempt_started = threading.Semaphore(0)
         self.attempt_done = threading.Semaphore(0)
+        # The nodes each ``registered()`` answer named, in order: a token from
+        # attempt_done says an attempt ended, not that it saw a given node.
+        self.answers = threading.Condition()
+        self.answered: list[frozenset[str]] = []
+
+    def wait_for_answer_naming(self, nodename: str) -> None:
+        with self.answers:
+            assert self.answers.wait_for(
+                lambda: any(nodename in named for named in self.answered), BOUND_S
+            ), f"no inspect answered with {nodename}"
 
     def block_first_attempt(self) -> None:
         self.first_attempt_gate.clear()
@@ -212,12 +237,105 @@ def test_p1_create_router_with_a_consumer_passed_in_probes_when_a_worker_joins(
     )
 
     with TestClient(app):
-        take(fleet.attempt_done)
+        # Startup attempts still owed (the app's startup handler runs more than
+        # once) must end first, so only the join can cause the next attempt.
+        assert fleet.clock.idle.wait(BOUND_S), "the probe never went idle"
         fleet.nodes = {NODE_B: (22, ["app.b"])}
         registry.register_worker(NODE_B, 22, [])
-        take(fleet.attempt_done)
+        fleet.wait_for_answer_naming(NODE_B)
+        # Idle again means that answer's registry apply is done.
+        assert fleet.clock.idle.wait(BOUND_S), "the probe never finished applying"
 
     assert registry.get_registered_tasks(NODE_B, 22) == ["app.b"]
+
+
+QUIET_S = 0.5
+
+
+@pytest.fixture
+def start_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+    real_start = InspectProbe.start
+
+    def counting_start(self: InspectProbe) -> None:
+        # Counts the calls that take effect: a start while running is a no-op.
+        if not self._started:
+            calls.append("start")
+        real_start(self)
+
+    monkeypatch.setattr(InspectProbe, "start", counting_start)
+    return calls
+
+
+@pytest.fixture
+def first_start_waits_for_its_attempt(
+    fleet: FakeFleet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hold the first attempt in flight while later start() calls arrive."""
+    fleet.block_first_attempt()
+    real_start = InspectProbe.start
+    first = []
+
+    def start(self: InspectProbe) -> None:
+        real_start(self)
+        if not first:
+            first.append(True)
+            take(fleet.attempt_started)
+
+    monkeypatch.setattr(InspectProbe, "start", start)
+
+
+def create_router_app(registry: WorkerRegistry) -> FastAPI:
+    app = FastAPI()
+    app.include_router(create_router(worker_registry=registry, broker_url=BROKER))
+    return app
+
+
+def test_p1_create_router_app_start_starts_the_probe_once_and_broadcasts_once(
+    fleet: FakeFleet,
+    start_calls: list[str],
+    first_start_waits_for_its_attempt: None,
+) -> None:
+    app = create_router_app(WorkerRegistry())
+
+    # FastAPI 0.162 runs the router's startup handler once per include level.
+    with TestClient(app):
+        fleet.first_attempt_gate.set()
+        take(fleet.attempt_done)
+        extra = fleet.attempt_done.acquire(timeout=QUIET_S)
+
+    assert start_calls == ["start"]
+    assert (fleet.attempts, extra) == (1, False)
+
+
+def test_p1_extension_app_start_starts_the_probe_once_and_broadcasts_once(
+    fleet: FakeFleet,
+    start_calls: list[str],
+    first_start_waits_for_its_attempt: None,
+) -> None:
+    _, app = extension_app()
+
+    with TestClient(app):
+        fleet.first_attempt_gate.set()
+        take(fleet.attempt_done)
+        extra = fleet.attempt_done.acquire(timeout=QUIET_S)
+
+    assert start_calls == ["start"]
+    assert (fleet.attempts, extra) == (1, False)
+
+
+def test_p1_create_router_app_probes_again_on_a_second_lifespan(
+    fleet: FakeFleet, start_calls: list[str]
+) -> None:
+    app = create_router_app(WorkerRegistry())
+
+    with TestClient(app):
+        take(fleet.attempt_done)
+    with TestClient(app):
+        take(fleet.attempt_done)
+
+    assert start_calls == ["start", "start"]
+    assert fleet.attempts == 2
 
 
 def test_p1_without_a_broker_url_nothing_is_probed(fleet: FakeFleet) -> None:
@@ -523,8 +641,12 @@ def test_p5_shutdown_during_a_blocked_probe_returns_within_the_stop_bound(
     began = time.monotonic()
     client.__exit__(None, None, None)
     elapsed = time.monotonic() - began
+    gate_was_open = fleet.first_attempt_gate.is_set()
+    # The probe thread was abandoned on purpose: let it finish while this test's fakes are
+    # still installed, so it can't consume a later test's.
+    fleet.first_attempt_gate.set()
 
-    assert not fleet.first_attempt_gate.is_set()
+    assert not gate_was_open
     assert elapsed < 2.0
 
 

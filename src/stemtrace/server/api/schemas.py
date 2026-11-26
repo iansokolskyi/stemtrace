@@ -359,6 +359,19 @@ class KpiCountResponse(BaseModel):
     baseline: int
 
 
+class KpiPercentileResponse(BaseModel):
+    """A percentile for the window and for the window before it, with their sample counts.
+
+    ``value`` and ``baseline`` are null with no samples. Callers decide how many
+    samples make a percentile worth comparing, so the counts are exposed.
+    """
+
+    value: int | None
+    baseline: int | None
+    samples: int
+    baseline_samples: int
+
+
 class WorkerCountsResponse(BaseModel):
     """Workers the server knows of, from worker events (no inspect round trip)."""
 
@@ -375,6 +388,8 @@ class OverviewResponse(BaseModel):
     failures: KpiCountResponse
     runs_per_minute: KpiResponse
     failure_rate: KpiResponse
+    p95_runtime_ms: KpiPercentileResponse
+    p95_queue_wait_ms: KpiPercentileResponse
     workers: WorkerCountsResponse
 
 
@@ -388,6 +403,11 @@ class TimeSeriesResponse(BaseModel):
     # enum dict keys).
     counts: dict[str, list[int]]
     by_task_group: dict[str, dict[str, list[int]]] | None = None
+    # Only with ``percentiles=p95``: one entry per bucket, the overall series.
+    p95_runtime_ms: list[int | None] | None = None
+    p95_queue_wait_ms: list[int | None] | None = None
+    runtime_samples: list[int] | None = None
+    queue_wait_samples: list[int] | None = None
 
 
 class FailureGroupResponse(BaseModel):
@@ -399,6 +419,7 @@ class FailureGroupResponse(BaseModel):
     last_seen: datetime
     task_names: list[str]
     sample_task_ids: list[str]
+    latest_message: str | None = None
 
 
 class FailureGroupListResponse(BaseModel):
@@ -464,6 +485,11 @@ class WorkerResponse(BaseModel):
     status: WorkerStatus
     registered_at: datetime
     last_seen: datetime
+    pool: str | None = None
+    concurrency: int | None = None
+    # STARTED runs on the live pid since its worker_ready, counted from run
+    # records; null for a pid that isn't its nodename's live, online process.
+    active: int | None = None
 
 
 class WorkerListResponse(BaseModel):

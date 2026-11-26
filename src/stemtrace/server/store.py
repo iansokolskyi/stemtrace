@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import operator
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from stemtrace.core.graph import (
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.inspect_probe import INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 from stemtrace.server.stats import RunRecord
+from stemtrace.server.worker_pool import NO_POOL_INFO
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
         TaskEvent,
         WorkerEvent,
     )
+    from stemtrace.server.worker_pool import PoolInfo
 
 
 class WorkerInfo(BaseModel):
@@ -52,6 +55,16 @@ class WorkerInfo(BaseModel):
     # seen in a stats reply (D4e reading 5: a stop for an unlisted pid is
     # compared with this, else with registered_at).
     ready_at: datetime | None = None
+    # From the newest stats() reply naming this pid; None where it said nothing.
+    pool: str | None = None
+    concurrency: int | None = None
+
+
+class WorkerSnapshot(NamedTuple):
+    """A copy of one worker row, and whether it is its nodename's live process."""
+
+    info: WorkerInfo
+    live: bool
 
 
 def ensure_tz_aware(dt: datetime) -> datetime:
@@ -59,6 +72,27 @@ def ensure_tz_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+class _Ranked(NamedTuple):
+    """A task's sort value and tie-breakers, read under the lock, with its live node."""
+
+    value: int | None
+    updated: datetime
+    task_id: str
+    node: TaskNode
+
+
+def _slowest_first(ranked: list[_Ranked]) -> list[TaskNode]:
+    """Order by value, largest first, those with None last.
+
+    Stable passes make the order total: value, then newest update, then task id.
+    """
+    ranked.sort(key=operator.attrgetter("task_id"))
+    ranked.sort(key=operator.attrgetter("updated"), reverse=True)
+    keyed = [r for r in ranked if r.value is not None]
+    keyed.sort(key=operator.attrgetter("value"), reverse=True)
+    return [r.node for r in keyed] + [r.node for r in ranked if r.value is None]
 
 
 def _ensure_end_of_day(dt: datetime) -> datetime:
@@ -345,7 +379,7 @@ class WorkerTimeline:
 
     def record(self, event: WorkerEvent) -> None:
         """Add a worker event (any type) to its nodename's timeline."""
-        # A naive timestamp (older worker) can't be compared with aware ones.
+        # A naive timestamp (a non-stemtrace producer) can't be compared with aware ones.
         entry = WorkerTimelineEntry(
             ensure_tz_aware(event.timestamp), event.event_type, event.pid
         )
@@ -472,10 +506,17 @@ class WorkerRegistry:
 
         with self._lock:
             is_new = hostname not in self._newest_by_node
+            known = self._workers.get(f"{hostname}:{pid}")
+            earlier_ready = known.ready_at if known is not None else None
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
             ready = self._workers[f"{hostname}:{pid}"]
             stamp = ensure_tz_aware(event_timestamp or ready.last_seen)
             ready.ready_at = max(ready.ready_at or stamp, stamp)
+            if earlier_ready is not None and stamp > ensure_tz_aware(earlier_ready):
+                # A newer ready for a pid we saw ready is a restart that reused
+                # the pid number: the old process's pool values are stale. The
+                # event generation below drops a reply taken before this one.
+                ready.pool = ready.concurrency = None
             self._event_at.pop(
                 hostname, None
             )  # a new process: older events aren't its own
@@ -496,7 +537,7 @@ class WorkerRegistry:
     ) -> None:
         """Add or refresh one worker entry and make it the node's newest."""
         with self._lock:
-            # A worker_ready is a new process (D4d reading 7): it can owe a confirm again.
+            # A registration (a worker_ready, or a stats reply naming a pid) can owe a confirm again (D4d reading 7).
             self._confirm_spent.discard(hostname)
             worker_id = f"{hostname}:{pid}"
             # Use event timestamp for last_seen (important for Redis replay)
@@ -513,7 +554,7 @@ class WorkerRegistry:
                 self._workers[worker_id].pid = pid
                 # Never back: older counted misses would count again (D4d reading 2).
                 self._workers[worker_id].last_seen = max(
-                    self._workers[worker_id].last_seen, ensure_tz_aware(timestamp)
+                    self._workers[worker_id].last_seen, timestamp
                 )
                 self._workers[worker_id].status = WorkerStatus.ONLINE
                 self._workers[worker_id].shutdown_reported = False
@@ -807,6 +848,7 @@ class WorkerRegistry:
         seen: Mapping[str, int],
         replies: Mapping[str, tuple[int | None, list[str] | None]],
         *,
+        pools: Mapping[str, PoolInfo] | None = None,
         now: datetime | None = None,
         monotonic: float | None = None,
     ) -> None:
@@ -827,6 +869,9 @@ class WorkerRegistry:
             seen: ``event_generations()`` taken before the inspect call.
             replies: Nodename -> (pid or None, registered task names or None).
                 None tasks keep the worker's current list.
+            pools: Nodename -> pool info from the same reply. Given, it replaces
+                the stored pool info of each applied pid (a missing nodename
+                clears it); None leaves the stored info alone.
             now: When the reply arrived (tests); defaults to now.
             monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
@@ -853,6 +898,12 @@ class WorkerRegistry:
                     self._register(
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
+                    if pools is not None:
+                        # The reply is the newest word on this pid: what it
+                        # doesn't say is cleared, not carried over.
+                        info = pools.get(nodename, NO_POOL_INFO)
+                        worker = self._workers[f"{nodename}:{pid}"]
+                        worker.pool, worker.concurrency = info
                 self.mark_node_alive(nodename, pid, now=now)
             # The broadcast completed: stamped here, after its answers are
             # applied and in the same locked step, so no evaluation sees it
@@ -1060,6 +1111,27 @@ class WorkerRegistry:
                 reverse=True,
             )
 
+    def snapshot_workers(self, hostname: str | None = None) -> list[WorkerSnapshot]:
+        """Copy the workers (newest ``last_seen`` first) with whether each is its node's live pid.
+
+        Live means online and not superseded, which only a nodename's newest pid
+        can be. Rows and flags come from one locked step, so a concurrent event
+        can't split them.
+
+        Args:
+            hostname: Keep only this nodename's rows; None keeps all.
+        """
+        with self._lock:
+            rows = [
+                WorkerSnapshot(
+                    w.model_copy(),
+                    w.status == WorkerStatus.ONLINE and not w.superseded,
+                )
+                for w in self._workers.values()
+                if hostname is None or w.hostname == hostname
+            ]
+        return sorted(rows, key=lambda r: r.info.last_seen, reverse=True)
+
     def get_worker(self, hostname: str, pid: int) -> WorkerInfo | None:
         """Get worker info by hostname and PID.
 
@@ -1203,7 +1275,7 @@ class GraphStore:
         # One immutable record per TASK node, kept in step with the graph
         # under the same lock, so summaries never walk the live graph. An
         # event changes its own node's state and events; names can also
-        # change on other nodes, which the graph reports (take_renamed).
+        # change on other nodes, which the graph reports (take_changed).
         self._runs: dict[str, RunRecord] = {}
         # Counts stored events and evictions: the flow-time cache's key.
         self._changes = 0
@@ -1227,7 +1299,7 @@ class GraphStore:
             self._maybe_evict()
             # A task.replace() reuse can rename other tasks (here or while
             # evicting); refresh those records too.
-            for task_id in self._graph.take_renamed():
+            for task_id in self._graph.take_changed():
                 self._index_run(task_id)
 
         for listener in self._listeners:
@@ -1273,8 +1345,9 @@ class GraphStore:
         queue: str | None = None,
         exception_type: str | None = None,
         task_names: Collection[str] | None = None,
+        sort_key: Callable[[RunRecord], int | None] | None = None,
     ) -> tuple[list[TaskNode], int]:
-        """Get nodes with optional filtering, most recent first.
+        """Get nodes with optional filtering, newest update first or slowest first.
 
         Excludes synthetic nodes (GROUP, CHORD) which are for graph
         visualization only.
@@ -1292,11 +1365,15 @@ class GraphStore:
         ``updated_before`` keeps the nodes whose ``last_updated`` is earlier
         than it (exclusive): with ``from_date`` it selects the runs a time-series
         bucket counts, which ``to_date`` (a start time) cannot.
+        ``sort_key`` maps a run record to its sort value (a ``stats`` sample
+        function): matches go largest first, those with None last, ties by
+        newest update then task id. It sorts every match, so call it off the
+        event loop; the sort runs outside the store lock.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
-        # Filter, sort and copy in one critical section: the consumer thread
+        # Filter and copy in one critical section: the consumer thread
         # mutates live nodes, so a node could otherwise change state between
         # passing the filter and being copied.
         with self._lock:
@@ -1330,10 +1407,25 @@ class GraphStore:
                     if n.first_seen is not None and n.first_seen <= to_dt
                 ]
 
-            nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
-            total = len(nodes)
-            page = [_snapshot(n) for n in nodes[offset : offset + limit]]
-        return page, total
+            if sort_key is None:
+                nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+                total = len(nodes)
+                page = [_snapshot(n) for n in nodes[offset : offset + limit]]
+                return page, total
+            # One cheap pass under the lock copies what the sort reads (records are
+            # immutable, ``last_updated`` is read now, as the nodes keep changing);
+            # keys and the O(n log n) sort run outside it.
+            ids = [n.task_id for n in nodes]
+            records = list(map(self._runs.get, ids))
+            updated = [n.last_updated or _MIN_DATETIME for n in nodes]
+        ranked = [
+            _Ranked(None if r is None else sort_key(r), u, i, n)
+            for r, u, i, n in zip(records, updated, ids, nodes, strict=True)
+        ]
+        ordered = _slowest_first(ranked)
+        with self._lock:
+            page = [_snapshot(n) for n in ordered[offset : offset + limit]]
+        return page, len(ordered)
 
     def get_root_nodes(
         self,
