@@ -76,7 +76,8 @@ Clicking **Runs / min** or **Failure rate** opens the matching runs in the
 state chips.
 
 Clicking **Workers online** opens a row for each worker host, offline hosts first and then by
-name, each with its status. A row opens that host, and **All workers** links to
+name, each with its status and, when the server sends both `active` and `concurrency`, the busy
+slots (`3 of 8 slots`). A row opens that host, and **All workers** links to
 [Workers](#workers). With no workers, the list says **No workers registered.** The entry is
 `panel=worker:all` in the URL, so a reload restores it.
 
@@ -101,6 +102,22 @@ there are neither failures nor anomalies, it says **All clear**.
 
 The strip shows a card for each worker host with its status, how many tasks it registered and when
 the server last saw it. A card opens the worker in the triage panel.
+
+When `GET /api/workers` returns pool information, the card adds a line and a meter:
+
+- With `pool`, `concurrency` and `active`, the line reads `prefork pool, 3 of 8 slots active`, and
+  the meter fills by the share of busy slots.
+- When `active` is more than `concurrency`, the line reads `prefork pool, 9 active, 8 slots`, and
+  the meter is full.
+- Without `active`, which is the case for an offline host, the line reads `prefork pool, 8 slots`
+  and the card has no meter.
+- Without `concurrency`, the line reads `prefork pool, 3 active` and the card has no meter.
+- Without `pool`, the line leaves out the pool name.
+- With neither `pool` nor `concurrency`, including a server that doesn't send the fields, the
+  card shows no line and no meter.
+
+How the server counts `active` and when it can read high or low is in
+[Workers and registry inspect](features.md#workers-and-registry-inspect).
 
 ### Task health
 
@@ -154,8 +171,6 @@ restore it.
 
 - The Overview counts the tasks the server holds. Tasks that the server evicted aren't in any
   number. See [Event retention](retention.md).
-- **Workers online** and the worker strip show no pool size or active slots, because the API
-  doesn't carry them.
 - A failed request leaves its part of the page empty. The Anomalies tile says **Unavailable** when
   `GET /api/anomalies` fails.
 
@@ -320,7 +335,7 @@ so the list is current when the page loads.
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
   [Workers and registry inspect](features.md#workers-and-registry-inspect).
-- Pool size and active slots aren't in the API, so the dashboard doesn't show them.
+- The [Workers](#workers) page and the Worker page don't show the pool or the active slots.
 
 ## Worker page
 
