@@ -55,6 +55,10 @@ class FakeClock:
         if seconds is None:
             self.idle.set()
             try:
+                # A trigger that landed before the set owes an attempt: not idle.
+                if event.is_set():
+                    self.idle.clear()
+                    return True
                 return event.wait(BOUND_S)
             finally:
                 self.idle.clear()
