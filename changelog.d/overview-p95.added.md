@@ -1,0 +1,1 @@
+- `GET /api/overview` also returns `p95_runtime_ms` and `p95_queue_wait_ms`: the p95 for the window and for the window before it, with the number of runs each comes from. `GET /api/stats/timeseries` takes `percentiles=p95` to add the p95 runtime and queue wait per bucket, with sample counts. See [Summary endpoints](docs/features.md#summary-endpoints).
