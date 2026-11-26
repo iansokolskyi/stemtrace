@@ -242,3 +242,60 @@ async def test_summary_request_during_ingestion_returns_a_consistent_snapshot(
         assert initial <= total <= initial + 2 * added
     else:
         assert initial // 2 - 5 <= body["runs"]["value"] <= initial + 2 * added
+
+
+class _CountingLock:
+    """An RLock that counts profile events (work) of the thread during each outermost hold."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._work = 0
+        self._previous: object = None
+        self.longest = 0
+
+    def _count(self, frame: object, event: str, arg: object) -> None:
+        self._work += 1
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+        if self._depth == 1:
+            self._work = 0
+            self._previous = sys.getprofile()
+            sys.setprofile(self._count)
+
+    def __exit__(self, *exc: object) -> None:
+        if self._depth == 1:
+            sys.setprofile(self._previous)  # type: ignore[arg-type]  # restores what getprofile returned
+            self.longest = max(self.longest, self._work)
+        self._depth -= 1
+        self._lock.release()
+
+
+async def _longest_lock_hold(store: GraphStore, path: str) -> int:
+    """Request ``path`` with the store's lock counting; return its longest hold (events)."""
+    counting = _CountingLock()
+    store._lock = counting  # type: ignore[assignment]  # a stand-in with the same protocol
+    try:
+        response = await _get(_app(store), path)
+    finally:
+        store._lock = counting._lock
+    assert response.status_code == 200
+    return counting.longest
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+async def test_sorted_task_list_holds_the_store_lock_no_longer_than_the_default(
+    sort: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """The sort runs outside the lock, so a writer waits no longer than for the default list."""
+    store = _big_store(big_stores, "mix")
+    default = await _longest_lock_hold(store, "/api/tasks?limit=100")
+    sorted_hold = await _longest_lock_hold(store, f"/api/tasks?limit=100&sort={sort}")
+
+    assert sorted_hold <= default * 1.5, (
+        f"sorted request held the lock for {sorted_hold} events "
+        f"(default list: {default})"
+    )

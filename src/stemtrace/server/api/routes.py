@@ -64,6 +64,7 @@ from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
 )
+from stemtrace.server.stats import queue_wait_sort_value, runtime_sort_value
 from stemtrace.server.worker_pool import pool_from_stats_payload
 from stemtrace.transports import broker_kind
 
@@ -1113,8 +1114,10 @@ def _add_task_routes(
             Literal["runtime", "queue_wait"] | None,
             Query(
                 description=(
-                    "Slowest first by runtime or queue wait (the p95 tiles' "
-                    "values); runs without one come last. Default: newest first."
+                    "Slowest first by runtime or queue wait: the samples the "
+                    "overview's p95 tiles use. Runs the tiles leave out (not "
+                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
+                    "come last. Default: newest update first."
                 )
             ),
         ] = None,
@@ -1152,8 +1155,10 @@ def _add_task_routes(
             nodes, total = find()
         else:
             # The sort touches every match with a Python key: off the loop.
-            sort_field = "runtime_ms" if sort == "runtime" else "queue_wait_ms"
-            nodes, total = await run_in_threadpool(find, sort=sort_field)
+            sort_key = (
+                runtime_sort_value if sort == "runtime" else queue_wait_sort_value
+            )
+            nodes, total = await run_in_threadpool(find, sort_key=sort_key)
         return TaskListResponse(
             tasks=[
                 _node_to_response(

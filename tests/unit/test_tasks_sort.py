@@ -222,3 +222,82 @@ def test_tasks_without_sort_keep_the_default_order_and_item_bytes(
     assert [t["task_id"] for t in plain["tasks"]] == oracle
     assert plain["tasks"] == [sorted_items[t] for t in oracle]
     assert set(plain) == {"tasks", "total", "limit", "offset"}
+
+
+def _tile_poc_store() -> GraphStore:
+    """The review's repro: runs the p95 tile leaves out, slower than every run it counts."""
+    store = GraphStore()
+    _run(store, "counted", wait=128, runtime=128, end=NOW - timedelta(seconds=9))
+    _run(
+        store, "revoked", wait=100, runtime=3_600_000, state=TaskState.REVOKED,
+        end=NOW - timedelta(seconds=1),
+    )  # fmt: skip
+    _run(
+        store, "builtin", wait=900_000, runtime=900_000,
+        name="celery.chord_unlock", end=NOW - timedelta(seconds=2),
+    )  # fmt: skip
+    _run(
+        store, "ignored", wait=500_000, runtime=500_000, state=TaskState.IGNORED,
+        end=NOW - timedelta(seconds=3),
+    )  # fmt: skip
+    _run(store, "running", wait=5, runtime=None, end=NOW - timedelta(seconds=4))
+    return store
+
+
+def test_sort_runtime_ranks_only_the_runs_the_p95_tile_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(_tile_poc_store(), monkeypatch)
+
+    ids = _ids(client, "&sort=runtime")
+
+    # REVOKED, IGNORED, celery.* and running runs have no runtime sample: newest first.
+    assert ids == ["counted", "revoked", "builtin", "ignored", "running"]
+
+
+def test_sort_queue_wait_ranks_only_the_runs_the_p95_tile_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(_tile_poc_store(), monkeypatch)
+
+    ids = _ids(client, "&sort=queue_wait")
+
+    # A REVOKED run did wait (it counts); IGNORED, celery.* and running runs do not.
+    assert ids[:2] == ["counted", "revoked"]
+    assert ids[2:] == ["builtin", "ignored", "running"]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("hostname=w1", ["h_slow", "h_fast"]),
+        ("queue=q1", ["h_slow", "h_fast"]),
+        ("exception_type=Boom", ["h_fast"]),
+    ],
+)
+def test_sort_combines_with_hostname_queue_and_exception_type_filters(
+    query: str, expected: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GraphStore()
+    for tid, runtime, host, queue, exc, state in [
+        ("h_slow", 900, "w1", "q1", None, TaskState.SUCCESS),
+        ("h_fast", 100, "w1", "q1", "Boom", TaskState.FAILURE),
+        ("other", 5_000, "w2", "q2", "Bang", TaskState.FAILURE),
+    ]:
+        started = NOW - timedelta(milliseconds=runtime)
+        store.add_event(
+            TaskEvent(
+                task_id=tid, name="app.work", state=TaskState.STARTED,
+                timestamp=started, hostname=host, queue=queue,
+            )
+        )  # fmt: skip
+        store.add_event(
+            TaskEvent(
+                task_id=tid, name="app.work", state=state, timestamp=NOW,
+                hostname=host, queue=queue, exception_type=exc,
+            )
+        )  # fmt: skip
+
+    ids = _ids(_client(store, monkeypatch), f"&sort=runtime&{query}")
+
+    assert ids == expected

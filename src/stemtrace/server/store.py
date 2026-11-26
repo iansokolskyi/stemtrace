@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import operator
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,42 @@ def ensure_tz_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _within(
+    nodes: list[TaskNode], from_date: datetime | None, to_date: datetime | None
+) -> list[TaskNode]:
+    """Keep the nodes updated at or after ``from_date`` and first seen by ``to_date``."""
+    if from_date is not None:
+        from_dt = ensure_tz_aware(from_date)
+        nodes = [
+            n for n in nodes if n.last_updated is not None and n.last_updated >= from_dt
+        ]
+    if to_date is not None:
+        to_dt = _ensure_end_of_day(to_date)
+        nodes = [n for n in nodes if n.first_seen is not None and n.first_seen <= to_dt]
+    return nodes
+
+
+class _Ranked(NamedTuple):
+    """A task's sort value and tie-breakers, read under the lock, with its live node."""
+
+    value: int | None
+    updated: datetime
+    task_id: str
+    node: TaskNode
+
+
+def _slowest_first(ranked: list[_Ranked]) -> list[TaskNode]:
+    """Order by value, largest first, those with None last.
+
+    Stable passes make the order total: value, then newest update, then task id.
+    """
+    ranked.sort(key=operator.attrgetter("task_id"))
+    ranked.sort(key=operator.attrgetter("updated"), reverse=True)
+    keyed = [r for r in ranked if r.value is not None]
+    keyed.sort(key=operator.attrgetter("value"), reverse=True)
+    return [r.node for r in keyed] + [r.node for r in ranked if r.value is None]
 
 
 def _ensure_end_of_day(dt: datetime) -> datetime:
@@ -1234,9 +1271,9 @@ class GraphStore:
         queue: str | None = None,
         exception_type: str | None = None,
         task_names: Collection[str] | None = None,
-        sort: str | None = None,
+        sort_key: Callable[[RunRecord], int | None] | None = None,
     ) -> tuple[list[TaskNode], int]:
-        """Get nodes with optional filtering, most recent first.
+        """Get nodes with optional filtering, newest update first or slowest first.
 
         Excludes synthetic nodes (GROUP, CHORD) which are for graph
         visualization only.
@@ -1251,15 +1288,15 @@ class GraphStore:
         ``task_names`` keeps the tasks with one of these names (the API's
         task group and tag filters resolve names to it beforehand, outside
         the lock); pass a set for O(1) lookups.
-        ``sort`` (``runtime_ms`` or ``queue_wait_ms``, a ``RunRecord`` field)
-        orders the filtered set slowest first, runs without a value last,
-        ties by newest update then task id. It sorts every match, so call it
-        off the event loop.
+        ``sort_key`` maps a run record to its sort value (a ``stats`` sample
+        function): matches go largest first, those with None last, ties by
+        newest update then task id. It sorts every match, so call it off the
+        event loop; the sort runs outside the store lock.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
-        # Filter, sort and copy in one critical section: the consumer thread
+        # Filter and copy in one critical section: the consumer thread
         # mutates live nodes, so a node could otherwise change state between
         # passing the filter and being copied.
         with self._lock:
@@ -1284,47 +1321,27 @@ class GraphStore:
                 nodes = [n for n in nodes if n.exception_type == exception_type]
             if task_names is not None:
                 nodes = [n for n in nodes if n.name in task_names]
-            if from_date is not None:
-                from_dt = ensure_tz_aware(from_date)
-                nodes = [
-                    n
-                    for n in nodes
-                    if n.last_updated is not None and n.last_updated >= from_dt
-                ]
-            if to_date is not None:
-                to_dt = _ensure_end_of_day(to_date)
-                nodes = [
-                    n
-                    for n in nodes
-                    if n.first_seen is not None and n.first_seen <= to_dt
-                ]
+            nodes = _within(nodes, from_date, to_date)
 
-            nodes = self._ordered(nodes, sort)
-            total = len(nodes)
-            page = [_snapshot(n) for n in nodes[offset : offset + limit]]
-        return page, total
-
-    def _ordered(self, nodes: list[TaskNode], field: str | None) -> list[TaskNode]:
-        """Newest update first, or by the run record's ``field`` largest first.
-
-        Hold the lock. The ``field`` order is total (value, newest update, task id).
-        """
-        if field is None:
-            nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
-            return nodes
-        nodes.sort(key=lambda n: n.task_id)
-        nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
-        keyed: list[tuple[int, TaskNode]] = []
-        unkeyed: list[TaskNode] = []
-        for node in nodes:
-            record = self._runs.get(node.task_id)
-            value = getattr(record, field) if record is not None else None
-            if value is None:
-                unkeyed.append(node)
-            else:
-                keyed.append((value, node))
-        keyed.sort(key=lambda pair: pair[0], reverse=True)
-        return [node for _, node in keyed] + unkeyed
+            if sort_key is None:
+                nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+                total = len(nodes)
+                page = [_snapshot(n) for n in nodes[offset : offset + limit]]
+                return page, total
+            # One cheap pass under the lock copies what the sort reads (records are
+            # immutable, ``last_updated`` is read now, as the nodes keep changing);
+            # keys and the O(n log n) sort run outside it.
+            ids = [n.task_id for n in nodes]
+            records = list(map(self._runs.get, ids))
+            updated = [n.last_updated or _MIN_DATETIME for n in nodes]
+        ranked = [
+            _Ranked(None if r is None else sort_key(r), u, i, n)
+            for r, u, i, n in zip(records, updated, ids, nodes, strict=True)
+        ]
+        ordered = _slowest_first(ranked)
+        with self._lock:
+            page = [_snapshot(n) for n in ordered[offset : offset + limit]]
+        return page, len(ordered)
 
     def get_root_nodes(
         self,
