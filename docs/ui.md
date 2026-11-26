@@ -234,8 +234,16 @@ range.
 
 ### Timeline view
 
-**Timeline** draws the latest 50 tasks that match the filters as bars from their first event to
-their last update. A bar opens the task. The view doesn't page.
+**Timeline** draws the latest 50 tasks that match the filters, one row each, on a shared time axis.
+The view doesn't page.
+
+- The axis shows UTC times in 24-hour format. When it spans a day or more, the labels add the date.
+- A row's bars use the same look as the [flow page](#flow-page) timeline: a grey bar for the wait
+  before the first start, a hatched bar for earlier attempts, and a block in the state's color for
+  the last run.
+- Point to a bar to see its state, how long it lasted and its UTC start.
+- The legend lists only the states that appear in the rows.
+- The task name opens the task. The last column shows the task's duration.
 
 ### Limits
 

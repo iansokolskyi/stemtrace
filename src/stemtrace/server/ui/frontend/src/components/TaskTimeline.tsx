@@ -59,7 +59,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
 
   return (
     <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
-      <div className="min-w-[560px] px-4 pt-3 pb-3.5">
+      <div className="min-w-[720px] px-4 pt-3 pb-3.5">
         <div className={clsx(COLUMNS, 'mb-1 h-5 text-xs text-muted')} aria-hidden="true">
           <span>UTC</span>
           <div className="relative" data-testid="timeline-axis">
