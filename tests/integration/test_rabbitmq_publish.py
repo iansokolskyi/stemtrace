@@ -278,7 +278,9 @@ class TestRabbitMQPublishFailFastNoBroker:
     def test_kombu_sleeps_fixture_files_other_threads_apart(
         # Order matters: pytest builds fixtures left to right, and ``kombu_sleeps``
         # must snapshot the threads after ``leaked_connect`` has started its thread.
-        self, leaked_connect: _LeakedConnect, kombu_sleeps: _KombuSleeps
+        self,
+        leaked_connect: _LeakedConnect,
+        kombu_sleeps: _KombuSleeps,
     ) -> None:
         transport = RabbitMQTransport(_refused_url(), prefix="test", ttl=60)
         transport.publish(_event("t-0"))

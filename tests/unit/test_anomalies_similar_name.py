@@ -11,13 +11,10 @@ import pytest
 from stemtrace.core.anomalies import (
     SIMILAR_NAME_MIN_SCORE,
     AnomalyKind,
-    RegistryFacts,
     _live_by_module,
     _similar_name,
 )
-from tests.unit.anomaly_pipeline import at
 from tests.unit.test_anomalies_unregistered import (
-    FRESH,
     OLD,
     pending,
     registry,

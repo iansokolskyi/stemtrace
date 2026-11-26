@@ -78,7 +78,7 @@ def _oracle_nearest_rank(samples: list[int], percent: int) -> int:
 
 @pytest.mark.parametrize("percent", [0, -1, 101])
 def test_percentile_outside_one_to_a_hundred_raises(percent: int) -> None:
-    with pytest.raises(ValueError, match="percent must be in 1..100"):
+    with pytest.raises(ValueError, match=r"percent must be in 1\.\.100"):
         percentile([1, 2, 3], percent)
 
 
