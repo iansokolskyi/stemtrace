@@ -75,6 +75,15 @@ def _check_group_indexes(graph: TaskGraph) -> None:
         assert set(tally.marked) <= set(tally.members), (group_id, "stray mark")
         wanted = graph._wanted_headers(group_id, tally)
         assert set(tally.headers) == set(wanted), (group_id, "headers", list(wanted))
+    for group_id, tally in graph._groups.items():
+        reporters: dict[str, set[str]] = {}
+        for member_id in tally.members:
+            parent_id = nodes[member_id].reported_parent_id
+            if parent_id is not None:
+                reporters.setdefault(parent_id, set()).add(member_id)
+        assert {p: set(m) for p, m in tally.reporters.items()} == reporters, group_id
+        chained = {m for m in graph._chain_of if nodes[m].group_id == group_id}
+        assert set(tally.chained) == chained, (group_id, "chained members")
     for node_id, node in nodes.items():
         if node.group_id is None:
             continue
