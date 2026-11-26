@@ -2,7 +2,7 @@
 
 import bisect
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -2530,12 +2530,10 @@ class FlowSummary(BaseModel):
     member_name: str | None = None
 
 
-def _member_fields(
-    nodes: Mapping[str, TaskNode],
-    root_id: str,
-    name_of: Callable[[TaskNode], str] | None = None,
-) -> tuple[int | None, str | None]:
-    """Count a container root's members and name the task they share.
+def member_row_ends(
+    nodes: Mapping[str, TaskNode], root_id: str
+) -> list[TaskNode] | None:
+    """The last task of each member of a container root; None for a TASK root.
 
     Mirrors the flow page's ``layoutFlow`` (``partsOf``, ``rowFrom``): a member is a
     row that starts at a task child, minus the chord's callback, and follows single
@@ -2543,13 +2541,13 @@ def _member_fields(
     """
     root = nodes[root_id]
     if root.node_type == NodeType.TASK:
-        return None, None
+        return None
     # The callback is the child ``chord_id`` names, as ``/api/graphs`` sends it.
     is_callback_child = (
         root.node_type == NodeType.CHORD and root.chord_id in root.children
     )
     callback = root.chord_id if is_callback_child else None
-    ends: list[str] = []
+    ends: list[TaskNode] = []
     for head in root.children:
         if head in (root_id, callback) or head not in nodes:
             continue
@@ -2567,19 +2565,34 @@ def _member_fields(
                 break
             seen.add(nexts[0])
             current = nodes[nexts[0]]
-        ends.append(current.name if name_of is None else name_of(current))
-    shared = ends[0] if ends and all(name == ends[0] for name in ends) else None
-    return len(ends), None if shared is None else shared.rsplit(".", 1)[-1]
+        ends.append(current)
+    return ends
+
+
+def shared_last_segment(names: Iterable[str]) -> str | None:
+    """The last name segment when every name is the same and it isn't empty, else None.
+
+    Pulls names lazily and stops at the first one that differs.
+    """
+    first: str | None = None
+    for name in names:
+        if first is None:
+            first = name
+        elif name != first:
+            return None
+    if first is None:
+        return None
+    return first.rsplit(".", 1)[-1] or None
 
 
 def flow_summary(
     nodes: Mapping[str, TaskNode],
     root_id: str,
-    name_of: Callable[[TaskNode], str] | None = None,
+    row_ends: list[TaskNode] | None = None,
 ) -> FlowSummary:
     """Summarize the flow rooted at ``root_id``; ``nodes`` must hold its whole graph.
 
-    ``name_of`` gives the name a member shows (default ``node.name``).
+    ``row_ends`` is ``member_row_ends`` of the same graph, when the caller has it.
 
     The state is the worst TASK state in ``FLOW_STATE_ORDER``, so a succeeded
     root can head a failed flow. Without TASK nodes it is
@@ -2588,13 +2601,13 @@ def flow_summary(
     counts = Counter(
         node.state for node in nodes.values() if node.node_type == NodeType.TASK
     )
-    member_count, member_name = _member_fields(nodes, root_id, name_of)
+    ends = member_row_ends(nodes, root_id) if row_ends is None else row_ends
     worst = {_FLOW_STATE_OF[state] for state in counts}
     return FlowSummary(
         task_count=sum(counts.values()),
         state_counts={s.value: counts[s] for s in TaskState if counts[s]},
         not_run_count=len(chord_not_run_reasons(nodes)),
         state=next((s for s in FLOW_STATE_ORDER if s in worst), nodes[root_id].state),
-        member_count=member_count,
-        member_name=member_name,
+        member_count=None if ends is None else len(ends),
+        member_name=None if ends is None else shared_last_segment(n.name for n in ends),
     )

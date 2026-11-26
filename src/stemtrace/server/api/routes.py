@@ -33,6 +33,7 @@ from stemtrace.core.graph import (
     ChordNotRunReason,
     NodeType,
     chord_not_run_reasons,
+    shared_last_segment,
 )
 from stemtrace.core.groups import GroupConfig, ResolvedGroup, TaskAttributes
 from stemtrace.server.api import params
@@ -81,7 +82,12 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
-    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
+    from stemtrace.server.store import (
+        GraphStore,
+        RootFlows,
+        WorkerRegistry,
+        WorkerTimeline,
+    )
     from stemtrace.server.websocket import WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -312,6 +318,21 @@ def _resolve_node_alias(node: TaskNode, key: str | None) -> str:
             return str(kwargs[key])
 
     return node.name
+
+
+def _flow_response(
+    page: RootFlows, root_id: str, node_alias_key: str | None
+) -> FlowSummaryResponse:
+    """The root's flow summary, with ``member_name`` from the resolved aliases if a key is set."""
+    flow = FlowSummaryResponse.model_validate(
+        page.summaries[root_id], from_attributes=True
+    )
+    ends = (page.member_ends or {}).get(root_id)
+    if ends is not None:
+        flow.member_name = shared_last_segment(
+            _resolve_node_alias(end, node_alias_key) for end in ends
+        )
+    return flow
 
 
 def _node_to_graph_response(
@@ -1317,11 +1338,7 @@ def _add_graph_routes(
             from_date=start,
             to_date=to_date,
             task_names=task_names,
-            name_of=(
-                None
-                if node_alias_key is None
-                else lambda node: _resolve_node_alias(node, node_alias_key)
-            ),
+            with_member_ends=node_alias_key is not None,
         )
         return GraphListResponse(
             graphs=[
@@ -1330,9 +1347,7 @@ def _add_graph_routes(
                     page.related,
                     node_alias_key=node_alias_key,
                     group_of=group_of,
-                    flow=FlowSummaryResponse.model_validate(
-                        page.summaries[r.task_id], from_attributes=True
-                    ),
+                    flow=_flow_response(page, r.task_id, node_alias_key),
                     anomalies=anomalies,
                     containers=page.containers,
                 )

@@ -19,6 +19,7 @@ from stemtrace.core.graph import (
     TaskGraph,
     TaskNode,
     flow_summary,
+    member_row_ends,
 )
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.inspect_probe import INSPECT_REFRESH_MIN_INTERVAL_SECONDS
@@ -108,6 +109,8 @@ class RootFlows(NamedTuple):
     total: int
     # Children of the roots that are not tasks (or are missing).
     containers: set[str]
+    # Root ID -> copies of its members' last tasks (only when asked for).
+    member_ends: dict[str, list[TaskNode]] | None = None
 
 
 def _snapshot(node: TaskNode) -> TaskNode:
@@ -1362,11 +1365,12 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
-        name_of: Callable[[TaskNode], str] | None = None,
+        with_member_ends: bool = False,
     ) -> RootFlows:
         """Get root nodes, what their graph response reads and each flow's summary.
 
-        ``name_of`` is the display name a member shows in the summary (see ``flow_summary``).
+        With ``with_member_ends``, ``member_ends`` holds copies of each container
+        root's member row ends, for naming them after the lock is released.
 
         With ``task_names``, only graphs with a task of one of these names
         (anywhere in the graph, not only the root) are listed. Takes the lock
@@ -1398,13 +1402,15 @@ class GraphStore:
                         and child_id not in related
                     ):
                         related[child_id] = _snapshot(child)
-            summaries = {
-                n.task_id: flow_summary(
-                    self._graph_locked(n.task_id), n.task_id, name_of
-                )
-                for n in live
-            }
-            return RootFlows(roots, related, summaries, total, containers)
+            summaries: dict[str, FlowSummary] = {}
+            member_ends: dict[str, list[TaskNode]] = {}
+            for n in live:
+                graph = self._graph_locked(n.task_id)
+                ends = member_row_ends(graph, n.task_id) if with_member_ends else None
+                summaries[n.task_id] = flow_summary(graph, n.task_id, ends)
+                if ends is not None:
+                    member_ends[n.task_id] = [_snapshot(end) for end in ends]
+            return RootFlows(roots, related, summaries, total, containers, member_ends)
 
     def _root_nodes_locked(
         self,

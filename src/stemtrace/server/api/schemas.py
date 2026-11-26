@@ -205,8 +205,10 @@ class FlowSummaryResponse(BaseModel):
     member_name: str | None = Field(
         default=None,
         description=(
-            "The last segment of the task name that ends every member, or null when "
-            "the names differ, there are no members, or the root is a TASK."
+            "The last segment of the task name that ends every member (of the name "
+            "resolved from task arguments when node_alias_from_arguments is set), or "
+            "null when the names differ, the segment is empty, there are no members, "
+            "or the root is a TASK."
         ),
     )
 
