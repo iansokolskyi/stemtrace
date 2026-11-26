@@ -1,7 +1,7 @@
 import { clsx } from 'clsx'
 import { type ReactElement, useMemo, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
-import { buildSegments, effectiveTimes, sortEventsChronologically } from '@/components/TimelineBar'
+import { buildSegments, effectiveTimes, sortEventsChronologically } from '@/utils/events'
 import { formatSpan, formatTime } from '@/utils/format'
 import { Panel } from './Panel'
 import { stateFill } from './stateFill'

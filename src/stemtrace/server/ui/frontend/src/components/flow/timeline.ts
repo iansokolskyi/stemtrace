@@ -363,6 +363,28 @@ function axisOf(t0: number, t1: number, settledEnd: number, cut: boolean): Axis 
 }
 
 /**
+ * Where an axis from `t0` ends. Open bars run to `now`, held at `settledEnd` (the latest event) so
+ * a clock behind the server cannot shrink them, and capped at `settledEnd` plus a few spans so one
+ * orphan cannot squash the finished work: past the cap the bar is `cut`. Shared with the
+ * Executions Timeline view.
+ */
+export function axisEnd(
+  t0: number,
+  settledEnd: number,
+  hasOpen: boolean,
+  now: number,
+): { t1: number; cut: boolean; anyOpen: boolean } {
+  const anyOpen = hasOpen && Number.isFinite(now)
+  const cap = Math.max(OPEN_CAP_FACTOR * (settledEnd - t0), OPEN_CAP_FLOOR_MS)
+  const reach = anyOpen ? Math.max(settledEnd, Math.min(now, settledEnd + cap)) : settledEnd
+  return {
+    t1: Math.max(reach, t0 + MIN_SPAN_MS),
+    cut: anyOpen && now > settledEnd + cap,
+    anyOpen,
+  }
+}
+
+/**
  * The Timeline for a layout: a row per drawn task, "+N more" block and not-run box, in the
  * diagram's order; the axis over every bar (hidden tasks too); the critical path. Open bars run to
  * `now`, held at the latest event so a clock behind the server cannot shrink them; a flow with
@@ -412,11 +434,12 @@ export function buildTimeline(
   const settledEnd = maxOf(bars, (bar) => (bar.end === null ? bar.runFrom : bar.end))
   // An open bar runs to now, but not past settledEnd plus a cap: one orphaned task, or a browser
   // clock far ahead, must not squash the finished work
-  const anyOpen = bars.some((bar) => bar.end === null) && Number.isFinite(now)
-  const cap = Math.max(OPEN_CAP_FACTOR * (settledEnd - t0), OPEN_CAP_FLOOR_MS)
-  const reach = anyOpen ? Math.max(settledEnd, Math.min(now, settledEnd + cap)) : settledEnd
-  const t1 = Math.max(reach, t0 + MIN_SPAN_MS)
-  const cut = anyOpen && now > settledEnd + cap
+  const { t1, cut } = axisEnd(
+    t0,
+    settledEnd,
+    bars.some((bar) => bar.end === null),
+    now,
+  )
   const axis = axisOf(t0, t1, settledEnd, cut)
 
   const resolved = new Map<string, Bar>()

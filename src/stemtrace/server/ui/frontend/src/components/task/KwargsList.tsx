@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import type { TaskEvent } from '@/api/client'
-import { sortEventsChronologically } from '@/components/TimelineBar'
+import { sortEventsChronologically } from '@/utils/events'
 import { Panel } from './Panel'
 
 interface Line {
