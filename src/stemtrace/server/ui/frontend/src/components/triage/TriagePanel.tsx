@@ -18,6 +18,7 @@ import { RunsBody } from './RunsBody'
 import { decodeScope, scopeTitle } from './runsScope'
 import { TaskBody } from './TaskBody'
 import { WorkerBody } from './WorkerBody'
+import { ALL_WORKERS_ID } from './workerId'
 
 /** The entry's title (its heading and its crumb) and the muted line under the heading. */
 function useEntryText(entry: PanelEntry, panelData: PanelData): { title: string; sub?: string } {
@@ -36,6 +37,7 @@ function useEntryText(entry: PanelEntry, panelData: PanelData): { title: string;
     case 'exception':
       return { title: exceptionOfId(entry.id) ?? 'No exception class' }
     case 'worker':
+      if (entry.id === ALL_WORKERS_ID) return { title: 'Workers' }
       return { title: shortHost(entry.id), sub: entry.id }
     case 'group':
       return { title: entry.id }

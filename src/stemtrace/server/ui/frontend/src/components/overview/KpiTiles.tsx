@@ -1,11 +1,11 @@
-import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import type { CSSProperties, ReactElement } from 'react'
 import type { OverviewResponse } from '@/api/client'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
 import { encodeScope, type RunsScope } from '@/components/triage/runsScope'
+import { ALL_WORKERS_ID } from '@/components/triage/workerId'
 import type { Host } from '@/components/workers/workers'
-import { formatCount, formatPercent, formatSpan, shortHost } from '@/utils/format'
+import { formatPercent, formatSpan, shortHost } from '@/utils/format'
 import { AnomaliesTile } from './AnomaliesTile'
 import type { OverviewAnomalies } from './anomalyData'
 import { type Bucket, baselineNote, formatRate, type Grade, gradeOf } from './model'
@@ -13,7 +13,7 @@ import { Sparkline } from './Sparkline'
 import { TILE, TileFace } from './TileFace'
 
 /** How many tiles the row holds; the grid is laid out for it before any data arrives. */
-const TILE_COUNT = 5
+const TILE_COUNT = 4
 
 interface KpiTilesProps {
   overview: OverviewResponse | undefined
@@ -28,7 +28,7 @@ interface KpiTilesProps {
 /**
  * The tiles over the chart: each a number for the window, how far it is from the window before
  * it, and a sparkline of the same series the chart draws. A run tile opens its runs in the
- * triage panel. Fixed height, so a tile never moves when its numbers arrive.
+ * triage panel, the Workers and Anomalies tiles their lists. Fixed height, so a tile never moves when its numbers arrive.
  */
 export function KpiTiles({
   overview,
@@ -42,7 +42,8 @@ export function KpiTiles({
   const compare = within !== undefined
   const style = {
     '--tiles': TILE_COUNT,
-    '--tiles-md': 3,
+    // Rows of equal length: three across for six tiles, else two
+    '--tiles-md': TILE_COUNT % 3 === 0 ? 3 : 2,
   } as CSSProperties
 
   const runsTile = (() => {
@@ -63,29 +64,6 @@ export function KpiTiles({
           noteIcon={kpi && kpi.value > kpi.baseline ? 'up' : 'down'}
           sub={kpi && compare ? `earlier: ${formatRate(kpi.baseline)}/min` : ''}
           spark={<Sparkline values={buckets.map((b) => b.outcomes)} height={26} grade={grade} />}
-        />
-      </button>
-    )
-  })()
-
-  const failuresTile = (() => {
-    const kpi = overview?.failures
-    const grade = kpi && compare ? gradeOf(kpi.value, kpi.baseline, 1.3, 2) : 'ok'
-    const scope: RunsScope = { kind: 'kpi', within, state: 'FAILURE', label: 'Failures' }
-    return (
-      <button
-        type="button"
-        {...openerProps(panel, { kind: 'runs', id: encodeScope(scope) })}
-        className={TILE}
-      >
-        <TileFace
-          label="Failures"
-          value={kpi ? formatCount(kpi.value) : ''}
-          grade={grade}
-          note={kpi && compare ? baselineNote(grade, kpi.value, kpi.baseline) : ''}
-          noteIcon="up"
-          sub={kpi && compare ? `earlier: ${formatCount(kpi.baseline)}` : ''}
-          spark={<Sparkline values={buckets.map((b) => b.failure)} height={26} grade={grade} />}
         />
       </button>
     )
@@ -127,7 +105,6 @@ export function KpiTiles({
       className="mb-4 grid grid-cols-2 gap-3 min-[900px]:grid-cols-[repeat(var(--tiles-md),minmax(0,1fr))] min-[1280px]:grid-cols-[repeat(var(--tiles),minmax(0,1fr))]"
     >
       {runsTile}
-      {failuresTile}
       {rateTile}
       <WorkersTile hosts={hosts} overview={overview} />
       <AnomaliesTile anomalies={anomalies} failed={anomaliesFailed} className={TILE} />
@@ -135,6 +112,7 @@ export function KpiTiles({
   )
 }
 
+/** The Workers tile: online hosts out of all; it opens the list of hosts in the triage panel. */
 function WorkersTile({
   hosts,
   overview,
@@ -142,6 +120,7 @@ function WorkersTile({
   hosts: Host[] | undefined
   overview: OverviewResponse | undefined
 }): ReactElement {
+  const panel = usePanel()
   const offline = (hosts ?? []).filter((h) => h.leading.status === 'offline')
   const total = hosts?.length ?? overview?.workers.total ?? 0
   const online = hosts ? total - offline.length : (overview?.workers.online ?? 0)
@@ -151,7 +130,12 @@ function WorkersTile({
     ? `${offline.length} offline: ${shortHost(first.hostname)} for ${formatSpan(Date.now() - Date.parse(first.leading.last_seen))}`
     : 'All online'
   return (
-    <Link to="/workers" className={TILE} data-testid="workers-tile">
+    <button
+      type="button"
+      {...openerProps(panel, { kind: 'worker', id: ALL_WORKERS_ID })}
+      className={TILE}
+      data-testid="workers-tile"
+    >
       <TileFace
         label="Workers online"
         value={hosts || overview ? `${online}/${total}` : ''}
@@ -174,6 +158,6 @@ function WorkersTile({
           </span>
         }
       />
-    </Link>
+    </button>
   )
 }

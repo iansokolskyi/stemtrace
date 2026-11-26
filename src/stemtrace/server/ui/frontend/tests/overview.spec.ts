@@ -315,7 +315,7 @@ test.describe('Triage panel behaviour', () => {
 
   test('the opener stays marked while the panel is open', async ({ page }) => {
     await openOverview(page)
-    const tile = page.getByTestId('kpi-tiles').getByRole('button', { name: /Failures/ })
+    const tile = page.getByTestId('kpi-tiles').getByRole('button', { name: /Failure rate/ })
     await tile.click()
     await expect(tile).toHaveAttribute('data-on', '')
     await expect(tile).toHaveCSS('outline-style', 'solid')
@@ -375,7 +375,6 @@ test.describe('Triage panel behaviour', () => {
     const targets = [
       page.getByTestId('kpi-tiles').getByRole('button').nth(0),
       page.getByTestId('kpi-tiles').getByRole('button').nth(1),
-      page.getByTestId('kpi-tiles').getByRole('button').nth(2),
       page.getByTestId('workers-tile'),
       page.getByTestId('runs-chart'),
       page.getByTestId('worker-strip'),
@@ -863,19 +862,95 @@ test.describe('Overview anomalies', () => {
     await expect(page.getByText('No failures in the last 6h.')).toBeVisible()
   })
 
-  test('the five tiles keep their place when the anomalies arrive late', async ({ page }) => {
+  test('the four tiles keep their place when the anomalies arrive late', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 })
     await openOverview(page, '/', (setup) => {
       setup.api.setAnomalyDelay(1500)
       withAnomalies(setup)
     })
     const tiles = page.getByTestId('kpi-tiles').locator('> *')
-    await expect(tiles).toHaveCount(5)
+    await expect(tiles).toHaveCount(4)
     const before = await tiles.nth(0).boundingBox()
     await expect(
       page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ }),
     ).toContainText('3')
     expect(await tiles.nth(0).boundingBox()).toEqual(before)
+  })
+})
+
+test.describe('Workers tile', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const tile = (page: Page): Locator => page.getByTestId('workers-tile')
+  const panelValue = (page: Page): string =>
+    decodeURIComponent(new URL(page.url()).searchParams.get('panel') ?? '')
+
+  test('the Overview has four tiles, and none is Failures', async ({ page }) => {
+    await openOverview(page)
+    const tiles = page.getByTestId('kpi-tiles')
+    await expect(tiles.locator('> *')).toHaveCount(4)
+    await expect(tiles.getByRole('button', { name: /^Failures/ })).toHaveCount(0)
+    await expect(tiles.getByText('Failures', { exact: true })).toHaveCount(0)
+  })
+
+  test('a tile click opens worker:all with a row per host, offline first', async ({ page }) => {
+    await openOverview(page)
+    await tile(page).click()
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
+    await expect(tile(page)).toHaveAttribute('data-on', '')
+    await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('Workers')
+    const rows = panelOf(page).getByRole('listitem')
+    await expect(rows).toHaveCount(3)
+    await expect(rows.nth(0)).toContainText('worker-2')
+    await expect(rows.nth(0)).toContainText('Offline')
+    await expect(rows.nth(1)).toContainText('a/b:c%d')
+    await expect(rows.nth(2)).toContainText('worker-1')
+    await expect(panelOf(page).getByRole('link', { name: 'All workers' })).toHaveAttribute(
+      'href',
+      /\/workers/,
+    )
+  })
+
+  test('a row pushes the host and Esc returns to the list', async ({ page }) => {
+    await openOverview(page)
+    await tile(page).click()
+    await panelOf(page).getByRole('button', { name: 'worker-1' }).click()
+    await expect.poll(() => panelValue(page)).toBe('worker:all/worker:worker-1')
+    await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('worker-1')
+    await page.keyboard.press('Escape')
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
+    await expect(tile(page)).toHaveAttribute('data-on', '')
+  })
+
+  test('a reload with worker:all shows the same list', async ({ page }) => {
+    await openOverview(page)
+    await tile(page).click()
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
+    await page.reload()
+    await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('Workers')
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
+    await expect(tile(page)).toHaveAttribute('data-on', '')
+  })
+
+  test('opening the tile again with a host open closes the host and keeps the list', async ({
+    page,
+  }) => {
+    await openOverview(page)
+    await tile(page).click()
+    await panelOf(page).getByRole('button', { name: 'worker-1' }).click()
+    // The panel covers the tile at this width, so the keyboard opens it
+    await tile(page).focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
+  })
+
+  test('with no workers the panel says so and keeps the link', async ({ page }) => {
+    await openOverview(page, '/', ({ api }) => api.setWorkers([]))
+    await tile(page).click()
+    await expect(panelOf(page).getByText('No workers registered.')).toBeVisible()
+    await expect(panelOf(page).getByRole('listitem')).toHaveCount(0)
+    await expect(panelOf(page).getByRole('link', { name: 'All workers' })).toBeVisible()
   })
 })
 
@@ -1003,7 +1078,7 @@ test.describe('Tile notes stay inside their band', () => {
         })
         const tiles = page.getByTestId('kpi-tiles').locator('> *')
         const measure = async () => ({
-          tiles: await Promise.all([0, 1, 2, 3, 4].map((i) => tiles.nth(i).boundingBox())),
+          tiles: await Promise.all([0, 1, 2, 3].map((i) => tiles.nth(i).boundingBox())),
           chart: (await page.getByTestId('runs-chart').boundingBox())?.y,
         })
         const before = await measure()
@@ -1011,7 +1086,7 @@ test.describe('Tile notes stay inside their band', () => {
         await expect(workersTile).toContainText('offline')
         expect(await measure()).toEqual(before)
         // Nothing spills sideways: the text stays in the tile, its full text is the title
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 4; i++) {
           const fits = await tiles
             .nth(i)
             .evaluate((el) =>
