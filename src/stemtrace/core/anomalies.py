@@ -393,6 +393,8 @@ def _unregistered(
     for task in waiting:
         if task.name not in registry.live_names:
             by_name[task.name].append(task)
+    if not by_name:
+        return {}, []
     by_module = _live_by_module(registry.live_names)
     by_task: dict[str, Anomaly] = {}
     items: list[Anomaly] = []
@@ -419,14 +421,13 @@ def _split(name: str) -> tuple[str, str]:
 def _live_by_module(live_names: Iterable[str]) -> dict[str, list[tuple[str, str]]]:
     """Live names grouped by module as (name, version-stripped last segment).
 
-    Skips built-ins, names with no module and names whose segment is only a
-    version suffix.
+    Skips built-ins and names with no module.
     """
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for name in live_names:
         module, last = _split(name)
         stem = _VERSION_SUFFIX.sub("", last)
-        if module and stem and not name.startswith(_BUILTIN_PREFIX):
+        if module and not name.startswith(_BUILTIN_PREFIX):
             grouped[module].append((name, stem))
     return grouped
 
