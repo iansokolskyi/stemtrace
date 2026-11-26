@@ -29,6 +29,9 @@ BROKER = "redis://broker:6379/0"
 NODE = "w1@host"
 BOUND_S = 5.0
 SHORT_WAIT_S = 0.4
+# A request that waited would take the whole bound (the gate stays shut), so half of it
+# tells waiting from not waiting and survives a loaded CI host.
+NOT_WAITING_S = routes._INSPECT_WAIT_SECONDS / 2
 
 
 class GatedBroker:
@@ -195,7 +198,7 @@ async def test_r1_refresh_false_does_not_wait(
     await first
 
     assert response.json()["total"] == 0
-    assert elapsed < 0.2
+    assert elapsed < NOT_WAITING_S
 
 
 # --- R2: the wait is bounded ----------------------------------------------------------
@@ -245,7 +248,7 @@ async def test_r3_two_hundred_waiters_hold_no_threads_and_other_routes_answer(
     responses = await asyncio.gather(first, *waiters)
 
     assert other.status_code == 200
-    assert elapsed < 0.2
+    assert elapsed < NOT_WAITING_S
     assert len(pending) == 200
     assert threads_with_waiters - threads_before <= 5
     assert {r.status_code for r in responses} == {200}
