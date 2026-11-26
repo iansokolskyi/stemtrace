@@ -385,10 +385,10 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
     ) -> FailureGroupListResponse:
         """Tasks whose current state is FAILURE, grouped by exception class.
 
-        Each group lists its count, first and last failure, task names and up
-        to 5 of the latest task IDs; tasks without an exception class form one
-        group with ``exception_type`` null. Without ``within`` or ``from_date``,
-        from the oldest run held, at most 3650 days back.
+        Each group lists its count, first and last failure, task names, up to 5
+        of the latest task IDs and ``latest_message``: the newest failure's
+        message, first line only; it may contain task arguments. Tasks without
+        an exception class form one group with ``exception_type`` null.
         """
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
@@ -413,6 +413,7 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
                     last_seen=g.last_seen,
                     task_names=list(g.task_names),
                     sample_task_ids=list(g.sample_task_ids),
+                    latest_message=g.latest_message,
                 )
                 for g in groups_
             ],

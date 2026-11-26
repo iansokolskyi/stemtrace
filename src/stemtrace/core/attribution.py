@@ -22,6 +22,7 @@ __all__ = [
     "EventKey",
     "eta",
     "event_key",
+    "failure_text",
     "is_pre_start",
     "latest",
     "precedence",
@@ -251,6 +252,26 @@ def latest(
     """
     found = [event for event in events if value(event) is not None]
     return value(max(found, key=precedence)) if found else None
+
+
+def failure_text(events: list[TaskEvent]) -> str | None:
+    """The ``exception`` text of the event that gives the task's exception class.
+
+    That is the furthest-along event with a class (``latest``), so a retried
+    ``TimeoutError`` followed by a final ``ValueError`` gives the
+    ``ValueError`` text, whatever the earlier events said. Events from workers
+    without the class field fall back to the furthest-along event with text.
+
+    Args:
+        events: A task's events.
+
+    Returns:
+        That event's ``exception``, or None when it has none.
+    """
+    typed = [event for event in events if event.exception_type is not None]
+    if typed:
+        return max(typed, key=precedence).exception
+    return latest(events, lambda event: event.exception)
 
 
 def _own_first_attempt(

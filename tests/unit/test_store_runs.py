@@ -13,7 +13,7 @@ import pytest
 from stemtrace.core import attribution
 from stemtrace.core.events import CANCELLED_RETRY_REASON, TaskEvent, TaskState
 from stemtrace.core.graph import TERMINAL_STATES, NodeType, TaskGraph, TaskNode
-from stemtrace.server.stats import RunRecord
+from stemtrace.server.stats import MAX_MESSAGE_LENGTH, RunRecord
 from stemtrace.server.store import GraphStore
 
 T0 = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
@@ -27,6 +27,8 @@ def _event(
     name: str = "app.work",
     group_id: str | None = None,
     exception_type: str | None = None,
+    exception: str | None = None,
+    retries: int = 0,
 ) -> TaskEvent:
     return TaskEvent(
         task_id=task_id,
@@ -35,6 +37,8 @@ def _event(
         timestamp=T0 + timedelta(seconds=seconds),
         group_id=group_id,
         exception_type=exception_type,
+        exception=exception,
+        retries=retries,
     )
 
 
@@ -745,3 +749,135 @@ def test_naive_eta_is_read_as_utc_like_the_timestamp() -> None:
     )
 
     assert record.replaced_progress == T0 + timedelta(seconds=30)
+
+
+# --- exception_message (B2) -------------------------------------------------
+
+
+def _failed_message(*events: TaskEvent) -> str | None:
+    store = GraphStore()
+    for event in events:
+        store.add_event(event)
+    return _records(store)["t"].exception_message
+
+
+def test_record_message_is_the_failures_exception_text() -> None:
+    failure = _event(
+        "t",
+        TaskState.FAILURE,
+        5,
+        exception_type="ValueError",
+        exception="ValueError: bad id 7",
+    )
+    assert _failed_message(failure) == "ValueError: bad id 7"
+
+
+def test_record_message_keeps_only_the_first_line() -> None:
+    text = "ValueError: first\nTraceback (most recent call last):\n  File x"
+    failure = _event("t", TaskState.FAILURE, 5, exception="ValueError: first\n" + text)
+    assert _failed_message(failure) == "ValueError: first"
+
+
+def test_record_message_of_ten_kilobytes_is_cut_to_the_cap() -> None:
+    long = "E: " + "x" * 10_000 + "\nsecond line"
+    message = _failed_message(_event("t", TaskState.FAILURE, 5, exception=long))
+    assert message == long[:MAX_MESSAGE_LENGTH]
+    assert MAX_MESSAGE_LENGTH == 300
+
+
+@pytest.mark.parametrize("length", [299, 300, 301])
+def test_record_message_cap_boundary(length: int) -> None:
+    message = _failed_message(_event("t", TaskState.FAILURE, 5, exception="y" * length))
+    assert message == "y" * min(length, MAX_MESSAGE_LENGTH)
+
+
+def test_record_message_is_none_when_exception_is_none() -> None:
+    assert _failed_message(_event("t", TaskState.FAILURE, 5)) is None
+
+
+def test_record_message_is_none_when_the_text_is_empty() -> None:
+    assert _failed_message(_event("t", TaskState.FAILURE, 5, exception="")) is None
+
+
+def test_record_message_comes_from_the_event_that_gave_the_type() -> None:
+    """A retried TimeoutError, then a final ValueError: the ValueError's text."""
+    events = [
+        _event(
+            "t",
+            TaskState.RETRY,
+            1,
+            exception_type="TimeoutError",
+            exception="TimeoutError: slow",
+        ),
+        _event(
+            "t",
+            TaskState.FAILURE,
+            5,
+            retries=1,
+            exception_type="ValueError",
+            exception="ValueError: final",
+        ),
+    ]
+    assert _failed_message(*events) == "ValueError: final"
+
+
+def test_record_message_is_none_when_the_typed_event_has_no_text() -> None:
+    """Not another event's text: the type and the message stay a pair."""
+    events = [
+        _event(
+            "t",
+            TaskState.RETRY,
+            1,
+            exception_type="TimeoutError",
+            exception="TimeoutError: slow",
+        ),
+        _event("t", TaskState.FAILURE, 5, retries=1, exception_type="ValueError"),
+    ]
+    assert _failed_message(*events) == None  # noqa: E711 - the value is the point
+
+
+def test_record_message_without_a_type_uses_the_furthest_events_text() -> None:
+    """Older workers send no exception_type."""
+    events = [
+        _event("t", TaskState.RETRY, 1, exception="Retry: first"),
+        _event("t", TaskState.FAILURE, 5, retries=1, exception="KeyError: 'k'"),
+    ]
+    assert _failed_message(*events) == "KeyError: 'k'"
+
+
+def test_record_message_is_none_unless_the_run_failed() -> None:
+    store = GraphStore()
+    store.add_event(
+        _event(
+            "t",
+            TaskState.RETRY,
+            1,
+            exception_type="E",
+            exception="E: still retrying",
+        )
+    )
+    assert _records(store)["t"].exception_message is None
+
+
+def test_retry_events_never_read_the_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Like the class, it scans every event: only a FAILURE record may read it."""
+    reads: list[str] = []
+    real = TaskNode.exception_text
+
+    def counting(node: TaskNode) -> str | None:
+        reads.append(node.task_id)
+        return real.fget(node)  # type: ignore[attr-defined, no-any-return]  # a property
+
+    monkeypatch.setattr(TaskNode, "exception_text", property(counting))
+    store = GraphStore()
+    for i in range(100):
+        store.add_event(
+            _event("t", TaskState.RETRY, i, retries=i, exception="E: retrying")
+        )
+    assert reads == []
+
+    store.add_event(_event("t", TaskState.FAILURE, 200, retries=100, exception="E: x"))
+
+    assert reads == ["t"]

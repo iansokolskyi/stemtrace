@@ -181,6 +181,11 @@ class TaskNode(BaseModel):
         return self._latest(lambda event: event.exception_type)
 
     @property
+    def exception_text(self) -> str | None:
+        """The ``exception`` text of the event that gave ``exception_type`` (see ``failure_text``)."""
+        return attribution.failure_text(self.events)
+
+    @property
     def hostname(self) -> str | None:
         """Nodename of the worker of the task's furthest-along event that has one."""
         return self._latest(lambda event: event.hostname)

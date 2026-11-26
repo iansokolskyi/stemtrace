@@ -39,6 +39,9 @@ MAX_BUCKETS: Final[int] = 1440
 #: Most sample task IDs listed per failure group.
 FAILURE_SAMPLES: Final[int] = 5
 
+#: Longest failure message a run record keeps, after the cut to its first line.
+MAX_MESSAGE_LENGTH: Final[int] = 300
+
 #: Longest window or bucket (10 years). Summary windows start at most this far
 #: back, so even the largest automatic bucket (7d) fits in ``MAX_BUCKETS`` and
 #: bucket edges stay within the dates Python can represent.
@@ -72,6 +75,9 @@ class RunRecord:
     # Milliseconds the first attempt waited before starting; set on the same
     # terminal-only gate as ``runtime_ms`` (see ``TaskNode.queue_wait_ms``).
     queue_wait_ms: int | None = None
+    # First line (at most ``MAX_MESSAGE_LENGTH`` characters) of the exception text
+    # of the event that gave ``exception_type``; FAILURE runs only.
+    exception_message: str | None = None
     # The state-deciding event's time and nodename (None for an eager task or
     # an old worker), whether it is a cold-stop cancelled RETRY, and the parent
     # the task's events reported.
@@ -96,10 +102,13 @@ class RunRecord:
             name=node.name,
             state=node.state,
             last_updated=last_updated,
-            # Only failure groups read it. Reading it scans all of the node's
+            # Only failure groups read these. Reading them scans all of the node's
             # events, and this runs under the store lock on every event, so a
             # task retrying thousands of times would make ingest quadratic.
             exception_type=node.exception_type
+            if node.state == TaskState.FAILURE
+            else None,
+            exception_message=_first_line(node.exception_text)
             if node.state == TaskState.FAILURE
             else None,
             # Same reason: run_times() scans and sorts every event, so only a
@@ -120,6 +129,13 @@ class RunRecord:
             attempt_started=node.attempt_started,
             replaced_progress=node.replaced_progress,
         )
+
+
+def _first_line(text: str | None) -> str | None:
+    """The first line of ``text``, cut to ``MAX_MESSAGE_LENGTH`` characters."""
+    if not text:
+        return None
+    return text.splitlines()[0][:MAX_MESSAGE_LENGTH]
 
 
 def parse_duration(text: str) -> timedelta:
@@ -317,6 +333,8 @@ class FailureGroup:
     last_seen: datetime
     task_names: tuple[str, ...]
     sample_task_ids: tuple[str, ...]
+    # Message of the newest run by (last_updated, task_id), the order of the samples.
+    latest_message: str | None = None
 
 
 class FailureTally:
@@ -326,7 +344,15 @@ class FailureTally:
     the runs: summarizing is O(types), whatever the number of failures.
     """
 
-    __slots__ = ("_names", "_newest", "count", "first_seen", "last_seen")
+    __slots__ = (
+        "_latest_entry",
+        "_latest_message",
+        "_names",
+        "_newest",
+        "count",
+        "first_seen",
+        "last_seen",
+    )
 
     def __init__(self, first: RunRecord) -> None:
         """Start a tally with its first run."""
@@ -336,6 +362,8 @@ class FailureTally:
         # Min-heap of the newest runs by (last_updated, task_id): the root is
         # the next to drop.
         self._newest = [(first.last_updated, first.task_id)]
+        self._latest_entry = self._newest[0]
+        self._latest_message = first.exception_message
 
     def add(self, record: RunRecord) -> None:
         """Count one more FAILURE run."""
@@ -345,6 +373,10 @@ class FailureTally:
         self.last_seen = max(self.last_seen, stamp)
         self._names.add(record.name)
         entry = (stamp, record.task_id)
+        # The heap root is its smallest entry, so the newest is tracked apart.
+        if entry > self._latest_entry:
+            self._latest_entry = entry
+            self._latest_message = record.exception_message
         if len(self._newest) < FAILURE_SAMPLES:
             heapq.heappush(self._newest, entry)
         elif entry > self._newest[0]:
@@ -361,6 +393,7 @@ class FailureTally:
             sample_task_ids=tuple(
                 task_id for _, task_id in sorted(self._newest, reverse=True)
             ),
+            latest_message=self._latest_message,
         )
 
 
