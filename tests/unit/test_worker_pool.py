@@ -358,3 +358,16 @@ def test_workers_api_with_a_pool_dict_lacking_every_field_returns_nulls_not_an_e
         None,
         None,
     )
+
+
+def test_worker_ready_for_a_pid_with_stored_values_keeps_them_until_the_next_reply() -> (
+    None
+):
+    # A documented limitation: a process that reuses the pid keeps the old values
+    # until an inspect reply names it.
+    registry = WorkerRegistry()
+    apply(registry, 10, PoolInfo("prefork", 8))
+    registry.register_worker(
+        NODE, 10, ["app.t"], event_timestamp=T + timedelta(minutes=1)
+    )
+    assert row(registry, 10) == ("prefork", 8)
