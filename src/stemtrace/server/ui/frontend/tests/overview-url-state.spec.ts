@@ -417,11 +417,17 @@ test.describe('Overview view state in the URL', () => {
   })
 
   test('two Show more clicks in one tick stop at the last step', async ({ page }) => {
-    const { scenario } = await openOverview(page, '/', addMany)
-    await page.goto(barPanel(scenario, '@m=12'))
-    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(500)
-    await page.goto(barPanel(scenario, '@m=11'))
-    await expect(showMore(page)).toBeVisible()
+    // A host list starts at 10 rows, so 12 steps leave 490 and the 13th step is still a button
+    await openOverview(page, '/', (api, scenario) => {
+      for (let i = 0; i < 520; i++) {
+        const task = createFailedTask('tests.flow.step_2', 'ValueError: x', 'Traceback')
+        task.hostname = 'worker-1'
+        task.last_updated = new Date(bucketStart(scenario, 8) + 60_000 + i * 100).toISOString()
+        api.addTask(task)
+      }
+    })
+    await page.goto(`/?panel=${encodeURIComponent('worker:worker-1@m=12')}`)
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(490)
     await page.evaluate(() => {
       const button = [...document.querySelectorAll('button')].find((b) =>
         /^Show \d+ more/.test(b.textContent ?? ''),
@@ -430,7 +436,7 @@ test.describe('Overview view state in the URL', () => {
       button?.click()
     })
     await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(500)
-    expect(decodeURIComponent(search(page).get('panel') ?? '')).toMatch(/@m=13$/)
+    expect(decodeURIComponent(search(page).get('panel') ?? '')).toBe('worker:worker-1@m=13')
   })
 
   test('a tile that fixes a state ignores the chips in the link', async ({ page }) => {
