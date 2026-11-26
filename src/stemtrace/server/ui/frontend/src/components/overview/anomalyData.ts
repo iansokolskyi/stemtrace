@@ -5,6 +5,7 @@ import {
   useAnomalyBadge,
   useFleetAnomaly,
 } from '@/api/anomalies'
+import { useViewState, type ViewState } from '@/hooks/useViewState'
 
 /** What the Overview shows of the anomalies: the listed items, the fleet item and the counts. */
 export interface OverviewAnomalies {
@@ -23,13 +24,24 @@ export interface OverviewAnomalies {
  * joins one already running; inside a backoff window it answers at once). `failed` is true when the
  * request fails (an older server answers 404): the page then says nothing about anomalies.
  */
-export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; failed: boolean } {
+export function useOverviewAnomalies(): {
+  data: OverviewAnomalies | undefined
+  failed: boolean
+  /** The list or the fleet item failed to refresh while earlier data is held. */
+  stale: boolean
+  /** The queries behind it, for the page's stale line. */
+  views: ViewState[]
+} {
   const list = useAnomalyBadge()
   const data = list.data
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   // The list is capped and sorted by `since`, so a full one may not hold the fleet item
   const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
-  if (!data) return { data: undefined, failed: list.isError }
+  const listView = useViewState(list)
+  const fleetView = useViewState(fleetQuery)
+  const views = [listView, fleetView]
+  const stale = views.some((v) => v.stale)
+  if (!data) return { data: undefined, failed: listView.phase === 'error', stale, views }
   return {
     data: {
       items: data.anomalies.filter((a) => a.kind !== 'no_workers_online'),
@@ -38,5 +50,7 @@ export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; f
       total: anomalyTotal(data.counts),
     },
     failed: false,
+    stale,
+    views,
   }
 }

@@ -29,6 +29,14 @@ export class HttpError extends Error {
   }
 }
 
+/** Thrown when a request gets no response (server down, network cut). */
+export class NetworkError extends Error {
+  constructor() {
+    super('No response from the server')
+    this.name = 'NetworkError'
+  }
+}
+
 /** Thrown when the API responds 401 (session missing or expired). */
 export class UnauthorizedError extends Error {
   constructor() {
@@ -126,7 +134,14 @@ export async function apiFetch<T>(
   errorMessage: string,
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(url, { signal })
+  let response: Response
+  try {
+    response = await fetch(url, { signal })
+  } catch (error) {
+    // An aborted request is the caller's doing; any other rejection means no response came back
+    if (signal?.aborted) throw error
+    throw new NetworkError()
+  }
   if (response.status === 401) {
     if ((await readUnauthorizedReason(response)) === SESSION_SECRET_MISMATCH) {
       // Signing in again wouldn't help, so explain instead of redirecting.

@@ -107,6 +107,7 @@ export function useAnomalies() {
     queryKey: ['anomalies'],
     queryFn: () => fetchAnomalies(),
     refetchInterval: pollUnlessMissing,
+    // The list request waits on the workers' inspect (up to ~7 s): the next poll is the retry
     retry: false,
   })
 }
@@ -122,6 +123,7 @@ export function useAnomalyBadge() {
     queryKey: ['anomalies', 'badge'],
     queryFn: () => fetchAnomalies(),
     refetchInterval: pollUnlessMissing,
+    // The list request waits on the workers' inspect (up to ~7 s): the next poll is the retry
     retry: false,
   })
 }
@@ -134,6 +136,7 @@ export function useFleetAnomaly(enabled: boolean) {
     queryFn: () => fetchAnomalies({ kind: 'no_workers_online', refresh: false }),
     enabled,
     refetchInterval: pollUnlessMissing,
+    // The list request waits on the workers' inspect (up to ~7 s): the next poll is the retry
     retry: false,
   })
 }
