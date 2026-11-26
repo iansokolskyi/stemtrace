@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from typing import TYPE_CHECKING
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +20,14 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
 from stemtrace.server.worker_pool import PoolInfo
+from tests.unit.test_summary_routes_off_loop import (
+    MAX_LOOP_WORK,
+    _get,
+    _longest_loop_hold,
+)
+
+if TYPE_CHECKING:
+    from stemtrace.server.stats import RunRecord
 
 T = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
 NODE = "celery@a"
@@ -390,3 +400,63 @@ def test_next_reply_after_the_restart_ready_refills_pool_values() -> None:
     )
     stats(registry, 10, T + timedelta(minutes=6))
     assert pool_row(registry, 10) == ("prefork", 8)
+
+
+# --- cost -------------------------------------------------------------------------
+
+
+def test_workers_without_a_live_row_do_not_scan_the_run_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = Rig()
+    rig.ready(10)
+    rig.registry.mark_shutdown(NODE, 10, T + timedelta(seconds=1))
+
+    def scanned() -> list[object]:
+        raise AssertionError("run_records() was called with no live worker")
+
+    monkeypatch.setattr(rig.store, "run_records", scanned)
+    assert rig.rows() == {10: None}
+
+
+def test_many_live_workers_share_one_scan_of_the_run_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = Rig()
+    for n in range(25):
+        rig.ready(100 + n, node=f"celery@w{n}")
+    scans = []
+    real = rig.store.run_records
+
+    def counting() -> list[RunRecord]:
+        scans.append(1)
+        return real()
+
+    monkeypatch.setattr(rig.store, "run_records", counting)
+    assert len(rig.rows()) == 25
+    assert len(scans) == 1
+
+
+@pytest.mark.slow
+async def test_workers_request_at_30k_started_runs_keeps_loop_work_within_budget() -> (
+    None
+):
+    store = GraphStore(max_nodes=35_000)
+    registry = WorkerRegistry()
+    for n in range(2):
+        registry.register_worker(f"celery@w{n}", 100 + n, ["app.t"], event_timestamp=T)
+    for i in range(30_000):
+        store.add_event(
+            TaskEvent(
+                task_id=f"t{i}",
+                name="app.t",
+                state=TaskState.STARTED,
+                timestamp=T + timedelta(seconds=1 + i % 1000),
+                hostname=f"celery@w{i % 2}",
+            )
+        )
+    app = FastAPI()
+    app.include_router(create_api_router(store, worker_registry=registry))
+    assert (await _get(app, "/api/health")).status_code == 200
+    longest = await _longest_loop_hold(app, "/api/workers?refresh=false")
+    assert longest <= MAX_LOOP_WORK
