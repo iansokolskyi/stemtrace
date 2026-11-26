@@ -957,6 +957,10 @@ class TaskGraph(BaseModel):
         """IDs of the root nodes, in the order they became roots (a copy)."""
         return list(self._roots)
 
+    def is_root(self, task_id: str) -> bool:
+        """Whether ``task_id`` is one of ``root_ids`` (a constant-time check)."""
+        return task_id in self._roots
+
     def add_event(self, event: TaskEvent) -> TaskEvent | None:
         """Add event, creating node if needed, and update the graph's links.
 

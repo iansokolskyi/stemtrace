@@ -61,6 +61,16 @@ root task ID.
 - `from_date` and `within` keep the flows whose latest time is at or after the bound.
 - `to_date` keeps the flows whose first event is at or before the end of that day.
 - Each graph's own `first_seen` and `last_updated` in the list still describe its root.
+- A flow with no task that has a time (only a hand-built group or chord can be one) sorts last, is left out by `from_date` and `within`, and is kept by `to_date`.
+
+### Freshness and clock skew
+
+- Which flows are listed is always current: a new flow, a group or chord that forms, or a parent that arrives shows in the next list, and an evicted flow leaves it. Only a flow's time can be older than the store.
+- The server works out the flow times only after an event arrived or an eviction ran, and then waits at least 1 second, or as long as the last computation took, whichever is longer, before the next one. A list request in that wait uses the earlier times, so a change can take up to that long to move a flow. A flow the last computation hadn't seen is placed by its own tasks' times at once, except that a part of it the last computation had already timed (a flow that a new parent just took in) keeps its earlier times until the next computation. A server that receives no events never works the times out again.
+- Each computation holds the store lock while it runs, which stalls event ingest and other reads. Measured on a 2-vCPU host: about 0.95 seconds for 100,000 flows of one task each, about 0.47 seconds for 1,000 flows of 100 tasks (100,000 tasks), and about 0.85 seconds for 2,000 flows of 100 tasks (200,000 tasks). A list inside the wait does not recompute, but it copies the root IDs and checks each one against the cached times, so it costs time in proportion to the number of flows: about 25 milliseconds at 100,000 flows of one task each, and about 1 millisecond at 1,000 flows. It also times each new flow once by walking its tasks. That is far less than a computation, but at 100,000 one-task flows, with frequent lists and any incoming events, the store lock can be busy for most of the time.
+- An eviction during the wait can leave an evicted task's time in its flow's latest time until the next computation.
+- The `task_group` and `tag` filters check every stored task on each request, not the cached times.
+- A worker whose clock runs ahead keeps its flows at the top of the list, and in every `from_date` or `within` window that reaches its times, until the server evicts them.
 
 ## Chord callbacks
 
