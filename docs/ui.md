@@ -77,7 +77,7 @@ state chips.
 
 Clicking **Workers online** opens a row for each worker host, offline hosts first and then by
 name, each with its status and, when the server sends both `active` and `concurrency`, the busy
-slots (`3 of 8 slots`). A row opens that host, and **All workers** links to
+slots (`3 of 8 slots`, or `9 active, 8 slots` when `active` is more than `concurrency`). A row opens that host, and **All workers** links to
 [Workers](#workers). With no workers, the list says **No workers registered.** The entry is
 `panel=worker:all` in the URL, so a reload restores it.
 
@@ -103,7 +103,8 @@ there are neither failures nor anomalies, it says **All clear**.
 The strip shows a card for each worker host with its status, how many tasks it registered and when
 the server last saw it. A card opens the worker in the triage panel.
 
-When `GET /api/workers` returns pool information, the card adds a line and a meter:
+When `GET /api/workers` returns pool information, the card shows a pool line in place of the
+registered tasks line, with a meter when it can:
 
 - With `pool`, `concurrency` and `active`, the line reads `prefork pool, 3 of 8 slots active`, and
   the meter fills by the share of busy slots.
@@ -114,7 +115,7 @@ When `GET /api/workers` returns pool information, the card adds a line and a met
 - Without `concurrency`, the line reads `prefork pool, 3 active` and the card has no meter.
 - Without `pool`, the line leaves out the pool name.
 - With neither `pool` nor `concurrency`, including a server that doesn't send the fields, the
-  card shows no line and no meter.
+  card has no pool line and no meter, and keeps the registered tasks line.
 
 How the server counts `active` and when it can read high or low is in
 [Workers and registry inspect](features.md#workers-and-registry-inspect).
