@@ -896,7 +896,7 @@ test.describe('Workers tile', () => {
   test('a tile click opens worker:all with a row per host, offline first', async ({ page }) => {
     await openOverview(page)
     await tile(page).click()
-    expect(panelValue(page)).toBe('worker:all')
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
     await expect(tile(page)).toHaveAttribute('data-on', '')
     await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('Workers')
     const rows = panelOf(page).getByRole('listitem')
@@ -915,10 +915,10 @@ test.describe('Workers tile', () => {
     await openOverview(page)
     await tile(page).click()
     await panelOf(page).getByRole('button', { name: 'worker-1' }).click()
-    expect(panelValue(page)).toBe('worker:all/worker:worker-1')
+    await expect.poll(() => panelValue(page)).toBe('worker:all/worker:worker-1')
     await expect(panelOf(page).getByRole('heading', { level: 2 })).toHaveText('worker-1')
     await page.keyboard.press('Escape')
-    expect(panelValue(page)).toBe('worker:all')
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
     await expect(panelOf(page).getByRole('listitem')).toHaveCount(3)
     await expect(tile(page)).toHaveAttribute('data-on', '')
   })
@@ -933,14 +933,16 @@ test.describe('Workers tile', () => {
     await expect(tile(page)).toHaveAttribute('data-on', '')
   })
 
-  test('clicking the tile again with a host open closes the host and keeps the list', async ({
+  test('opening the tile again with a host open closes the host and keeps the list', async ({
     page,
   }) => {
     await openOverview(page)
     await tile(page).click()
     await panelOf(page).getByRole('button', { name: 'worker-1' }).click()
-    await tile(page).click()
-    expect(panelValue(page)).toBe('worker:all')
+    // The panel covers the tile at this width, so the keyboard opens it
+    await tile(page).focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => panelValue(page)).toBe('worker:all')
   })
 
   test('with no workers the panel says so and keeps the link', async ({ page }) => {
