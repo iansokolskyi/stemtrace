@@ -57,14 +57,14 @@ test.describe('panel entry view: parse and format', () => {
     expect(parsePanel('runs:a@s=')).toStrictEqual([{ kind: 'runs', id: 'a' }])
   })
 
-  for (const bad of ['x', '', '0', '-1', '1.5', '26', '1e1', '99999999999999999999', ' 2']) {
+  for (const bad of ['x', '', '0', '-1', '1.5', '51', '1e1', '99999999999999999999', ' 2']) {
     test(`a Show more count of ${JSON.stringify(bad)} is the default`, () => {
       expect(parsePanel(`runs:a@m=${bad}`)).toStrictEqual([{ kind: 'runs', id: 'a' }])
     })
   }
 
-  test('the largest Show more count is 25', () => {
-    expect(parsePanel('runs:a@m=25')).toStrictEqual([{ kind: 'runs', id: 'a', more: 25 }])
+  test('the largest Show more count is 50', () => {
+    expect(parsePanel('runs:a@m=50')).toStrictEqual([{ kind: 'runs', id: 'a', more: 50 }])
   })
 
   test('an unknown or repeated view key is ignored, the first of a key wins', () => {
@@ -261,19 +261,20 @@ test.describe('Overview view state in the URL', () => {
   })
 
   test('a copied URL opens the same view in a new page', async ({ page, context }) => {
-    await openOverview(page, '/', addFailures)
+    await openOverview(page)
     await brushBars(page, 7, 9)
     await page.getByRole('button', { name: 'Open runs' }).click()
-    await chip(page, 'Failure').click()
     await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(2)
+    await chip(page, 'Failure').click()
+    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
     const label = await page.getByTestId('brush-label').textContent()
     const url = new URL(page.url())
 
     const other = await context.newPage()
-    await openOverview(other, url.pathname + url.search, addFailures)
+    await openOverview(other, url.pathname + url.search)
     await expect(other.getByTestId('brush-label')).toHaveText(label ?? '')
     await expect(chip(other, 'Failure')).toHaveAttribute('aria-pressed', 'true')
-    await expect(panelOf(other).getByTestId('panel-run')).toHaveCount(2)
+    await expect(panelOf(other).getByTestId('panel-run')).toHaveCount(1)
   })
 
   test('a brush outside the range keeps its label and draws no span', async ({ page }) => {

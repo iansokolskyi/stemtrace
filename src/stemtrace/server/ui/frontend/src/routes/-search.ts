@@ -1,4 +1,5 @@
 import type { ExecutionFilters } from '@/api/client'
+import { formatBrush, parseBrush } from '@/components/overview/brushSpan'
 import { dateSearchParam } from '@/utils/format'
 
 /** The time range switch in the top strip. */
@@ -110,16 +111,23 @@ export function flowsSearch(search: Record<string, unknown>): FlowsSearch {
 }
 
 /**
- * Search params of the Overview (`/`): the range and the triage panel's stack (`panel`, see
- * `components/triage/panelState.ts`).
+ * Search params of the Overview (`/`): the range, the triage panel's stack (`panel`, see
+ * `components/triage/panelState.ts`) and the chart's brush (`brush`, see
+ * `components/overview/brushSpan.ts`).
  */
 export interface OverviewSearch {
   range?: Range
   panel?: string
+  brush?: string
 }
 
 export function overviewSearch(search: Record<string, unknown>): OverviewSearch {
-  return { ...rangeSearch(search), panel: str(search.panel) }
+  // A brush that is not a span is no brush
+  return {
+    ...rangeSearch(search),
+    panel: str(search.panel),
+    brush: formatBrush(parseBrush(str(search.brush))),
+  }
 }
 
 // What the task list at `/` took before the Overview: the Executions filters and its view

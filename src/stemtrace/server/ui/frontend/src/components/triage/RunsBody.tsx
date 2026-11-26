@@ -2,12 +2,11 @@ import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
 import { endsOpen } from '@/components/overview/model'
 import { formatCount, formatPercent } from '@/utils/format'
-import { useEntryState } from './PanelContext'
+import { useEntryView } from './PanelContext'
 import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
+import { STATE_CHIPS } from './panelState'
 import { RunRows } from './RunRows'
 import { decodeScope, scopeFilters } from './runsScope'
-
-const STATE_CHIPS = ['FAILURE', 'RETRY', 'STARTED', 'PENDING', 'SUCCESS'] as const
 
 interface RunsBodyProps {
   id: string
@@ -20,7 +19,9 @@ interface RunsBodyProps {
  */
 export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
   const scope = decodeScope(id)
-  const [chosen, setChosen] = useEntryState<string[]>('states', [])
+  const [view, setView] = useEntryView()
+  const chosen = view.states ?? []
+  const setChosen = (states: string[]) => setView({ ...view, states })
   if (!scope)
     return <p className="m-0 pt-4 text-xs text-muted">This link does not name any runs.</p>
 

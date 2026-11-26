@@ -1,15 +1,8 @@
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import {
-  createContext,
-  type ReactElement,
-  type ReactNode,
-  useContext,
-  useMemo,
-  useState,
-} from 'react'
+import { createContext, type ReactElement, type ReactNode, useContext, useMemo } from 'react'
 import { formatPanel, type PanelEntry, parsePanel } from './panelState'
 
-/** The triage panel's stack and the moves on it. Every move is a history entry, so Back undoes it. */
+/** The triage panel's stack and the moves on it. Every move but `refine` is a history entry, so Back undoes it. */
 export interface PanelApi {
   stack: PanelEntry[]
   /** The opener's key (`data-tk`): what the stack's first entry was opened from. */
@@ -23,6 +16,8 @@ export interface PanelApi {
   /** Keep the first `length` entries (a crumb). */
   popTo: (length: number) => void
   close: () => void
+  /** Set the view (chips, "Show more") of the entry at `index`, in place in the history. */
+  refine: (index: number, view: EntryView) => void
 }
 
 /** The key an opener carries in `data-tk`, so the panel can mark it and return focus to it. */
@@ -44,34 +39,22 @@ export function openerProps(
   }
 }
 
-// What each stack entry remembers (the state chips, "Show more"), by entry position and key. It
-// outlives the entry's component, so a pop (Esc, Back), a return from a task's page and a Back
-// across a new open from the page all restore it.
-const ENTRY_STORE_LIMIT = 200
-const entryStore = new Map<string, unknown>()
+/** The stack position of the entry the component below is rendered for. */
+export const EntryIndex = createContext(0)
 
-/** Names the stack entry the component below is rendered for (`index|key`). */
-export const EntryScope = createContext('')
+/** The view an entry is in: what it keeps in the URL beside its kind and id. */
+export type EntryView = Pick<PanelEntry, 'states' | 'more'>
 
-/** State kept per stack entry: like `useState`, but it survives the entry being popped and shown again. */
-export function useEntryState<T>(slot: string, initial: T): [T, (value: T) => void] {
-  const key = `${useContext(EntryScope)}|${slot}`
-  const [value, setValue] = useState<T>(() =>
-    entryStore.has(key) ? (entryStore.get(key) as T) : initial,
-  )
-  return [
-    value,
-    (next) => {
-      entryStore.delete(key)
-      entryStore.set(key, next)
-      // Bounded: the oldest entries go first
-      for (const old of entryStore.keys()) {
-        if (entryStore.size <= ENTRY_STORE_LIMIT) break
-        entryStore.delete(old)
-      }
-      setValue(next)
-    },
-  ]
+/**
+ * The view of the entry the component is rendered for, and a setter for it. The view is in the
+ * `panel` URL value, so a reload, a shared link, Esc and Back restore it. A change replaces the
+ * history entry: the chips and "Show more" refine a view, they are not steps to go back through.
+ */
+export function useEntryView(): [EntryView, (view: EntryView) => void] {
+  const panel = usePanel()
+  const index = useContext(EntryIndex)
+  const entry = panel.stack[index]
+  return [{ states: entry?.states, more: entry?.more }, (view) => panel.refine(index, view)]
 }
 
 const PanelContext = createContext<PanelApi | null>(null)
@@ -83,8 +66,8 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
   const stack = useMemo(() => parsePanel(panel), [panel])
 
   const api = useMemo<PanelApi>(() => {
-    const go = (next: PanelEntry[]) =>
-      navigate({ to: '/', search: (prev) => ({ ...prev, panel: formatPanel(next) }) })
+    const go = (next: PanelEntry[], replace = false) =>
+      navigate({ to: '/', search: (prev) => ({ ...prev, panel: formatPanel(next) }), replace })
     return {
       stack,
       activeKey: stack[0] && openerKey(stack[0]),
@@ -97,6 +80,14 @@ export function PanelProvider({ children }: { children: ReactNode }): ReactEleme
       pop: () => go(stack.slice(0, -1)),
       popTo: (length) => go(stack.slice(0, length)),
       close: () => go([]),
+      refine: (index, view) => {
+        if (!stack[index]) return
+        const { states: _s, more: _m, ...rest } = stack[index]
+        go(
+          stack.map((entry, i) => (i === index ? { ...rest, ...view } : entry)),
+          true,
+        )
+      },
     }
   }, [navigate, stack])
 
