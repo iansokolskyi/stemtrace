@@ -271,15 +271,21 @@ def time_series(
     return series
 
 
-def bucket_index(series: TimeSeries, record: RunRecord) -> int | None:
-    """The bucket of ``record``'s ``last_updated``; None before the first bucket.
+def bucket_placer(series: TimeSeries) -> Callable[[RunRecord], int | None]:
+    """A function giving a record's bucket in ``series``; None before the first bucket.
 
     The last bucket takes everything after it, so a run stamped in the future lands there.
     """
-    offset = record.last_updated.timestamp() - series.starts[0].timestamp()
-    if offset < 0:
-        return None
-    return min(int(offset // series.bucket.total_seconds()), len(series.starts) - 1)
+    first = series.starts[0].timestamp()
+    size = series.bucket.total_seconds()
+    last = len(series.starts) - 1
+
+    def place(record: RunRecord) -> int | None:
+        """The bucket of ``record``'s ``last_updated``."""
+        offset = record.last_updated.timestamp() - first
+        return None if offset < 0 else min(int(offset // size), last)
+
+    return place
 
 
 def count_runs(
@@ -289,11 +295,12 @@ def count_runs(
     key_of: Callable[[RunRecord], str] | None = None,
 ) -> None:
     """Add ``records`` to ``series``, so a long list can be counted in slices."""
+    place = bucket_placer(series)
+    width = len(series.starts)
     for record in records:
-        index = bucket_index(series, record)
+        index = place(record)
         if index is None:
             continue
-        width = len(series.starts)
         series.counts.setdefault(record.state, [0] * width)[index] += 1
         if key_of is not None:
             per_key = series.by_key.setdefault(key_of(record), {})
@@ -472,10 +479,11 @@ def collect_bucket_samples(
 ) -> list[WindowSamples]:
     """The samples of each of ``series``' buckets, placed as ``count_runs`` places runs."""
     buckets = [WindowSamples() for _ in series.starts]
+    place = bucket_placer(series)
     for record in records:
         if record.name.startswith(EXCLUDED_NAME_PREFIX):
             continue
-        index = bucket_index(series, record)
+        index = place(record)
         if index is None:
             continue
         runtime = runtime_sample(record)
