@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import type { Grade } from './model'
 
 interface SparklineProps {
-  /** One value per bucket, oldest first; null is a bucket with nothing to draw (a gap, not a zero). */
+  /** One value per bucket, oldest first; null is a bucket with nothing to draw: it breaks the line (never bridged, never a zero). */
   values: readonly (number | null)[]
   /** Fixed pixel width; none fills the container. */
   width?: number
@@ -29,13 +29,21 @@ export function Sparkline({
 }: SparklineProps): ReactElement | null {
   if (values.length === 0) return null
   const w = width ?? 100
-  const drawn = values.flatMap((v, i) => (v === null ? [] : [{ v, i }]))
-  if (drawn.length === 0) return null
-  const max = Math.max(...drawn.map((d) => d.v)) || 1
-  const points = drawn.map(({ v, i }) => {
-    const x = (values.length === 1 ? 0 : (i * (w - 2)) / (values.length - 1)) + 1
-    return `${x.toFixed(1)},${(height - 2 - (v / max) * (height - 4)).toFixed(1)}`
+  // A null bucket breaks the line: each run of buckets with a value is a segment of its own
+  const xOf = (i: number): number =>
+    (values.length === 1 ? 0 : (i * (w - 2)) / (values.length - 1)) + 1
+  const segments: { x: number; y: number }[][] = []
+  let max = 0
+  values.forEach((v, i) => {
+    if (v === null) return
+    max = Math.max(max, v)
+    if (values[i - 1] == null) segments.push([])
+    segments[segments.length - 1].push({ x: xOf(i), y: v })
   })
+  if (segments.length === 0) return null
+  const yOf = (v: number): number => height - 2 - (v / (max || 1)) * (height - 4)
+  const textOf = (seg: { x: number; y: number }[]): string =>
+    seg.map((p) => `${p.x.toFixed(1)},${yOf(p.y).toFixed(1)}`).join(' ')
   return (
     <svg
       aria-hidden="true"
@@ -45,20 +53,33 @@ export function Sparkline({
       preserveAspectRatio="none"
       className={clsx('block overflow-visible', TONE[grade])}
     >
-      <polygon
-        points={`1,${height} ${points.join(' ')} ${w - 1},${height}`}
-        fill="currentColor"
-        opacity={0.14}
-      />
-      <polyline
-        points={points.join(' ')}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.75}
-        vectorEffect="non-scaling-stroke"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+      {segments.map((seg) => {
+        const first = seg[0]
+        if (seg.length === 1) {
+          return (
+            <circle key={first.x} cx={first.x} cy={yOf(first.y)} r={1.75} fill="currentColor" />
+          )
+        }
+        const last = seg[seg.length - 1]
+        return (
+          <g key={first.x}>
+            <polygon
+              points={`${first.x.toFixed(1)},${height} ${textOf(seg)} ${last.x.toFixed(1)},${height}`}
+              fill="currentColor"
+              opacity={0.14}
+            />
+            <polyline
+              points={textOf(seg)}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.75}
+              vectorEffect="non-scaling-stroke"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          </g>
+        )
+      })}
     </svg>
   )
 }

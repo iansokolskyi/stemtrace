@@ -92,3 +92,6 @@ export const sameInstant = (a: string, b: string): boolean => Date.parse(a) === 
 
 /** The fewest runs in each window for a p95 to be compared: below it a p95 is nearly one run's time. */
 export const P95_MIN_SAMPLES = 20
+
+/** The smallest rise, in ms, a p95 tile flags: a p95 that moves by less is noise at any ratio. */
+export const P95_MIN_RISE_MS = 50

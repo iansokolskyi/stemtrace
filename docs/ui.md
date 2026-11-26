@@ -59,7 +59,8 @@ and the group trends), `GET /api/failures` (What's wrong), `GET /api/stats/tasks
 Six tiles sit above the chart: **Runs / min**, **Failure rate**, **p95 runtime**, **p95 queue
 wait**, **Workers online** and **Anomalies**. They fill rows of six (1280 px and wider), three
 (900 to 1279 px) or two (narrower). If the server doesn't send the p95 fields, the two p95 tiles
-are hidden and the other four fill rows of four, two or two.
+are hidden and the other four fill rows of four, two or two. Until the overview arrives the row
+has room for six, so on an older server it shrinks to four once.
 
 - **Runs / min** and **Failure rate** for the range, each with a sparkline. A run is
   a task that ended with SUCCESS, FAILURE, REVOKED or REJECTED. IGNORED tasks aren't runs. The
@@ -74,7 +75,9 @@ are hidden and the other four fill rows of four, two or two.
   the p95 of each chart bucket. The window's value comes from all its runs, not from the buckets.
   A tile compares with the window before it only when both windows have at least 20 samples. Then
   it is flagged at 1.4 times (runtime) or 1.5 times (queue wait) its baseline, and flagged more
-  strongly at 2.5 times or 3 times. A fall isn't flagged. With fewer samples, or with **All**,
+  strongly at 2.5 times or 3 times. A fall isn't flagged, and neither is a rise of less than 50 ms
+  or a baseline of 0 ms, which show **earlier:** with no note. A bucket with no sample breaks the
+  sparkline, and a lone bucket is a dot. With fewer samples, or with **All**,
   the tile shows the value and **from N runs**, with no note. With no samples, it says **No data**
   and why. See [Summary endpoints](features.md#summary-endpoints) for which runs are samples.
 - **Workers online** shows online and known worker hosts. It opens the list of hosts in the
@@ -90,7 +93,8 @@ Clicking **p95 runtime** or **p95 queue wait** opens the window's runs, slowest 
 says **Not counted in the p95 runtime tile** (or **queue wait tile**). That includes a run that is
 still running, which shows its wait so far, and `celery.` tasks. **Show more** asks for one longer
 list from the start, never a second page, so the order holds. The list has no **Open in
-Executions** link, because the Executions page has no slowest-first order.
+Executions** link, because the Executions page has no slowest-first order. A link to a sorted list opened on a server that
+ignores `sort` still says "Slowest runtime first" over the newest-first list.
 
 Clicking **Workers online** opens a row for each worker host, offline hosts first and then by
 name, each with its status and, when the server sends both `active` and `concurrency`, the busy

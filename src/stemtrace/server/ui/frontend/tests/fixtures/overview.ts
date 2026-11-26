@@ -125,7 +125,7 @@ export function spikeScenario(now = Date.now()): OverviewScenario {
     overview: { runs_per_minute: [8.4, 7.9], failures: [18, 4], failure_rate: [0.04, 0.01] },
     p95: {
       runtime: { value: 1680, baseline: 1200, samples: 480, baseline_samples: 470 },
-      queue_wait: { value: 300, baseline: 280, samples: 480, baseline_samples: 470 },
+      queue_wait: { value: 340, baseline: 280, samples: 480, baseline_samples: 470 },
       runtime_series: Array.from({ length: 12 }, (_, i) => 900 + i * 70),
       queue_wait_series: Array.from({ length: 12 }, (_, i) => 200 + (i % 4) * 40),
     },

@@ -3,7 +3,7 @@ import type { PercentileKpi, RunSort } from '@/api/client'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
 import { encodeScope, type RunsScope } from '@/components/triage/runsScope'
 import { formatCount, formatSpan } from '@/utils/format'
-import { baselineNote, gradeOf, P95_MIN_SAMPLES } from './model'
+import { baselineNote, gradeOf, P95_MIN_RISE_MS, P95_MIN_SAMPLES } from './model'
 import { Sparkline } from './Sparkline'
 import { TILE, TileFace } from './TileFace'
 
@@ -57,8 +57,14 @@ export function PercentileTile({
       kpi.samples >= P95_MIN_SAMPLES &&
       kpi.baseline_samples >= P95_MIN_SAMPLES
     if (comparable && kpi.baseline !== null) {
-      grade = gradeOf(kpi.value, kpi.baseline, warn, bad)
-      note = baselineNote(grade, kpi.value, kpi.baseline)
+      // A p95 is whole milliseconds: from 0 ms any rise has an infinite ratio, and a few ms is
+      // noise. Grade only a baseline above 0 and a rise of at least P95_MIN_RISE_MS.
+      const rise = kpi.value - kpi.baseline
+      const real = kpi.baseline > 0 && (rise <= 0 || rise >= P95_MIN_RISE_MS)
+      if (real) {
+        grade = gradeOf(kpi.value, kpi.baseline, warn, bad)
+        note = baselineNote(grade, kpi.value, kpi.baseline)
+      }
       sub = `earlier: ${formatSpan(kpi.baseline)}`
     } else {
       sub = `from ${formatCount(kpi.samples)} ${kpi.samples === 1 ? 'run' : 'runs'}`

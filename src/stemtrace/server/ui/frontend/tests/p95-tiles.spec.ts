@@ -156,7 +156,7 @@ test.describe('p95 tiles', () => {
   }) => {
     await openOverview(page)
     const t = waitTile(page)
-    await expect(t).toContainText('300ms')
+    await expect(t).toContainText('340ms')
     await expect(t).toContainText('In baseline')
     await expect(t).toContainText('earlier: 280ms')
     await expect(t).toHaveAttribute('data-grade', 'ok')
@@ -253,13 +253,59 @@ test.describe('p95 tiles', () => {
     expect(new Set(heights).size).toBe(1)
   })
 
-  test('a bucket with no sample leaves a gap in the sparkline, not a zero', async ({ page }) => {
+  test('a bucket with no sample breaks the line there: two segments, never a bridge or a zero', async ({
+    page,
+  }) => {
     await openOverview(page, (s) => {
       const p95 = p95Of(s)
       p95.runtime_series = p95.runtime_series.map((v, i) => (i === 4 ? null : v))
     })
-    const points = await runtimeTile(page).locator('polyline').getAttribute('points')
-    expect(points?.split(' ')).toHaveLength(11)
+    const lines = runtimeTile(page).locator('polyline')
+    await expect(lines).toHaveCount(2)
+    const sizes = await lines.evaluateAll((els) =>
+      els.map((el) => (el.getAttribute('points') ?? '').split(' ').length),
+    )
+    // Buckets 0-3 and 5-11
+    expect(sizes).toEqual([4, 7])
+  })
+
+  test('a lone bucket with a sample draws a dot', async ({ page }) => {
+    await openOverview(page, (s) => {
+      const p95 = p95Of(s)
+      p95.runtime_series = p95.runtime_series.map((v, i) => (i === 5 ? v : null))
+    })
+    await expect(runtimeTile(page).locator('circle')).toHaveCount(1)
+    await expect(runtimeTile(page).locator('polyline')).toHaveCount(0)
+  })
+
+  // Rows of #324 round 1: a grade needs a baseline over 0 and a rise of at least 50 ms
+  const FLOOR = [
+    [0, 3, 'ok'],
+    [1, 3, 'ok'],
+    [0, 0, 'ok'],
+    [100, 160, 'warn'],
+    [20, 60, 'ok'],
+    [100, 149, 'ok'],
+  ] as const
+  for (const [baseline, value, grade] of FLOOR) {
+    test(`p95 runtime ${value}ms against ${baseline}ms is ${grade}`, async ({ page }) => {
+      await openOverview(page, (s) => {
+        p95Of(s).runtime = pct(value, baseline)
+      })
+      const t = runtimeTile(page)
+      await expect(t).toHaveAttribute('data-grade', grade)
+      await expect(t).toContainText(`earlier: ${baseline}ms`)
+      if (grade === 'ok' && value >= baseline) await expect(t).not.toContainText('baseline')
+      if (grade === 'warn') await expect(t).toContainText('Above baseline')
+    })
+  }
+
+  test('a tile flagged below its baseline reads "Below baseline: -N%"', async ({ page }) => {
+    await openOverview(page, (s) => {
+      // 5.5 / 8 = 0.69: a fall of 31%, past the 1.4 factor either way
+      s.overview.runs_per_minute = [5.5, 8]
+    })
+    await expect(tile(page, /^Runs \/ min/)).toContainText('Below baseline: \u221231%')
   })
 
   test('the tile shows the server window value, not a mean of the bucket p95s', async ({
@@ -345,6 +391,35 @@ test.describe('p95 tile click: the slowest runs first', () => {
       await expect(uncounted(page, i)).toHaveText('Not counted in the p95 runtime tile')
     // The Executions page has no slowest-first order, so the panel doesn't link to it
     await expect(page.getByRole('link', { name: 'Open in Executions' })).toHaveCount(0)
+  })
+
+  test('runs the tiles leave out are marked: rejected, ignored, and a success with no runtime', async ({
+    page,
+  }) => {
+    await openOverview(page, (_, api) =>
+      api.addTasks([
+        run('tests.c.ok', 'SUCCESS', { runtime: 900, wait: 90, id: id(1) }),
+        run('tests.c.rejected', 'REJECTED', { runtime: 800, wait: 80, id: id(2) }),
+        run('tests.c.ignored', 'IGNORED', { runtime: 700, wait: 70, id: id(3) }),
+        run('tests.c.noruntime', 'SUCCESS', { runtime: null, wait: 60, id: id(4) }),
+      ]),
+    )
+    await runtimeTile(page).click()
+    await expect(panelRows(page)).toHaveCount(4)
+    const marked = async (): Promise<string[]> =>
+      panelRows(page).evaluateAll((rows) =>
+        rows
+          .filter((r) => r.querySelector('[data-testid="panel-run-uncounted"]'))
+          .map((r) => r.getAttribute('data-task-id') ?? '')
+          .sort(),
+      )
+    // Runtime counts SUCCESS and FAILURE with a runtime only
+    expect(await marked()).toEqual([id(2), id(3), id(4)])
+    await page.keyboard.press('Escape')
+    await waitTile(page).click()
+    await expect(panelRows(page)).toHaveCount(4)
+    // The wait counts any outcome with a wait: only IGNORED is left out
+    expect(await marked()).toEqual([id(3)])
   })
 
   test('the runtime tile asks the tasks API for sort=runtime over its window', async ({ page }) => {

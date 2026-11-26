@@ -85,9 +85,9 @@ interface RunRowsProps {
 }
 
 /**
- * The runs behind a panel entry, newest first: the API's own filtering (the bar's span, the
- * state, the exception), the first rows and a "Show more" for the rest. A row opens the task in
- * the panel.
+ * The runs behind a panel entry, in the order the API gives (newest first, or slowest first
+ * with `filters.sort`, which marks the runs the p95 tile leaves out): the API's own filtering,
+ * the first rows and a "Show more" for the rest. A row opens the task in the panel.
  */
 export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProps): ReactElement {
   const [view, setView] = useEntryView()
