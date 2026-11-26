@@ -10,16 +10,19 @@ import asyncio
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import BaseModel, TypeAdapter
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.core.groups import GroupConfig, GroupRule
 from stemtrace.server import store as store_module
 from stemtrace.server.api import params, summary_routes
 from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.api.schemas import GraphListResponse, TaskListResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
 if TYPE_CHECKING:
@@ -55,6 +58,12 @@ TASK_LIST_PATHS = [
     "/api/tasks?limit=500&exception_type=Err3",
     "/api/tasks?limit=500&within=1h",
     "/api/tasks?limit=500&from_date=2026-10-18T11:00:00Z",
+    "/api/tasks?limit=500&offset=5000",
+    "/api/tasks?limit=500&task_group=ungrouped",
+    "/api/tasks?limit=500&tag=money",
+    "/api/tasks?limit=500&sort=runtime",
+    "/api/tasks?limit=500&sort=queue_wait&state=SUCCESS,FAILURE",
+    "/api/tasks?limit=500&compact=true",
     "/api/graphs?limit=100",
     "/api/graphs?limit=100&within=1h",
 ]
@@ -93,8 +102,12 @@ def _add(store: GraphStore, i: int, *, seconds_ago: int, shape: str = "mix") -> 
     )
 
 
+# Near max_data_size (10 KB): one shared string, so 30k runs don't hold 1 GB.
+PAYLOAD = "x" * 10_000
+
+
 def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
-    """One run of 10 events (2 retries) with worker, queue and exception set.
+    """One run of 10 events (2 retries) with worker, queue, exception and payloads set.
 
     Every third run is a root and the next two its children, so graphs have
     children to read. The attempts follow Celery's received, started, retry
@@ -123,6 +136,10 @@ def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
         store.add_event(
             TaskEvent(
                 state=state,
+                args=[PAYLOAD] if state == TaskState.PENDING else None,
+                kwargs={"data": PAYLOAD} if state == TaskState.PENDING else None,
+                result=PAYLOAD if state == TaskState.SUCCESS else None,
+                traceback=PAYLOAD if failed else None,
                 timestamp=NOW - timedelta(seconds=seconds_ago + len(steps) - n),
                 retries=retries,
                 exception_type=f"Err{i % 7}" if failed else None,
@@ -148,7 +165,12 @@ def _populated(count: int, shape: str = "mix") -> GraphStore:
 
 def _app(store: GraphStore) -> FastAPI:
     app = FastAPI()
-    app.include_router(create_api_router(store, worker_registry=WorkerRegistry()))
+    groups = GroupConfig(
+        rules=[GroupRule(name="seven", match=["app.task7"], tags=["money"])]
+    )
+    app.include_router(
+        create_api_router(store, worker_registry=WorkerRegistry(), groups=groups)
+    )
     return app
 
 
@@ -278,6 +300,73 @@ async def test_task_and_graph_lists_at_30k_nodes_return_matches(
     body = response.json()
     assert body["total"] > 0
     assert len(body.get("tasks", body.get("graphs"))) > 0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("path", TASK_LIST_PATHS)
+async def test_task_and_graph_lists_at_30k_nodes_encode_nothing_on_the_loop(
+    path: str, big_stores: dict[str, GraphStore], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A big body is encoded in the worker thread: profile events can't see it.
+
+    One ``dump_json`` call counts as about one profile event whatever its size,
+    and 18 to 76 ms of loop CPU go into a 2 to 28 MB body.
+    """
+    loop_thread = threading.get_ident()
+    on_loop: list[int] = []
+    real_dump_json = TypeAdapter.dump_json
+    real_model_dump_json = BaseModel.model_dump_json
+
+    def dump_json(self: TypeAdapter[Any], *args: Any, **kwargs: Any) -> bytes:
+        out = real_dump_json(self, *args, **kwargs)
+        if threading.get_ident() == loop_thread:
+            on_loop.append(len(out))
+        return out
+
+    def model_dump_json(self: BaseModel, *args: Any, **kwargs: Any) -> str:
+        out = real_model_dump_json(self, *args, **kwargs)
+        if threading.get_ident() == loop_thread:
+            on_loop.append(len(out))
+        return out
+
+    app = _app(_big_store(big_stores, "realistic"))
+    assert (await _get(app, "/api/health")).status_code == 200
+    on_loop.clear()  # the health response is small and ours to ignore
+    monkeypatch.setattr(TypeAdapter, "dump_json", dump_json)
+    monkeypatch.setattr(BaseModel, "model_dump_json", model_dump_json)
+
+    response = await _get(app, path)
+
+    assert response.status_code == 200
+    assert len(response.content) > 10_000
+    assert [n for n in on_loop if n > 10_000] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "model"),
+    [
+        ("/api/tasks?limit=100", TaskListResponse),
+        ("/api/tasks?limit=100&sort=runtime", TaskListResponse),
+        ("/api/tasks?limit=100&compact=true", TaskListResponse),
+        ("/api/tasks?limit=100&state=FAILURE&offset=10", TaskListResponse),
+        ("/api/graphs?limit=50", GraphListResponse),
+    ],
+)
+async def test_list_body_is_the_one_fastapi_encodes_from_the_model(
+    path: str, model: type[BaseModel]
+) -> None:
+    """The handlers' own JSON equals what FastAPI sends for the same model."""
+    store = _populated_realistic(400)
+    actual = (await _get(_app(store), path)).content
+    reference = FastAPI()
+
+    @reference.get("/", response_model=model)
+    async def echo() -> BaseModel:  # FastAPI wants a coroutine here
+        return model.model_validate_json(actual)
+
+    expected = (await _get(reference, "/")).content
+    assert len(actual) > 10_000
+    assert actual == expected
 
 
 @pytest.mark.parametrize("shape", SHAPES)
