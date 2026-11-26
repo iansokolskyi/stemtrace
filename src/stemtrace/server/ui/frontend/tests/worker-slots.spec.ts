@@ -129,6 +129,24 @@ test.describe('Worker cell pool line and meter', () => {
     await expect(meterOf(web)).toHaveCount(0)
   })
 
+  const withPoolInfo: [string, Partial<MockWorker>][] = [
+    ['pool, slots and active', { pool: 'prefork', concurrency: 8, active: 3 }],
+    ['pool and slots', { pool: 'prefork', concurrency: 8, active: null }],
+    ['pool only', { pool: 'prefork', concurrency: null, active: null }],
+    ['slots only', { pool: null, concurrency: 8, active: null }],
+    ['an offline host', { status: 'offline', pool: 'prefork', concurrency: 8, active: null }],
+  ]
+  for (const [name, fields] of withPoolInfo) {
+    test(`with pool info (${name}) the pool line replaces the registered tasks line`, async ({
+      page,
+    }) => {
+      await openOverview(page, [worker({ hostname: 'web-1', last_seen: minutesAgo(1), ...fields })])
+      const web = cell(page, 'web-1')
+      await expect(poolLine(web)).toBeVisible()
+      await expect(web).not.toContainText('registered tasks')
+    })
+  }
+
   test('with no pool info the line and the bar are hidden, and nothing reads "–"', async ({
     page,
   }) => {
@@ -237,6 +255,6 @@ test.describe('Workers panel rows', () => {
       [worker({ hostname: 'celery@alpha', pool: 'prefork', concurrency: 8, active: 9 })],
       '/?panel=worker%3Aall',
     )
-    await expect(row(page, 'alpha').getByTestId('slot-count')).toHaveText('9 of 8 slots')
+    await expect(row(page, 'alpha').getByTestId('slot-count')).toHaveText('9 active, 8 slots')
   })
 })
