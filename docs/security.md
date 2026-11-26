@@ -24,8 +24,9 @@ Scrubbing goes by key name: keyword arguments, and keys of dicts inside argument
 Values that aren't dicts, lists or tuples, whether positional arguments or return values (e.g.
 the password in `login.delay("alice", "hunter2")`), exception messages and tracebacks are shown
 as they are. That includes the failure message that `GET /api/failures` returns in
-`latest_message`, which the Overview shows under the exception name in each "What's wrong" row.
-The message can contain task arguments, as on the task page, and nothing scrubs it.
+`latest_message`. The Overview shows it under the exception name in each "What's wrong" row that
+has one, without the class prefix, and the exception panel shows the full text. Nothing scrubs it,
+so it can contain task arguments, as on the task page.
 
 Keys match by substring, whatever the key's case (`USER_PASSWORD` matches `password`). Bytes keys
 (such as redis-py's `hgetall()` without `decode_responses`) are decoded as UTF-8 and matched the

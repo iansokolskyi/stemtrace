@@ -1188,6 +1188,15 @@ test.describe('Overview failure message line', () => {
       .getByRole('row')
       .filter({ has: page.getByRole('button', { name: exception, exact: true }) })
 
+  /** The `title` the pointer meets at the line's center: the row's click overlay is on top. */
+  const hoverTitle = (line: Locator): Promise<string | null> =>
+    line.evaluate((el) => {
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
+      return hit?.closest('[title]')?.getAttribute('title') ?? null
+    })
+
   async function openWith(
     page: Page,
     messages: Record<string, string | null | undefined>,
@@ -1205,7 +1214,7 @@ test.describe('Overview failure message line', () => {
     await openWith(page, { ValueError: 'ValueError: bad id 7' })
     const line = wrongRow(page, 'ValueError').getByTestId('failure-message')
     await expect(line).toHaveText('bad id 7')
-    await expect(line).toHaveAttribute('title', 'bad id 7')
+    expect(await hoverTitle(line)).toBe('bad id 7')
   })
 
   test('row 1: strips the prefix once, not twice', async ({ page }) => {
@@ -1225,7 +1234,7 @@ test.describe('Overview failure message line', () => {
     const body = 'x'.repeat(288)
     await openWith(page, { ValueError: `ValueError: ${body}` })
     const line = wrongRow(page, 'ValueError').getByTestId('failure-message')
-    await expect(line).toHaveAttribute('title', body)
+    expect(await hoverTitle(line)).toBe(body)
     const lineHeight = await line.evaluate((el) =>
       Number.parseFloat(getComputedStyle(el).lineHeight),
     )
@@ -1257,5 +1266,24 @@ test.describe('Overview failure message line', () => {
   test('row 7: a message that is only the class prefix draws no line', async ({ page }) => {
     await openWith(page, { ValueError: 'ValueError: ' })
     await expect(page.getByTestId('failure-message')).toHaveCount(0)
+  })
+
+  test('the exception panel shows the full message, with the class prefix', async ({ page }) => {
+    const body = `ValueError: ${'y'.repeat(400)}`
+    await openOverview(page, '/?panel=exception%3AValueError', ({ scenario }) => {
+      scenario.failures[0].latest_message = body
+    })
+    const panel = page.getByTestId('triage-panel')
+    await expect(panel.getByText('Message', { exact: true })).toBeVisible()
+    await expect(panel.locator('dd', { hasText: body })).toHaveText(body)
+  })
+
+  test('the exception panel has no Message row for a null or blank message', async ({ page }) => {
+    await openOverview(page, '/?panel=exception%3AValueError', ({ scenario }) => {
+      scenario.failures[0].latest_message = '  '
+    })
+    const panel = page.getByTestId('triage-panel')
+    await expect(panel).toContainText('Failures')
+    await expect(panel.getByText('Message', { exact: true })).toHaveCount(0)
   })
 })

@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
 import { TaskName } from '@/components/TaskName'
+import { fullFailureMessage } from '@/utils/failureMessage'
 import { formatAgo, formatCount, formatDateTime } from '@/utils/format'
 import { exceptionOfId } from './exceptionId'
 import { usePanel } from './PanelContext'
@@ -13,12 +14,14 @@ export function ExceptionBody({ id, data }: { id: string; data: PanelData }): Re
   const panel = usePanel()
   const type = exceptionOfId(id)
   const group = data.failures?.groups.find((g) => g.exception_type === type)
+  const message = fullFailureMessage(group)
   const stateOnly = { state: 'FAILURE', within: data.within }
   return (
     <>
       <Section>
         <Facts
           rows={[
+            ['Message', message && <span className="font-mono">{message}</span>],
             [
               'Failures',
               group && <b className="font-mono text-failure-t">{formatCount(group.count)}</b>,

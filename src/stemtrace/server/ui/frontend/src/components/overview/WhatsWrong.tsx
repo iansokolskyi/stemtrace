@@ -4,6 +4,7 @@ import { Icon } from '@/components/Icon'
 import { TaskName } from '@/components/TaskName'
 import { exceptionId } from '@/components/triage/exceptionId'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
+import { failureLine } from '@/utils/failureMessage'
 import { formatAgo, formatCount } from '@/utils/format'
 import { AnomalyList } from './AnomalyList'
 import type { OverviewAnomalies } from './anomalyData'
@@ -19,20 +20,6 @@ interface WhatsWrongProps {
 const TH =
   'h-9 whitespace-nowrap border-b border-rule px-2.5 text-left text-xs font-semibold text-muted first:pl-4 last:pr-4'
 const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
-
-/**
- * The message to show under an exception name, or undefined for none. The worker writes
- * `"<ShortName>: <msg>"`, so one leading `"<last segment of the class>: "` is dropped.
- */
-export function failureLine(group: FailureGroup): string | undefined {
-  const text = group.latest_message?.trim()
-  if (!text) return undefined
-  const name = group.exception_type?.split('.').pop()
-  // `trim` also removed the space after the colon of a bare "<ShortName>: ".
-  const stripped = name && `${text} `.startsWith(`${name}: `) ? text.slice(name.length + 1) : text
-  const message = stripped.trim()
-  return message || undefined
-}
 
 /**
  * Failures grouped by exception class and the anomalies now, each row opening in the triage
@@ -117,6 +104,8 @@ export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps):
                                 kind: 'exception',
                                 id: exceptionId(group.exception_type),
                               })}
+                              // The overlay covers the message line, so the hover text lives here.
+                              title={message}
                               className="font-mono font-bold text-failure-t after:absolute after:inset-0"
                             >
                               {group.exception_type ?? 'No exception class'}
@@ -124,7 +113,6 @@ export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps):
                             {message && (
                               <div
                                 data-testid="failure-message"
-                                title={message}
                                 className="max-w-[300px] truncate text-[11px] text-muted"
                               >
                                 {message}
