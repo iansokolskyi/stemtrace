@@ -1178,3 +1178,84 @@ test.describe('A span waits for the chart', () => {
     expect(urls.every((u) => !u.includes('updated_before'))).toBe(true)
   })
 })
+
+test.describe('Overview failure message line', () => {
+  test.skip(isRealMode, 'Mock-only test')
+
+  const wrongRow = (page: Page, exception: string): Locator =>
+    page
+      .getByRole('table', { name: 'Failures by exception' })
+      .getByRole('row')
+      .filter({ has: page.getByRole('button', { name: exception, exact: true }) })
+
+  async function openWith(
+    page: Page,
+    messages: Record<string, string | null | undefined>,
+  ): Promise<void> {
+    await openOverview(page, '/', ({ scenario }) => {
+      for (const group of scenario.failures) {
+        const key = group.exception_type ?? 'none'
+        if (key in messages) group.latest_message = messages[key]
+      }
+    })
+    await expect(page.getByRole('table', { name: 'Failures by exception' })).toBeVisible()
+  }
+
+  test('row 1: strips the class prefix and puts the text in the title', async ({ page }) => {
+    await openWith(page, { ValueError: 'ValueError: bad id 7' })
+    const line = wrongRow(page, 'ValueError').getByTestId('failure-message')
+    await expect(line).toHaveText('bad id 7')
+    await expect(line).toHaveAttribute('title', 'bad id 7')
+  })
+
+  test('row 1: strips the prefix once, not twice', async ({ page }) => {
+    await openWith(page, {
+      ValueError: 'ValueError: ValueError: twice',
+      TimeoutError: 'TimeoutError: slow',
+    })
+    await expect(wrongRow(page, 'ValueError').getByTestId('failure-message')).toHaveText(
+      'ValueError: twice',
+    )
+    await expect(wrongRow(page, 'TimeoutError').getByTestId('failure-message')).toHaveText('slow')
+  })
+
+  test('row 4: a long message is one ellipsised line with the full text in the title', async ({
+    page,
+  }) => {
+    const body = 'x'.repeat(288)
+    await openWith(page, { ValueError: `ValueError: ${body}` })
+    const line = wrongRow(page, 'ValueError').getByTestId('failure-message')
+    await expect(line).toHaveAttribute('title', body)
+    const lineHeight = await line.evaluate((el) =>
+      Number.parseFloat(getComputedStyle(el).lineHeight),
+    )
+    expect((await line.boundingBox())?.height).toBeLessThanOrEqual(lineHeight + 1)
+    expect(await line.evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis')
+  })
+
+  test('row 5: the null-class group shows its message unchanged', async ({ page }) => {
+    await openWith(page, { none: 'ValueError: not a prefix here' })
+    const row = page.getByRole('row').filter({ hasText: 'No exception class' })
+    await expect(row.getByTestId('failure-message')).toHaveText('ValueError: not a prefix here')
+  })
+
+  test('row 6: an einfo message without the class prefix shows unchanged', async ({ page }) => {
+    await openWith(page, { ValueError: 'Traceback (most recent call last)' })
+    await expect(wrongRow(page, 'ValueError').getByTestId('failure-message')).toHaveText(
+      'Traceback (most recent call last)',
+    )
+  })
+
+  test('row 7: a null, blank or missing message draws no line', async ({ page }) => {
+    await openWith(page, { ValueError: null, TimeoutError: '   ' })
+    await expect(page.getByRole('table', { name: 'Failures by exception' })).toContainText(
+      'TimeoutError',
+    )
+    await expect(page.getByTestId('failure-message')).toHaveCount(0)
+  })
+
+  test('row 7: a message that is only the class prefix draws no line', async ({ page }) => {
+    await openWith(page, { ValueError: 'ValueError: ' })
+    await expect(page.getByTestId('failure-message')).toHaveCount(0)
+  })
+})

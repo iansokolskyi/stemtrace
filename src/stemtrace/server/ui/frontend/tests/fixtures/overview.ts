@@ -27,6 +27,8 @@ export interface OverviewScenario {
     exception_type: string | null
     count: number
     task_names: string[]
+    /** Left out of the response when undefined, as an older server does. */
+    latest_message?: string | null
   }[]
   /** Per task: name, group, runs, failures, p50/p95 ms. */
   tasks: { name: string; group: string; runs: number; failures: number; p50: number; p95: number }[]

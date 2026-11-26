@@ -1,0 +1,1 @@
+- Each "What's wrong" row on the Overview shows the newest failure's message under the exception name, in one muted line with the full text in a tooltip. The row hides the line when the server sends no message. Messages aren't scrubbed and can contain task arguments. See [Security](https://github.com/iansokolskyi/stemtrace/blob/main/docs/security.md#sensitive-data-scrubbing).

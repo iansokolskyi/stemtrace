@@ -21,6 +21,20 @@ const TH =
 const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
 
 /**
+ * The message to show under an exception name, or undefined for none. The worker writes
+ * `"<ShortName>: <msg>"`, so one leading `"<last segment of the class>: "` is dropped.
+ */
+export function failureLine(group: FailureGroup): string | undefined {
+  const text = group.latest_message?.trim()
+  if (!text) return undefined
+  const name = group.exception_type?.split('.').pop()
+  // `trim` also removed the space after the colon of a bare "<ShortName>: ".
+  const stripped = name && `${text} `.startsWith(`${name}: `) ? text.slice(name.length + 1) : text
+  const message = stripped.trim()
+  return message || undefined
+}
+
+/**
  * Failures grouped by exception class and the anomalies now, each row opening in the triage
  * panel. Always present: with neither it says "All clear" (only once the anomalies are known).
  */
@@ -89,40 +103,54 @@ export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps):
                     </tr>
                   </thead>
                   <tbody>
-                    {(groups ?? []).map((group) => (
-                      <tr
-                        key={group.exception_type ?? ''}
-                        className="relative border-b border-rule last:border-b-0 hover:bg-hover has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
-                      >
-                        <td className={TD}>
-                          <button
-                            type="button"
-                            {...openerProps(panel, {
-                              kind: 'exception',
-                              id: exceptionId(group.exception_type),
-                            })}
-                            className="font-mono font-bold text-failure-t after:absolute after:inset-0"
-                          >
-                            {group.exception_type ?? 'No exception class'}
-                          </button>
-                        </td>
-                        <td className={`${TD} max-w-[320px]`}>
-                          <TaskName name={group.task_names[0] ?? ''} />
-                          {group.task_names.length > 1 && (
-                            <span className="text-muted">+{group.task_names.length - 1} more</span>
-                          )}
-                        </td>
-                        <td className={`${TD} text-right font-bold tabular-nums`}>
-                          {formatCount(group.count)}
-                        </td>
-                        <td className={`${TD} whitespace-nowrap text-muted`}>
-                          {formatAgo(group.first_seen)}
-                        </td>
-                        <td className={`${TD} whitespace-nowrap text-muted`}>
-                          {formatAgo(group.last_seen)}
-                        </td>
-                      </tr>
-                    ))}
+                    {(groups ?? []).map((group) => {
+                      const message = failureLine(group)
+                      return (
+                        <tr
+                          key={group.exception_type ?? ''}
+                          className="relative border-b border-rule last:border-b-0 hover:bg-hover has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
+                        >
+                          <td className={TD}>
+                            <button
+                              type="button"
+                              {...openerProps(panel, {
+                                kind: 'exception',
+                                id: exceptionId(group.exception_type),
+                              })}
+                              className="font-mono font-bold text-failure-t after:absolute after:inset-0"
+                            >
+                              {group.exception_type ?? 'No exception class'}
+                            </button>
+                            {message && (
+                              <div
+                                data-testid="failure-message"
+                                title={message}
+                                className="max-w-[300px] truncate text-[11px] text-muted"
+                              >
+                                {message}
+                              </div>
+                            )}
+                          </td>
+                          <td className={`${TD} max-w-[320px]`}>
+                            <TaskName name={group.task_names[0] ?? ''} />
+                            {group.task_names.length > 1 && (
+                              <span className="text-muted">
+                                +{group.task_names.length - 1} more
+                              </span>
+                            )}
+                          </td>
+                          <td className={`${TD} text-right font-bold tabular-nums`}>
+                            {formatCount(group.count)}
+                          </td>
+                          <td className={`${TD} whitespace-nowrap text-muted`}>
+                            {formatAgo(group.first_seen)}
+                          </td>
+                          <td className={`${TD} whitespace-nowrap text-muted`}>
+                            {formatAgo(group.last_seen)}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
