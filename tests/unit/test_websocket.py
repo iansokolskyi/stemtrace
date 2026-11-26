@@ -300,7 +300,9 @@ class TestSecondLifespan:
         async def lifespan(ws: MagicMock, task_id: str) -> None:
             async with ext.lifespan(app):
                 await ext.ws_manager.connect(ws)
-                ext.store.add_event(sample_event.model_copy(update={"task_id": task_id}))
+                ext.store.add_event(
+                    sample_event.model_copy(update={"task_id": task_id})
+                )
                 await _wait_for_send(ws)
                 ext.ws_manager.disconnect(ws)
 
@@ -348,9 +350,7 @@ class _FlakyManager(WebSocketManager):
 
 class TestBroadcastLoopErrors:
     @staticmethod
-    def _manager(
-        failures: int, sleeps: list[float], now: list[float]
-    ) -> _FlakyManager:
+    def _manager(failures: int, sleeps: list[float], now: list[float]) -> _FlakyManager:
         async def fake_sleep(delay: float) -> None:
             sleeps.append(delay)
             await asyncio.sleep(0)

@@ -6,10 +6,11 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from fastapi import WebSocket
 
     from stemtrace.core.events import TaskEvent
@@ -130,7 +131,7 @@ class WebSocketManager:
                 await self.broadcast(event)
             except asyncio.CancelledError:
                 break
-            except Exception as exc:  # noqa: BLE001  the loop must outlive any one failure
+            except Exception as exc:  # the loop must outlive any one failure
                 failures += 1
                 now = self._clock()
                 if last_log is None:
