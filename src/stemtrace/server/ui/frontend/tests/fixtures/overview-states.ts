@@ -2,15 +2,23 @@ import type { Page, Route } from '@playwright/test'
 
 /** Mock-API shapes for the Overview's error and empty states (spec and visual baselines). */
 
+/** The requests the Overview makes, one pattern each (the series and its per-group split differ). */
+export const OVERVIEW_ENDPOINT = /\/api\/overview(\?|$)/
+export const SERIES_ENDPOINT = /\/api\/stats\/timeseries(?!.*group_by)/
+export const GROUP_SERIES_ENDPOINT = /\/api\/stats\/timeseries.*group_by/
+export const FAILURES_ENDPOINT = /\/api\/failures(\?|$)/
+export const STATS_ENDPOINT = /\/api\/stats\/tasks(\?|$)/
+export const WORKERS_ENDPOINT = /\/api\/workers(\?|$)/
+export const ANOMALIES_ENDPOINT = /\/api\/anomalies(\?|$)/
+
+/** The five whose failure the first-load boxes cover. */
 export const SUMMARY_ENDPOINTS = [
-  /\/api\/overview(\?|$)/,
-  /\/api\/stats\/timeseries(\?|$)/,
-  /\/api\/failures(\?|$)/,
-  /\/api\/stats\/tasks(\?|$)/,
-  /\/api\/workers(\?|$)/,
+  OVERVIEW_ENDPOINT,
+  SERIES_ENDPOINT,
+  FAILURES_ENDPOINT,
+  STATS_ENDPOINT,
+  WORKERS_ENDPOINT,
 ]
-export const FAILURES_ENDPOINT = SUMMARY_ENDPOINTS[2]
-export const SERIES_ENDPOINT = SUMMARY_ENDPOINTS[1]
 
 const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })

@@ -1,6 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useEffect, useMemo } from 'react'
-import { UnauthorizedError } from '@/api/client'
 import {
   CHART_BUCKET,
   overviewWithin,
@@ -16,7 +15,7 @@ import { useOverviewAnomalies } from '@/components/overview/anomalyData'
 import { formatBrush, parseBrush } from '@/components/overview/brushSpan'
 import { HealthTable } from '@/components/overview/HealthTable'
 import { KpiTiles } from '@/components/overview/KpiTiles'
-import { LoadError, type LoadFailure } from '@/components/overview/LoadError'
+import { LoadError, showsError } from '@/components/overview/LoadError'
 import { bucketsOf } from '@/components/overview/model'
 import { type Brush, RunsChart } from '@/components/overview/RunsChart'
 import { StaleNotice } from '@/components/overview/StaleNotice'
@@ -28,6 +27,7 @@ import { clock } from '@/components/triage/runsScope'
 import { TriagePanel } from '@/components/triage/TriagePanel'
 import { hostsOf } from '@/components/workers/workers'
 import { carryRange } from '@/hooks/useCarriedRange'
+import { staleOf, useViewState } from '@/hooks/useViewState'
 import { DEFAULT_RANGE, legacyExecutionsSearch, overviewSearch, WINDOW_WORDS } from './-search'
 
 export const Route = createFileRoute('/')({
@@ -59,25 +59,26 @@ function OverviewPage() {
   const stats = useWindowTaskStats(within)
   const groupSeries = useGroupSeries(within, !isAll)
   const workers = useWorkersStrip()
-  const { data: anomalies, failed: anomaliesFailed, stale: anomaliesStale } = useOverviewAnomalies()
+  const {
+    data: anomalies,
+    failed: anomaliesFailed,
+    stale: anomaliesStale,
+    views: anomalyViews,
+  } = useOverviewAnomalies()
 
-  // Data held from an earlier answer wins over a failed refresh (it shows, with the stale line);
-  // an error shows only for a part that never loaded
-  const firstLoadFailure = (q: {
-    isError: boolean
-    data: unknown
-    error: unknown
-    refetch: () => unknown
-  }): LoadFailure | undefined =>
-    q.isError && q.data === undefined ? { error: q.error, retry: q.refetch } : undefined
-  const seriesStatus = series.data ? 'ready' : series.isError ? 'failed' : 'loading'
-  // An expired session (401) is the login redirect's to handle, not a stale page
-  const refreshFailed = [overview, series, failures, stats, workers].filter(
-    (q) => q.isError && q.data !== undefined && !(q.error instanceof UnauthorizedError),
-  )
-  const retryRefresh = () => Promise.allSettled(refreshFailed.map((q) => q.refetch()))
+  // One rule decides each part (useViewState); the stale line covers every query rendered here
+  const views = {
+    overview: useViewState(overview),
+    series: useViewState(series),
+    failures: useViewState(failures),
+    stats: useViewState(stats),
+    workers: useViewState(workers),
+    // Only while it is asked for (not on All): a disabled query has nothing to fail
+    groupSeries: useViewState(groupSeries),
+  }
+  const stale = staleOf([...Object.values(views), ...anomalyViews])
+  const seriesStatus = series.data ? 'ready' : views.series.phase === 'error' ? 'failed' : 'loading'
 
-  const overviewFailure = firstLoadFailure(overview)
   const buckets = useMemo(() => (series.data ? bucketsOf(series.data) : []), [series.data])
   const hosts = useMemo(
     () => (workers.data ? hostsOf(workers.data.workers) : undefined),
@@ -91,7 +92,7 @@ function OverviewPage() {
 
   const data: PanelData = {
     buckets,
-    seriesStatus: seriesStatus,
+    seriesStatus,
     failures: failures.data,
     stats: stats.data,
     hosts,
@@ -119,15 +120,12 @@ function OverviewPage() {
           </h1>
           <p className="mt-1 min-h-5 text-sm text-muted">{subtitle}</p>
         </div>
-        {refreshFailed.length > 0 && (
-          <StaleNotice
-            since={Math.min(...refreshFailed.map((q) => q.dataUpdatedAt))}
-            onRetry={retryRefresh}
-          />
+        {stale && (
+          <StaleNotice since={stale.since} retrying={stale.retrying} onRetry={stale.retry} />
         )}
-        {overviewFailure && (
-          <div className="mb-4 rounded-lg bg-surface">
-            <LoadError what="the overview" failure={overviewFailure} />
+        {views.overview.phase === 'error' && showsError(views.overview.error) && (
+          <div data-testid="overview-error" className="mb-4 rounded-lg bg-surface">
+            <LoadError what="the overview" view={views.overview} />
           </div>
         )}
         <KpiTiles
@@ -139,8 +137,7 @@ function OverviewPage() {
           anomaliesFailed={anomaliesFailed}
         />
         <RunsChart
-          status={series.data ? 'ready' : series.isError ? 'error' : 'loading'}
-          failure={firstLoadFailure(series)}
+          state={views.series}
           buckets={buckets}
           bucketSeconds={series.data?.bucket_seconds}
           brush={brush}
@@ -148,14 +145,14 @@ function OverviewPage() {
         />
         <WhatsWrong
           groups={failures.data?.groups}
-          failed={firstLoadFailure(failures)}
-          stale={(failures.isError && failures.data !== undefined) || anomaliesStale}
+          view={views.failures}
+          stale={views.failures.stale || anomaliesStale}
           windowWords={windowWords}
           anomalies={anomalies}
         />
-        <WorkerStrip hosts={hosts} failed={firstLoadFailure(workers)} />
+        <WorkerStrip hosts={hosts} view={views.workers} />
         <HealthTable
-          failed={firstLoadFailure(stats)}
+          view={views.stats}
           stats={stats.data}
           series={groupSeries.data}
           within={within}

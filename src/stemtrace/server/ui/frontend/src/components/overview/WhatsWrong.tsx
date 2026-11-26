@@ -4,16 +4,17 @@ import { Icon } from '@/components/Icon'
 import { TaskName } from '@/components/TaskName'
 import { exceptionId } from '@/components/triage/exceptionId'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
+import type { ViewState } from '@/hooks/useViewState'
 import { failureLine } from '@/utils/failureMessage'
 import { formatAgo, formatCount } from '@/utils/format'
 import { AnomalyList } from './AnomalyList'
 import type { OverviewAnomalies } from './anomalyData'
-import { LoadError, type LoadFailure } from './LoadError'
+import { LoadError } from './LoadError'
 
 interface WhatsWrongProps {
   groups: FailureGroup[] | undefined
-  /** Set when the failures request failed; the section says so instead of showing headers. */
-  failed: LoadFailure | undefined
+  /** The failures request's state; an error or loading shows instead of the table. */
+  view: ViewState
   /** A refresh failed with earlier data held: neither the counts nor "All clear" are current. */
   stale: boolean
   /** "the last 6h"; none for All. */
@@ -32,7 +33,7 @@ const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
  */
 export function WhatsWrong({
   groups,
-  failed,
+  view,
   stale,
   windowWords,
   anomalies,
@@ -74,8 +75,8 @@ export function WhatsWrong({
         >
           <div className="min-w-0">
             <h3 className="px-4 pt-2 pb-1.5 text-[13px] font-bold">Failures by exception</h3>
-            {failed ? (
-              <LoadError what="the failures" failure={failed} />
+            {view.phase === 'error' ? (
+              <LoadError what="the failures" view={view} />
             ) : groups === undefined ? (
               <p className="m-0 px-4 py-3 text-xs text-muted">Loading failures…</p>
             ) : failuresNone ? (

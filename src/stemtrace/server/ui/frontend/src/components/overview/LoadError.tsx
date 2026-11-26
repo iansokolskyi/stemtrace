@@ -1,30 +1,31 @@
-import { type ReactElement, type RefObject, useRef, useState } from 'react'
-import { HttpError, UnauthorizedError } from '@/api/client'
-
-/** What a part needs to show its first-load failure: the error and the query's `refetch`. */
-export interface LoadFailure {
-  error: unknown
-  retry: () => unknown
-}
+import { type ReactElement, useRef, useState } from 'react'
+import { getLoginPath, HttpError, NetworkError, UnauthorizedError } from '@/api/client'
+import type { ViewState } from '@/hooks/useViewState'
 
 /**
- * Runs `retry` and reports whether it is in flight. A button the retry removes hands focus to
- * the page heading instead of dropping it on the body; one that stays gets it back.
+ * A Retry that stays put while it works: the button reads "Retrying…" and ignores clicks (it is
+ * `aria-disabled`, not `disabled`, so keyboard focus stays on it). When the retry ends with the
+ * button still there (it failed again) focus returns to it; when the button went away with the
+ * error, focus moves to the page heading instead of dropping onto the body.
  */
-export function useRetry(retry: () => unknown): {
-  pending: boolean
-  run: () => Promise<void>
-  buttonRef: RefObject<HTMLButtonElement | null>
-} {
-  const [pending, setPending] = useState(false)
+export function RetryButton({
+  retry,
+  busy = false,
+}: {
+  retry: () => unknown
+  /** A request is already in flight (a poll), so the button shows it too. */
+  busy?: boolean
+}): ReactElement {
+  const [clicked, setClicked] = useState(false)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const working = clicked || busy
   const run = async (): Promise<void> => {
-    setPending(true)
+    if (working) return
+    setClicked(true)
     try {
       await retry()
     } finally {
-      setPending(false)
-      // After the render that follows: the button is back, or gone with the error it belonged to
+      setClicked(false)
       requestAnimationFrame(() => {
         if (buttonRef.current?.isConnected) buttonRef.current.focus()
         else if (document.activeElement === document.body) {
@@ -33,49 +34,58 @@ export function useRetry(retry: () => unknown): {
       })
     }
   }
-  return { pending, run, buttonRef }
-}
-
-export function RetryButton({ retry }: { retry: () => unknown }): ReactElement {
-  const { pending, run, buttonRef } = useRetry(retry)
   return (
     <button
       ref={buttonRef}
       type="button"
-      disabled={pending}
+      aria-disabled={working || undefined}
       onClick={run}
-      className="h-6 rounded-[3px] bg-raised px-2.5 text-xs font-semibold hover:bg-press disabled:cursor-progress disabled:text-muted"
+      className="h-6 rounded-[3px] bg-raised px-2.5 text-xs font-semibold hover:bg-press aria-disabled:cursor-progress aria-disabled:text-muted"
     >
-      {pending ? 'Retrying…' : 'Retry'}
+      {working ? 'Retrying…' : 'Retry'}
     </button>
   )
 }
 
-/** Why a request failed, in words: the status the server answered, or that it did not answer. */
-function reasonOf(error: unknown): string {
-  return error instanceof HttpError
-    ? `The server answered ${error.status}.`
-    : 'No response from the server.'
+/** One reason sentence for a failure, or none when the cause is unknown. */
+function reasonOf(error: unknown): string | null {
+  if (error instanceof HttpError) return `The server answered ${error.status}.`
+  if (error instanceof NetworkError) return 'No response from the server.'
+  return null
+}
+
+/** Whether `error` gets a box at all: an expired session with form login is the redirect's. */
+export function showsError(error: unknown): boolean {
+  return !(error instanceof UnauthorizedError && getLoginPath() !== null)
 }
 
 /**
- * One Overview part's failed first load: what failed, why, and Retry. An expired session (401)
- * gets no box, since the login redirect handles it.
+ * One Overview part's failed first load: what failed, why, and Retry. The box stays mounted
+ * while it retries, so it is announced once. A 401 without form login asks for an API key; with
+ * it, nothing renders.
  */
 export function LoadError({
   what,
-  failure,
+  view,
 }: {
   /** What failed to load, as a noun phrase: "the runs". */
   what: string
-  failure: LoadFailure
+  view: ViewState
 }): ReactElement | null {
-  if (failure.error instanceof UnauthorizedError) return null
+  if (!showsError(view.error)) return null
+  if (view.error instanceof UnauthorizedError) {
+    return (
+      <p role="alert" className="m-0 px-4 py-3 text-xs text-ink">
+        The server needs a valid API key.
+      </p>
+    )
+  }
+  const reason = reasonOf(view.error)
   return (
     <p role="alert" className="m-0 flex flex-wrap items-center gap-x-2 px-4 py-3 text-xs text-ink">
       <span className="font-bold">Couldn&apos;t load {what}.</span>
-      <span className="text-muted">{reasonOf(failure.error)}</span>
-      <RetryButton retry={failure.retry} />
+      {reason && <span className="text-muted">{reason}</span>}
+      <RetryButton retry={view.retry} busy={view.retrying} />
     </p>
   )
 }

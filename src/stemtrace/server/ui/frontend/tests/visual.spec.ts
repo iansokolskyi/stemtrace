@@ -743,8 +743,12 @@ for (const theme of ['light', 'dark'] as const) {
         } else {
           await expect(page.getByTestId('chart-bar')).toHaveCount(12)
           await failSummaryEndpoints(page)
-          await page.clock.runFor(16_000)
-          await page.clock.runFor(10_000)
+          // 1 s steps: each retry timer must exist before the clock passes it
+          const stale = page.getByRole('status').filter({ hasText: "Couldn't refresh." })
+          for (let step = 0; step < 60 && (await stale.count()) === 0; step++) {
+            await page.clock.runFor(1_000)
+            await page.waitForTimeout(40)
+          }
           await expect(
             page.getByRole('status').filter({ hasText: "Couldn't refresh." }),
           ).toBeVisible({ timeout: 20_000 })

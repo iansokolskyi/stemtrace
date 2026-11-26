@@ -15,8 +15,9 @@ import {
   type RunsScope,
   spanLabel,
 } from '@/components/triage/runsScope'
+import type { ViewState } from '@/hooks/useViewState'
 import { formatCount, formatPercent } from '@/utils/format'
-import { LoadError, type LoadFailure } from './LoadError'
+import { LoadError, showsError } from './LoadError'
 import { type Bucket, sameInstant } from './model'
 
 /** A brushed span of the chart, as ISO times. */
@@ -62,9 +63,8 @@ const brushScope = (brush: Brush): RunsScope => ({
 })
 
 interface RunsChartProps {
-  /** `loading` until the series answers; `error` when it failed (not the same as no runs). */
-  status: 'loading' | 'error' | 'ready'
-  failure: LoadFailure | undefined
+  /** The series' state: loading and failed are not the same as no runs. */
+  state: ViewState
   buckets: Bucket[]
   /** The bucket size in seconds, for the title ("Runs per 5 min"). */
   bucketSeconds: number | undefined
@@ -86,8 +86,7 @@ function bucketWord(seconds: number | undefined): string {
  * same from the keyboard, and Table lists the same numbers. Retry is hatched at 45 degrees.
  */
 export function RunsChart({
-  status,
-  failure,
+  state,
   buckets,
   bucketSeconds,
   brush,
@@ -201,7 +200,7 @@ export function RunsChart({
           <Legend swatch="retry-hatch" label="Retry" />
         </div>
         <span className="grow" />
-        {status !== 'ready' ? null : brush ? (
+        {state.phase !== 'data' ? null : brush ? (
           <>
             <span className="inline-flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised pr-1 pl-2.5 text-xs">
               <span className="text-muted">Filtered to</span>
@@ -233,7 +232,7 @@ export function RunsChart({
         )}
         <fieldset
           aria-label="Chart view"
-          hidden={status !== 'ready'}
+          hidden={state.phase !== 'data'}
           className="m-0 inline-flex min-w-0 flex-none gap-0.5 rounded-[3px] border-0 bg-raised p-0.5"
         >
           {(['chart', 'table'] as const).map((mode) => (
@@ -251,9 +250,13 @@ export function RunsChart({
       </div>
 
       <div ref={boxRef} className="relative px-3 pt-1.5 pb-3" data-testid="runs-chart">
-        {status === 'error' && failure ? (
-          <LoadError what="the runs" failure={failure} />
-        ) : status !== 'ready' ? (
+        {state.phase === 'error' ? (
+          showsError(state.error) && (
+            <div className="-mx-3">
+              <LoadError what="the runs" view={state} />
+            </div>
+          )
+        ) : state.phase !== 'data' ? (
           <p className="m-0 px-4 py-10 text-center text-xs text-muted">Loading runs…</p>
         ) : view === 'table' ? (
           <ChartTable buckets={buckets} />

@@ -5,8 +5,9 @@ import { openerProps, usePanel } from '@/components/triage/PanelContext'
 import { poolUsage } from '@/components/workers/slots'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { type Host, registeredTasks } from '@/components/workers/workers'
+import type { ViewState } from '@/hooks/useViewState'
 import { formatAgo, shortHost } from '@/utils/format'
-import { LoadError, type LoadFailure } from './LoadError'
+import { LoadError } from './LoadError'
 
 /**
  * A cell per worker host: name, status (offline is the loud one) and what the server knows of
@@ -15,11 +16,11 @@ import { LoadError, type LoadFailure } from './LoadError'
  */
 export function WorkerStrip({
   hosts,
-  failed,
+  view,
 }: {
   hosts: Host[] | undefined
-  /** Set when the workers request failed; the strip says so instead of drawing nothing. */
-  failed: LoadFailure | undefined
+  /** The workers request's state; an error or loading shows instead of the strip. */
+  view: ViewState
 }): ReactElement {
   const panel = usePanel()
   return (
@@ -36,8 +37,8 @@ export function WorkerStrip({
           All workers
         </Link>
       </div>
-      {failed ? (
-        <LoadError what="the workers" failure={failed} />
+      {view.phase === 'error' ? (
+        <LoadError what="the workers" view={view} />
       ) : hosts === undefined ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading workers…</p>
       ) : hosts.length === 0 ? (

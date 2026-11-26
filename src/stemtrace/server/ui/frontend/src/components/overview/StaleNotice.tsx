@@ -5,10 +5,12 @@ import { RetryButton } from './LoadError'
 /** A refresh failed but the page still shows what loaded before: say how old it is. */
 export function StaleNotice({
   since,
+  retrying,
   onRetry,
 }: {
-  /** The oldest `dataUpdatedAt` (ms) among the parts that failed to refresh. */
+  /** When the oldest part that failed to refresh last had data (ms). */
   since: number
+  retrying: boolean
   onRetry: () => unknown
 }): ReactElement {
   return (
@@ -16,7 +18,7 @@ export function StaleNotice({
       <span>
         Couldn&apos;t refresh. Showing data from {clock(new Date(since).toISOString())} UTC.
       </span>
-      <RetryButton retry={onRetry} />
+      <RetryButton retry={onRetry} busy={retrying} />
     </p>
   )
 }
