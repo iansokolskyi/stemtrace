@@ -237,6 +237,68 @@ range.
 **Timeline** draws the latest 50 tasks that match the filters, one row each, on a shared time axis.
 The view doesn't page.
 
+- The axis shows UTC times in 24-hour format. When it spans a day or more, the labels and the
+  tooltip times add the date.
+- A row's bars use the same look as the [flow page](#flow-page) timeline: a grey bar for the wait
+  before the first start, a hatched bar for earlier attempts, and a block in the state's color for
+  the last run.
+- A run that is still going runs to the current time, as on the flow page. Its last column and its
+  tooltip show how long it has run (or waited), for example "Running for 20m". When it has run far
+  longer than the other rows, its bar stops at a cut mark instead of stretching the axis.
+- Point to a bar, or move keyboard focus to a row's last bar, to see its state, how long it lasted
+  and its UTC start.
+- The legend lists the states that appear in the rows, plus **Waiting** and **Earlier attempt**
+  when a row draws them.
+- The task name opens the task. The last column shows the task's duration.
+
+### Limits
+
+- The Overview counts the tasks the server holds. Tasks that the server evicted aren't in any
+  number. See [Event retention](retention.md).
+- A failed request leaves its part of the page empty. The Anomalies tile says **Unavailable** when
+  `GET /api/anomalies` fails.
+
+## Executions
+
+Every run the server holds, newest update first, as a table that loads 200 rows at a time. A
+row opens the [task page](#task-page). The heading counts the tasks that match the filters and
+the range, finished or not, and calls them runs, for example "1,204 runs in the last 6h".
+
+**Data:** `GET /api/tasks` with `compact=1`, `limit=200`, the filters and `within` (the **List**
+view), and `GET /api/tasks` with `limit=50` (the **Timeline** view). The groups for suggestions come from
+`GET /api/groups`.
+
+### Filters
+
+Filter chips narrow the list. Each chip opens a small editor:
+
+- **State** (one or more of the nine Celery states), **Name** (part of a task name) and **Task**
+  (the exact name).
+- **Exception**, **Worker**, **Queue**, **Group** and **Tag**. The editors suggest values from the
+  rows that are already loaded and from the task groups.
+- **Time** takes **Today**, **Yesterday**, **Last 7 days**, **Last 30 days**, or **From** and
+  **To** dates. Dates replace the time range.
+
+Filters are in the URL, so you can share a view. **Clear all** removes the filters and keeps the
+range.
+
+### Columns and rows
+
+- **State**, **Task** and **Started** always show. **Group**, **Worker**, **Queue**,
+  **Queue wait**, **Runtime** and **Anomaly** show only when a row on the first page has a value.
+  The table decides the columns once for a set of filters, from the first page. Scrolling and
+  refreshing don't change them.
+- A row with an anomaly is tinted and has an anomaly flag. See [Anomalies](#anomalies).
+- **Compact** and **Comfortable** set the row height.
+- While your pointer is over the table, or you scrolled away from its top, rows keep their order.
+  Tasks that would appear above them wait behind an **N new** button. A row that no longer matches
+  your filters stays, dimmed, with its last known data, until you release the table.
+
+### Timeline view
+
+**Timeline** draws the latest 50 tasks that match the filters, one row each, on a shared time axis.
+The view doesn't page.
+
 - The axis shows UTC times in 24-hour format. When it spans a day or more, the labels add the date.
 - A row's bars use the same look as the [flow page](#flow-page) timeline: a grey bar for the wait
   before the first start, a hatched bar for earlier attempts, and a block in the state's color for

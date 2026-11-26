@@ -8,24 +8,37 @@ export interface BarPart {
   kind: PartKind
   /** Milliseconds since the epoch. */
   from: number
+  /** The latest event; for an open part the bar runs on to the axis end (see `axisEnd`). */
   to: number
+  /** Still going: a started run with no end, or a wait with no start yet. */
+  open?: boolean
 }
 
 /**
  * The parts of one run's bar, in time order: queue wait up to the first start, the earlier
- * attempts up to the last start, then the last run to the final event. A run that never started
- * is one run part, so it still has a bar. Events missing: first_seen to last_updated as a run.
+ * attempts up to the last start, then the last run to the final event. A STARTED run's last
+ * part is open. A PENDING or RECEIVED run is one open wait. A run that ended without a start is
+ * one run part. Events missing: first_seen to last_updated as a run.
  */
 export function barParts(task: TaskNode): BarPart[] {
+  const running = task.state === 'STARTED'
+  const waiting = task.state === 'PENDING' || task.state === 'RECEIVED'
   if (task.events.length === 0) {
     if (!task.first_seen || !task.last_updated) return []
-    return [{ kind: 'run', from: Date.parse(task.first_seen), to: Date.parse(task.last_updated) }]
+    const from = Date.parse(task.first_seen)
+    const to = Date.parse(task.last_updated)
+    if (waiting) return [{ kind: 'queued', from, to, open: true }]
+    return [{ kind: 'run', from, to, open: running }]
   }
   const sorted = sortEventsChronologically([...task.events])
   const times = effectiveTimes(sorted)
   const last = times.length - 1
   const firstStart = sorted.findIndex((event) => event.state === 'STARTED')
-  if (firstStart === -1) return [{ kind: 'run', from: times[0], to: times[last] }]
+  if (firstStart === -1) {
+    return waiting
+      ? [{ kind: 'queued', from: times[0], to: times[last], open: true }]
+      : [{ kind: 'run', from: times[0], to: times[last] }]
+  }
   const lastStart = sorted.map((event) => event.state).lastIndexOf('STARTED')
 
   const parts: BarPart[] = []
@@ -35,7 +48,7 @@ export function barParts(task: TaskNode): BarPart[] {
   if (lastStart > firstStart) {
     parts.push({ kind: 'tries', from: times[firstStart], to: times[lastStart] })
   }
-  parts.push({ kind: 'run', from: times[lastStart], to: times[last] })
+  parts.push({ kind: 'run', from: times[lastStart], to: times[last], open: running })
   return parts
 }
 

@@ -1,6 +1,6 @@
 import type { TaskEvent } from '@/api/client'
 
-export const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED', 'IGNORED'])
+const TERMINAL_STATES = new Set(['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED', 'IGNORED'])
 
 // Fixed state order for exact timestamp ties. Matches the server's
 // _STATE_ORDER (stemtrace/core/attribution.py), so the UI agrees with the API order.
@@ -16,7 +16,7 @@ const STATE_PRIORITY: Record<string, number> = {
   IGNORED: 8,
 }
 
-export interface TimelineSegment {
+interface TimelineSegment {
   state: string
   duration: number
   timestamp: Date

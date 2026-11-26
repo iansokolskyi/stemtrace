@@ -1,9 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
-import { type ReactElement, type ReactNode, useMemo } from 'react'
+import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { TaskNode, TimedFilters } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { toneOf } from '@/components/flow/flowFacts'
+import { axisEnd } from '@/components/flow/timeline'
 import { Icon } from '@/components/Icon'
 import { stateLook } from '@/components/StatusChip'
 import { Tooltip } from '@/components/Tooltip'
@@ -15,7 +16,7 @@ interface TaskTimelineProps {
   filters: TimedFilters
 }
 
-/** Fixed columns, so the grid lines and the bars line up: label, gap, plot, gap, duration. */
+/** One column template for the axis, the grid lines and every row, so they line up. */
 const COLUMNS = 'grid grid-cols-[11rem_minmax(0,1fr)_4rem] gap-x-3'
 const TICKS = [0, 0.25, 0.5, 0.75, 1]
 const MIN_BAR_PX = 3
@@ -26,36 +27,58 @@ interface TimelineRowData {
   parts: BarPart[]
 }
 
+/** What the rows are drawn against: the axis, and the clock open runs are measured to. */
+interface Scale {
+  start: number
+  end: number
+  /** An open run has run past the axis end (the cap in `axisEnd`): its bar stops at a cut mark. */
+  cut: boolean
+  now: number
+}
+
 /**
  * The Executions page's Timeline view: a row per run on one time axis (UTC, 24-hour), with the
  * same bar language as the flow page's timeline: a thin track for the wait, a hatch for
- * earlier attempts, a block in the state's colour for the last run.
+ * earlier attempts, a block in the state's colour for the last run. Open runs follow the flow
+ * page's rule (`axisEnd`): they run to now.
  */
 export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
   const { data, isLoading, error } = useTasks(filters)
 
-  const timed = useMemo(
-    () => (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated),
-    [data],
-  )
   const rows = useMemo<TimelineRowData[]>(() => {
+    const timed = (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated)
     const names = shortestUniqueSuffixes(timed.map((t) => t.name))
-    return timed
-      .map((task) => ({ task, label: names.get(task.name) ?? task.name, parts: barParts(task) }))
-      .filter((row) => row.parts.length > 0)
-  }, [timed])
+    return timed.map((task) => ({
+      task,
+      label: names.get(task.name) ?? task.name,
+      parts: barParts(task),
+    }))
+  }, [data])
+
+  // Open runs run to now: the clock ticks once a second while one is open and stops otherwise
+  const anyOpen = rows.some((row) => row.parts.some((part) => part.open))
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!anyOpen) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [anyOpen])
 
   if (isLoading) return <TimelineSkeleton />
   if (error) return <Notice tone="error">Failed to load timeline</Notice>
   if (!data?.tasks.length) return <Notice>No executions to display</Notice>
   if (rows.length === 0) return <Notice>No timing data available</Notice>
 
-  const times = rows.flatMap((row) => row.parts.flatMap((part) => [part.from, part.to]))
-  const start = Math.min(...times)
-  const end = Math.max(...times)
-  const span = end - start
-  const pct = (time: number): number => (span > 0 ? ((time - start) / span) * 100 : 0)
-  const states = legendStates(rows.map((row) => row.task.state))
+  const parts = rows.flatMap((row) => row.parts)
+  const start = Math.min(...parts.map((part) => part.from))
+  const settledEnd = Math.max(...parts.map((part) => (part.open ? part.from : part.to)))
+  const { t1, cut } = axisEnd(start, settledEnd, anyOpen, now)
+  const scale: Scale = { start, end: t1, cut, now }
+  const span = t1 - start
+  const states = legendStates(
+    rows.filter((row) => row.parts.some((part) => part.kind === 'run')).map((r) => r.task.state),
+  )
 
   return (
     <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
@@ -80,56 +103,69 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
         </div>
 
         <div className="relative">
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 right-[5.75rem] left-[12.75rem]"
-          >
-            {TICKS.map((tick) => (
-              <div
-                key={tick}
-                className="absolute inset-y-0 w-px bg-rule"
-                style={{ left: `${tick * 100}%` }}
-              />
-            ))}
+          <div aria-hidden="true" className={clsx(COLUMNS, 'pointer-events-none absolute inset-0')}>
+            <span />
+            <div className="relative">
+              {TICKS.map((tick) => (
+                <div
+                  key={tick}
+                  data-testid="timeline-gridline"
+                  className="absolute inset-y-0 w-px bg-rule"
+                  style={{ left: `${tick * 100}%` }}
+                />
+              ))}
+            </div>
           </div>
           {rows.map((row) => (
-            <TimelineRow key={row.task.task_id} row={row} pct={pct} />
+            <TimelineRow key={row.task.task_id} row={row} scale={scale} />
           ))}
         </div>
 
         <ul className="m-0 mt-3 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 pt-3 text-xs text-muted shadow-[0_-1px_0_var(--rule)]">
           {states.map((state) => (
-            <li
+            <LegendItem
               key={state}
-              data-testid="timeline-legend-item"
-              className="flex items-center gap-1.5"
-            >
-              <span
-                aria-hidden="true"
-                className={clsx(
-                  'size-3 rounded-[3px]',
-                  state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`,
-                )}
-              />
-              {stateLook(state).word}
-            </li>
+              word={stateLook(state).word}
+              swatch={state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`}
+            />
           ))}
+          {parts.some((part) => part.kind === 'queued') && (
+            <LegendItem word="Waiting" swatch="bg-track" />
+          )}
+          {parts.some((part) => part.kind === 'tries') && (
+            <LegendItem word="Earlier attempt" swatch="retry-hatch" />
+          )}
         </ul>
       </div>
     </section>
   )
 }
 
-interface TimelineRowProps {
-  row: TimelineRowData
-  pct: (time: number) => number
+function LegendItem({ word, swatch }: { word: string; swatch: string }): ReactElement {
+  return (
+    <li data-testid="timeline-legend-item" className="flex items-center gap-1.5">
+      <span aria-hidden="true" className={clsx('size-3 rounded-[3px]', swatch)} />
+      {word}
+    </li>
+  )
 }
 
-function TimelineRow({ row, pct }: TimelineRowProps): ReactElement {
+interface TimelineRowProps {
+  row: TimelineRowData
+  scale: Scale
+}
+
+function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
   const { task, label, parts } = row
   const look = stateLook(task.state)
   const tone = toneOf(task.state)
+  const span = scale.end - scale.start
+  const pct = (time: number): number => ((time - scale.start) / span) * 100
   const placement = pct(parts[0].from) > 60 ? 'bottom-end' : 'bottom'
+  const openPart = parts.find((part) => part.open)
+  // Held at the latest event, so a clock behind the server never reads as a negative time
+  const elapsed = openPart ? Math.max(0, Math.max(scale.now, openPart.to) - openPart.from) : null
+  const lastIndex = parts.length - 1
 
   return (
     <div
@@ -142,12 +178,12 @@ function TimelineRow({ row, pct }: TimelineRowProps): ReactElement {
         params={{ taskId: task.task_id }}
         className="flex min-w-0 items-center gap-2 text-xs text-ink hover:underline"
         title={task.name}
-        aria-label={task.name}
+        aria-label={`${task.name}, ${look.word}`}
       >
         <span
           aria-hidden="true"
           className={clsx(
-            's-' + tone,
+            `s-${tone}`,
             'flex size-4 flex-none items-center justify-center rounded-[3px] bg-[var(--c)] text-[var(--on)]',
           )}
         >
@@ -158,34 +194,38 @@ function TimelineRow({ row, pct }: TimelineRowProps): ReactElement {
 
       <div className="relative h-6">
         <div className="absolute inset-x-0 top-[11px] h-0.5 bg-rule" aria-hidden="true" />
-        {parts.map((part) => {
-          const left = pct(part.from)
-          const width = Math.max(pct(part.to) - left, 0)
+        {parts.map((part, index) => {
+          const width = (Math.max((part.open ? scale.end : part.to) - part.from, 0) / span) * 100
           const words =
             part.kind === 'queued'
-              ? 'Queued'
+              ? 'Waiting'
               : part.kind === 'tries'
-                ? 'Earlier attempts'
+                ? 'Earlier attempt'
                 : look.word
+          const time = `${utcLabel(part.from, span)} UTC`
+          const content = part.open
+            ? `${words} for ${formatSpan(elapsed)} · ${time}`
+            : `${words} · ${formatSpan(part.to - part.from)} · ${time}`
           return (
             <div
               key={part.kind}
               data-part={part.kind}
               className="absolute"
               style={{
-                left: `${left}%`,
+                left: `${pct(part.from)}%`,
                 width: `max(${width}%, ${MIN_BAR_PX}px)`,
                 top: part.kind === 'queued' ? 9 : 5,
                 height: part.kind === 'queued' ? 6 : 14,
               }}
             >
-              <Tooltip
-                className="h-full"
-                placement={placement}
-                content={`${words} · ${formatSpan(part.to - part.from)} · ${utcLabel(part.from, 0)} UTC`}
-              >
+              <Tooltip className="h-full" placement={placement} content={content}>
+                {/* One focus stop per row (its last part), so the tooltip shows from the keyboard
+                    without a tab stop for every bar */}
                 <div
                   data-fill=""
+                  role="img"
+                  aria-label={content}
+                  tabIndex={index === lastIndex ? 0 : undefined}
                   className={clsx(
                     'h-full rounded-[3px]',
                     part.kind === 'queued' && 'bg-track',
@@ -195,13 +235,24 @@ function TimelineRow({ row, pct }: TimelineRowProps): ReactElement {
                   )}
                 />
               </Tooltip>
+              {part.open && scale.cut && (
+                <span
+                  data-cut=""
+                  aria-hidden="true"
+                  className="absolute -top-0.5 -right-px h-[18px] w-0.5 rotate-[20deg] bg-ink"
+                />
+              )}
             </div>
           )
         })}
       </div>
 
       <div className="text-right text-xs text-muted tabular-nums">
-        {task.duration_ms !== null ? formatSpan(task.duration_ms) : '–'}
+        {elapsed !== null
+          ? formatSpan(elapsed)
+          : task.duration_ms !== null
+            ? formatSpan(task.duration_ms)
+            : '–'}
       </div>
     </div>
   )

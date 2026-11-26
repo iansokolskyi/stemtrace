@@ -127,11 +127,23 @@ test.describe('Executions timeline: legend', () => {
       'Success',
       'Failure',
       'Retry',
+      'Waiting',
+      'Earlier attempt',
     ])
   })
 
   test('has no entry for a state no row is in', async ({ page }) => {
     await openTimeline(page, threeRuns().slice(0, 1))
+
+    await expect(page.getByTestId('timeline-legend-item')).toHaveText(['Success', 'Waiting'])
+  })
+
+  test('has no Waiting or Earlier attempt entry when no row draws one', async ({ page }) => {
+    const bare = run('ffff0000-0000-4000-8000-000000000006', 'shop.fast', 'SUCCESS', [
+      { state: 'STARTED', s: 0 },
+      { state: 'SUCCESS', s: 2 },
+    ])
+    await openTimeline(page, [bare])
 
     await expect(page.getByTestId('timeline-legend-item')).toHaveText(['Success'])
   })
@@ -189,16 +201,141 @@ test.describe('Executions timeline: UTC 24-hour axis', () => {
   })
 })
 
+test.describe('Executions timeline: details', () => {
+  test('the tooltip time follows the axis date rule', async ({ page }) => {
+    const old = run('eeee0000-0000-4000-8000-000000000005', 'shop.old', 'SUCCESS', [
+      { state: 'STARTED', s: -90_000 },
+      { state: 'SUCCESS', s: -89_990 },
+    ])
+    await openTimeline(page, [...threeRuns(), old])
+
+    const bar = rowOf(page, 'shop.old').locator('[data-part="run"] [data-fill]')
+    await bar.hover()
+    await expect(rowOf(page, 'shop.old').getByText('Success · 10s · 10-16 22:58 UTC')).toBeVisible()
+  })
+
+  test('each row link is named with the task and its state', async ({ page }) => {
+    await openTimeline(page, threeRuns())
+
+    await expect(page.getByRole('link', { name: 'shop.mail.send_receipt, Failure' })).toHaveCount(1)
+    await expect(page.getByRole('link', { name: 'shop.sync.pull, Retry' })).toHaveCount(1)
+  })
+
+  test('the tooltip shows on keyboard focus too', async ({ page }) => {
+    await openTimeline(page, threeRuns())
+
+    const row = rowOf(page, 'shop.mail.send_receipt')
+    await row.locator('[data-part="run"] [data-fill]').focus()
+    await expect(row.getByText('Failure · 1.0s · 23:58:03 UTC')).toBeVisible()
+  })
+
+  test('grid lines sit on the axis ends and ticks', async ({ page }) => {
+    await openTimeline(page, threeRuns())
+
+    const axis = await page.getByTestId('timeline-axis').boundingBox()
+    const lines = await page
+      .getByTestId('timeline-gridline')
+      .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left))
+    expect(axis).not.toBeNull()
+    const box = axis as { x: number; width: number }
+    expect(lines).toHaveLength(5)
+    lines.forEach((x, i) => {
+      expect(Math.abs(x - (box.x + (box.width * i) / 4))).toBeLessThanOrEqual(1)
+    })
+  })
+})
+
+test.describe('Executions timeline: open runs', () => {
+  const open = (state: string, steps: { state: string; s: number }[]) =>
+    run('99990000-0000-4000-8000-000000000009', 'shop.long_job', state, steps)
+
+  async function openAt(page: Page, tasks: MockTask[], nowSeconds: number): Promise<void> {
+    await page.clock.setFixedTime(new Date(T0 + nowSeconds * 1000))
+    await openTimeline(page, tasks)
+  }
+
+  test('a started run with no end runs to now and reports its elapsed time', async ({ page }) => {
+    const job = open('STARTED', [
+      { state: 'PENDING', s: 0 },
+      { state: 'STARTED', s: 2 },
+    ])
+    await openAt(page, [...threeRuns(), job], 20)
+
+    const row = rowOf(page, 'shop.long_job')
+    await expect(row).toContainText('18s')
+    await expect(row).not.toContainText('0ms')
+    const geometry = await row.locator('[data-part="run"]').evaluate((el) => {
+      const plot = (el.parentElement as HTMLElement).getBoundingClientRect()
+      const bar = el.getBoundingClientRect()
+      return { right: bar.right - plot.right, width: bar.width }
+    })
+    expect(Math.abs(geometry.right)).toBeLessThanOrEqual(1)
+    expect(geometry.width).toBeGreaterThan(100)
+    await row.locator('[data-part="run"] [data-fill]').hover()
+    await expect(row.getByText(/^Running for 18s · /)).toBeVisible()
+    await expect(row.locator('[data-cut]')).toHaveCount(0)
+  })
+
+  test('a run open far past the others is cut, with the elapsed time', async ({ page }) => {
+    const job = open('STARTED', [
+      { state: 'PENDING', s: 0 },
+      { state: 'STARTED', s: 2 },
+    ])
+    await openAt(page, [...threeRuns(), job], 1202)
+
+    const row = rowOf(page, 'shop.long_job')
+    await expect(row).toContainText('20m')
+    await expect(row.locator('[data-cut]')).toHaveCount(1)
+    await row.locator('[data-part="run"] [data-fill]').hover()
+    await expect(row.getByText(/^Running for 20m · /)).toBeVisible()
+  })
+
+  test('a pending run is a growing wait bar with its waiting time', async ({ page }) => {
+    const waiting = open('PENDING', [{ state: 'PENDING', s: 1 }])
+    await openAt(page, [...threeRuns(), waiting], 31)
+
+    const row = rowOf(page, 'shop.long_job')
+    await expect(row.locator('[data-part]')).toHaveCount(1)
+    await expect(row.locator('[data-part="queued"]')).toHaveCount(1)
+    await expect(row).toContainText('30s')
+    await expect(row).not.toContainText('0ms')
+    const width = await row
+      .locator('[data-part="queued"]')
+      .evaluate((el) => el.getBoundingClientRect().width)
+    expect(width).toBeGreaterThan(100)
+    await row.locator('[data-part="queued"] [data-fill]').hover()
+    await expect(row.getByText(/^Waiting for 30s · /)).toBeVisible()
+  })
+})
+
 test.describe('barParts', () => {
-  test('a run that never started is one run part', () => {
+  test('a pending run is one open wait', () => {
     const [task] = threeRuns()
     const pending = { ...task, state: 'PENDING', events: task.events.slice(0, 1) }
-    expect(barParts(pending).map((p) => p.kind)).toEqual(['run'])
+    expect(barParts(pending)).toEqual([{ kind: 'queued', from: T0, to: T0, open: true }])
+  })
+
+  test('a revoked run that never started is one closed run part', () => {
+    const [task] = threeRuns()
+    const revoked = { ...task, state: 'REVOKED', events: task.events.slice(0, 1) }
+    expect(barParts(revoked)).toEqual([{ kind: 'run', from: T0, to: T0 }])
+  })
+
+  test('a started run has an open last part, a finished one has none', () => {
+    const [task] = threeRuns()
+    const started = { ...task, state: 'STARTED', events: task.events.slice(0, 2) }
+    expect(barParts(started).map((p) => [p.kind, p.open ?? false])).toEqual([
+      ['queued', false],
+      ['run', true],
+    ])
+    expect(barParts(task).every((p) => !p.open)).toBe(true)
   })
 
   test('a run without events falls back to first_seen to last_updated', () => {
     const [task] = threeRuns()
-    expect(barParts({ ...task, events: [] })).toEqual([{ kind: 'run', from: T0, to: T0 + 5000 }])
+    expect(barParts({ ...task, events: [] })).toEqual([
+      { kind: 'run', from: T0, to: T0 + 5000, open: false },
+    ])
   })
 })
 
