@@ -9,7 +9,6 @@ own clock on both sides (``worker_ready`` and STARTED are both
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-
 from typing import TYPE_CHECKING
 
 import pytest
@@ -32,6 +31,12 @@ if TYPE_CHECKING:
 T = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
 NODE = "celery@a"
 ABSENT = "absent"
+
+
+def _app(store: GraphStore, registry: WorkerRegistry) -> FastAPI:
+    app = FastAPI()
+    app.include_router(create_api_router(store, worker_registry=registry))
+    return app
 
 
 class Rig:
@@ -460,3 +465,26 @@ async def test_workers_request_at_30k_started_runs_keeps_loop_work_within_budget
     assert (await _get(app, "/api/health")).status_code == 200
     longest = await _longest_loop_hold(app, "/api/workers?refresh=false")
     assert longest <= MAX_LOOP_WORK
+
+
+# --- stated limitations (docs/features.md) ---------------------------------------------
+
+
+def test_clock_stepped_back_across_a_restart_lets_the_older_runs_count() -> None:
+    rig = Rig()
+    rig.ready(10)
+    rig.started(2, T + timedelta(minutes=10))  # never ended: pid 10 was killed
+    rig.ready(11, T + timedelta(minutes=5))  # the host clock stepped back
+    assert rig.active(11) == 2
+
+
+def test_run_in_a_flow_evicted_at_max_nodes_stops_counting() -> None:
+    rig = Rig()
+    rig.store = GraphStore(max_nodes=10)
+    rig.client = TestClient(_app(rig.store, rig.registry))
+    rig.ready(10)
+    rig.started(1, T + timedelta(seconds=1))
+    assert rig.active(10) == 1
+    for n in range(20):
+        rig.run(TaskState.SUCCESS, T + timedelta(minutes=1, seconds=n))
+    assert rig.active(10) == 0
