@@ -277,12 +277,51 @@ test.describe('Overview view state in the URL', () => {
     await expect(panelOf(other).getByTestId('panel-run')).toHaveCount(1)
   })
 
-  test('a brush outside the range keeps its label and draws no span', async ({ page }) => {
+  test('a brush outside the range keeps its label, draws no span and lists its own runs', async ({
+    page,
+  }) => {
     const { scenario } = await openOverview(page)
+    const urls: string[] = []
+    page.on('request', (r) => {
+      if (/\/api\/tasks\?/.test(r.url())) urls.push(r.url())
+    })
     const from = Math.floor(scenario.start / 1000) - 7200
     await page.goto(`/?brush=${from}-${from + 900}`)
     await expect(page.getByTestId('brush-label')).toBeVisible()
     await expect(page.getByTestId('brush')).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Open runs' }).click()
+    await expect(panelOf(page).getByText('No runs match.')).toBeVisible()
+    await expect(panelOf(page).getByText('Failure rate')).toHaveCount(0)
+    expect(urls.some((u) => u.includes('from_date') && u.includes('updated_before'))).toBe(true)
+  })
+
+  test('a brush that starts before the range is drawn from the first bar', async ({ page }) => {
+    const { scenario } = await openOverview(page)
+    const start = Math.floor(scenario.start / 1000)
+    await page.goto(`/?brush=${start - 1800}-${start + 900}`)
+    await expect(page.getByTestId('brush')).toHaveCount(1)
+    const bars = page.getByTestId('chart-bar')
+    const first = await bars.nth(0).boundingBox()
+    const second = await bars.nth(1).boundingBox()
+    const brush = await page.getByTestId('brush').boundingBox()
+    if (!first || !second || !brush) throw new Error('chart not drawn')
+    const pitch = second.x - first.x
+    expect(Math.abs(brush.x - first.x)).toBeLessThan(pitch)
+    expect(Math.abs(brush.width - 3 * pitch)).toBeLessThan(2)
+  })
+
+  test('changing the range keeps the brush', async ({ page }) => {
+    await openOverview(page)
+    await brushBars(page, 7, 9)
+    const value = search(page).get('brush')
+    await page
+      .getByRole('group', { name: 'Time range' })
+      .getByRole('button', { name: '1h' })
+      .click()
+    await expect(page.getByTestId('brush-label')).toBeVisible()
+    expect(search(page).get('brush')).toBe(value)
+    expect(search(page).get('range')).toBe('1h')
   })
 
   const INVALID = [

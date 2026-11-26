@@ -120,6 +120,30 @@ the next entry on top of it.
   (failure, retry, started, pending and success), except for the failure tiles. A task entry links to the task page and
   to its flow.
 
+### Overview link state
+
+A link to the Overview carries the view you were looking at. A reload, a copied link and **Back**
+restore it.
+
+| Parameter | Holds | Example |
+| --- | --- | --- |
+| `range` | `1h` or `all`. The default, 6h, isn't written. | `range=1h` |
+| `panel` | The panel stack. After an entry, `@s=` lists its state chips and `@m=` counts how many times you chose **Show more** in it. | `panel=runs:...@s=FAILURE,RETRY@m=2` |
+| `brush` | The span you dragged on the chart, as two epoch-second instants, `<from>-<to>`. | `brush=1764151500-1764152400` |
+
+- Each panel entry keeps its own chips and **Show more** count. An entry with no chips and no
+  **Show more** writes neither.
+- Choosing a chip, choosing **Show more**, brushing and clearing the brush replace the current
+  history entry. Opening or closing a panel entry adds one, so **Back** from the runs of a brushed
+  span closes the panel and keeps the brush.
+- A value that isn't valid is ignored, as if it weren't in the link. An unknown or repeated chip
+  is dropped. A **Show more** count that isn't a whole number from 1 to 50 is none. A `brush`
+  that isn't two epoch-second times with `from` before `to` is no brush.
+- A brush is stored as absolute times, not as bars. Changing the range keeps it. If the span is
+  partly outside the range, the chart shades the bars inside it. If it is entirely outside, the
+  chart shades nothing, but the **Filtered to** label stays and **Open runs** lists the runs
+  updated in that span, with no counts above the list. **Clear** removes it.
+
 ### Limits
 
 - The Overview counts the tasks the server holds. Tasks that the server evicted aren't in any
