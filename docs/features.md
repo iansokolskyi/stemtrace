@@ -733,7 +733,8 @@ The task list also takes:
   A task's `runtime_ms` and `queue_wait_ms` fields still show their own values, so a running
   task can show a queue wait and sort last. Equal values sort by newest update, then task ID, so
   while no event arrives, consecutive pages neither overlap nor skip a task. While events arrive,
-  a page can shift; load more rows with a larger `limit` instead of paging. The filters apply
+  a page can shift; load more rows with a larger `limit` (at most 500; a larger value is a `422`)
+  instead of paging. The filters apply
   first, and `total` counts the matches. Any other value is a `422`. Without `sort`, the order
   is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each

@@ -1185,8 +1185,8 @@ def _add_task_routes(
                 description=(
                     "Slowest first by runtime or queue wait: the samples the "
                     "overview's p95 tiles use. Runs the tiles leave out (not "
-                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
-                    "come last. Default: newest update first."
+                    "finished, IGNORED, celery.* tasks, and REVOKED or REJECTED "
+                    "for runtime) come last. Default: newest update first."
                 )
             ),
         ] = None,

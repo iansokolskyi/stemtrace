@@ -1331,9 +1331,11 @@ class GraphStore:
         Returns:
             Tuple of (filtered nodes, total count matching filters).
         """
-        # Filter and copy in one critical section: the consumer thread
-        # mutates live nodes, so a node could otherwise change state between
-        # passing the filter and being copied.
+        # Without a sort key, filter and copy in one critical section: the
+        # consumer thread mutates live nodes, so a node could otherwise change
+        # state between passing the filter and being copied. The sorted path
+        # copies in a second section and re-checks the state there.
+        wanted: set[TaskState] | None = None
         with self._lock:
             # Exclude synthetic nodes (GROUP, CHORD) - they're for graphs, not task list
             nodes = [
@@ -1366,16 +1368,25 @@ class GraphStore:
             # One cheap pass under the lock copies what the sort reads (records are
             # immutable, ``last_updated`` is read now, as the nodes keep changing);
             # keys and the O(n log n) sort run outside it.
-            ids = [n.task_id for n in nodes]
-            records = list(map(self._runs.get, ids))
-            updated = [n.last_updated or _MIN_DATETIME for n in nodes]
+            rows = [
+                (self._runs.get(n.task_id), n.last_updated or _MIN_DATETIME, n)
+                for n in nodes
+            ]
         ranked = [
-            _Ranked(None if r is None else sort_key(r), u, i, n)
-            for r, u, i, n in zip(records, updated, ids, nodes, strict=True)
+            _Ranked(None if r is None else sort_key(r), u, n.task_id, n)
+            for r, u, n in rows
         ]
         ordered = _slowest_first(ranked)
         with self._lock:
-            page = [_snapshot(n) for n in ordered[offset : offset + limit]]
+            # Events were ingested while the sort ran: a page row may have left
+            # the state filter or been evicted. ``total`` still counts the
+            # matches of the first section.
+            page = [
+                _snapshot(n)
+                for n in ordered[offset : offset + limit]
+                if self._graph.nodes.get(n.task_id) is n
+                and (wanted is None or n.state in wanted)
+            ]
         return page, len(ordered)
 
     def get_root_nodes(
