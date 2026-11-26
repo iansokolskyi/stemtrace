@@ -53,6 +53,13 @@ class WorkerInfo(BaseModel):
     concurrency: int | None = None
 
 
+class WorkerSnapshot(NamedTuple):
+    """A copy of one worker row, and whether it is its nodename's live process."""
+
+    info: WorkerInfo
+    live: bool
+
+
 def ensure_tz_aware(dt: datetime) -> datetime:
     """Ensure datetime is timezone-aware (assume UTC if naive)."""
     if dt.tzinfo is None:
@@ -415,10 +422,17 @@ class WorkerRegistry:
 
         with self._lock:
             is_new = hostname not in self._newest_by_node
+            known = self._workers.get(f"{hostname}:{pid}")
+            earlier_ready = known.ready_at if known is not None else None
             self._register(hostname, pid, tasks, task_definitions, event_timestamp)
             ready = self._workers[f"{hostname}:{pid}"]
             stamp = ensure_tz_aware(event_timestamp or ready.last_seen)
             ready.ready_at = max(ready.ready_at or stamp, stamp)
+            if earlier_ready is not None and stamp > ensure_tz_aware(earlier_ready):
+                # A newer ready for a pid we saw ready is a restart that reused
+                # the pid number: the old process's pool values are stale. The
+                # event generation below drops a reply taken before this one.
+                ready.pool = ready.concurrency = None
             self._event_at.pop(
                 hostname, None
             )  # a new process: older events aren't its own
@@ -1012,6 +1026,28 @@ class WorkerRegistry:
                 key=lambda w: w.last_seen,
                 reverse=True,
             )
+
+    def snapshot_workers(self, hostname: str | None = None) -> list[WorkerSnapshot]:
+        """Copy the workers (newest ``last_seen`` first) with whether each is its node's live pid.
+
+        Live means the node's newest pid, online and not superseded. Rows and
+        flags come from one locked step, so a concurrent event can't split them.
+
+        Args:
+            hostname: Keep only this nodename's rows; None keeps all.
+        """
+        with self._lock:
+            rows = [
+                WorkerSnapshot(
+                    w.model_copy(),
+                    self._newest_by_node.get(w.hostname) == f"{w.hostname}:{w.pid}"
+                    and w.status == WorkerStatus.ONLINE
+                    and not w.superseded,
+                )
+                for w in self._workers.values()
+                if hostname is None or w.hostname == hostname
+            ]
+        return sorted(rows, key=lambda r: r.info.last_seen, reverse=True)
 
     def get_worker(self, hostname: str, pid: int) -> WorkerInfo | None:
         """Get worker info by hostname and PID.

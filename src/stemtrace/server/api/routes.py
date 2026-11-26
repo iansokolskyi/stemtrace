@@ -64,6 +64,7 @@ from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
 )
+from stemtrace.server.worker_active import count_active_by_node
 from stemtrace.server.worker_pool import pool_from_stats_payload
 from stemtrace.transports import broker_kind
 
@@ -77,7 +78,12 @@ if TYPE_CHECKING:
     from stemtrace.core.events import TaskEvent
     from stemtrace.core.graph import TaskNode
     from stemtrace.server.consumer import AsyncEventConsumer
-    from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
+    from stemtrace.server.store import (
+        GraphStore,
+        WorkerRegistry,
+        WorkerSnapshot,
+        WorkerTimeline,
+    )
     from stemtrace.server.websocket import WebSocketManager
     from stemtrace.server.worker_pool import PoolInfo
 
@@ -1393,9 +1399,31 @@ def _add_group_routes(
         )
 
 
+async def _worker_responses(
+    store: GraphStore, snapshots: list[WorkerSnapshot]
+) -> list[WorkerResponse]:
+    """Worker rows with ``active`` from one scan of the run records, off the loop.
+
+    The scan runs only when some row is live, and covers all of them at once.
+    """
+    since = {s.info.hostname: s.info.ready_at for s in snapshots if s.live}
+    counts: dict[str, int] = {}
+    if since:
+        counts = await run_in_threadpool(
+            lambda: count_active_by_node(store.run_records(), since)
+        )
+    return [
+        WorkerResponse.model_validate(s.info).model_copy(
+            update={"active": counts[s.info.hostname] if s.live else None}
+        )
+        for s in snapshots
+    ]
+
+
 def _add_worker_routes(
     router: APIRouter,
     *,
+    store: GraphStore,
     worker_registry: WorkerRegistry | None,
     refresher: _InspectRefresher,
 ) -> None:
@@ -1425,11 +1453,8 @@ def _add_worker_routes(
         if refresh:
             await refresher.maybe_refresh()
 
-        workers = worker_registry.get_all_workers()
-        return WorkerListResponse(
-            workers=[WorkerResponse.model_validate(w) for w in workers],
-            total=len(workers),
-        )
+        workers = await _worker_responses(store, worker_registry.snapshot_workers())
+        return WorkerListResponse(workers=workers, total=len(workers))
 
     @router.get(
         "/workers/{hostname}",
@@ -1444,11 +1469,10 @@ def _add_worker_routes(
         if worker_registry is None:
             return WorkerListResponse(workers=[], total=0)
 
-        workers = worker_registry.get_workers_by_hostname(hostname)
-        return WorkerListResponse(
-            workers=[WorkerResponse.model_validate(w) for w in workers],
-            total=len(workers),
+        workers = await _worker_responses(
+            store, worker_registry.snapshot_workers(hostname)
         )
+        return WorkerListResponse(workers=workers, total=len(workers))
 
 
 class _ApiRoute(APIRoute):
@@ -1583,7 +1607,9 @@ def create_api_router(  # noqa: PLR0917  public API (stemtrace.server.api): posi
     add_summary_routes(
         router, store=store, worker_registry=worker_registry, groups=group_config
     )
-    _add_worker_routes(router, worker_registry=worker_registry, refresher=refresher)
+    _add_worker_routes(
+        router, store=store, worker_registry=worker_registry, refresher=refresher
+    )
     add_anomaly_routes(router, evaluator=evaluator, refresher=refresher)
     _serve_head_on_get_routes(router)
     return router
