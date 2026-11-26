@@ -233,11 +233,14 @@ class AnomalyReport:
 
     ``anomalies`` maps a task ID to the item that covers it (an unregistered
     task maps to its name's item). ``items`` is the list: each stuck or
-    interrupted task, one item per unregistered name, at most one fleet item. ``counts`` tallies ``items`` and has every kind (0 included).
+    interrupted task, one item per unregistered name, at most one fleet item.
+    ``counts`` tallies ``items`` and has every kind (0 included).
     """
 
     anomalies: Mapping[str, Anomaly]
-    counts: Mapping[AnomalyKind, int] = field(default_factory=dict)
+    counts: Mapping[AnomalyKind, int] = field(
+        default_factory=lambda: dict.fromkeys(AnomalyKind, 0)
+    )
     items: Sequence[Anomaly] = ()
 
 
