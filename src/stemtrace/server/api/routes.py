@@ -13,7 +13,7 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple
 
 from celery import Celery
 from celery.app.amqp import AMQP
@@ -64,6 +64,7 @@ from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
 )
+from stemtrace.server.stats import queue_wait_sort_value, runtime_sort_value
 from stemtrace.server.worker_active import count_active_by_node
 from stemtrace.server.worker_pool import pool_from_stats_payload
 from stemtrace.transports import broker_kind
@@ -1115,6 +1116,17 @@ def _add_task_routes(
         compact: Annotated[
             bool, Query(description="Leave out each task's events (events: null)")
         ] = False,
+        sort: Annotated[
+            Literal["runtime", "queue_wait"] | None,
+            Query(
+                description=(
+                    "Slowest first by runtime or queue wait: the samples the "
+                    "overview's p95 tiles use. Runs the tiles leave out (not "
+                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
+                    "come last. Default: newest update first."
+                )
+            ),
+        ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -1131,7 +1143,8 @@ def _add_task_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
-        nodes, total = store.get_nodes(
+        find = functools.partial(
+            store.get_nodes,
             limit=limit,
             offset=offset,
             state=states,
@@ -1144,6 +1157,14 @@ def _add_task_routes(
             exception_type=exception_type,
             task_names=task_names,
         )
+        if sort is None:
+            nodes, total = find()
+        else:
+            # The sort touches every match with a Python key: off the loop.
+            sort_key = (
+                runtime_sort_value if sort == "runtime" else queue_wait_sort_value
+            )
+            nodes, total = await run_in_threadpool(find, sort_key=sort_key)
         return TaskListResponse(
             tasks=[
                 _node_to_response(

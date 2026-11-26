@@ -472,6 +472,22 @@ def queue_wait_sample(record: RunRecord) -> int | None:
     return record.queue_wait_ms if record.state in OUTCOME_STATES else None
 
 
+def runtime_sort_value(record: RunRecord) -> int | None:
+    """What a task list sorted by runtime ranks the run by: the p95 tile's sample, or None."""
+    return (
+        None if record.name.startswith(EXCLUDED_NAME_PREFIX) else runtime_sample(record)
+    )
+
+
+def queue_wait_sort_value(record: RunRecord) -> int | None:
+    """What a task list sorted by queue wait ranks the run by: the p95 tile's sample, or None."""
+    return (
+        None
+        if record.name.startswith(EXCLUDED_NAME_PREFIX)
+        else queue_wait_sample(record)
+    )
+
+
 def p95(samples: list[int]) -> int | None:
     """Sort ``samples`` in place and return their nearest-rank p95; None when empty."""
     samples.sort()

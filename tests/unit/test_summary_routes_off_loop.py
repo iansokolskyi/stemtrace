@@ -10,15 +10,20 @@ import asyncio
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server import store as store_module
 from stemtrace.server.api import params, summary_routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
+
+if TYPE_CHECKING:
+    from stemtrace.core.graph import TaskNode
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
@@ -32,6 +37,11 @@ PATHS = [
     "/api/failures",
     "/api/stats/timeseries",
     "/api/stats/timeseries?percentiles=p95",
+]
+# Not in PATHS: the tests over PATHS read the summary response shape.
+TASK_SORT_PATHS = [
+    "/api/tasks?sort=runtime&limit=100",
+    "/api/tasks?sort=queue_wait&limit=100&state=SUCCESS,FAILURE",
 ]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
@@ -160,6 +170,20 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
     )
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("path", TASK_SORT_PATHS)
+async def test_sorted_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
+    path: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """Sorting every matching run (a Python key per node) runs off the loop."""
+    app = _app(_big_store(big_stores, "mix"))
+    assert (await _get(app, "/api/health")).status_code == 200
+    longest = await _longest_loop_hold(app, path)
+    assert longest <= MAX_LOOP_WORK, (
+        f"loop did {longest} events between turns (max {MAX_LOOP_WORK})"
+    )
+
+
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize(
     "path",
@@ -223,3 +247,82 @@ async def test_summary_request_during_ingestion_returns_a_consistent_snapshot(
         assert initial <= total <= initial + 2 * added
     else:
         assert initial // 2 - 5 <= body["runs"]["value"] <= initial + 2 * added
+
+
+class _CountingLock:
+    """An RLock that counts profile events (work) of the thread during each outermost hold."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._work = 0
+        self._previous: object = None
+        self.longest = 0
+
+    def _count(self, frame: object, event: str, arg: object) -> None:
+        self._work += 1
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+        if self._depth == 1:
+            self._work = 0
+            self._previous = sys.getprofile()
+            sys.setprofile(self._count)
+
+    def __exit__(self, *exc: object) -> None:
+        if self._depth == 1:
+            sys.setprofile(self._previous)  # type: ignore[arg-type]  # restores what getprofile returned
+            self.longest = max(self.longest, self._work)
+        self._depth -= 1
+        self._lock.release()
+
+
+async def _longest_lock_hold(store: GraphStore, path: str) -> int:
+    """Request ``path`` with the store's lock counting; return its longest hold (events)."""
+    counting = _CountingLock()
+    store._lock = counting  # type: ignore[assignment]  # a stand-in with the same protocol
+    try:
+        response = await _get(_app(store), path)
+    finally:
+        store._lock = counting._lock
+    assert response.status_code == 200
+    return counting.longest
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+async def test_sorted_task_list_holds_the_store_lock_no_longer_than_the_default(
+    sort: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """The sort runs outside the lock, so a writer waits no longer than for the default list."""
+    store = _big_store(big_stores, "mix")
+    default = await _longest_lock_hold(store, "/api/tasks?limit=100")
+    sorted_hold = await _longest_lock_hold(store, f"/api/tasks?limit=100&sort={sort}")
+
+    assert sorted_hold <= default * 1.5, (
+        f"sorted request held the lock for {sorted_hold} events "
+        f"(default list: {default})"
+    )
+
+
+async def test_sorted_task_list_sorts_while_the_store_lock_is_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The O(n log n) sort is C code the profile-event count can't see: check the lock itself."""
+    store = _populated(300)
+    counting = _CountingLock()
+    held_during_sort: list[int] = []
+    real_sort = store_module._slowest_first
+
+    def spy(ranked: list[store_module._Ranked]) -> list[TaskNode]:
+        held_during_sort.append(counting._depth)
+        return real_sort(ranked)
+
+    monkeypatch.setattr(store_module, "_slowest_first", spy)
+    store._lock = counting  # type: ignore[assignment]  # a stand-in with the same protocol
+
+    response = await _get(_app(store), "/api/tasks?sort=runtime")
+
+    assert response.status_code == 200
+    assert held_during_sort == [0]
