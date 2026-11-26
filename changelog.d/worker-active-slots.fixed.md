@@ -1,0 +1,1 @@
+- A `worker_ready` with a later time for a pid the server already saw ready clears that pid's `pool` and `concurrency` until the next inspect reply, so a restart that reuses the pid number no longer shows the previous process's pool size.
