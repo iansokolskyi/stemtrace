@@ -1864,7 +1864,7 @@ class TaskGraph(BaseModel):
         if parent_id is None:
             return
         _add_to(self._reported_children, parent_id, node.task_id)
-        if (tally := self._group_of_member(node.task_id)) is not None:
+        if (tally := self._group_of_member(node)) is not None:
             _add_to(tally.reporters, parent_id, node.task_id)
         self._on_children_changed(parent_id)
         # A chain whose first task this is can now extend upwards.
@@ -1873,16 +1873,15 @@ class TaskGraph(BaseModel):
     def _forget_reported_child(self, task_id: str, parent_id: str) -> None:
         """A task no longer reports ``parent_id`` (an earlier event said else)."""
         _drop_from(self._reported_children, parent_id, task_id)
-        if (tally := self._group_of_member(task_id)) is not None:
+        if (tally := self._group_of_member(self.nodes[task_id])) is not None:
             _drop_from(tally.reporters, parent_id, task_id)
         self._on_children_changed(parent_id)
         self._rechain_owner_of(task_id)
 
-    def _group_of_member(self, task_id: str) -> _GroupTally | None:
+    def _group_of_member(self, node: TaskNode) -> _GroupTally | None:
         """The tally whose members include this task, if any."""
-        node = self.nodes.get(task_id)
-        tally = self._groups.get(node.group_id) if node and node.group_id else None
-        return tally if tally is not None and task_id in tally.members else None
+        tally = self._groups.get(node.group_id) if node.group_id else None
+        return tally if tally is not None and node.task_id in tally.members else None
 
     def _single_child(self, parent_id: str) -> str | None:
         """The only task that reported ``parent_id`` as parent, if just one did."""
@@ -2022,10 +2021,7 @@ class TaskGraph(BaseModel):
 
     def _note_chained(self, member_id: str, *, chained: bool) -> None:
         """Keep the member's group tally listing exactly the chained members."""
-        group_id = self.nodes[member_id].group_id
-        tally = self._groups.get(group_id) if group_id else None
-        if tally is None:
-            return
+        tally = self._groups[self.nodes[member_id].group_id or ""]  # a counted member
         if chained:
             tally.chained[member_id] = None
         else:
