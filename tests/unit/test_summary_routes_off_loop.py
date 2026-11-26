@@ -43,6 +43,21 @@ TASK_SORT_PATHS = [
     "/api/tasks?sort=runtime&limit=100",
     "/api/tasks?sort=queue_wait&limit=100&state=SUCCESS,FAILURE",
 ]
+# Default order (no sort=): the filters each scan every node, some reading every event;
+# the graph list scans every root and its children.
+TASK_LIST_PATHS = [
+    "/api/tasks?limit=100",
+    "/api/tasks?limit=100&state=FAILURE",
+    "/api/tasks?limit=100&name=task7",
+    "/api/tasks?limit=100&name_exact=app.task7",
+    "/api/tasks?limit=100&hostname=w1@host",
+    "/api/tasks?limit=100&queue=default",
+    "/api/tasks?limit=100&exception_type=Err3",
+    "/api/tasks?limit=100&within=1h",
+    "/api/tasks?limit=100&from_date=2026-10-18T11:00:00Z",
+    "/api/graphs?limit=100",
+    "/api/graphs?limit=100&within=1h",
+]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
 # failing over 7 types; a storm has every run failing, over 1 or 50 types.
@@ -176,6 +191,20 @@ async def test_sorted_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
     path: str, big_stores: dict[str, GraphStore]
 ) -> None:
     """Sorting every matching run (a Python key per node) runs off the loop."""
+    app = _app(_big_store(big_stores, "mix"))
+    assert (await _get(app, "/api/health")).status_code == 200
+    longest = await _longest_loop_hold(app, path)
+    assert longest <= MAX_LOOP_WORK, (
+        f"loop did {longest} events between turns (max {MAX_LOOP_WORK})"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("path", TASK_LIST_PATHS)
+async def test_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
+    path: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """Filtering and ordering every node for the default list runs off the loop."""
     app = _app(_big_store(big_stores, "mix"))
     assert (await _get(app, "/api/health")).status_code == 200
     longest = await _longest_loop_hold(app, path)
