@@ -68,6 +68,13 @@ TASK_LIST_PATHS = [
     "/api/graphs?limit=100&within=1h",
 ]
 ENCODE_NODES = 600
+# The few encode cases: each returns more than 10 KB of the 600 nodes.
+ENCODE_PATHS = [
+    "/api/tasks?limit=500",
+    "/api/tasks?limit=500&sort=runtime",
+    "/api/tasks?limit=500&compact=true",
+    "/api/graphs?limit=100",
+]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
 # failing over 7 types; a storm has every run failing, over 1 or 50 types.
@@ -308,7 +315,7 @@ async def test_task_and_graph_lists_at_30k_nodes_return_matches(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("path", TASK_LIST_PATHS)
+@pytest.mark.parametrize("path", ENCODE_PATHS)
 async def test_task_and_graph_lists_with_10kb_payloads_encode_nothing_on_the_loop(
     path: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
