@@ -406,3 +406,11 @@ def test_sorted_page_drops_a_row_evicted_meanwhile() -> None:
     assert len(live) < 13
     assert {n.task_id for n in page} <= live
     assert len(page) == len(live & {f"old{i}" for i in range(9)})
+
+
+@pytest.mark.parametrize(("limit", "status"), [(500, 200), (501, 422)])
+def test_task_list_limit_is_capped_at_500(
+    limit: int, status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(GraphStore(), monkeypatch)
+    assert client.get(f"/api/tasks?limit={limit}").status_code == status
