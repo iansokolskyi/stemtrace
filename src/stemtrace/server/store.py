@@ -1219,6 +1219,7 @@ class GraphStore:
         queue: str | None = None,
         exception_type: str | None = None,
         task_names: Collection[str] | None = None,
+        sort: str | None = None,
     ) -> tuple[list[TaskNode], int]:
         """Get nodes with optional filtering, most recent first.
 
@@ -1235,6 +1236,10 @@ class GraphStore:
         ``task_names`` keeps the tasks with one of these names (the API's
         task group and tag filters resolve names to it beforehand, outside
         the lock); pass a set for O(1) lookups.
+        ``sort`` (``runtime_ms`` or ``queue_wait_ms``, a ``RunRecord`` field)
+        orders the filtered set slowest first, runs without a value last,
+        ties by newest update then task id. It sorts every match, so call it
+        off the event loop.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -1279,10 +1284,32 @@ class GraphStore:
                     if n.first_seen is not None and n.first_seen <= to_dt
                 ]
 
-            nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+            if sort is not None:
+                nodes = self._slowest_first(nodes, sort)
+            else:
+                nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
             total = len(nodes)
             page = [_snapshot(n) for n in nodes[offset : offset + limit]]
         return page, total
+
+    def _slowest_first(self, nodes: list[TaskNode], field: str) -> list[TaskNode]:
+        """Order ``nodes`` by their run record's ``field``, largest first. Hold the lock.
+
+        Stable passes make the order total: value, then newest update, then task id.
+        """
+        nodes.sort(key=lambda n: n.task_id)
+        nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
+        keyed: list[tuple[int, TaskNode]] = []
+        unkeyed: list[TaskNode] = []
+        for node in nodes:
+            record = self._runs.get(node.task_id)
+            value = getattr(record, field) if record is not None else None
+            if value is None:
+                unkeyed.append(node)
+            else:
+                keyed.append((value, node))
+        keyed.sort(key=lambda pair: pair[0], reverse=True)
+        return [node for _, node in keyed] + unkeyed
 
     def get_root_nodes(
         self,

@@ -13,7 +13,7 @@ import time
 # FastAPI evaluates the Query annotations below at runtime, so datetime must be
 # a real import, not a type-checking one.
 from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple
 
 from celery import Celery
 from celery.app.amqp import AMQP
@@ -1105,6 +1105,15 @@ def _add_task_routes(
         compact: Annotated[
             bool, Query(description="Leave out each task's events (events: null)")
         ] = False,
+        sort: Annotated[
+            Literal["runtime", "queue_wait"] | None,
+            Query(
+                description=(
+                    "Slowest first by runtime or queue wait (the p95 tiles' "
+                    "values); runs without one come last. Default: newest first."
+                )
+            ),
+        ] = None,
     ) -> TaskListResponse:
         """List tasks with optional filtering by state, name, date range and more.
 
@@ -1121,7 +1130,8 @@ def _add_task_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
-        nodes, total = store.get_nodes(
+        find = functools.partial(
+            store.get_nodes,
             limit=limit,
             offset=offset,
             state=states,
@@ -1134,6 +1144,12 @@ def _add_task_routes(
             exception_type=exception_type,
             task_names=task_names,
         )
+        if sort is None:
+            nodes, total = find()
+        else:
+            # The sort touches every match with a Python key: off the loop.
+            sort_field = "runtime_ms" if sort == "runtime" else "queue_wait_ms"
+            nodes, total = await run_in_threadpool(find, sort=sort_field)
         return TaskListResponse(
             tasks=[
                 _node_to_response(

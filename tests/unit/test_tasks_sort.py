@@ -1,0 +1,224 @@
+"""``GET /api/tasks?sort=runtime|queue_wait`` orders runs slowest first."""
+
+from __future__ import annotations
+
+import random
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api import params
+from stemtrace.server.api.routes import create_api_router
+from stemtrace.server.store import GraphStore
+
+NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+
+
+def _ev(tid: str, state: TaskState, at: datetime, name: str) -> TaskEvent:
+    return TaskEvent(task_id=tid, name=name, state=state, timestamp=at)
+
+
+def _run(
+    store: GraphStore,
+    tid: str,
+    *,
+    wait: int | None,
+    runtime: int | None,
+    end: datetime = NOW,
+    state: TaskState = TaskState.SUCCESS,
+    name: str = "app.work",
+) -> None:
+    """Add a run that waited ``wait`` ms (None: no PENDING) and ran ``runtime`` ms.
+
+    A ``runtime`` of None leaves the run STARTED (not finished).
+    """
+    started = end - timedelta(milliseconds=runtime or 0)
+    if wait is not None:
+        sent = started - timedelta(milliseconds=wait)
+        store.add_event(_ev(tid, TaskState.PENDING, sent, name))
+    store.add_event(_ev(tid, TaskState.STARTED, started, name))
+    if runtime is not None:
+        store.add_event(_ev(tid, state, end, name))
+
+
+def _client(store: GraphStore, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(params, "utcnow", lambda: NOW)
+    app = FastAPI()
+    app.include_router(create_api_router(store))
+    return TestClient(app)
+
+
+def _ids(client: TestClient, query: str = "") -> list[str]:
+    response = client.get(f"/api/tasks?limit=500{query}")
+    assert response.status_code == 200
+    return [t["task_id"] for t in response.json()["tasks"]]
+
+
+@pytest.fixture
+def mixed(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    store = GraphStore()
+    _run(store, "fast", wait=900, runtime=10, end=NOW - timedelta(seconds=1))
+    _run(store, "slow", wait=5, runtime=900, end=NOW - timedelta(seconds=2))
+    _run(store, "mid", wait=300, runtime=200, end=NOW - timedelta(seconds=3))
+    _run(store, "running", wait=50, runtime=None, end=NOW - timedelta(seconds=4))
+    _run(store, "nosent", wait=None, runtime=5_000, end=NOW - timedelta(seconds=5))
+    return _client(store, monkeypatch)
+
+
+def test_sort_runtime_orders_slowest_first_with_unmeasured_runs_last(
+    mixed: TestClient,
+) -> None:
+    # "running" has no runtime yet, so it is the only run with no value.
+    assert _ids(mixed, "&sort=runtime") == [
+        "nosent",
+        "slow",
+        "mid",
+        "fast",
+        "running",
+    ]
+
+
+def test_sort_queue_wait_orders_longest_wait_first_with_unmeasured_runs_last(
+    mixed: TestClient,
+) -> None:
+    # "running" is not finished and "nosent" has no sent event: no wait for either.
+    assert _ids(mixed, "&sort=queue_wait") == [
+        "fast",
+        "mid",
+        "slow",
+        "running",
+        "nosent",
+    ]
+
+
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+def test_sort_zero_value_ranks_above_runs_with_no_value(
+    sort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GraphStore()
+    _run(store, "zero", wait=0, runtime=0)
+    _run(store, "none", wait=None, runtime=None)
+    _run(store, "some", wait=7, runtime=7)
+
+    ids = _ids(_client(store, monkeypatch), f"&sort={sort}")
+
+    assert ids == ["some", "zero", "none"]
+
+
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+def test_sort_ties_break_by_newest_update_then_task_id_whatever_the_arrival(
+    sort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    specs = [
+        ("b", NOW - timedelta(seconds=10)),
+        ("a", NOW - timedelta(seconds=10)),
+        ("c", NOW - timedelta(seconds=5)),
+        ("d", NOW - timedelta(seconds=20)),
+    ]
+    for order in ([0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]):
+        store = GraphStore()
+        for i in order:
+            _run(store, specs[i][0], wait=40, runtime=40, end=specs[i][1])
+
+        ids = _ids(_client(store, monkeypatch), f"&sort={sort}")
+
+        assert ids == ["c", "a", "b", "d"]
+
+
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+def test_sort_runs_with_no_value_tie_break_by_task_id(
+    sort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GraphStore()
+    for tid in ("z", "y", "x"):
+        _run(store, tid, wait=None, runtime=None)
+    _run(store, "keyed", wait=3, runtime=3)
+
+    ids = _ids(_client(store, monkeypatch), f"&sort={sort}")
+
+    assert ids == ["keyed", "x", "y", "z"]
+
+
+def test_sort_combines_with_state_name_and_time_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GraphStore()
+    _run(store, "ok_slow", wait=1, runtime=800, name="app.a")
+    _run(store, "ok_fast", wait=1, runtime=100, name="app.a")
+    _run(store, "bad_slowest", wait=1, runtime=2_000, state=TaskState.FAILURE)
+    _run(store, "other_name", wait=1, runtime=3_000, name="app.zzz")
+    old = NOW - timedelta(hours=3)
+    _run(store, "old", wait=1, runtime=9_000, end=old, name="app.a")
+    client = _client(store, monkeypatch)
+
+    combined = _ids(client, "&sort=runtime&state=SUCCESS&name=app.a&within=1h")
+    failed = client.get("/api/tasks?sort=runtime&state=FAILURE&within=1h").json()
+
+    assert combined == ["ok_slow", "ok_fast"]
+    assert [t["task_id"] for t in failed["tasks"]] == ["bad_slowest"]
+    assert failed["total"] == 1
+
+
+@pytest.mark.parametrize("sort", ["runtime", "queue_wait"])
+def test_sort_pages_partition_the_sorted_list(
+    sort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rng = random.Random(7)
+    store = GraphStore()
+    for i in range(60):
+        value = rng.choice([None, 0, 5, 5, 5, 9])
+        end = NOW - timedelta(seconds=rng.choice([1, 2, 3]))
+        _run(store, f"t{i:02d}", wait=value, runtime=value, end=end)
+    client = _client(store, monkeypatch)
+    full = _ids(client, f"&sort={sort}")
+
+    for size in (1, 7, 25):
+        paged: list[str] = []
+        for offset in range(0, 60, size):
+            url = f"/api/tasks?sort={sort}&limit={size}&offset={offset}"
+            body = client.get(url).json()
+            assert body["total"] == 60
+            paged += [t["task_id"] for t in body["tasks"]]
+        assert paged == full
+    assert len(set(full)) == 60
+
+
+def test_sort_rejects_an_unknown_value(mixed: TestClient) -> None:
+    assert mixed.get("/api/tasks?sort=bogus").status_code == 422
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_tasks_without_sort_keep_the_default_order_and_item_bytes(
+    seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``sort``: newest update first, ties in arrival order, same items as with it."""
+    rng = random.Random(seed)
+    store = GraphStore()
+    for i in range(80):
+        running = rng.random() < 0.2
+        _run(
+            store,
+            f"t{i:02d}",
+            wait=rng.choice([None, 0, 4, 9]),
+            runtime=None if running else rng.choice([0, 3, 8]),
+            end=NOW - timedelta(seconds=rng.choice([1, 1, 2, 30])),
+            state=rng.choice([TaskState.SUCCESS, TaskState.FAILURE]),
+        )
+    client = _client(store, monkeypatch)
+    records = store.run_records()  # in the order the runs first arrived
+    last = {r.task_id: r.last_updated for r in records}
+    # Python's sort is stable, so equal timestamps keep arrival order.
+    oracle = sorted(last, key=lambda t: last[t], reverse=True)
+
+    plain = client.get("/api/tasks?limit=500").json()
+    sorted_items = {
+        t["task_id"]: t
+        for t in client.get("/api/tasks?limit=500&sort=runtime").json()["tasks"]
+    }
+
+    assert [t["task_id"] for t in plain["tasks"]] == oracle
+    assert plain["tasks"] == [sorted_items[t] for t in oracle]
+    assert set(plain) == {"tasks", "total", "limit", "offset"}

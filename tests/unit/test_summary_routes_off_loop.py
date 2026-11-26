@@ -33,6 +33,11 @@ PATHS = [
     "/api/stats/timeseries",
     "/api/stats/timeseries?percentiles=p95",
 ]
+# Not in PATHS: the tests over PATHS read the summary response shape.
+TASK_SORT_PATHS = [
+    "/api/tasks?sort=runtime&limit=100",
+    "/api/tasks?sort=queue_wait&limit=100&state=SUCCESS,FAILURE",
+]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
 # failing over 7 types; a storm has every run failing, over 1 or 50 types.
@@ -153,6 +158,20 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
     """The most work the loop does between two of its turns stays bounded."""
     app = _app(_big_store(big_stores, shape))
     # The first request builds the app's middleware stack (about 70 ms): not ours.
+    assert (await _get(app, "/api/health")).status_code == 200
+    longest = await _longest_loop_hold(app, path)
+    assert longest <= MAX_LOOP_WORK, (
+        f"loop did {longest} events between turns (max {MAX_LOOP_WORK})"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("path", TASK_SORT_PATHS)
+async def test_sorted_task_list_at_30k_nodes_keeps_loop_lag_within_budget(
+    path: str, big_stores: dict[str, GraphStore]
+) -> None:
+    """Sorting every matching run (a Python key per node) runs off the loop."""
+    app = _app(_big_store(big_stores, "mix"))
     assert (await _get(app, "/api/health")).status_code == 200
     longest = await _longest_loop_hold(app, path)
     assert longest <= MAX_LOOP_WORK, (
