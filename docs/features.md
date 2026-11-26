@@ -125,12 +125,15 @@ pages work even if the server missed `worker_ready` events.
   Limitations:
   - The number can read high. A run whose final event never reached the server, for example after
     a `kill -9`, stays `STARTED` and counts until a new `worker_ready` for that nodename.
-  - The number can read low. Tasks that started before the server saw the worker have no record,
-    and when the server drops the oldest flows at its node limit, their running tasks stop
-    counting.
+  - The number can read low. A task whose `STARTED` event the server never received has no
+    record (for example on RabbitMQ, or past the Redis stream's retention), and when the server
+    drops the oldest flows at its node limit, their running tasks stop counting.
   - A pid the server knows only from an inspect reply has no `worker_ready` time, so every
     `STARTED` run on its nodename counts, including a previous process's.
-  - If the host clock steps back across a restart, runs of the previous process can count.
+  - If the host clock steps back across a restart, runs of the previous process can count. If a
+    restart that reuses the pid number is stamped no later than the pid's earlier `worker_ready`,
+    the number can read low (the earlier stamp stays the lower bound) and the old pool size stays
+    until the next `stats()` reply.
   - The number can exceed `concurrency`.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
