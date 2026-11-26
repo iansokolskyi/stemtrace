@@ -161,6 +161,67 @@ def test_scan_holds_the_store_lock_for_work_that_does_not_grow_with_the_store(
     assert big <= 100 * LIMIT, f"{scan}: held {big} events for a page of {LIMIT}"
 
 
+class _TimedLock:
+    """An RLock that sums the wall-clock time of every outermost hold."""
+
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
+        self._depth = 0
+        self._since = 0.0
+        self.held_s = 0.0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._depth += 1
+        if self._depth == 1:
+            self._since = time.perf_counter()
+
+    def __exit__(self, *exc: object) -> None:
+        if self._depth == 1:
+            self.held_s += time.perf_counter() - self._since
+        self._depth -= 1
+        self._lock.release()
+
+
+def _best_hold_s(store: GraphStore, scan: Callable[[GraphStore], object]) -> float:
+    """The smallest total lock hold of one ``scan`` call over several tries (C work included)."""
+    real = store._lock
+    timed = _TimedLock(real)
+    store._lock = timed  # type: ignore[assignment]  # same protocol
+    best = float("inf")
+    try:
+        for _ in range(7):
+            timed.held_s = 0.0
+            scan(store)
+            best = min(best, timed.held_s)
+    finally:
+        store._lock = real
+    return best
+
+
+# The graph date filters copy the whole root list and times under the lock: a
+# known limitation (about 37 ms at 100,000 roots), so only the trace-count test above runs them.
+WALL_CLOCK_EXCLUDED = {"root_flows_from", "root_flows_to", "root_nodes_from"}
+
+
+@pytest.mark.parametrize("scan", [s for s in SCANS if s not in WALL_CLOCK_EXCLUDED])
+def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
+    scan: str, small_store: GraphStore, big_store: GraphStore
+) -> None:
+    """C-level work (a sort, a copy) is invisible to the trace count; time it."""
+    run = SCANS[scan]
+    run(small_store)
+    run(big_store)
+
+    small = _best_hold_s(small_store, run)
+    big = _best_hold_s(big_store, run)
+
+    # 6.7x the runs: the reference copy grows, nothing else may.
+    assert big <= 2 * small + 0.002, (
+        f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {BIG}"
+    )
+
+
 def _add_wait_s(
     store: GraphStore, scan: Callable[[GraphStore], object], prefix: str
 ) -> list[float]:

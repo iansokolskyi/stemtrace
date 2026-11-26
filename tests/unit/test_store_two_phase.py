@@ -15,6 +15,7 @@ import pytest
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.core.graph import NodeType, TaskNode
 from stemtrace.server.store import GraphStore, _ensure_end_of_day, ensure_tz_aware
+from tests.conftest import InterleavingLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator
@@ -458,3 +459,166 @@ def test_page_under_concurrent_ingestion_is_the_filter_instants_rows_as_they_are
                 node.model_dump_json()
                 == live[node.task_id].snapshot().model_dump_json()
             )
+
+
+# -- identity between phases (an evicted ID that came back is a different run) --
+
+
+def _evict_and_recreate(store: GraphStore, task_id: str) -> Callable[[], None]:
+    """Flood the store so ``task_id`` is evicted, then let a late event re-create it."""
+
+    def action() -> None:
+        for i in range(6):
+            store.add_event(_ev(f"flood{i}", TaskState.STARTED, 500 + i))
+        assert store.get_node(task_id) is None  # evicted
+        store.add_event(_ev(task_id, TaskState.STARTED, 900, hostname="h2@x"))
+
+    return action
+
+
+@pytest.mark.parametrize("sort_key", [None, _SORT_KEYS[0]], ids=["newest", "sorted"])
+def test_an_id_evicted_and_recreated_meanwhile_is_dropped_from_the_task_page(
+    sort_key: Callable[[RunRecord], int | None] | None,
+) -> None:
+    store = GraphStore(max_nodes=8)
+    for i in range(8):
+        store.add_event(_ev(f"t{i}", TaskState.STARTED, i, hostname="h1@x"))
+
+    page, total = _scan_with(
+        store, _evict_and_recreate(store, "t0"), limit=100, sort_key=sort_key
+    )
+
+    assert "t0" not in {n.task_id for n in page}
+    assert total == 8
+    assert store.get_node("t0") is not None  # the new run exists, it is just not listed
+
+
+def _flows(store: GraphStore, count: int) -> None:
+    for i in range(count):
+        store.add_event(_ev(f"r{i}", TaskState.STARTED, i))
+        store.add_event(
+            _ev(f"c{i}", TaskState.STARTED, i, parent_id=f"r{i}", root_id=f"r{i}")
+        )
+
+
+class _FiringDate(datetime):
+    """A ``from_date`` that runs ``action`` once, when the root filter first compares it."""
+
+    action: Callable[[], None] | None = None
+
+    def __le__(self, other: datetime) -> bool:
+        action, type(self).action = type(self).action, None
+        if action is not None:
+            action()
+        return datetime.__le__(self, other)
+
+
+def _firing_date(action: Callable[[], None]) -> datetime:
+    _FiringDate.action = action
+    return _FiringDate(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def _flow_page(store: GraphStore, action: Callable[[], None], **kw: Any) -> Any:
+    return store.get_root_nodes_with_children(from_date=_firing_date(action), **kw)
+
+
+def test_filtered_graph_page_drops_a_root_that_got_a_parent_meanwhile() -> None:
+    store = GraphStore()
+    _flows(store, 5)
+    page = _flow_page(
+        store,
+        lambda: store.add_event(
+            _ev("r4", TaskState.STARTED, 50, parent_id="r0", root_id="r0")
+        ),
+        limit=3,
+    )
+
+    assert [n.task_id for n in page.roots] == ["r3", "r2"]  # newest first, r4 left
+    assert page.total == 5
+
+
+def test_filtered_graph_page_drops_a_root_evicted_meanwhile() -> None:
+    store = GraphStore(max_nodes=10)
+    _flows(store, 5)
+
+    def flood() -> None:
+        for i in range(4):
+            store.add_event(_ev(f"f{i}", TaskState.STARTED, 100 + i))
+
+    page = _flow_page(store, flood, limit=10)
+
+    live = set(store._graph.nodes)
+    assert {n.task_id for n in page.roots} == {f"r{i}" for i in range(5)} & live
+    assert len(live) < 14  # eviction ran
+    assert page.total == 5
+
+
+def test_filtered_graph_page_does_not_list_a_root_added_meanwhile() -> None:
+    store = GraphStore()
+    _flows(store, 3)
+
+    page = _flow_page(
+        store, lambda: store.add_event(_ev("late", seconds=900)), limit=10
+    )
+
+    assert [n.task_id for n in page.roots] == ["r2", "r1", "r0"]
+    assert page.total == 3
+
+
+def test_filtered_graph_page_snapshots_a_roots_children_with_it() -> None:
+    store = GraphStore()
+    _flows(store, 2)
+
+    def child_arrives() -> None:
+        store.add_event(
+            _ev("late-child", TaskState.STARTED, 60, parent_id="r1", root_id="r1")
+        )
+
+    page = _flow_page(store, child_arrives, limit=10)
+
+    by_id = {n.task_id: n for n in page.roots}
+    assert by_id["r1"].children == ["c1", "late-child"]
+
+
+def test_filtered_graph_page_drops_a_root_evicted_and_recreated_meanwhile() -> None:
+    store = GraphStore(max_nodes=10)
+    _flows(store, 5)
+
+    def churn() -> None:
+        for i in range(4):
+            store.add_event(_ev(f"f{i}", TaskState.STARTED, 100 + i))
+        assert store.get_node("r0") is None
+        store.add_event(_ev("r0", TaskState.STARTED, 900, hostname="h2@x"))
+
+    page = _flow_page(store, churn, limit=10)
+
+    assert "r0" not in {n.task_id for n in page.roots}
+    assert page.total == 5
+
+
+def test_unfiltered_graph_page_is_one_hold_so_a_parent_cannot_arrive_between() -> None:
+    store = GraphStore()
+    _flows(store, 11)
+    store.add_event(_ev("anchor", TaskState.STARTED, 650))
+    order = [r.task_id for r in store.get_root_nodes_with_children(limit=12).roots]
+    victims = iter(o for o in order if o != "anchor")
+
+    def top_root_gets_a_parent() -> None:
+        store.add_event(
+            _ev(
+                next(victims),
+                TaskState.STARTED,
+                700,
+                parent_id="anchor",
+                root_id="anchor",
+            )
+        )
+
+    lock = InterleavingLock(store._lock, top_root_gets_a_parent)
+    store._lock = lock  # type: ignore[assignment]  # same protocol
+
+    page = store.get_root_nodes_with_children(limit=3)
+
+    assert lock.interleavings == 1  # one acquisition: no point between two holds
+    assert len(page.roots) == 3
+    assert page.total == len(store._graph.root_ids)
