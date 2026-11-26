@@ -1328,6 +1328,7 @@ def _add_graph_routes(
         group_of = group_lookup(groups)
         task_names = await _filter_task_names(store, group_of, task_group, tag)
         anomalies = (await evaluator.evaluate()).anomalies
+
         # Roots plus the children the response reads, from one snapshot
         def build() -> GraphListResponse:
             page = store.get_root_nodes_with_children(
