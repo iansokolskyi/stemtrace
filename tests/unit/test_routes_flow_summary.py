@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server.api import routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore
 
@@ -259,3 +260,30 @@ def test_list_graphs_member_name_falls_back_to_the_task_name_when_the_key_is_mis
 
     assert _member_fields_listed(same, "site") == (2, "fetch")
     assert _member_fields_listed(other, "site") == (2, None)
+
+
+def test_list_graphs_resolves_aliases_outside_the_store_lock_and_stops_at_a_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolving a name reads and stringifies task arguments: never while the lock is held."""
+    store = GraphStore()
+    for i in range(5):
+        store.add_event(_member_event(f"m{i}", "app.x", i, kwargs={"site": f"s{i}"}))
+    resolved: list[tuple[str, bool]] = []
+    real = routes._resolve_node_alias
+
+    def recording(node: Any, key: str | None) -> str:
+        # RLock._is_owned: whether the calling thread holds the store lock
+        resolved.append((node.task_id, store._lock._is_owned()))
+        return real(node, key)
+
+    monkeypatch.setattr(routes, "_resolve_node_alias", recording)
+    app = FastAPI()
+    app.include_router(create_api_router(store, node_alias_from_arguments="site"))
+
+    (graph,) = TestClient(app).get("/api/graphs").json()["graphs"]
+
+    members = [(tid, held) for tid, held in resolved if tid.startswith("m")]
+    assert graph["flow"]["member_name"] is None
+    assert [held for _, held in members] == [False] * len(members)
+    assert len(members) == 2

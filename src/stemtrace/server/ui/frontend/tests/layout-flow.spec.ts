@@ -757,3 +757,17 @@ test.describe('layoutFlow: flows list title fields', () => {
     })
   }
 })
+
+test.describe('layoutFlow: empty shared name', () => {
+  for (const name of ['app.', '']) {
+    test(`members named ${JSON.stringify(name)} have no shared name`, () => {
+      const nodes = group(3)
+      for (const id of ['m0', 'm1', 'm2']) nodes[id].name = name
+
+      const box = layoutFlow(nodes, 'g', new Set()).containers.find((c) => c.id === 'g')
+
+      expect(box?.memberCount).toBe(3)
+      expect(box?.sharedName).toBeNull()
+    })
+  }
+})
