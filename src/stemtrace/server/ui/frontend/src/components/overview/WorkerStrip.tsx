@@ -9,8 +9,8 @@ import { formatAgo, shortHost } from '@/utils/format'
 
 /**
  * A cell per worker host: name, status (offline is the loud one) and what the server knows of
- * it, with its pool line and slot meter when the server sends them. A cell opens the worker in
- * the triage panel.
+ * it. With a live slot count the pool line and meter replace the registered/seen line; with pool
+ * info but no count the line goes below it. A cell opens the worker in the triage panel.
  */
 export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElement {
   const panel = usePanel()
@@ -37,7 +37,7 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
         >
           {(hosts ?? []).map(({ hostname, processes, leading }) => {
             const offline = leading.status === 'offline'
-            const { line, fill } = poolUsage(leading)
+            const { line, counted, fill } = poolUsage(leading)
             return (
               <button
                 key={hostname}
@@ -52,14 +52,15 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
                   {shortHost(hostname)}
                 </span>
                 <WorkerStatus status={leading.status} />
-                {line ? (
-                  <span data-testid="pool-line" className="text-xs text-muted">
-                    {line}
-                  </span>
-                ) : (
+                {!counted && (
                   <span className={clsx('text-xs', offline ? 'text-ink' : 'text-muted')}>
                     {registeredTasks(processes).length} registered tasks, seen{' '}
                     {formatAgo(leading.last_seen)}
+                  </span>
+                )}
+                {line && (
+                  <span data-testid="pool-line" className="text-xs text-muted">
+                    {line}
                   </span>
                 )}
                 {fill !== null && (
