@@ -2553,17 +2553,17 @@ def _member_fields(
             continue
         if nodes[head].node_type != NodeType.TASK:
             continue
-        row = [head]
+        seen = {head}
         current = nodes[head]
         while current.group_id != root.group_id:
             nexts = [c for c in current.children if c != current.task_id and c in nodes]
             if (
                 len(nexts) != 1
                 or nodes[nexts[0]].node_type != NodeType.TASK
-                or nexts[0] in row
+                or nexts[0] in seen
             ):
                 break
-            row.append(nexts[0])
+            seen.add(nexts[0])
             current = nodes[nexts[0]]
         ends.append(current.name)
     shared = ends[0] if ends and all(name == ends[0] for name in ends) else None
