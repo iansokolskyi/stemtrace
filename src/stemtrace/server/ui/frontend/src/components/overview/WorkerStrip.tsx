@@ -52,13 +52,14 @@ export function WorkerStrip({ hosts }: { hosts: Host[] | undefined }): ReactElem
                   {shortHost(hostname)}
                 </span>
                 <WorkerStatus status={leading.status} />
-                <span className={clsx('text-xs', offline ? 'text-ink' : 'text-muted')}>
-                  {registeredTasks(processes).length} registered tasks, seen{' '}
-                  {formatAgo(leading.last_seen)}
-                </span>
-                {line && (
+                {line ? (
                   <span data-testid="pool-line" className="text-xs text-muted">
                     {line}
+                  </span>
+                ) : (
+                  <span className={clsx('text-xs', offline ? 'text-ink' : 'text-muted')}>
+                    {registeredTasks(processes).length} registered tasks, seen{' '}
+                    {formatAgo(leading.last_seen)}
                   </span>
                 )}
                 {fill !== null && (

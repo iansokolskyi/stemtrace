@@ -18,12 +18,11 @@ export function poolUsage(worker: Worker): PoolUsage {
   const pool = worker.pool || null
   const slots = isCount(worker.concurrency) && worker.concurrency > 0 ? worker.concurrency : null
   const active = isCount(worker.active) ? worker.active : null
+  const over = slots !== null && active !== null && active > slots
   const parts: string[] = []
   if (pool) parts.push(`${pool} pool`)
   if (slots !== null && active !== null) {
-    parts.push(
-      active > slots ? `${active} active, ${slots} slots` : `${active} of ${slots} slots active`,
-    )
+    parts.push(over ? `${active} active, ${slots} slots` : `${active} of ${slots} slots active`)
   } else if (slots !== null) {
     parts.push(`${slots} slots`)
   } else if (active !== null && pool) {
@@ -32,7 +31,11 @@ export function poolUsage(worker: Worker): PoolUsage {
   const both = slots !== null && active !== null
   return {
     line: pool || slots !== null ? parts.join(', ') : null,
-    count: both ? `${active} of ${slots} slots` : null,
+    count: both
+      ? over
+        ? `${active} active, ${slots} slots`
+        : `${active} of ${slots} slots`
+      : null,
     fill: both ? Math.min(active, slots) / slots : null,
   }
 }
