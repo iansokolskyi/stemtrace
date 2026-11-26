@@ -1,7 +1,12 @@
 {
  "chain": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0a28de7a-8efa-4839-ab0e-63f4190f78bb": {
+    "anomaly": null,
     "children": [
      "79bda171-773a-4600-ac8d-69f3ec3f0290"
     ],
@@ -30,6 +35,7 @@
     "total_runtime_ms": 24
    },
    "0b3c9d01-0123-4a10-ac1a-ec5c42da6f7d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -56,6 +62,7 @@
     "total_runtime_ms": 0
    },
    "79bda171-773a-4600-ac8d-69f3ec3f0290": {
+    "anomaly": null,
     "children": [
      "0b3c9d01-0123-4a10-ac1a-ec5c42da6f7d"
     ],
@@ -87,8 +94,13 @@
   "root_id": "0a28de7a-8efa-4839-ab0e-63f4190f78bb"
  },
  "chain_a_group_tsum_add": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "29b0ead1-44fb-4c12-8e35-a785e9de0beb": {
+    "anomaly": null,
     "children": [
      "e03b94a4-e279-4a14-9bfa-7f5ebf2b20df"
     ],
@@ -117,6 +129,7 @@
     "total_runtime_ms": 1
    },
    "50bcba0c-e2a6-4dc4-8d42-b40735c80671": {
+    "anomaly": null,
     "children": [
      "group:5f963bb0-7256-4cb1-a9be-0a05f6f73beb"
     ],
@@ -145,6 +158,7 @@
     "total_runtime_ms": 7
    },
    "7dd7324c-d1b3-4992-874b-0a28f9cb6716": {
+    "anomaly": null,
     "children": [
      "29b0ead1-44fb-4c12-8e35-a785e9de0beb"
     ],
@@ -173,6 +187,7 @@
     "total_runtime_ms": 506
    },
    "7fdca6d5-d7db-47e3-9422-115d5e1e333c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -199,6 +214,7 @@
     "total_runtime_ms": 5
    },
    "e03b94a4-e279-4a14-9bfa-7f5ebf2b20df": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -225,6 +241,7 @@
     "total_runtime_ms": 0
    },
    "group:5f963bb0-7256-4cb1-a9be-0a05f6f73beb": {
+    "anomaly": null,
     "children": [
      "7fdca6d5-d7db-47e3-9422-115d5e1e333c",
      "7dd7324c-d1b3-4992-874b-0a28f9cb6716"
@@ -257,8 +274,13 @@
   "root_id": "50bcba0c-e2a6-4dc4-8d42-b40735c80671"
  },
  "chain_a_group_tsum_add@celery5.2": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "17688750-2d4f-4e12-afec-b7208812220d": {
+    "anomaly": null,
     "children": [
      "8b3bd4a2-184d-4eaa-b765-6470227d8384"
     ],
@@ -287,6 +309,7 @@
     "total_runtime_ms": 502
    },
    "4a21355c-85c6-434f-8661-5ca430ff02cb": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -313,6 +336,7 @@
     "total_runtime_ms": 0
    },
    "74c73468-d5f9-4636-a801-1448f6137685": {
+    "anomaly": null,
     "children": [
      "group:a3caee4e-bfa6-49cc-9de6-ee82f48d5040"
     ],
@@ -341,6 +365,7 @@
     "total_runtime_ms": 14
    },
    "8b3bd4a2-184d-4eaa-b765-6470227d8384": {
+    "anomaly": null,
     "children": [
      "4a21355c-85c6-434f-8661-5ca430ff02cb"
     ],
@@ -369,6 +394,7 @@
     "total_runtime_ms": 1
    },
    "a9676b42-663d-4c38-86b8-7b3ce4cd07fc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -395,6 +421,7 @@
     "total_runtime_ms": 0
    },
    "group:a3caee4e-bfa6-49cc-9de6-ee82f48d5040": {
+    "anomaly": null,
     "children": [
      "a9676b42-663d-4c38-86b8-7b3ce4cd07fc",
      "17688750-2d4f-4e12-afec-b7208812220d"
@@ -427,8 +454,13 @@
   "root_id": "74c73468-d5f9-4636-a801-1448f6137685"
  },
  "chain_a_group_tsum_add@chord_unlock": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "16b68b10-8215-4036-959f-571382d1ed5d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 31,
@@ -455,6 +487,7 @@
     "total_runtime_ms": 15
    },
    "52d72e86-38d9-4d6b-849f-6e05ac1b42c0": {
+    "anomaly": null,
     "children": [
      "16b68b10-8215-4036-959f-571382d1ed5d"
     ],
@@ -483,6 +516,7 @@
     "total_runtime_ms": 16
    },
    "53e6f781-07a7-4f41-8038-67db5273c20a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 47,
@@ -509,6 +543,7 @@
     "total_runtime_ms": 14
    },
    "55f94f5e-5b7c-480a-a91c-c3c66720ed69": {
+    "anomaly": null,
     "children": [
      "group:e32b4d35-6d86-42c2-8f63-bdaac9fb2712"
     ],
@@ -537,6 +572,7 @@
     "total_runtime_ms": 17
    },
    "e707016f-8b53-4474-8858-5de1ef6f2287": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 32,
@@ -563,6 +599,7 @@
     "total_runtime_ms": 15
    },
    "f1ceeae2-0583-4735-8f43-d690009270ca": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1007,
@@ -589,6 +626,7 @@
     "total_runtime_ms": 7
    },
    "group:e32b4d35-6d86-42c2-8f63-bdaac9fb2712": {
+    "anomaly": null,
     "children": [
      "e707016f-8b53-4474-8858-5de1ef6f2287",
      "53e6f781-07a7-4f41-8038-67db5273c20a",
@@ -623,8 +661,13 @@
   "root_id": "55f94f5e-5b7c-480a-a91c-c3c66720ed69"
  },
  "chain_a_group_tsum_add@chord_unlock@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "16b68b10-8215-4036-959f-571382d1ed5d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 31,
@@ -651,6 +694,7 @@
     "total_runtime_ms": 15
    },
    "52d72e86-38d9-4d6b-849f-6e05ac1b42c0": {
+    "anomaly": null,
     "children": [
      "16b68b10-8215-4036-959f-571382d1ed5d"
     ],
@@ -679,6 +723,7 @@
     "total_runtime_ms": 16
    },
    "53e6f781-07a7-4f41-8038-67db5273c20a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 47,
@@ -705,6 +750,7 @@
     "total_runtime_ms": 14
    },
    "55f94f5e-5b7c-480a-a91c-c3c66720ed69": {
+    "anomaly": null,
     "children": [
      "group:e32b4d35-6d86-42c2-8f63-bdaac9fb2712"
     ],
@@ -733,6 +779,7 @@
     "total_runtime_ms": 17
    },
    "e707016f-8b53-4474-8858-5de1ef6f2287": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 32,
@@ -759,6 +806,7 @@
     "total_runtime_ms": 15
    },
    "f1ceeae2-0583-4735-8f43-d690009270ca": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1007,
@@ -785,6 +833,7 @@
     "total_runtime_ms": 7
    },
    "group:e32b4d35-6d86-42c2-8f63-bdaac9fb2712": {
+    "anomaly": null,
     "children": [
      "e707016f-8b53-4474-8858-5de1ef6f2287",
      "53e6f781-07a7-4f41-8038-67db5273c20a",
@@ -819,8 +868,13 @@
   "root_id": "55f94f5e-5b7c-480a-a91c-c3c66720ed69"
  },
  "chain_a_group_tsum_add@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4ea45524-1448-40a5-a4d2-45e738e6fa53": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -847,6 +901,7 @@
     "total_runtime_ms": 0
    },
    "7db1b201-9256-4237-a5b6-1ab4690df693": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -873,6 +928,7 @@
     "total_runtime_ms": 0
    },
    "9083e10c-f4d6-4cee-8cf9-6db5e8422633": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 504,
@@ -899,6 +955,7 @@
     "total_runtime_ms": 501
    },
    "98917dd9-01d4-4390-be35-dd5c9e4eea41": {
+    "anomaly": null,
     "children": [
      "group:24c95b94-79c8-422f-99de-7a8dfe970784"
     ],
@@ -927,6 +984,7 @@
     "total_runtime_ms": 14
    },
    "aba1c275-49ba-4a48-870f-c09bcac237f7": {
+    "anomaly": null,
     "children": [
      "7db1b201-9256-4237-a5b6-1ab4690df693"
     ],
@@ -955,6 +1013,7 @@
     "total_runtime_ms": 0
    },
    "group:24c95b94-79c8-422f-99de-7a8dfe970784": {
+    "anomaly": null,
     "children": [
      "4ea45524-1448-40a5-a4d2-45e738e6fa53",
      "9083e10c-f4d6-4cee-8cf9-6db5e8422633",
@@ -988,8 +1047,13 @@
   "root_id": "98917dd9-01d4-4390-be35-dd5c9e4eea41"
  },
  "chain_a_group_tsum_add_add": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "12955bee-c7e5-421f-ac14-db9f4d427e53": {
+    "anomaly": null,
     "children": [
      "group:2e437c0a-4951-4782-b9c8-cf62f9d5b6f4"
     ],
@@ -1018,6 +1082,7 @@
     "total_runtime_ms": 13
    },
    "59dd5c80-f0d3-44d6-843b-ed3a39997828": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -1044,6 +1109,7 @@
     "total_runtime_ms": 0
    },
    "9b8a0c12-222f-424d-9d65-add051658d31": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -1070,6 +1136,7 @@
     "total_runtime_ms": 3
    },
    "bc9de9ed-df40-4c11-817e-d79b2066f2c3": {
+    "anomaly": null,
     "children": [
      "cf91cfdf-0870-46e2-b9ba-4b3bc7e1ea7e"
     ],
@@ -1098,6 +1165,7 @@
     "total_runtime_ms": 1
    },
    "cd1b306c-bf6e-4910-b3cc-f4f47db697be": {
+    "anomaly": null,
     "children": [
      "bc9de9ed-df40-4c11-817e-d79b2066f2c3"
     ],
@@ -1126,6 +1194,7 @@
     "total_runtime_ms": 508
    },
    "cf91cfdf-0870-46e2-b9ba-4b3bc7e1ea7e": {
+    "anomaly": null,
     "children": [
      "9b8a0c12-222f-424d-9d65-add051658d31"
     ],
@@ -1154,6 +1223,7 @@
     "total_runtime_ms": 4
    },
    "group:2e437c0a-4951-4782-b9c8-cf62f9d5b6f4": {
+    "anomaly": null,
     "children": [
      "59dd5c80-f0d3-44d6-843b-ed3a39997828",
      "cd1b306c-bf6e-4910-b3cc-f4f47db697be"
@@ -1186,8 +1256,13 @@
   "root_id": "12955bee-c7e5-421f-ac14-db9f4d427e53"
  },
  "chain_a_group_tsum_add_add@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "177d1007-4857-4512-8dfc-e6f78c66f534": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 505,
@@ -1214,6 +1289,7 @@
     "total_runtime_ms": 502
    },
    "6dc35f27-b9ce-41b1-8d4a-22cacf8aca4c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -1240,6 +1316,7 @@
     "total_runtime_ms": 0
    },
    "c0f557db-b72b-451e-b55e-e53dc771befa": {
+    "anomaly": null,
     "children": [
      "d67f3a66-56ac-43e7-9649-a7db1d8e0d60"
     ],
@@ -1268,6 +1345,7 @@
     "total_runtime_ms": 1
    },
    "d67f3a66-56ac-43e7-9649-a7db1d8e0d60": {
+    "anomaly": null,
     "children": [
      "6dc35f27-b9ce-41b1-8d4a-22cacf8aca4c"
     ],
@@ -1296,6 +1374,7 @@
     "total_runtime_ms": 1
    },
    "ddaeae1e-4db0-4bfe-ae72-e1ae11a8f242": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -1322,6 +1401,7 @@
     "total_runtime_ms": 0
    },
    "ff45c5dc-d0d5-4a93-8ad8-f110f8e29546": {
+    "anomaly": null,
     "children": [
      "group:69b97794-6128-4218-b91b-229ad9efe21a"
     ],
@@ -1350,6 +1430,7 @@
     "total_runtime_ms": 3
    },
    "group:69b97794-6128-4218-b91b-229ad9efe21a": {
+    "anomaly": null,
     "children": [
      "ddaeae1e-4db0-4bfe-ae72-e1ae11a8f242",
      "177d1007-4857-4512-8dfc-e6f78c66f534",
@@ -1383,8 +1464,13 @@
   "root_id": "ff45c5dc-d0d5-4a93-8ad8-f110f8e29546"
  },
  "chain_chord": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "188a5b57-25b9-43c8-a528-0f1096d389c1": {
+    "anomaly": null,
     "children": [],
     "chord_id": "aec11681-e976-40fb-93e8-3900db3f9803",
     "duration_ms": 1,
@@ -1411,6 +1497,7 @@
     "total_runtime_ms": 0
    },
    "6f7a3386-1fe6-494e-80c2-e443efb91ea6": {
+    "anomaly": null,
     "children": [],
     "chord_id": "aec11681-e976-40fb-93e8-3900db3f9803",
     "duration_ms": 502,
@@ -1437,6 +1524,7 @@
     "total_runtime_ms": 501
    },
    "c19bdf19-fcb6-45d8-99c1-602ca70bda9b": {
+    "anomaly": null,
     "children": [
      "e2814226-2010-4e66-86be-59c4fb1f51b3",
      "group:aec11681-e976-40fb-93e8-3900db3f9803"
@@ -1466,6 +1554,7 @@
     "total_runtime_ms": 2
    },
    "e2814226-2010-4e66-86be-59c4fb1f51b3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -1492,6 +1581,7 @@
     "total_runtime_ms": 0
    },
    "group:aec11681-e976-40fb-93e8-3900db3f9803": {
+    "anomaly": null,
     "children": [
      "188a5b57-25b9-43c8-a528-0f1096d389c1",
      "6f7a3386-1fe6-494e-80c2-e443efb91ea6"
@@ -1524,8 +1614,13 @@
   "root_id": "c19bdf19-fcb6-45d8-99c1-602ca70bda9b"
  },
  "chain_chord@celery5.2": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "054f9e66-585f-4fdf-9b18-e990e880f937": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -1552,6 +1647,7 @@
     "total_runtime_ms": 0
    },
    "081a1e8e-9160-4753-b85b-2f87e703d643": {
+    "anomaly": null,
     "children": [
      "group:afe865c4-faf1-4960-b8b1-2dc5aba6b70b"
     ],
@@ -1580,6 +1676,7 @@
     "total_runtime_ms": 3
    },
    "b679727f-4446-4ad3-894e-30d998457d0a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -1606,6 +1703,7 @@
     "total_runtime_ms": 0
    },
    "f2cf4ff6-4910-4383-9271-41e04750e7c1": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 504,
@@ -1632,6 +1730,7 @@
     "total_runtime_ms": 502
    },
    "group:afe865c4-faf1-4960-b8b1-2dc5aba6b70b": {
+    "anomaly": null,
     "children": [
      "b679727f-4446-4ad3-894e-30d998457d0a",
      "f2cf4ff6-4910-4383-9271-41e04750e7c1",
@@ -1665,8 +1764,13 @@
   "root_id": "081a1e8e-9160-4753-b85b-2f87e703d643"
  },
  "chain_chord@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "42e48608-1e27-4f21-9629-325a698a8b6a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -1693,6 +1797,7 @@
     "total_runtime_ms": 0
    },
    "a98581dd-6fef-4f6b-b9f9-29fc717c9297": {
+    "anomaly": null,
     "children": [
      "group:01877970-86a3-44dc-acd7-18d22bf735f3"
     ],
@@ -1721,6 +1826,7 @@
     "total_runtime_ms": 2
    },
    "cc728ba3-7456-4d54-b240-722ee4bb6088": {
+    "anomaly": null,
     "children": [],
     "chord_id": "01877970-86a3-44dc-acd7-18d22bf735f3",
     "duration_ms": 1,
@@ -1747,6 +1853,7 @@
     "total_runtime_ms": 0
    },
    "e095a40b-361d-4129-8a10-743e6167d692": {
+    "anomaly": null,
     "children": [],
     "chord_id": "01877970-86a3-44dc-acd7-18d22bf735f3",
     "duration_ms": 503,
@@ -1773,6 +1880,7 @@
     "total_runtime_ms": 501
    },
    "group:01877970-86a3-44dc-acd7-18d22bf735f3": {
+    "anomaly": null,
     "children": [
      "cc728ba3-7456-4d54-b240-722ee4bb6088",
      "e095a40b-361d-4129-8a10-743e6167d692",
@@ -1806,8 +1914,13 @@
   "root_id": "a98581dd-6fef-4f6b-b9f9-29fc717c9297"
  },
  "chain_chord_header_subtask_add_add": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "3638b88e-493d-47be-ac12-7c69f0fdbd27": {
+    "anomaly": null,
     "children": [
      "d4a87775-a204-4f8a-b4be-d069cf7d6de2"
     ],
@@ -1836,6 +1949,7 @@
     "total_runtime_ms": 0
    },
    "4158da09-a17d-40c4-9298-f73f817e0816": {
+    "anomaly": null,
     "children": [
      "3638b88e-493d-47be-ac12-7c69f0fdbd27"
     ],
@@ -1864,6 +1978,7 @@
     "total_runtime_ms": 6
    },
    "9014ca5c-b378-4678-943f-9808ce98333f": {
+    "anomaly": null,
     "children": [
      "4158da09-a17d-40c4-9298-f73f817e0816"
     ],
@@ -1892,6 +2007,7 @@
     "total_runtime_ms": 501
    },
    "d4a87775-a204-4f8a-b4be-d069cf7d6de2": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -1918,6 +2034,7 @@
     "total_runtime_ms": 0
    },
    "d7d30b16-71ce-431f-83e9-b69554397418": {
+    "anomaly": null,
     "children": [
      "group:14080d1f-37ee-4151-8d05-25090537b332"
     ],
@@ -1946,6 +2063,7 @@
     "total_runtime_ms": 3
    },
    "e74f81d4-791f-4ae1-889c-9cc19e9092f5": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 505,
@@ -1972,6 +2090,7 @@
     "total_runtime_ms": 0
    },
    "f2fb4bac-18e7-4a0a-9544-fc00fb663c18": {
+    "anomaly": null,
     "children": [
      "e74f81d4-791f-4ae1-889c-9cc19e9092f5"
     ],
@@ -2000,6 +2119,7 @@
     "total_runtime_ms": 1
    },
    "group:14080d1f-37ee-4151-8d05-25090537b332": {
+    "anomaly": null,
     "children": [
      "f2fb4bac-18e7-4a0a-9544-fc00fb663c18",
      "9014ca5c-b378-4678-943f-9808ce98333f"
@@ -2032,8 +2152,13 @@
   "root_id": "d7d30b16-71ce-431f-83e9-b69554397418"
  },
  "chain_chord_header_subtask_add_add@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0ec852be-7d68-4335-99fe-a5040fc411fb": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -2060,6 +2185,7 @@
     "total_runtime_ms": 0
    },
    "1fc28967-acff-474e-bca2-e0368c99a5c5": {
+    "anomaly": null,
     "children": [
      "4a5ce950-aef1-4e14-8215-3e405139d3d0"
     ],
@@ -2088,6 +2214,7 @@
     "total_runtime_ms": 0
    },
    "452895ee-565d-4621-9c5c-8564585600c6": {
+    "anomaly": null,
     "children": [
      "bd86a559-1c0d-4f29-a301-e39126340d89"
     ],
@@ -2116,6 +2243,7 @@
     "total_runtime_ms": 0
    },
    "4a5ce950-aef1-4e14-8215-3e405139d3d0": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 503,
@@ -2142,6 +2270,7 @@
     "total_runtime_ms": 0
    },
    "b3061bcd-5475-4eca-8f35-89d9f25144ae": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 504,
@@ -2168,6 +2297,7 @@
     "total_runtime_ms": 501
    },
    "bd86a559-1c0d-4f29-a301-e39126340d89": {
+    "anomaly": null,
     "children": [
      "0ec852be-7d68-4335-99fe-a5040fc411fb"
     ],
@@ -2196,6 +2326,7 @@
     "total_runtime_ms": 0
    },
    "cfbc8be7-5d09-4ab1-80a3-dde42bc217cf": {
+    "anomaly": null,
     "children": [
      "group:6e3fc299-408f-4059-a106-d15e68aafcf7"
     ],
@@ -2224,6 +2355,7 @@
     "total_runtime_ms": 2
    },
    "group:6e3fc299-408f-4059-a106-d15e68aafcf7": {
+    "anomaly": null,
     "children": [
      "1fc28967-acff-474e-bca2-e0368c99a5c5",
      "b3061bcd-5475-4eca-8f35-89d9f25144ae",
@@ -2257,8 +2389,13 @@
   "root_id": "cfbc8be7-5d09-4ab1-80a3-dde42bc217cf"
  },
  "chain_failed_head": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "526e08bf-533a-49d9-96c8-582e965cbf15": {
+    "anomaly": null,
     "children": [
      "531430d3-cd03-4675-bc30-91639851632c"
     ],
@@ -2287,6 +2424,7 @@
     "total_runtime_ms": null
    },
    "531430d3-cd03-4675-bc30-91639851632c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": null,
@@ -2313,6 +2451,7 @@
     "total_runtime_ms": null
    },
    "64c9fcf5-4854-45a2-8a9f-b2b0c0a0cb0c": {
+    "anomaly": null,
     "children": [
      "526e08bf-533a-49d9-96c8-582e965cbf15"
     ],
@@ -2344,8 +2483,13 @@
   "root_id": "64c9fcf5-4854-45a2-8a9f-b2b0c0a0cb0c"
  },
  "chain_group_group": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "45d73a5a-533c-499f-8fa9-b98fe3b16f9a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -2372,6 +2516,7 @@
     "total_runtime_ms": 0
    },
    "92cd75b2-f41c-4c2f-9591-57fd0955571c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -2398,6 +2543,7 @@
     "total_runtime_ms": 0
    },
    "97854b5d-12c6-4027-8590-4c572b869c81": {
+    "anomaly": null,
     "children": [
      "45d73a5a-533c-499f-8fa9-b98fe3b16f9a",
      "92cd75b2-f41c-4c2f-9591-57fd0955571c"
@@ -2427,6 +2573,7 @@
     "total_runtime_ms": 502
    },
    "dd877803-438b-40be-9bfb-0badf2bc7d57": {
+    "anomaly": null,
     "children": [],
     "chord_id": "24f4e9f2-0ff5-46f0-97ac-8ae294b5eaf4",
     "duration_ms": 999,
@@ -2453,6 +2600,7 @@
     "total_runtime_ms": 0
    },
    "group:24f4e9f2-0ff5-46f0-97ac-8ae294b5eaf4": {
+    "anomaly": null,
     "children": [
      "dd877803-438b-40be-9bfb-0badf2bc7d57",
      "97854b5d-12c6-4027-8590-4c572b869c81"
@@ -2485,8 +2633,13 @@
   "root_id": "group:24f4e9f2-0ff5-46f0-97ac-8ae294b5eaf4"
  },
  "chain_group_group@celery5.2": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "34c2f671-52f1-49c8-805e-6887fd8f7805": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 965,
@@ -2513,6 +2666,7 @@
     "total_runtime_ms": 1
    },
    "503163ab-29d5-4b99-bd1a-d23814a8427e": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -2539,6 +2693,7 @@
     "total_runtime_ms": 0
    },
    "97f7938d-a809-4073-a8b6-9cd28c5b2ab3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1468,
@@ -2565,6 +2720,7 @@
     "total_runtime_ms": 503
    },
    "fd8d1200-c1c7-442a-807a-ee804796a03a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -2591,6 +2747,7 @@
     "total_runtime_ms": 0
    },
    "group:81b0fcea-2237-44f2-b303-78a7f370009b": {
+    "anomaly": null,
     "children": [
      "34c2f671-52f1-49c8-805e-6887fd8f7805",
      "97f7938d-a809-4073-a8b6-9cd28c5b2ab3",
@@ -2621,6 +2778,7 @@
     "total_runtime_ms": null
    },
    "group:b66cf31b-a054-47d4-b70e-057876259c7d": {
+    "anomaly": null,
     "children": [
      "503163ab-29d5-4b99-bd1a-d23814a8427e",
      "fd8d1200-c1c7-442a-807a-ee804796a03a"
@@ -2653,8 +2811,13 @@
   "root_id": "group:81b0fcea-2237-44f2-b303-78a7f370009b"
  },
  "chain_group_group@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "148accb2-ae93-41c3-b037-2531b199e6c8": {
+    "anomaly": null,
     "children": [
      "34fb9d4e-abfa-454e-86ba-42abd00b0be8",
      "46552194-b6b8-4972-a3ad-d7b38741f216"
@@ -2684,6 +2847,7 @@
     "total_runtime_ms": 502
    },
    "34fb9d4e-abfa-454e-86ba-42abd00b0be8": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -2710,6 +2874,7 @@
     "total_runtime_ms": 0
    },
    "46552194-b6b8-4972-a3ad-d7b38741f216": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -2736,6 +2901,7 @@
     "total_runtime_ms": 0
    },
    "7aac57c7-ada7-43c6-80b1-e2eced977aff": {
+    "anomaly": null,
     "children": [],
     "chord_id": "5a36db74-4366-4705-8774-791d067dfad0",
     "duration_ms": 8,
@@ -2762,6 +2928,7 @@
     "total_runtime_ms": 0
    },
    "group:5a36db74-4366-4705-8774-791d067dfad0": {
+    "anomaly": null,
     "children": [
      "7aac57c7-ada7-43c6-80b1-e2eced977aff",
      "148accb2-ae93-41c3-b037-2531b199e6c8"
@@ -2794,8 +2961,13 @@
   "root_id": "group:5a36db74-4366-4705-8774-791d067dfad0"
  },
  "chain_group_nested": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "060cc9b3-e846-4f6c-a892-7c0aa9128ae0": {
+    "anomaly": null,
     "children": [
      "group:95e5d4ac-5093-4286-9810-8faa07bede6c"
     ],
@@ -2824,6 +2996,7 @@
     "total_runtime_ms": 6
    },
    "3badd31e-8ea5-4761-83ee-756af04d6df1": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -2850,6 +3023,7 @@
     "total_runtime_ms": 0
    },
    "b71afe5b-6bb6-4912-b739-8145fec4a498": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -2876,6 +3050,7 @@
     "total_runtime_ms": 0
    },
    "group:95e5d4ac-5093-4286-9810-8faa07bede6c": {
+    "anomaly": null,
     "children": [
      "b71afe5b-6bb6-4912-b739-8145fec4a498",
      "3badd31e-8ea5-4761-83ee-756af04d6df1"
@@ -2908,8 +3083,13 @@
   "root_id": "060cc9b3-e846-4f6c-a892-7c0aa9128ae0"
  },
  "chain_group_of_chains": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4361d088-b156-43cb-9d6e-1d3e505e5004": {
+    "anomaly": null,
     "children": [
      "c3e68b9b-a490-497e-93e6-99dcea0bc406"
     ],
@@ -2938,6 +3118,7 @@
     "total_runtime_ms": 0
    },
    "910942f0-93de-4b6c-a260-60ce633c0bfc": {
+    "anomaly": null,
     "children": [
      "group:2bd3d4bd-bbd4-45c5-92a8-64a6e27d4e7c"
     ],
@@ -2966,6 +3147,7 @@
     "total_runtime_ms": 6
    },
    "a405d844-95c9-49dc-8aad-0c4c0c881673": {
+    "anomaly": null,
     "children": [
      "b5e7c4c0-591e-416a-bf32-69f17c4eb9b5"
     ],
@@ -2994,6 +3176,7 @@
     "total_runtime_ms": 5
    },
    "b5e7c4c0-591e-416a-bf32-69f17c4eb9b5": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 9,
@@ -3020,6 +3203,7 @@
     "total_runtime_ms": 2
    },
    "c3e68b9b-a490-497e-93e6-99dcea0bc406": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 10,
@@ -3046,6 +3230,7 @@
     "total_runtime_ms": 2
    },
    "group:2bd3d4bd-bbd4-45c5-92a8-64a6e27d4e7c": {
+    "anomaly": null,
     "children": [
      "a405d844-95c9-49dc-8aad-0c4c0c881673",
      "4361d088-b156-43cb-9d6e-1d3e505e5004"
@@ -3078,8 +3263,13 @@
   "root_id": "910942f0-93de-4b6c-a260-60ce633c0bfc"
  },
  "chain_group_tsum_add": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "0a1ec1e9-adbf-4540-8d1c-432c24d85079": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -3106,6 +3296,7 @@
     "total_runtime_ms": 0
    },
    "22e78d02-4596-4e16-978b-3cb069e022dd": {
+    "anomaly": null,
     "children": [
      "0a1ec1e9-adbf-4540-8d1c-432c24d85079"
     ],
@@ -3134,6 +3325,7 @@
     "total_runtime_ms": 2
    },
    "624a535e-f7db-40fe-89c1-160820a97808": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 548,
@@ -3160,6 +3352,7 @@
     "total_runtime_ms": 0
    },
    "c59c8587-cf54-435a-9693-d67d91912005": {
+    "anomaly": null,
     "children": [
      "22e78d02-4596-4e16-978b-3cb069e022dd"
     ],
@@ -3188,6 +3381,7 @@
     "total_runtime_ms": 502
    },
    "group:2c08d714-e8b3-40af-95ac-7a1568833bef": {
+    "anomaly": null,
     "children": [
      "624a535e-f7db-40fe-89c1-160820a97808",
      "c59c8587-cf54-435a-9693-d67d91912005"
@@ -3220,8 +3414,13 @@
   "root_id": "group:2c08d714-e8b3-40af-95ac-7a1568833bef"
  },
  "chain_group_tsum_add@celery5.2": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "1368e478-d11c-42ed-aad9-5d88fae4c283": {
+    "anomaly": null,
     "children": [
      "f88ee2a1-36fb-4286-bfc6-894771ba077d"
     ],
@@ -3250,6 +3449,7 @@
     "total_runtime_ms": 1
    },
    "21331399-5e02-4bdd-92f3-6ec4ae805955": {
+    "anomaly": null,
     "children": [
      "1368e478-d11c-42ed-aad9-5d88fae4c283"
     ],
@@ -3278,6 +3478,7 @@
     "total_runtime_ms": 504
    },
    "a8d27647-425e-46e1-8c64-3e0c1850ba41": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 972,
@@ -3304,6 +3505,7 @@
     "total_runtime_ms": 2
    },
    "f88ee2a1-36fb-4286-bfc6-894771ba077d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -3330,6 +3532,7 @@
     "total_runtime_ms": 0
    },
    "group:c1ad40db-6a63-4d0f-9864-bdb22e200b68": {
+    "anomaly": null,
     "children": [
      "a8d27647-425e-46e1-8c64-3e0c1850ba41",
      "21331399-5e02-4bdd-92f3-6ec4ae805955"
@@ -3362,8 +3565,13 @@
   "root_id": "group:c1ad40db-6a63-4d0f-9864-bdb22e200b68"
  },
  "chain_group_tsum_add@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "1499e4d7-ab7b-4866-bbcc-5ae0abaf5e5c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1016,
@@ -3390,6 +3598,7 @@
     "total_runtime_ms": 502
    },
    "28da6c46-bf1b-49d1-8193-dc2da4074f82": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 514,
@@ -3416,6 +3625,7 @@
     "total_runtime_ms": 1
    },
    "ab45dfec-9378-4dbf-bccd-dc2d0ea3b297": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -3442,6 +3652,7 @@
     "total_runtime_ms": 0
    },
    "c40d68b9-f733-4db2-ab13-c3070637a14b": {
+    "anomaly": null,
     "children": [
      "ab45dfec-9378-4dbf-bccd-dc2d0ea3b297"
     ],
@@ -3470,6 +3681,7 @@
     "total_runtime_ms": 0
    },
    "group:0b6bea72-3ac8-410c-9d66-9c5b23c8a8c9": {
+    "anomaly": null,
     "children": [
      "28da6c46-bf1b-49d1-8193-dc2da4074f82",
      "1499e4d7-ab7b-4866-bbcc-5ae0abaf5e5c",
@@ -3503,8 +3715,13 @@
   "root_id": "group:0b6bea72-3ac8-410c-9d66-9c5b23c8a8c9"
  },
  "chain_groups_tasks": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": "add"
+  },
   "nodes": {
    "1b0fbfa3-8326-4d7d-87f9-91fd2e4064f1": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 3,
@@ -3531,6 +3748,7 @@
     "total_runtime_ms": 2
    },
    "1e6d29c0-d162-4839-b7bb-f0306fd72170": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1010,
@@ -3557,6 +3775,7 @@
     "total_runtime_ms": 0
    },
    "3f058058-041f-4c29-9029-d3623739fdf6": {
+    "anomaly": null,
     "children": [
      "e26f0811-fa30-49f8-aebc-7c590baebda4"
     ],
@@ -3585,6 +3804,7 @@
     "total_runtime_ms": 506
    },
    "5161ddbe-6f1c-4917-9bb6-3ec8af5029c0": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -3611,6 +3831,7 @@
     "total_runtime_ms": 2
    },
    "74631ff7-7c9b-49d0-96de-f04b2bce5b8a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1007,
@@ -3637,6 +3858,7 @@
     "total_runtime_ms": 26
    },
    "78f58720-1d65-46b9-97fa-e928e02ec043": {
+    "anomaly": null,
     "children": [],
     "chord_id": "ebcdc8d6-3cf8-4c09-8711-361cb762d917",
     "duration_ms": 508,
@@ -3663,6 +3885,7 @@
     "total_runtime_ms": 504
    },
    "b19ff796-9eb9-413c-bc33-6814c4f262ee": {
+    "anomaly": null,
     "children": [
      "c2b406ef-bd0e-4a86-8972-a6a1b1ec2f55"
     ],
@@ -3691,6 +3914,7 @@
     "total_runtime_ms": 502
    },
    "c2b406ef-bd0e-4a86-8972-a6a1b1ec2f55": {
+    "anomaly": null,
     "children": [
      "group:c7b899c4-c638-48cd-8a63-87525f76f1d0"
     ],
@@ -3719,6 +3943,7 @@
     "total_runtime_ms": 4
    },
    "db31c6b8-f3e4-42b3-9554-6169c45fdee6": {
+    "anomaly": null,
     "children": [],
     "chord_id": "ebcdc8d6-3cf8-4c09-8711-361cb762d917",
     "duration_ms": 6,
@@ -3745,6 +3970,7 @@
     "total_runtime_ms": 2
    },
    "e26f0811-fa30-49f8-aebc-7c590baebda4": {
+    "anomaly": null,
     "children": [
      "group:3f64c5aa-3505-47dc-9ac6-bae2a2792c8f"
     ],
@@ -3773,6 +3999,7 @@
     "total_runtime_ms": 7
    },
    "group:3f64c5aa-3505-47dc-9ac6-bae2a2792c8f": {
+    "anomaly": null,
     "children": [
      "5161ddbe-6f1c-4917-9bb6-3ec8af5029c0",
      "b19ff796-9eb9-413c-bc33-6814c4f262ee"
@@ -3802,6 +4029,7 @@
     "total_runtime_ms": null
    },
    "group:c7b899c4-c638-48cd-8a63-87525f76f1d0": {
+    "anomaly": null,
     "children": [
      "db31c6b8-f3e4-42b3-9554-6169c45fdee6",
      "78f58720-1d65-46b9-97fa-e928e02ec043",
@@ -3832,6 +4060,7 @@
     "total_runtime_ms": null
    },
    "group:ebcdc8d6-3cf8-4c09-8711-361cb762d917": {
+    "anomaly": null,
     "children": [
      "74631ff7-7c9b-49d0-96de-f04b2bce5b8a",
      "1e6d29c0-d162-4839-b7bb-f0306fd72170",
@@ -3865,8 +4094,13 @@
   "root_id": "group:ebcdc8d6-3cf8-4c09-8711-361cb762d917"
  },
  "chain_groups_tasks@field": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": "add"
+  },
   "nodes": {
    "0b46a72f-71ab-462e-b77a-9e102bab33f1": {
+    "anomaly": null,
     "children": [
      "group:b30d8316-cb7f-4030-9ca4-3117f45087f5"
     ],
@@ -3895,6 +4129,7 @@
     "total_runtime_ms": 2
    },
    "30521b96-43c8-42b7-b8d6-bad5400942d3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 69,
@@ -3921,6 +4156,7 @@
     "total_runtime_ms": 0
    },
    "65c15614-b3ed-42f5-a14c-bd24cecf7adb": {
+    "anomaly": null,
     "children": [],
     "chord_id": "c1d36fb2-cccc-44f9-81ff-b92e682df38b",
     "duration_ms": 1,
@@ -3947,6 +4183,7 @@
     "total_runtime_ms": 0
    },
    "69edd27a-858a-41aa-9915-c82fc0a2e23f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 503,
@@ -3973,6 +4210,7 @@
     "total_runtime_ms": 501
    },
    "6e7a49bc-c75c-4b1f-9598-60c2d4ed240b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 573,
@@ -3999,6 +4237,7 @@
     "total_runtime_ms": 503
    },
    "880deeec-1fc6-48cf-9024-e80400e1db57": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 70,
@@ -4025,6 +4264,7 @@
     "total_runtime_ms": 0
    },
    "8d711895-2bde-46c6-94db-a981b7bc1cd6": {
+    "anomaly": null,
     "children": [],
     "chord_id": "c1d36fb2-cccc-44f9-81ff-b92e682df38b",
     "duration_ms": 502,
@@ -4051,6 +4291,7 @@
     "total_runtime_ms": 501
    },
    "b58c70d5-962a-4a3a-b2f2-198ffdf25678": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -4077,6 +4318,7 @@
     "total_runtime_ms": 0
    },
    "f00e17bb-afca-4387-9339-3b6eede36b63": {
+    "anomaly": null,
     "children": [
      "group:91088939-4b87-4143-ade7-27e6af679388"
     ],
@@ -4105,6 +4347,7 @@
     "total_runtime_ms": 1
    },
    "f2f92b1a-1a81-4d85-93a4-7f2f69abe7a1": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -4131,6 +4374,7 @@
     "total_runtime_ms": 0
    },
    "group:91088939-4b87-4143-ade7-27e6af679388": {
+    "anomaly": null,
     "children": [
      "65c15614-b3ed-42f5-a14c-bd24cecf7adb",
      "8d711895-2bde-46c6-94db-a981b7bc1cd6",
@@ -4161,6 +4405,7 @@
     "total_runtime_ms": null
    },
    "group:b30d8316-cb7f-4030-9ca4-3117f45087f5": {
+    "anomaly": null,
     "children": [
      "b58c70d5-962a-4a3a-b2f2-198ffdf25678",
      "69edd27a-858a-41aa-9915-c82fc0a2e23f",
@@ -4191,6 +4436,7 @@
     "total_runtime_ms": null
    },
    "group:c1d36fb2-cccc-44f9-81ff-b92e682df38b": {
+    "anomaly": null,
     "children": [
      "30521b96-43c8-42b7-b8d6-bad5400942d3",
      "880deeec-1fc6-48cf-9024-e80400e1db57",
@@ -4225,8 +4471,13 @@
   "root_id": "group:c1d36fb2-cccc-44f9-81ff-b92e682df38b"
  },
  "chain_groups_tasks_add": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "359d0413-791e-48d3-a294-81f383d13b18": {
+    "anomaly": null,
     "children": [
      "fd8132a9-19f5-41c2-8ebc-cd9fb714090b"
     ],
@@ -4255,6 +4506,7 @@
     "total_runtime_ms": 1
    },
    "576ed850-06c2-4c89-b8c3-08afd9d70b78": {
+    "anomaly": null,
     "children": [
      "6c842fec-0824-41f0-a412-470d88d41135"
     ],
@@ -4283,6 +4535,7 @@
     "total_runtime_ms": 512
    },
    "594a6bb7-04b8-449f-be94-c6654f744d3d": {
+    "anomaly": null,
     "children": [
      "359d0413-791e-48d3-a294-81f383d13b18"
     ],
@@ -4311,6 +4564,7 @@
     "total_runtime_ms": 503
    },
    "6c842fec-0824-41f0-a412-470d88d41135": {
+    "anomaly": null,
     "children": [
      "group:69837090-8278-42b2-8051-ad42dde59204"
     ],
@@ -4339,6 +4593,7 @@
     "total_runtime_ms": 6
    },
    "8e8e6318-7873-4f8b-a5e0-463298f5cfc7": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 3,
@@ -4365,6 +4620,7 @@
     "total_runtime_ms": 0
    },
    "c24a791e-c6b4-4c47-8260-ef67d7b6eee9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 997,
@@ -4391,6 +4647,7 @@
     "total_runtime_ms": 5
    },
    "fd8132a9-19f5-41c2-8ebc-cd9fb714090b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -4417,6 +4674,7 @@
     "total_runtime_ms": 0
    },
    "group:69837090-8278-42b2-8051-ad42dde59204": {
+    "anomaly": null,
     "children": [
      "8e8e6318-7873-4f8b-a5e0-463298f5cfc7",
      "594a6bb7-04b8-449f-be94-c6654f744d3d"
@@ -4446,6 +4704,7 @@
     "total_runtime_ms": null
    },
    "group:8679c5c1-b977-48b7-adec-e0c23b8f4a1d": {
+    "anomaly": null,
     "children": [
      "c24a791e-c6b4-4c47-8260-ef67d7b6eee9",
      "576ed850-06c2-4c89-b8c3-08afd9d70b78"
@@ -4478,8 +4737,13 @@
   "root_id": "group:8679c5c1-b977-48b7-adec-e0c23b8f4a1d"
  },
  "chain_groups_tasks_add@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "13d8a3b0-9ee0-4d10-958f-949098d173c9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -4506,6 +4770,7 @@
     "total_runtime_ms": 0
    },
    "1f473195-4dcc-41e2-944d-7bc378284a08": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 584,
@@ -4532,6 +4797,7 @@
     "total_runtime_ms": 502
    },
    "49f59e55-7aea-4b8a-b3eb-0ab3671e36c3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -4558,6 +4824,7 @@
     "total_runtime_ms": 0
    },
    "801b00a3-305a-4daa-8a49-305364bea28a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 83,
@@ -4584,6 +4851,7 @@
     "total_runtime_ms": 1
    },
    "a444b323-ce87-43f2-86d9-259bcdf75f03": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 503,
@@ -4610,6 +4878,7 @@
     "total_runtime_ms": 502
    },
    "bd53a5d9-ed92-4792-90c6-0f9645eb50cd": {
+    "anomaly": null,
     "children": [
      "13d8a3b0-9ee0-4d10-958f-949098d173c9"
     ],
@@ -4638,6 +4907,7 @@
     "total_runtime_ms": 0
    },
    "cb98304e-1610-41ad-b4f2-f39556c5cb45": {
+    "anomaly": null,
     "children": [
      "group:97cce702-c32d-4ff7-bec0-c4d4e15991ba"
     ],
@@ -4666,6 +4936,7 @@
     "total_runtime_ms": 1
    },
    "group:97cce702-c32d-4ff7-bec0-c4d4e15991ba": {
+    "anomaly": null,
     "children": [
      "49f59e55-7aea-4b8a-b3eb-0ab3671e36c3",
      "a444b323-ce87-43f2-86d9-259bcdf75f03",
@@ -4696,6 +4967,7 @@
     "total_runtime_ms": null
    },
    "group:9d4d8a31-172b-4b17-97a4-82c96c1ca28a": {
+    "anomaly": null,
     "children": [
      "801b00a3-305a-4daa-8a49-305364bea28a",
      "1f473195-4dcc-41e2-944d-7bc378284a08",
@@ -4729,8 +5001,13 @@
   "root_id": "group:9d4d8a31-172b-4b17-97a4-82c96c1ca28a"
  },
  "chain_head_result_not_stored": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "149bb6d9-e4ea-467f-96b1-b43fbe8f253c": {
+    "anomaly": null,
     "children": [
      "8b1134b3-7f5c-41b6-9efb-bdbde9a6dfa3"
     ],
@@ -4759,6 +5036,7 @@
     "total_runtime_ms": 1
    },
    "8b1134b3-7f5c-41b6-9efb-bdbde9a6dfa3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -4785,6 +5063,7 @@
     "total_runtime_ms": 0
    },
    "c85cff62-96c4-4710-b8f5-ce95bb5f4cb2": {
+    "anomaly": null,
     "children": [
      "149bb6d9-e4ea-467f-96b1-b43fbe8f253c"
     ],
@@ -4816,8 +5095,13 @@
   "root_id": "c85cff62-96c4-4710-b8f5-ce95bb5f4cb2"
  },
  "chain_replace12@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "174163ca-81cf-45a9-b6b3-d16d0bd065aa": {
+    "anomaly": null,
     "children": [
      "cd6346b9-0894-4e5e-b9ae-9da6a52c0400"
     ],
@@ -4846,6 +5130,7 @@
     "total_runtime_ms": 0
    },
    "1d3ab8dc-8219-45f9-89d3-86a1e9be9580": {
+    "anomaly": null,
     "children": [
      "174163ca-81cf-45a9-b6b3-d16d0bd065aa"
     ],
@@ -4874,6 +5159,7 @@
     "total_runtime_ms": 0
    },
    "2246eabb-bd18-4fb3-bd0c-c5bc133ab2fb": {
+    "anomaly": null,
     "children": [
      "1d3ab8dc-8219-45f9-89d3-86a1e9be9580"
     ],
@@ -4902,6 +5188,7 @@
     "total_runtime_ms": 0
    },
    "268b87cf-b479-4ec5-9cef-c51857ed59a8": {
+    "anomaly": null,
     "children": [
      "2246eabb-bd18-4fb3-bd0c-c5bc133ab2fb"
     ],
@@ -4930,6 +5217,7 @@
     "total_runtime_ms": 0
    },
    "34aa8dd2-3e47-43c3-bcd5-05554c8cc5d5": {
+    "anomaly": null,
     "children": [
      "4859b897-27de-4c8f-bd23-ae32b2622973"
     ],
@@ -4958,6 +5246,7 @@
     "total_runtime_ms": 1
    },
    "3e0071f1-1d53-4f93-8bc7-c392a124e449": {
+    "anomaly": null,
     "children": [
      "67603384-8eb2-4d6a-8512-1a1060a92f34"
     ],
@@ -4986,6 +5275,7 @@
     "total_runtime_ms": 0
    },
    "4859b897-27de-4c8f-bd23-ae32b2622973": {
+    "anomaly": null,
     "children": [
      "3e0071f1-1d53-4f93-8bc7-c392a124e449"
     ],
@@ -5014,6 +5304,7 @@
     "total_runtime_ms": 1
    },
    "53fa7c32-a265-4ce5-9efa-9aee0edb4f06": {
+    "anomaly": null,
     "children": [
      "9b52853b-a8ae-480f-8d6a-af82af88cfa3"
     ],
@@ -5042,6 +5333,7 @@
     "total_runtime_ms": 0
    },
    "5a58c007-6d44-4e79-be97-9ea2c6c47ddb": {
+    "anomaly": null,
     "children": [
      "6378c4cd-47b5-410e-8751-abcdbf896b0f"
     ],
@@ -5070,6 +5362,7 @@
     "total_runtime_ms": 13
    },
    "6378c4cd-47b5-410e-8751-abcdbf896b0f": {
+    "anomaly": null,
     "children": [
      "34aa8dd2-3e47-43c3-bcd5-05554c8cc5d5"
     ],
@@ -5098,6 +5391,7 @@
     "total_runtime_ms": 0
    },
    "67603384-8eb2-4d6a-8512-1a1060a92f34": {
+    "anomaly": null,
     "children": [
      "53fa7c32-a265-4ce5-9efa-9aee0edb4f06"
     ],
@@ -5126,6 +5420,7 @@
     "total_runtime_ms": 0
    },
    "9b52853b-a8ae-480f-8d6a-af82af88cfa3": {
+    "anomaly": null,
     "children": [
      "268b87cf-b479-4ec5-9cef-c51857ed59a8"
     ],
@@ -5154,6 +5449,7 @@
     "total_runtime_ms": 0
    },
    "cd6346b9-0894-4e5e-b9ae-9da6a52c0400": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -5183,8 +5479,13 @@
   "root_id": "5a58c007-6d44-4e79-be97-9ea2c6c47ddb"
  },
  "chain_replace3@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4d6d559a-8f07-484b-9056-01133370f609": {
+    "anomaly": null,
     "children": [
      "a182f2dd-496d-4d8b-b58b-909645c37243"
     ],
@@ -5213,6 +5514,7 @@
     "total_runtime_ms": 8
    },
    "a182f2dd-496d-4d8b-b58b-909645c37243": {
+    "anomaly": null,
     "children": [
      "b8d68b5f-fbe3-44ee-a0da-dc7fb33aa48d"
     ],
@@ -5241,6 +5543,7 @@
     "total_runtime_ms": 0
    },
    "ac83a884-88a0-4ab9-b4a6-360f47d905c0": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -5267,6 +5570,7 @@
     "total_runtime_ms": 0
    },
    "b8d68b5f-fbe3-44ee-a0da-dc7fb33aa48d": {
+    "anomaly": null,
     "children": [
      "ac83a884-88a0-4ab9-b4a6-360f47d905c0"
     ],
@@ -5298,8 +5602,13 @@
   "root_id": "4d6d559a-8f07-484b-9056-01133370f609"
  },
  "chain_replace4@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0237e215-8b22-4fa2-b954-d9d97774dd9c": {
+    "anomaly": null,
     "children": [
      "f164bf3e-13cb-4483-a7d6-0624af3ccd53"
     ],
@@ -5328,6 +5637,7 @@
     "total_runtime_ms": 0
    },
    "0c3fedac-2998-4946-a934-4fbac273fb53": {
+    "anomaly": null,
     "children": [
      "0237e215-8b22-4fa2-b954-d9d97774dd9c"
     ],
@@ -5356,6 +5666,7 @@
     "total_runtime_ms": 0
    },
    "d890c9bb-2872-444d-a4b4-cb38b384895b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -5382,6 +5693,7 @@
     "total_runtime_ms": 0
    },
    "f164bf3e-13cb-4483-a7d6-0624af3ccd53": {
+    "anomaly": null,
     "children": [
      "ffd2e0c6-a46d-4610-a7cf-d6be43c30643"
     ],
@@ -5410,6 +5722,7 @@
     "total_runtime_ms": 0
    },
    "ffd2e0c6-a46d-4610-a7cf-d6be43c30643": {
+    "anomaly": null,
     "children": [
      "d890c9bb-2872-444d-a4b4-cb38b384895b"
     ],
@@ -5441,8 +5754,13 @@
   "root_id": "0c3fedac-2998-4946-a934-4fbac273fb53"
  },
  "chain_replace_group@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "2bad3164-3b19-4d59-b84b-2d266acf2f0f": {
+    "anomaly": null,
     "children": [
      "a70adfab-3406-44b0-a3fc-a93ffcc2947c"
     ],
@@ -5471,6 +5789,7 @@
     "total_runtime_ms": 1
    },
    "81790902-f7c9-4b5b-8857-f4a3b5f2688c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 9,
@@ -5497,6 +5816,7 @@
     "total_runtime_ms": 1
    },
    "a70adfab-3406-44b0-a3fc-a93ffcc2947c": {
+    "anomaly": null,
     "children": [
      "group:07cd9a0c-f030-4a0d-a7fc-619fff2aafe9"
     ],
@@ -5525,6 +5845,7 @@
     "total_runtime_ms": 0
    },
    "b0941376-ece5-45d0-afd3-86003216c597": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 511,
@@ -5551,6 +5872,7 @@
     "total_runtime_ms": 501
    },
    "group:07cd9a0c-f030-4a0d-a7fc-619fff2aafe9": {
+    "anomaly": null,
     "children": [
      "81790902-f7c9-4b5b-8857-f4a3b5f2688c",
      "b0941376-ece5-45d0-afd3-86003216c597"
@@ -5583,8 +5905,13 @@
   "root_id": "2bad3164-3b19-4d59-b84b-2d266acf2f0f"
  },
  "chain_replace_group_tsum": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0ecc05f7-e36f-494c-bc98-38b11418c6a7": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -5611,6 +5938,7 @@
     "total_runtime_ms": 0
    },
    "7e1afcdd-d397-45e2-9c7a-7907770aef28": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 507,
@@ -5637,6 +5965,7 @@
     "total_runtime_ms": 501
    },
    "ce05185b-d7ba-4236-b5e2-09d514aaa91d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -5663,6 +5992,7 @@
     "total_runtime_ms": 0
    },
    "f12b608e-9186-4d33-8eb1-d1fee470307e": {
+    "anomaly": null,
     "children": [
      "0ecc05f7-e36f-494c-bc98-38b11418c6a7",
      "group:89e3bdaa-5740-4799-bd1b-a714725b2b4c"
@@ -5692,6 +6022,7 @@
     "total_runtime_ms": 0
    },
    "group:89e3bdaa-5740-4799-bd1b-a714725b2b4c": {
+    "anomaly": null,
     "children": [
      "ce05185b-d7ba-4236-b5e2-09d514aaa91d",
      "7e1afcdd-d397-45e2-9c7a-7907770aef28"
@@ -5724,8 +6055,13 @@
   "root_id": "f12b608e-9186-4d33-8eb1-d1fee470307e"
  },
  "chain_replace_group_tsum@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "10a9efec-5bcf-449b-bdd2-9d626ad0543d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -5752,6 +6088,7 @@
     "total_runtime_ms": 0
    },
    "4bf7dd43-a044-43e2-8756-67287a4e6563": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -5778,6 +6115,7 @@
     "total_runtime_ms": 0
    },
    "b088f005-69db-41cb-a961-205b68851f59": {
+    "anomaly": null,
     "children": [
      "4bf7dd43-a044-43e2-8756-67287a4e6563",
      "group:2c344af1-492c-4440-8512-0d031785fc9d"
@@ -5807,6 +6145,7 @@
     "total_runtime_ms": 0
    },
    "c6f50d68-74ac-4ded-8024-25760a87ddec": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 508,
@@ -5833,6 +6172,7 @@
     "total_runtime_ms": 501
    },
    "group:2c344af1-492c-4440-8512-0d031785fc9d": {
+    "anomaly": null,
     "children": [
      "10a9efec-5bcf-449b-bdd2-9d626ad0543d",
      "c6f50d68-74ac-4ded-8024-25760a87ddec"
@@ -5865,8 +6205,13 @@
   "root_id": "b088f005-69db-41cb-a961-205b68851f59"
  },
  "chain_replace_group_tsum@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "478df39f-1db9-446b-9e81-91efdf527437": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 513,
@@ -5893,6 +6238,7 @@
     "total_runtime_ms": 502
    },
    "6ab76a99-b49d-4977-b8c6-b0d529dcc906": {
+    "anomaly": null,
     "children": [
      "b408ef21-be18-4f53-aad2-36f850eac63a",
      "group:78068d26-0416-47fa-abf9-ab1b5a8d96b0"
@@ -5922,6 +6268,7 @@
     "total_runtime_ms": 0
    },
    "9964b02b-fbc3-4165-8794-190d62301174": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 11,
@@ -5948,6 +6295,7 @@
     "total_runtime_ms": 0
    },
    "b408ef21-be18-4f53-aad2-36f850eac63a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -5974,6 +6322,7 @@
     "total_runtime_ms": 0
    },
    "group:78068d26-0416-47fa-abf9-ab1b5a8d96b0": {
+    "anomaly": null,
     "children": [
      "9964b02b-fbc3-4165-8794-190d62301174",
      "478df39f-1db9-446b-9e81-91efdf527437"
@@ -6006,8 +6355,13 @@
   "root_id": "6ab76a99-b49d-4977-b8c6-b0d529dcc906"
  },
  "chain_replace_group_tsum@worker_process@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "3f5d1b74-9b0d-4a36-a16d-55c0e81e380f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 509,
@@ -6034,6 +6388,7 @@
     "total_runtime_ms": 502
    },
    "60a5f446-feb4-4830-bb92-0e84eb3fa6cc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -6060,6 +6415,7 @@
     "total_runtime_ms": 0
    },
    "7c10e36b-bf41-4d7b-b49b-c34bf99f66ac": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -6086,6 +6442,7 @@
     "total_runtime_ms": 0
    },
    "c9080879-1ccc-4399-ac5d-6fa81580944d": {
+    "anomaly": null,
     "children": [
      "60a5f446-feb4-4830-bb92-0e84eb3fa6cc",
      "group:4370a7c6-ce3b-46ad-be83-3c15372d69e9"
@@ -6115,6 +6472,7 @@
     "total_runtime_ms": 0
    },
    "group:4370a7c6-ce3b-46ad-be83-3c15372d69e9": {
+    "anomaly": null,
     "children": [
      "7c10e36b-bf41-4d7b-b49b-c34bf99f66ac",
      "3f5d1b74-9b0d-4a36-a16d-55c0e81e380f"
@@ -6147,8 +6505,13 @@
   "root_id": "c9080879-1ccc-4399-ac5d-6fa81580944d"
  },
  "chain_replace_same_name@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "2bb70f96-7e50-4762-b3dd-0924f3e01653": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 17,
@@ -6175,6 +6538,7 @@
     "total_runtime_ms": 1
    },
    "8c9491b1-403b-4bf6-9dff-a1c77cd85d01": {
+    "anomaly": null,
     "children": [
      "ad7cf80b-edd0-4141-bd1f-3176b29fb5c4"
     ],
@@ -6203,6 +6567,7 @@
     "total_runtime_ms": 9
    },
    "ad7cf80b-edd0-4141-bd1f-3176b29fb5c4": {
+    "anomaly": null,
     "children": [
      "2bb70f96-7e50-4762-b3dd-0924f3e01653"
     ],
@@ -6234,8 +6599,13 @@
   "root_id": "8c9491b1-403b-4bf6-9dff-a1c77cd85d01"
  },
  "chain_single_header_chord": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "55a64e72-e9c5-4846-a58d-f00e5e0b17a8": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -6262,6 +6632,7 @@
     "total_runtime_ms": 0
    },
    "aa3422f5-e8e5-4ea8-b59c-d7695a953a86": {
+    "anomaly": null,
     "children": [],
     "chord_id": "8987ad7b-1167-4699-b9fb-97fda39865c8",
     "duration_ms": 502,
@@ -6288,6 +6659,7 @@
     "total_runtime_ms": 501
    },
    "f646b384-7d71-4efc-af43-fedb61b3d9dc": {
+    "anomaly": null,
     "children": [
      "55a64e72-e9c5-4846-a58d-f00e5e0b17a8",
      "group:8987ad7b-1167-4699-b9fb-97fda39865c8"
@@ -6317,6 +6689,7 @@
     "total_runtime_ms": 9
    },
    "group:8987ad7b-1167-4699-b9fb-97fda39865c8": {
+    "anomaly": null,
     "children": [
      "aa3422f5-e8e5-4ea8-b59c-d7695a953a86"
     ],
@@ -6348,8 +6721,13 @@
   "root_id": "f646b384-7d71-4efc-af43-fedb61b3d9dc"
  },
  "chain_single_header_chord@field": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "1e3208c9-e092-4342-9ffd-6ddba304f54e": {
+    "anomaly": null,
     "children": [],
     "chord_id": "49e26fa4-a32e-4dc1-9ddd-bdc8a5acfa1c",
     "duration_ms": 502,
@@ -6376,6 +6754,7 @@
     "total_runtime_ms": 501
    },
    "d30b95c7-6167-4e1b-8d58-6f2c91daa77c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -6402,6 +6781,7 @@
     "total_runtime_ms": 0
    },
    "f545f953-5ebe-4b7a-8e1c-91cf6ddb1b94": {
+    "anomaly": null,
     "children": [
      "group:49e26fa4-a32e-4dc1-9ddd-bdc8a5acfa1c"
     ],
@@ -6430,6 +6810,7 @@
     "total_runtime_ms": 2
    },
    "group:49e26fa4-a32e-4dc1-9ddd-bdc8a5acfa1c": {
+    "anomaly": null,
     "children": [
      "1e3208c9-e092-4342-9ffd-6ddba304f54e",
      "d30b95c7-6167-4e1b-8d58-6f2c91daa77c"
@@ -6462,8 +6843,13 @@
   "root_id": "f545f953-5ebe-4b7a-8e1c-91cf6ddb1b94"
  },
  "chord": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": "add"
+  },
   "nodes": {
    "0858a004-d640-41e8-832d-68aa2b506bc3": {
+    "anomaly": null,
     "children": [
      "b5f41fb6-8af2-4465-a594-5ae892dd5e4b"
     ],
@@ -6492,6 +6878,7 @@
     "total_runtime_ms": 501
    },
    "14a87871-ca5c-4c8a-92df-8419f7004f7e": {
+    "anomaly": null,
     "children": [],
     "chord_id": "9de60359-64c5-46fc-9cc8-683a55661700",
     "duration_ms": 992,
@@ -6518,6 +6905,7 @@
     "total_runtime_ms": 0
    },
    "6b8e8b05-ff82-4941-9862-704805d58d6a": {
+    "anomaly": null,
     "children": [],
     "chord_id": "9de60359-64c5-46fc-9cc8-683a55661700",
     "duration_ms": 996,
@@ -6544,6 +6932,7 @@
     "total_runtime_ms": 0
    },
    "b5f41fb6-8af2-4465-a594-5ae892dd5e4b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -6570,6 +6959,7 @@
     "total_runtime_ms": 0
    },
    "group:9de60359-64c5-46fc-9cc8-683a55661700": {
+    "anomaly": null,
     "children": [
      "6b8e8b05-ff82-4941-9862-704805d58d6a",
      "14a87871-ca5c-4c8a-92df-8419f7004f7e",
@@ -6603,8 +6993,13 @@
   "root_id": "group:9de60359-64c5-46fc-9cc8-683a55661700"
  },
  "chord@chord_unlock": {
+  "member_fields": {
+   "member_count": 4,
+   "member_name": null
+  },
   "nodes": {
    "2de39d07-9168-4e67-bd6e-5827029bc330": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 621,
@@ -6631,6 +7026,7 @@
     "total_runtime_ms": 26
    },
    "59c50b1f-2617-4695-aae9-73fe41906b8b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1018,
@@ -6657,6 +7053,7 @@
     "total_runtime_ms": 19
    },
    "6a468018-2b58-457d-92c9-2c329dad0611": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 637,
@@ -6683,6 +7080,7 @@
     "total_runtime_ms": 14
    },
    "7af95b13-8f12-4b5d-854f-41ed5b5a3728": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 652,
@@ -6709,6 +7107,7 @@
     "total_runtime_ms": 15
    },
    "9c3f307e-ccda-40eb-bfce-ce6e737f231b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 652,
@@ -6735,6 +7134,7 @@
     "total_runtime_ms": 15
    },
    "group:cb6fcee4-1157-404f-8e01-1d50d61ebe64": {
+    "anomaly": null,
     "children": [
      "2de39d07-9168-4e67-bd6e-5827029bc330",
      "6a468018-2b58-457d-92c9-2c329dad0611",
@@ -6770,8 +7170,13 @@
   "root_id": "group:cb6fcee4-1157-404f-8e01-1d50d61ebe64"
  },
  "chord@chord_unlock@field": {
+  "member_fields": {
+   "member_count": 4,
+   "member_name": null
+  },
   "nodes": {
    "2de39d07-9168-4e67-bd6e-5827029bc330": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 621,
@@ -6798,6 +7203,7 @@
     "total_runtime_ms": 26
    },
    "59c50b1f-2617-4695-aae9-73fe41906b8b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1018,
@@ -6824,6 +7230,7 @@
     "total_runtime_ms": 19
    },
    "6a468018-2b58-457d-92c9-2c329dad0611": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 637,
@@ -6850,6 +7257,7 @@
     "total_runtime_ms": 14
    },
    "7af95b13-8f12-4b5d-854f-41ed5b5a3728": {
+    "anomaly": null,
     "children": [],
     "chord_id": "cb6fcee4-1157-404f-8e01-1d50d61ebe64",
     "duration_ms": 652,
@@ -6876,6 +7284,7 @@
     "total_runtime_ms": 15
    },
    "9c3f307e-ccda-40eb-bfce-ce6e737f231b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 652,
@@ -6902,6 +7311,7 @@
     "total_runtime_ms": 15
    },
    "group:cb6fcee4-1157-404f-8e01-1d50d61ebe64": {
+    "anomaly": null,
     "children": [
      "2de39d07-9168-4e67-bd6e-5827029bc330",
      "6a468018-2b58-457d-92c9-2c329dad0611",
@@ -6937,8 +7347,13 @@
   "root_id": "group:cb6fcee4-1157-404f-8e01-1d50d61ebe64"
  },
  "chord@field": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": "add"
+  },
   "nodes": {
    "11dfd3cd-e851-4068-bdde-11c0447388a4": {
+    "anomaly": null,
     "children": [],
     "chord_id": "39b8367c-5a02-423d-b406-a59433bb73d8",
     "duration_ms": 31,
@@ -6965,6 +7380,7 @@
     "total_runtime_ms": 0
    },
    "73034eb3-c30b-4928-87cd-3eca162bf1cf": {
+    "anomaly": null,
     "children": [],
     "chord_id": "39b8367c-5a02-423d-b406-a59433bb73d8",
     "duration_ms": 532,
@@ -6991,6 +7407,7 @@
     "total_runtime_ms": 501
    },
    "a2a41494-aacc-41cd-945a-a2cb02d5df6a": {
+    "anomaly": null,
     "children": [],
     "chord_id": "39b8367c-5a02-423d-b406-a59433bb73d8",
     "duration_ms": 31,
@@ -7017,6 +7434,7 @@
     "total_runtime_ms": 0
    },
    "dc2b4004-eb8b-4cf4-adfb-505bf0390c66": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -7043,6 +7461,7 @@
     "total_runtime_ms": 0
    },
    "group:39b8367c-5a02-423d-b406-a59433bb73d8": {
+    "anomaly": null,
     "children": [
      "a2a41494-aacc-41cd-945a-a2cb02d5df6a",
      "11dfd3cd-e851-4068-bdde-11c0447388a4",
@@ -7077,8 +7496,13 @@
   "root_id": "group:39b8367c-5a02-423d-b406-a59433bb73d8"
  },
  "chord_body_replace3@worker_process": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "2a53c75e-6abe-4c17-9c6d-017fa7e24418": {
+    "anomaly": null,
     "children": [
      "7740416b-93b4-4399-9011-e1d6c85b05a1"
     ],
@@ -7107,6 +7531,7 @@
     "total_runtime_ms": 0
    },
    "2fb03775-9792-4f67-a862-80345f655500": {
+    "anomaly": null,
     "children": [
      "2a53c75e-6abe-4c17-9c6d-017fa7e24418"
     ],
@@ -7135,6 +7560,7 @@
     "total_runtime_ms": 501
    },
    "30ee630c-8434-4373-bcd8-f23443cec363": {
+    "anomaly": null,
     "children": [],
     "chord_id": "aebfd9a9-28c9-42aa-84c6-a23c7c28899d",
     "duration_ms": 1001,
@@ -7161,6 +7587,7 @@
     "total_runtime_ms": 10
    },
    "5c5a06f5-d6de-4163-9092-8ab7b9561e90": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -7187,6 +7614,7 @@
     "total_runtime_ms": 0
    },
    "7740416b-93b4-4399-9011-e1d6c85b05a1": {
+    "anomaly": null,
     "children": [
      "5c5a06f5-d6de-4163-9092-8ab7b9561e90"
     ],
@@ -7215,6 +7643,7 @@
     "total_runtime_ms": 1
    },
    "group:aebfd9a9-28c9-42aa-84c6-a23c7c28899d": {
+    "anomaly": null,
     "children": [
      "30ee630c-8434-4373-bcd8-f23443cec363",
      "2fb03775-9792-4f67-a862-80345f655500"
@@ -7247,8 +7676,13 @@
   "root_id": "group:aebfd9a9-28c9-42aa-84c6-a23c7c28899d"
  },
  "chord_body_replace3@worker_process@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "1dfd5f81-91bb-4d0d-a3b1-c0f931c3de3b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -7275,6 +7709,7 @@
     "total_runtime_ms": 0
    },
    "a40cd029-9b83-4555-ba86-90224230318a": {
+    "anomaly": null,
     "children": [
      "a6913ee3-31ed-42b8-be50-6e6be38226d0"
     ],
@@ -7303,6 +7738,7 @@
     "total_runtime_ms": 0
    },
    "a6913ee3-31ed-42b8-be50-6e6be38226d0": {
+    "anomaly": null,
     "children": [
      "1dfd5f81-91bb-4d0d-a3b1-c0f931c3de3b"
     ],
@@ -7331,6 +7767,7 @@
     "total_runtime_ms": 1
    },
    "e89b52a4-a9e7-4de8-957a-bd50dad8b6f8": {
+    "anomaly": null,
     "children": [],
     "chord_id": "76caf12a-3557-415c-8a3f-2e6cf9764e86",
     "duration_ms": 509,
@@ -7357,6 +7794,7 @@
     "total_runtime_ms": 501
    },
    "fba80483-03ab-4954-be72-7341742a6929": {
+    "anomaly": null,
     "children": [],
     "chord_id": "76caf12a-3557-415c-8a3f-2e6cf9764e86",
     "duration_ms": 7,
@@ -7383,6 +7821,7 @@
     "total_runtime_ms": 0
    },
    "group:76caf12a-3557-415c-8a3f-2e6cf9764e86": {
+    "anomaly": null,
     "children": [
      "fba80483-03ab-4954-be72-7341742a6929",
      "e89b52a4-a9e7-4de8-957a-bd50dad8b6f8",
@@ -7416,8 +7855,13 @@
   "root_id": "group:76caf12a-3557-415c-8a3f-2e6cf9764e86"
  },
  "chord_chain_header_failed_head": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "a620f7c1-2fbe-40ac-90ca-b28541bbd00e": {
+    "anomaly": null,
     "children": [],
     "chord_id": "185af0d9-8387-406d-8774-05b34fee1bd8",
     "duration_ms": null,
@@ -7444,6 +7888,7 @@
     "total_runtime_ms": null
    },
    "ba2a14ed-ba0d-4950-b126-435590358c12": {
+    "anomaly": null,
     "children": [],
     "chord_id": "185af0d9-8387-406d-8774-05b34fee1bd8",
     "duration_ms": 16,
@@ -7470,6 +7915,7 @@
     "total_runtime_ms": 11
    },
    "c27264ef-8441-40bf-94b6-df45b3acdd69": {
+    "anomaly": null,
     "children": [
      "a620f7c1-2fbe-40ac-90ca-b28541bbd00e"
     ],
@@ -7498,6 +7944,7 @@
     "total_runtime_ms": 10
    },
    "fb510322-27c0-4181-afc9-c78e4a411723": {
+    "anomaly": null,
     "children": [
      "ba2a14ed-ba0d-4950-b126-435590358c12"
     ],
@@ -7526,6 +7973,7 @@
     "total_runtime_ms": 1
    },
    "group:185af0d9-8387-406d-8774-05b34fee1bd8": {
+    "anomaly": null,
     "children": [
      "c27264ef-8441-40bf-94b6-df45b3acdd69",
      "fb510322-27c0-4181-afc9-c78e4a411723"
@@ -7558,8 +8006,13 @@
   "root_id": "group:185af0d9-8387-406d-8774-05b34fee1bd8"
  },
  "chord_failed_header": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "c789f5ab-639f-433a-9911-437a6c6621bc": {
+    "anomaly": null,
     "children": [],
     "chord_id": "14abf4f3-b548-40e3-9d0b-ab31ce9d2727",
     "duration_ms": 94,
@@ -7586,6 +8039,7 @@
     "total_runtime_ms": 8
    },
    "ea06aa93-8d30-4dd5-a887-09b280757c49": {
+    "anomaly": null,
     "children": [],
     "chord_id": "14abf4f3-b548-40e3-9d0b-ab31ce9d2727",
     "duration_ms": 83,
@@ -7612,6 +8066,7 @@
     "total_runtime_ms": 7
    },
    "group:14abf4f3-b548-40e3-9d0b-ab31ce9d2727": {
+    "anomaly": null,
     "children": [
      "ea06aa93-8d30-4dd5-a887-09b280757c49",
      "c789f5ab-639f-433a-9911-437a6c6621bc"
@@ -7644,8 +8099,13 @@
   "root_id": "group:14abf4f3-b548-40e3-9d0b-ab31ce9d2727"
  },
  "chord_failed_header@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "36abaa2c-7a22-42e8-911e-b0924647e311": {
+    "anomaly": null,
     "children": [],
     "chord_id": "1df322e1-62af-42cf-873a-518a72d28361",
     "duration_ms": 55,
@@ -7672,6 +8132,7 @@
     "total_runtime_ms": 2
    },
    "b120d1b6-2567-42a0-b82b-9b102f14e7b8": {
+    "anomaly": null,
     "children": [],
     "chord_id": "1df322e1-62af-42cf-873a-518a72d28361",
     "duration_ms": 59,
@@ -7698,6 +8159,7 @@
     "total_runtime_ms": 2
    },
    "group:1df322e1-62af-42cf-873a-518a72d28361": {
+    "anomaly": null,
     "children": [
      "36abaa2c-7a22-42e8-911e-b0924647e311",
      "b120d1b6-2567-42a0-b82b-9b102f14e7b8"
@@ -7730,8 +8192,13 @@
   "root_id": "group:1df322e1-62af-42cf-873a-518a72d28361"
  },
  "chord_failed_header_subtask": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "42b67bab-e15b-4273-ba44-bda90901b8ce": {
+    "anomaly": null,
     "children": [
      "abc97f1f-62e2-4ece-92f8-fb4991774367"
     ],
@@ -7760,6 +8227,7 @@
     "total_runtime_ms": 11
    },
    "821e327f-260f-490c-a5d4-97bf31ca994a": {
+    "anomaly": null,
     "children": [],
     "chord_id": "3573d5c3-d3dc-4c83-a3e2-a3ab4210826d",
     "duration_ms": 1005,
@@ -7786,6 +8254,7 @@
     "total_runtime_ms": 8
    },
    "abc97f1f-62e2-4ece-92f8-fb4991774367": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 12,
@@ -7812,6 +8281,7 @@
     "total_runtime_ms": 0
    },
    "group:3573d5c3-d3dc-4c83-a3e2-a3ab4210826d": {
+    "anomaly": null,
     "children": [
      "42b67bab-e15b-4273-ba44-bda90901b8ce",
      "821e327f-260f-490c-a5d4-97bf31ca994a"
@@ -7844,8 +8314,13 @@
   "root_id": "group:3573d5c3-d3dc-4c83-a3e2-a3ab4210826d"
  },
  "chord_failed_header_subtask@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "586d8bf3-808c-43fb-8c8f-e8f2878df462": {
+    "anomaly": null,
     "children": [],
     "chord_id": "18ecb732-c93f-4b4d-8788-72ff812384ec",
     "duration_ms": 64,
@@ -7872,6 +8347,7 @@
     "total_runtime_ms": 4
    },
    "b78d72ca-7784-4f56-ba88-1c57346270ee": {
+    "anomaly": null,
     "children": [
      "c30feadd-b17c-4b12-b5fc-dc43695bfcd3"
     ],
@@ -7900,6 +8376,7 @@
     "total_runtime_ms": 1
    },
    "c30feadd-b17c-4b12-b5fc-dc43695bfcd3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -7926,6 +8403,7 @@
     "total_runtime_ms": 0
    },
    "group:18ecb732-c93f-4b4d-8788-72ff812384ec": {
+    "anomaly": null,
     "children": [
      "b78d72ca-7784-4f56-ba88-1c57346270ee",
      "586d8bf3-808c-43fb-8c8f-e8f2878df462"
@@ -7958,8 +8436,13 @@
   "root_id": "group:18ecb732-c93f-4b4d-8788-72ff812384ec"
  },
  "chord_group_body": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "3b48fb36-10d8-4b41-aac7-f86064a6f23b": {
+    "anomaly": null,
     "children": [],
     "chord_id": "050be12c-b5e2-4481-8be4-1b0abba62408",
     "duration_ms": 998,
@@ -7986,6 +8469,7 @@
     "total_runtime_ms": 10
    },
    "5fe6fae6-fedf-42c4-a792-a31a9a0702cc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -8012,6 +8496,7 @@
     "total_runtime_ms": 0
    },
    "6222f760-1b2a-416f-868e-3511e699fe00": {
+    "anomaly": null,
     "children": [
      "5fe6fae6-fedf-42c4-a792-a31a9a0702cc",
      "c63f41f4-0c60-4b2f-aedc-f8e393bd7dd6"
@@ -8041,6 +8526,7 @@
     "total_runtime_ms": 502
    },
    "c63f41f4-0c60-4b2f-aedc-f8e393bd7dd6": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -8067,6 +8553,7 @@
     "total_runtime_ms": 0
    },
    "group:050be12c-b5e2-4481-8be4-1b0abba62408": {
+    "anomaly": null,
     "children": [
      "3b48fb36-10d8-4b41-aac7-f86064a6f23b",
      "6222f760-1b2a-416f-868e-3511e699fe00"
@@ -8099,8 +8586,13 @@
   "root_id": "group:050be12c-b5e2-4481-8be4-1b0abba62408"
  },
  "chord_group_body@celery5.2": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "1990958d-b0e6-471f-ac63-abb324f54114": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 786,
@@ -8127,6 +8619,7 @@
     "total_runtime_ms": 17
    },
    "4a045ea8-c859-4a96-8c70-89b303d46378": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1304,
@@ -8153,6 +8646,7 @@
     "total_runtime_ms": 517
    },
    "560a0fd0-97cf-4819-b31b-b9cba3b44bb2": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -8179,6 +8673,7 @@
     "total_runtime_ms": 0
    },
    "ad13e112-2a18-4b9b-ad50-7c21a4994431": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 3,
@@ -8205,6 +8700,7 @@
     "total_runtime_ms": 0
    },
    "group:471189f1-934d-40a9-89cc-39c75e083a69": {
+    "anomaly": null,
     "children": [
      "ad13e112-2a18-4b9b-ad50-7c21a4994431",
      "560a0fd0-97cf-4819-b31b-b9cba3b44bb2"
@@ -8234,6 +8730,7 @@
     "total_runtime_ms": null
    },
    "group:7cfc4605-baf2-4e4f-900b-505cb7894ece": {
+    "anomaly": null,
     "children": [
      "1990958d-b0e6-471f-ac63-abb324f54114",
      "4a045ea8-c859-4a96-8c70-89b303d46378",
@@ -8267,8 +8764,13 @@
   "root_id": "group:7cfc4605-baf2-4e4f-900b-505cb7894ece"
  },
  "chord_group_body@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "0b4c9e8e-2155-4c2a-8132-b66c41193f4b": {
+    "anomaly": null,
     "children": [],
     "chord_id": "230148ea-f955-4a08-acc4-05052201f69e",
     "duration_ms": 32,
@@ -8295,6 +8797,7 @@
     "total_runtime_ms": 0
    },
    "0cc88b9a-4491-4b1d-a2fe-4f788d850b57": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -8321,6 +8824,7 @@
     "total_runtime_ms": 0
    },
    "2e3b74d2-40be-4566-b111-1e16b19b852f": {
+    "anomaly": null,
     "children": [
      "0cc88b9a-4491-4b1d-a2fe-4f788d850b57",
      "fcdc28ab-749d-45f3-b031-2bf9f3165e70"
@@ -8350,6 +8854,7 @@
     "total_runtime_ms": 503
    },
    "fcdc28ab-749d-45f3-b031-2bf9f3165e70": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -8376,6 +8881,7 @@
     "total_runtime_ms": 0
    },
    "group:230148ea-f955-4a08-acc4-05052201f69e": {
+    "anomaly": null,
     "children": [
      "0b4c9e8e-2155-4c2a-8132-b66c41193f4b",
      "2e3b74d2-40be-4566-b111-1e16b19b852f"
@@ -8408,8 +8914,13 @@
   "root_id": "group:230148ea-f955-4a08-acc4-05052201f69e"
  },
  "chord_header_fanout_group": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "4d0d04de-fb73-4605-9e6a-42012a59903a": {
+    "anomaly": null,
     "children": [
      "83ce0b6c-0387-4572-a12d-5c1e4a677c0b"
     ],
@@ -8438,6 +8949,7 @@
     "total_runtime_ms": 502
    },
    "6c979668-9234-420f-a570-35c90dfa7cf9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 512,
@@ -8464,6 +8976,7 @@
     "total_runtime_ms": 0
    },
    "83ce0b6c-0387-4572-a12d-5c1e4a677c0b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -8490,6 +9003,7 @@
     "total_runtime_ms": 0
    },
    "c62273c1-ded7-4792-be3d-fba8ab03cd7a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 511,
@@ -8516,6 +9030,7 @@
     "total_runtime_ms": 3
    },
    "f59cd85e-601f-41f4-a38c-65465907b4df": {
+    "anomaly": null,
     "children": [
      "group:e351b647-6bb3-4ed6-aa79-61eaa8bff26b"
     ],
@@ -8544,6 +9059,7 @@
     "total_runtime_ms": 6
    },
    "group:82017c2c-ca8e-4f96-80e8-621742302b1d": {
+    "anomaly": null,
     "children": [
      "f59cd85e-601f-41f4-a38c-65465907b4df",
      "4d0d04de-fb73-4605-9e6a-42012a59903a"
@@ -8573,6 +9089,7 @@
     "total_runtime_ms": null
    },
    "group:e351b647-6bb3-4ed6-aa79-61eaa8bff26b": {
+    "anomaly": null,
     "children": [
      "c62273c1-ded7-4792-be3d-fba8ab03cd7a",
      "6c979668-9234-420f-a570-35c90dfa7cf9"
@@ -8605,8 +9122,13 @@
   "root_id": "group:82017c2c-ca8e-4f96-80e8-621742302b1d"
  },
  "chord_header_fanout_group@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "2529c6ef-fa81-4de0-b4a7-7e5176d740a0": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 504,
@@ -8633,6 +9155,7 @@
     "total_runtime_ms": 0
    },
    "787a497d-68b8-4cec-9b19-e1186e7f6a4c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -8659,6 +9182,7 @@
     "total_runtime_ms": 0
    },
    "9213d2e3-fc77-4ba2-aa3e-9f34a55900ad": {
+    "anomaly": null,
     "children": [],
     "chord_id": "9ebf6c9e-64df-47d2-9e79-441df3730959",
     "duration_ms": 1037,
@@ -8685,6 +9209,7 @@
     "total_runtime_ms": 501
    },
    "a3b61f2f-2a1c-40b7-8d83-ccdf04590b1f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 503,
@@ -8711,6 +9236,7 @@
     "total_runtime_ms": 0
    },
    "e898252d-29c0-418d-b5ea-5e73f1142316": {
+    "anomaly": null,
     "children": [
      "group:446aca7f-4301-4b53-ad6f-b787a2977096"
     ],
@@ -8739,6 +9265,7 @@
     "total_runtime_ms": 2
    },
    "group:446aca7f-4301-4b53-ad6f-b787a2977096": {
+    "anomaly": null,
     "children": [
      "2529c6ef-fa81-4de0-b4a7-7e5176d740a0",
      "a3b61f2f-2a1c-40b7-8d83-ccdf04590b1f"
@@ -8768,6 +9295,7 @@
     "total_runtime_ms": null
    },
    "group:9ebf6c9e-64df-47d2-9e79-441df3730959": {
+    "anomaly": null,
     "children": [
      "e898252d-29c0-418d-b5ea-5e73f1142316",
      "9213d2e3-fc77-4ba2-aa3e-9f34a55900ad",
@@ -8801,8 +9329,13 @@
   "root_id": "group:9ebf6c9e-64df-47d2-9e79-441df3730959"
  },
  "chord_header_replace3@worker_process": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "10086aba-2bdc-4154-8cdf-9c9c81268c9e": {
+    "anomaly": null,
     "children": [
      "a09476e1-12eb-437d-a07d-fa6bd062602c"
     ],
@@ -8831,6 +9364,7 @@
     "total_runtime_ms": 0
    },
    "14845448-0332-4417-aa0a-7bf64785c938": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -8857,6 +9391,7 @@
     "total_runtime_ms": 0
    },
    "2ee0775d-1380-4d9b-a56c-295b578523d6": {
+    "anomaly": null,
     "children": [
      "10086aba-2bdc-4154-8cdf-9c9c81268c9e",
      "14845448-0332-4417-aa0a-7bf64785c938"
@@ -8886,6 +9421,7 @@
     "total_runtime_ms": 501
    },
    "7b96aa0c-e1b7-49f0-b0db-f8db6cb91937": {
+    "anomaly": null,
     "children": [],
     "chord_id": "788a9b55-5e7c-4c69-9647-b97284743e5c",
     "duration_ms": 997,
@@ -8912,6 +9448,7 @@
     "total_runtime_ms": 0
    },
    "a09476e1-12eb-437d-a07d-fa6bd062602c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -8938,6 +9475,7 @@
     "total_runtime_ms": 0
    },
    "group:788a9b55-5e7c-4c69-9647-b97284743e5c": {
+    "anomaly": null,
     "children": [
      "2ee0775d-1380-4d9b-a56c-295b578523d6",
      "7b96aa0c-e1b7-49f0-b0db-f8db6cb91937"
@@ -8970,8 +9508,13 @@
   "root_id": "group:788a9b55-5e7c-4c69-9647-b97284743e5c"
  },
  "chord_header_replace3@worker_process@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "55bc2bdc-e8a6-432b-8dbd-38b78ce1c335": {
+    "anomaly": null,
     "children": [
      "7f318a64-9e8d-4973-a069-8ee6690803f4"
     ],
@@ -9000,6 +9543,7 @@
     "total_runtime_ms": 0
    },
    "6d56e8f0-356f-4122-be09-64fb63f1857d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -9026,6 +9570,7 @@
     "total_runtime_ms": 0
    },
    "7f318a64-9e8d-4973-a069-8ee6690803f4": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -9052,6 +9597,7 @@
     "total_runtime_ms": 0
    },
    "b0727ef7-8620-4902-9baa-ce5eb25d81de": {
+    "anomaly": null,
     "children": [],
     "chord_id": "c4ab5b37-9901-4975-8963-af15f874f60c",
     "duration_ms": 24,
@@ -9078,6 +9624,7 @@
     "total_runtime_ms": 0
    },
    "d39eb01f-bd55-4f65-aae6-d8bdcc69d487": {
+    "anomaly": null,
     "children": [
      "55bc2bdc-e8a6-432b-8dbd-38b78ce1c335"
     ],
@@ -9106,6 +9653,7 @@
     "total_runtime_ms": 501
    },
    "group:c4ab5b37-9901-4975-8963-af15f874f60c": {
+    "anomaly": null,
     "children": [
      "d39eb01f-bd55-4f65-aae6-d8bdcc69d487",
      "b0727ef7-8620-4902-9baa-ce5eb25d81de",
@@ -9139,8 +9687,13 @@
   "root_id": "group:c4ab5b37-9901-4975-8963-af15f874f60c"
  },
  "chord_header_replace_same_name@worker_process": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "45d0b1e7-82f2-4618-906c-09cd5cd83e23": {
+    "anomaly": null,
     "children": [
      "b02803e3-8a0d-49ad-8f77-308f4a89464c",
      "8af8cec6-2c65-4caf-8dd7-156274f553b9"
@@ -9170,6 +9723,7 @@
     "total_runtime_ms": 501
    },
    "8af8cec6-2c65-4caf-8dd7-156274f553b9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -9196,6 +9750,7 @@
     "total_runtime_ms": 0
    },
    "a64a322a-7226-4fba-91e0-32c980c45fa2": {
+    "anomaly": null,
     "children": [],
     "chord_id": "23ed38d1-6626-488b-bd35-f4e6edcb294c",
     "duration_ms": 85,
@@ -9222,6 +9777,7 @@
     "total_runtime_ms": 0
    },
    "b02803e3-8a0d-49ad-8f77-308f4a89464c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -9248,6 +9804,7 @@
     "total_runtime_ms": 0
    },
    "group:23ed38d1-6626-488b-bd35-f4e6edcb294c": {
+    "anomaly": null,
     "children": [
      "45d0b1e7-82f2-4618-906c-09cd5cd83e23",
      "a64a322a-7226-4fba-91e0-32c980c45fa2"
@@ -9280,8 +9837,13 @@
   "root_id": "group:23ed38d1-6626-488b-bd35-f4e6edcb294c"
  },
  "chord_header_replace_same_name@worker_process@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "1cfa8770-f60b-4d1a-8391-8941054a9b1d": {
+    "anomaly": null,
     "children": [],
     "chord_id": "13973ed5-7abe-4290-a32d-cbd959610d60",
     "duration_ms": 31,
@@ -9308,6 +9870,7 @@
     "total_runtime_ms": 0
    },
    "7111fdb5-dbc2-4967-b56d-102038cb97c2": {
+    "anomaly": null,
     "children": [
      "86df7341-5830-4f85-afe2-0551aa2bf438"
     ],
@@ -9336,6 +9899,7 @@
     "total_runtime_ms": 503
    },
    "86df7341-5830-4f85-afe2-0551aa2bf438": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -9362,6 +9926,7 @@
     "total_runtime_ms": 1
    },
    "ea6412b3-7716-4c22-ad3c-4b12c39e5577": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -9388,6 +9953,7 @@
     "total_runtime_ms": 0
    },
    "group:13973ed5-7abe-4290-a32d-cbd959610d60": {
+    "anomaly": null,
     "children": [
      "7111fdb5-dbc2-4967-b56d-102038cb97c2",
      "1cfa8770-f60b-4d1a-8391-8941054a9b1d",
@@ -9421,8 +9987,13 @@
   "root_id": "group:13973ed5-7abe-4290-a32d-cbd959610d60"
  },
  "chord_header_subtask": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "34f1e8aa-fdd9-4e39-8c68-83bd62fb51df": {
+    "anomaly": null,
     "children": [
      "55b2a614-9dca-4b3b-8eb1-7b66bbd2290b"
     ],
@@ -9451,6 +10022,7 @@
     "total_runtime_ms": 503
    },
    "55b2a614-9dca-4b3b-8eb1-7b66bbd2290b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 3,
@@ -9477,6 +10049,7 @@
     "total_runtime_ms": 0
    },
    "5f08c3d7-dae2-4b92-9a7d-26aa349eb957": {
+    "anomaly": null,
     "children": [
      "863c98c9-eeb7-4d41-9d5c-f42a74bce041"
     ],
@@ -9505,6 +10078,7 @@
     "total_runtime_ms": 5
    },
    "863c98c9-eeb7-4d41-9d5c-f42a74bce041": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 509,
@@ -9531,6 +10105,7 @@
     "total_runtime_ms": 2
    },
    "group:0eb6994e-f318-4e7d-a05e-7e9ce7b4c5a8": {
+    "anomaly": null,
     "children": [
      "5f08c3d7-dae2-4b92-9a7d-26aa349eb957",
      "34f1e8aa-fdd9-4e39-8c68-83bd62fb51df"
@@ -9563,8 +10138,13 @@
   "root_id": "group:0eb6994e-f318-4e7d-a05e-7e9ce7b4c5a8"
  },
  "chord_header_subtask@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "11fc37f0-d16e-4d00-b541-04dd04b53ba2": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 503,
@@ -9591,6 +10171,7 @@
     "total_runtime_ms": 0
    },
    "13688cf2-6b33-4d4c-b4dd-b4ac011fc9e3": {
+    "anomaly": null,
     "children": [],
     "chord_id": "d63e865c-d778-4698-95af-4018beff598c",
     "duration_ms": 539,
@@ -9617,6 +10198,7 @@
     "total_runtime_ms": 501
    },
    "1e7373ce-8251-43fa-ba97-d70e459580ac": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2,
@@ -9643,6 +10225,7 @@
     "total_runtime_ms": 0
    },
    "8cabd4ed-5320-4288-a368-23631e13a608": {
+    "anomaly": null,
     "children": [
      "11fc37f0-d16e-4d00-b541-04dd04b53ba2"
     ],
@@ -9671,6 +10254,7 @@
     "total_runtime_ms": 1
    },
    "group:d63e865c-d778-4698-95af-4018beff598c": {
+    "anomaly": null,
     "children": [
      "8cabd4ed-5320-4288-a368-23631e13a608",
      "13688cf2-6b33-4d4c-b4dd-b4ac011fc9e3",
@@ -9704,8 +10288,13 @@
   "root_id": "group:d63e865c-d778-4698-95af-4018beff598c"
  },
  "chord_ignored_header": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "033f2c6f-7678-4d8f-84e1-bff869c5d8ea": {
+    "anomaly": null,
     "children": [],
     "chord_id": "46c70348-cefa-4d24-8e20-9334543d442b",
     "duration_ms": 995,
@@ -9732,6 +10321,7 @@
     "total_runtime_ms": 17
    },
    "3cd93bb7-24a0-4804-af93-c86bc7e32f0a": {
+    "anomaly": null,
     "children": [],
     "chord_id": "46c70348-cefa-4d24-8e20-9334543d442b",
     "duration_ms": 1025,
@@ -9758,6 +10348,7 @@
     "total_runtime_ms": 0
    },
    "group:46c70348-cefa-4d24-8e20-9334543d442b": {
+    "anomaly": null,
     "children": [
      "033f2c6f-7678-4d8f-84e1-bff869c5d8ea",
      "3cd93bb7-24a0-4804-af93-c86bc7e32f0a"
@@ -9790,8 +10381,13 @@
   "root_id": "group:46c70348-cefa-4d24-8e20-9334543d442b"
  },
  "chord_ignored_header_marked_done": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "2ecc1db2-457a-4806-b926-399ebcdfebb3": {
+    "anomaly": null,
     "children": [],
     "chord_id": "3eafad46-1401-44cd-9e24-23cea8ab043c",
     "duration_ms": 1022,
@@ -9818,6 +10414,7 @@
     "total_runtime_ms": 59
    },
    "4ce7fc48-d94a-4423-a33c-ee138a577eae": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -9844,6 +10441,7 @@
     "total_runtime_ms": 0
    },
    "592a5e49-e2d2-42cb-837c-553c0b6ecf15": {
+    "anomaly": null,
     "children": [
      "4ce7fc48-d94a-4423-a33c-ee138a577eae"
     ],
@@ -9872,6 +10470,7 @@
     "total_runtime_ms": 506
    },
    "group:3eafad46-1401-44cd-9e24-23cea8ab043c": {
+    "anomaly": null,
     "children": [
      "2ecc1db2-457a-4806-b926-399ebcdfebb3",
      "592a5e49-e2d2-42cb-837c-553c0b6ecf15"
@@ -9904,8 +10503,13 @@
   "root_id": "group:3eafad46-1401-44cd-9e24-23cea8ab043c"
  },
  "chord_ignored_header_marked_done@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "36bb6cae-bc1a-412d-8202-dfbb0d85fcd4": {
+    "anomaly": null,
     "children": [],
     "chord_id": "8887a7ab-070c-4b3f-b36d-7706823c973d",
     "duration_ms": 70,
@@ -9932,6 +10536,7 @@
     "total_runtime_ms": 3
    },
    "62fdda1e-24a3-448a-bf8d-08529157f6f9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -9958,6 +10563,7 @@
     "total_runtime_ms": 0
    },
    "79b514f0-a856-4a14-a2f2-f4908df5f9ed": {
+    "anomaly": null,
     "children": [],
     "chord_id": "8887a7ab-070c-4b3f-b36d-7706823c973d",
     "duration_ms": 572,
@@ -9984,6 +10590,7 @@
     "total_runtime_ms": 501
    },
    "group:8887a7ab-070c-4b3f-b36d-7706823c973d": {
+    "anomaly": null,
     "children": [
      "36bb6cae-bc1a-412d-8202-dfbb0d85fcd4",
      "79b514f0-a856-4a14-a2f2-f4908df5f9ed",
@@ -10017,8 +10624,13 @@
   "root_id": "group:8887a7ab-070c-4b3f-b36d-7706823c973d"
  },
  "chord_in_chord_body": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "280cb38a-5e7d-4c04-a083-ae3fbcd2cef4": {
+    "anomaly": null,
     "children": [],
     "chord_id": "d2315506-ee01-4b38-badb-db2774d74269",
     "duration_ms": 5,
@@ -10045,6 +10657,7 @@
     "total_runtime_ms": 0
    },
    "2eceed45-faf8-4f1f-ae6d-ecf7a6e02eef": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 559,
@@ -10071,6 +10684,7 @@
     "total_runtime_ms": 509
    },
    "45a95c12-d133-44a2-bff8-ab0c68cc153d": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 54,
@@ -10097,6 +10711,7 @@
     "total_runtime_ms": 0
    },
    "81b9702d-2b9c-4562-9e80-49aea0ab413f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -10123,6 +10738,7 @@
     "total_runtime_ms": 4
    },
    "8ff9ebd3-bd98-4fa3-b4fa-0a18aa2ec1f0": {
+    "anomaly": null,
     "children": [],
     "chord_id": "d2315506-ee01-4b38-badb-db2774d74269",
     "duration_ms": 508,
@@ -10149,6 +10765,7 @@
     "total_runtime_ms": 502
    },
    "group:d2315506-ee01-4b38-badb-db2774d74269": {
+    "anomaly": null,
     "children": [
      "45a95c12-d133-44a2-bff8-ab0c68cc153d",
      "2eceed45-faf8-4f1f-ae6d-ecf7a6e02eef",
@@ -10179,6 +10796,7 @@
     "total_runtime_ms": null
    },
    "group:fafff49e-6505-408f-bac8-55ae82e30b51": {
+    "anomaly": null,
     "children": [
      "280cb38a-5e7d-4c04-a083-ae3fbcd2cef4",
      "8ff9ebd3-bd98-4fa3-b4fa-0a18aa2ec1f0",
@@ -10212,8 +10830,13 @@
   "root_id": "group:d2315506-ee01-4b38-badb-db2774d74269"
  },
  "chord_in_chord_body@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "095025c2-67cc-4b1b-852d-8ac60bb95327": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 548,
@@ -10240,6 +10863,7 @@
     "total_runtime_ms": 502
    },
    "31cfdfdb-2ae1-4b7b-87ab-b650b1c36f04": {
+    "anomaly": null,
     "children": [],
     "chord_id": "edb3b7b0-50dc-4c22-81f4-6c56a2cc3b8b",
     "duration_ms": 1,
@@ -10266,6 +10890,7 @@
     "total_runtime_ms": 0
    },
    "6b88e854-1eff-4a0b-9793-722e0b77a20b": {
+    "anomaly": null,
     "children": [],
     "chord_id": "edb3b7b0-50dc-4c22-81f4-6c56a2cc3b8b",
     "duration_ms": 505,
@@ -10292,6 +10917,7 @@
     "total_runtime_ms": 503
    },
    "fbebc700-4d3e-4475-a502-df2b39e4f2e9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -10318,6 +10944,7 @@
     "total_runtime_ms": 0
    },
    "fc762229-c3dd-4ee8-811d-7cd2cb4c0e13": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 44,
@@ -10344,6 +10971,7 @@
     "total_runtime_ms": 0
    },
    "group:7c7c5bb8-080c-424e-9d71-433a926bc2ec": {
+    "anomaly": null,
     "children": [
      "31cfdfdb-2ae1-4b7b-87ab-b650b1c36f04",
      "6b88e854-1eff-4a0b-9793-722e0b77a20b",
@@ -10374,6 +11002,7 @@
     "total_runtime_ms": null
    },
    "group:edb3b7b0-50dc-4c22-81f4-6c56a2cc3b8b": {
+    "anomaly": null,
     "children": [
      "fc762229-c3dd-4ee8-811d-7cd2cb4c0e13",
      "095025c2-67cc-4b1b-852d-8ac60bb95327",
@@ -10407,8 +11036,13 @@
   "root_id": "group:edb3b7b0-50dc-4c22-81f4-6c56a2cc3b8b"
  },
  "chord_rejected_header": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "3a3a4a87-69cb-4b73-a2b9-b5cd6012b5d5": {
+    "anomaly": null,
     "children": [],
     "chord_id": "f8411e49-249c-4911-a39a-3c4bd0890541",
     "duration_ms": 409,
@@ -10435,6 +11069,7 @@
     "total_runtime_ms": 4
    },
    "a75bd252-bc00-4e0b-89ce-fcb311810ad8": {
+    "anomaly": null,
     "children": [],
     "chord_id": "f8411e49-249c-4911-a39a-3c4bd0890541",
     "duration_ms": 410,
@@ -10461,6 +11096,7 @@
     "total_runtime_ms": 0
    },
    "group:f8411e49-249c-4911-a39a-3c4bd0890541": {
+    "anomaly": null,
     "children": [
      "3a3a4a87-69cb-4b73-a2b9-b5cd6012b5d5",
      "a75bd252-bc00-4e0b-89ce-fcb311810ad8"
@@ -10493,8 +11129,13 @@
   "root_id": "group:f8411e49-249c-4911-a39a-3c4bd0890541"
  },
  "chord_retried_header": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "02b6998c-c177-4f5a-906b-865441c1edf9": {
+    "anomaly": null,
     "children": [],
     "chord_id": "2709df60-9cc6-4c51-b30a-5d2f44a7ba12",
     "duration_ms": 52,
@@ -10521,6 +11162,7 @@
     "total_runtime_ms": 2
    },
    "158e780c-eb18-430a-8d8c-92ea7f6af48d": {
+    "anomaly": null,
     "children": [
      "79e5fd82-0480-4f3b-9d50-8f494cf3272f"
     ],
@@ -10549,6 +11191,7 @@
     "total_runtime_ms": 511
    },
    "79e5fd82-0480-4f3b-9d50-8f494cf3272f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -10575,6 +11218,7 @@
     "total_runtime_ms": 0
    },
    "group:2709df60-9cc6-4c51-b30a-5d2f44a7ba12": {
+    "anomaly": null,
     "children": [
      "158e780c-eb18-430a-8d8c-92ea7f6af48d",
      "02b6998c-c177-4f5a-906b-865441c1edf9"
@@ -10607,8 +11251,13 @@
   "root_id": "group:2709df60-9cc6-4c51-b30a-5d2f44a7ba12"
  },
  "chord_retried_header@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "69927cb2-93db-4ec1-aff8-89c08f858bca": {
+    "anomaly": null,
     "children": [],
     "chord_id": "63c5d5f7-c854-41f8-a9c2-7c83472cdebe",
     "duration_ms": 544,
@@ -10635,6 +11284,7 @@
     "total_runtime_ms": 503
    },
    "81117938-9bb7-448e-b3d1-697311f3fa21": {
+    "anomaly": null,
     "children": [],
     "chord_id": "63c5d5f7-c854-41f8-a9c2-7c83472cdebe",
     "duration_ms": 41,
@@ -10661,6 +11311,7 @@
     "total_runtime_ms": 0
    },
    "d6264874-5fb5-403f-b7f6-6351ee3a364c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -10687,6 +11338,7 @@
     "total_runtime_ms": 0
    },
    "group:63c5d5f7-c854-41f8-a9c2-7c83472cdebe": {
+    "anomaly": null,
     "children": [
      "69927cb2-93db-4ec1-aff8-89c08f858bca",
      "81117938-9bb7-448e-b3d1-697311f3fa21",
@@ -10720,8 +11372,13 @@
   "root_id": "group:63c5d5f7-c854-41f8-a9c2-7c83472cdebe"
  },
  "chord_with_chain_body": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "075a4533-dcac-49f0-a8b1-7b69d7dd46f3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 3,
@@ -10748,6 +11405,7 @@
     "total_runtime_ms": 2
    },
    "38f1ac96-6d7b-4353-a951-5ab361d4bf41": {
+    "anomaly": null,
     "children": [
      "075a4533-dcac-49f0-a8b1-7b69d7dd46f3"
     ],
@@ -10776,6 +11434,7 @@
     "total_runtime_ms": 2
    },
    "6577d73d-b7f3-4ba6-9908-bd1d3286e9e9": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 57,
@@ -10802,6 +11461,7 @@
     "total_runtime_ms": 0
    },
    "9981d5c2-862a-4e7f-aa53-dedac89283e8": {
+    "anomaly": null,
     "children": [
      "38f1ac96-6d7b-4353-a951-5ab361d4bf41"
     ],
@@ -10830,6 +11490,7 @@
     "total_runtime_ms": 508
    },
    "group:49fb8c7d-e4b0-4c32-b220-54e6e6dacfca": {
+    "anomaly": null,
     "children": [
      "6577d73d-b7f3-4ba6-9908-bd1d3286e9e9",
      "9981d5c2-862a-4e7f-aa53-dedac89283e8"
@@ -10862,8 +11523,13 @@
   "root_id": "group:49fb8c7d-e4b0-4c32-b220-54e6e6dacfca"
  },
  "chord_with_chain_body@celery5.2": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "1d0ee1a8-62e4-4669-8dab-306ee750931b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 973,
@@ -10890,6 +11556,7 @@
     "total_runtime_ms": 3
    },
    "9ce06321-83da-43e4-8537-96f6d88aaed4": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -10916,6 +11583,7 @@
     "total_runtime_ms": 0
    },
    "c1835780-160d-44b5-b304-3c64b47b3151": {
+    "anomaly": null,
     "children": [
      "9ce06321-83da-43e4-8537-96f6d88aaed4"
     ],
@@ -10944,6 +11612,7 @@
     "total_runtime_ms": 1
    },
    "ce919b4e-302f-45f7-bff5-c3a42fbd86e4": {
+    "anomaly": null,
     "children": [
      "c1835780-160d-44b5-b304-3c64b47b3151"
     ],
@@ -10972,6 +11641,7 @@
     "total_runtime_ms": 503
    },
    "group:e387951d-9c3c-4774-9cbb-39a24cf58984": {
+    "anomaly": null,
     "children": [
      "1d0ee1a8-62e4-4669-8dab-306ee750931b",
      "ce919b4e-302f-45f7-bff5-c3a42fbd86e4"
@@ -11004,8 +11674,13 @@
   "root_id": "group:e387951d-9c3c-4774-9cbb-39a24cf58984"
  },
  "chord_with_chain_body@chord_unlock": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": null
+  },
   "nodes": {
    "164f2c0b-9a03-41e4-9288-8f663e66147b": {
+    "anomaly": null,
     "children": [
      "44ed7e8b-7197-427c-ad82-b4b25841590c"
     ],
@@ -11034,6 +11709,7 @@
     "total_runtime_ms": 14
    },
    "19b83187-e160-4d1b-b9c7-e8cb159a2351": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 217,
@@ -11060,6 +11736,7 @@
     "total_runtime_ms": 16
    },
    "1f74d552-a6f9-4de0-8e87-a94aa5dcbd16": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 233,
@@ -11086,6 +11763,7 @@
     "total_runtime_ms": 15
    },
    "44ed7e8b-7197-427c-ad82-b4b25841590c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 29,
@@ -11112,6 +11790,7 @@
     "total_runtime_ms": 14
    },
    "571beefb-5c53-4d73-bc79-d8e44b94cc2b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1012,
@@ -11138,6 +11817,7 @@
     "total_runtime_ms": 12
    },
    "group:5d4122fc-3860-4973-b3aa-50a8ecce3c4e": {
+    "anomaly": null,
     "children": [
      "19b83187-e160-4d1b-b9c7-e8cb159a2351",
      "1f74d552-a6f9-4de0-8e87-a94aa5dcbd16",
@@ -11172,8 +11852,13 @@
   "root_id": "group:5d4122fc-3860-4973-b3aa-50a8ecce3c4e"
  },
  "chord_with_chain_body@chord_unlock@field": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": null
+  },
   "nodes": {
    "164f2c0b-9a03-41e4-9288-8f663e66147b": {
+    "anomaly": null,
     "children": [
      "44ed7e8b-7197-427c-ad82-b4b25841590c"
     ],
@@ -11202,6 +11887,7 @@
     "total_runtime_ms": 14
    },
    "19b83187-e160-4d1b-b9c7-e8cb159a2351": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 217,
@@ -11228,6 +11914,7 @@
     "total_runtime_ms": 16
    },
    "1f74d552-a6f9-4de0-8e87-a94aa5dcbd16": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 233,
@@ -11254,6 +11941,7 @@
     "total_runtime_ms": 15
    },
    "44ed7e8b-7197-427c-ad82-b4b25841590c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 29,
@@ -11280,6 +11968,7 @@
     "total_runtime_ms": 14
    },
    "571beefb-5c53-4d73-bc79-d8e44b94cc2b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1012,
@@ -11306,6 +11995,7 @@
     "total_runtime_ms": 12
    },
    "group:5d4122fc-3860-4973-b3aa-50a8ecce3c4e": {
+    "anomaly": null,
     "children": [
      "19b83187-e160-4d1b-b9c7-e8cb159a2351",
      "1f74d552-a6f9-4de0-8e87-a94aa5dcbd16",
@@ -11340,8 +12030,13 @@
   "root_id": "group:5d4122fc-3860-4973-b3aa-50a8ecce3c4e"
  },
  "chord_with_chain_body@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "0e85806c-4703-45ac-ac0c-7a1a33c6557a": {
+    "anomaly": null,
     "children": [
      "a59b3ea7-c6b6-420d-a250-9c19ab52e7ec"
     ],
@@ -11370,6 +12065,7 @@
     "total_runtime_ms": 0
    },
    "70ae64a6-c035-42ff-a085-aa9909df75d4": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 544,
@@ -11396,6 +12092,7 @@
     "total_runtime_ms": 501
    },
    "a59b3ea7-c6b6-420d-a250-9c19ab52e7ec": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -11422,6 +12119,7 @@
     "total_runtime_ms": 0
    },
    "ef744e13-b6d0-4a4b-a998-477a888a7ce6": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 42,
@@ -11448,6 +12146,7 @@
     "total_runtime_ms": 0
    },
    "group:18c4854b-99a6-494c-ae4f-5ae1b237f572": {
+    "anomaly": null,
     "children": [
      "ef744e13-b6d0-4a4b-a998-477a888a7ce6",
      "70ae64a6-c035-42ff-a085-aa9909df75d4",
@@ -11481,8 +12180,13 @@
   "root_id": "group:18c4854b-99a6-494c-ae4f-5ae1b237f572"
  },
  "client_explicit_parent": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "3bd72867-9a8a-44b3-b6c9-e65107554589": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 997,
@@ -11509,6 +12213,7 @@
     "total_runtime_ms": 0
    },
    "fec725cc-2dcd-451d-94ca-1e5be39f6388": {
+    "anomaly": null,
     "children": [
      "3bd72867-9a8a-44b3-b6c9-e65107554589"
     ],
@@ -11540,8 +12245,13 @@
   "root_id": "fec725cc-2dcd-451d-94ca-1e5be39f6388"
  },
  "countdown": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "e4a01211-71a1-4b71-a287-6a253f754d62": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1993,
@@ -11571,8 +12281,13 @@
   "root_id": "e4a01211-71a1-4b71-a287-6a253f754d62"
  },
  "countdown_retry_countdown": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0c95c633-3a2b-4076-bb9e-eca9477212aa": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1964,
@@ -11602,8 +12317,13 @@
   "root_id": "0c95c633-3a2b-4076-bb9e-eca9477212aa"
  },
  "delayed_replace_delayed": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "62d27229-879e-4dcb-9419-c7e9a79feada": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2000,
@@ -11633,8 +12353,13 @@
   "root_id": "62d27229-879e-4dcb-9419-c7e9a79feada"
  },
  "group": {
+  "member_fields": {
+   "member_count": 3,
+   "member_name": "add"
+  },
   "nodes": {
    "2a63f4db-121a-49f1-8af5-dcd2c66ca707": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 494,
@@ -11661,6 +12386,7 @@
     "total_runtime_ms": 0
    },
    "6d4c4fa1-4ea9-491a-8832-58f6584cb326": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 495,
@@ -11687,6 +12413,7 @@
     "total_runtime_ms": 6
    },
    "9d6f492a-eec9-4fd5-8e15-c1477044ce51": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 489,
@@ -11713,6 +12440,7 @@
     "total_runtime_ms": 0
    },
    "group:9e5d464f-5b8c-444a-b6f7-dfb81b376ad0": {
+    "anomaly": null,
     "children": [
      "2a63f4db-121a-49f1-8af5-dcd2c66ca707",
      "9d6f492a-eec9-4fd5-8e15-c1477044ce51",
@@ -11746,8 +12474,13 @@
   "root_id": "group:9e5d464f-5b8c-444a-b6f7-dfb81b376ad0"
  },
  "group_chain_and_task": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "56bce627-ced8-46a2-9ad8-01268c0659cd": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 498,
@@ -11774,6 +12507,7 @@
     "total_runtime_ms": 0
    },
    "e74487c6-b67b-40e1-a7b8-41c8fd042e4d": {
+    "anomaly": null,
     "children": [
      "f5b8f9da-e011-481a-ae8f-5a9163fba311"
     ],
@@ -11802,6 +12536,7 @@
     "total_runtime_ms": 0
    },
    "f5b8f9da-e011-481a-ae8f-5a9163fba311": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -11828,6 +12563,7 @@
     "total_runtime_ms": 0
    },
    "group:55cbe34b-2afc-476b-8905-6e5dac11a56c": {
+    "anomaly": null,
     "children": [
      "56bce627-ced8-46a2-9ad8-01268c0659cd",
      "e74487c6-b67b-40e1-a7b8-41c8fd042e4d"
@@ -11860,8 +12596,13 @@
   "root_id": "group:55cbe34b-2afc-476b-8905-6e5dac11a56c"
  },
  "group_chain_replace3@worker_process": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "16ba0477-76dc-4bb7-b62b-2cfecfd4bd11": {
+    "anomaly": null,
     "children": [
      "a43df597-7777-40f4-830a-e5e297ccb9e4"
     ],
@@ -11890,6 +12631,7 @@
     "total_runtime_ms": 0
    },
    "3483b5ec-c7f3-4bec-8926-d200cd5a90a8": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1002,
@@ -11916,6 +12658,7 @@
     "total_runtime_ms": 0
    },
    "4e5fdac5-b17c-4c7d-b864-5dfb976d3c81": {
+    "anomaly": null,
     "children": [
      "16ba0477-76dc-4bb7-b62b-2cfecfd4bd11"
     ],
@@ -11944,6 +12687,7 @@
     "total_runtime_ms": 9
    },
    "a43df597-7777-40f4-830a-e5e297ccb9e4": {
+    "anomaly": null,
     "children": [
      "c672fb80-8114-4929-9dd4-3cf01dc35e23"
     ],
@@ -11972,6 +12716,7 @@
     "total_runtime_ms": 1
    },
    "c672fb80-8114-4929-9dd4-3cf01dc35e23": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -11998,6 +12743,7 @@
     "total_runtime_ms": 0
    },
    "group:f5620fee-422b-4a2d-9100-3a8ef92f82d4": {
+    "anomaly": null,
     "children": [
      "3483b5ec-c7f3-4bec-8926-d200cd5a90a8",
      "4e5fdac5-b17c-4c7d-b864-5dfb976d3c81"
@@ -12030,8 +12776,13 @@
   "root_id": "group:f5620fee-422b-4a2d-9100-3a8ef92f82d4"
  },
  "group_of_chains": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": "add"
+  },
   "nodes": {
    "0b99083c-39b9-4614-ad04-04a7d6029b7b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 11,
@@ -12058,6 +12809,7 @@
     "total_runtime_ms": 0
    },
    "b07c4da7-fd25-4f25-8820-91886e309ce7": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -12084,6 +12836,7 @@
     "total_runtime_ms": 0
    },
    "d6490971-04aa-4180-9fc7-0f7bf8f845c0": {
+    "anomaly": null,
     "children": [
      "0b99083c-39b9-4614-ad04-04a7d6029b7b"
     ],
@@ -12112,6 +12865,7 @@
     "total_runtime_ms": 0
    },
    "e81b317b-163f-45a7-a1fa-860c701aeb24": {
+    "anomaly": null,
     "children": [
      "b07c4da7-fd25-4f25-8820-91886e309ce7"
     ],
@@ -12140,6 +12894,7 @@
     "total_runtime_ms": 7
    },
    "group:0b836f7c-fbbf-4a67-b5a1-4bb319f00099": {
+    "anomaly": null,
     "children": [
      "d6490971-04aa-4180-9fc7-0f7bf8f845c0",
      "e81b317b-163f-45a7-a1fa-860c701aeb24"
@@ -12172,8 +12927,13 @@
   "root_id": "group:0b836f7c-fbbf-4a67-b5a1-4bb319f00099"
  },
  "group_of_chains_link_spawns": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "1b94c507-2b3d-45f9-83e0-5b14b3392e4f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 10,
@@ -12200,6 +12960,7 @@
     "total_runtime_ms": 0
    },
    "46a04a7d-4d8c-44b1-9d54-ca4841f399f5": {
+    "anomaly": null,
     "children": [
      "e716b549-f675-457a-aabb-cd6cc05f41f3",
      "group:88a8da39-22df-42f7-a902-c85910ff64b1"
@@ -12229,6 +12990,7 @@
     "total_runtime_ms": 5
    },
    "dc0d709e-62f9-41ec-83df-307525dbcc32": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 16,
@@ -12255,6 +13017,7 @@
     "total_runtime_ms": 7
    },
    "e716b549-f675-457a-aabb-cd6cc05f41f3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 12,
@@ -12281,6 +13044,7 @@
     "total_runtime_ms": 0
    },
    "ef94ed91-8b12-4fc5-b9ca-d4c592f8a94a": {
+    "anomaly": null,
     "children": [
      "dc0d709e-62f9-41ec-83df-307525dbcc32"
     ],
@@ -12309,6 +13073,7 @@
     "total_runtime_ms": 8
    },
    "group:88a8da39-22df-42f7-a902-c85910ff64b1": {
+    "anomaly": null,
     "children": [
      "1b94c507-2b3d-45f9-83e0-5b14b3392e4f",
      "ef94ed91-8b12-4fc5-b9ca-d4c592f8a94a"
@@ -12341,8 +13106,13 @@
   "root_id": "46a04a7d-4d8c-44b1-9d54-ca4841f399f5"
  },
  "group_of_chains_link_spawns@publish_headers": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "48d6eb7b-b991-42c1-88bb-c09dfb191658": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 16,
@@ -12369,6 +13139,7 @@
     "total_runtime_ms": 0
    },
    "59c6822a-3923-4f8d-9936-afb0bfbdae98": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 9,
@@ -12395,6 +13166,7 @@
     "total_runtime_ms": 0
    },
    "6b560619-0016-476a-aadb-1e3f23c4660a": {
+    "anomaly": null,
     "children": [
      "59c6822a-3923-4f8d-9936-afb0bfbdae98"
     ],
@@ -12423,6 +13195,7 @@
     "total_runtime_ms": 7
    },
    "9d421a51-b5ef-4db9-9741-c6f7cee5fce0": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 17,
@@ -12449,6 +13222,7 @@
     "total_runtime_ms": 0
    },
    "a43b0eeb-c0c9-4014-b621-791b866d168a": {
+    "anomaly": null,
     "children": [
      "48d6eb7b-b991-42c1-88bb-c09dfb191658",
      "group:584994c5-9681-4504-9167-ff9a1aca9223"
@@ -12478,6 +13252,7 @@
     "total_runtime_ms": 64
    },
    "group:584994c5-9681-4504-9167-ff9a1aca9223": {
+    "anomaly": null,
     "children": [
      "9d421a51-b5ef-4db9-9741-c6f7cee5fce0",
      "6b560619-0016-476a-aadb-1e3f23c4660a"
@@ -12510,8 +13285,13 @@
   "root_id": "a43b0eeb-c0c9-4014-b621-791b866d168a"
  },
  "group_spawned_in_task": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4c86cf34-2860-4c14-84ce-7f5c92f62262": {
+    "anomaly": null,
     "children": [
      "group:0234ce49-d2ab-453a-bd0c-1c5441f23664"
     ],
@@ -12540,6 +13320,7 @@
     "total_runtime_ms": 11
    },
    "554b9387-666f-4e5e-a93b-27df74cfa019": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -12566,6 +13347,7 @@
     "total_runtime_ms": 0
    },
    "85f111b3-dbf6-4eb7-8709-6d4ef47f5846": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 11,
@@ -12592,6 +13374,7 @@
     "total_runtime_ms": 0
    },
    "90779411-2bdd-4bd8-9930-738a82eab5d2": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -12618,6 +13401,7 @@
     "total_runtime_ms": 0
    },
    "group:0234ce49-d2ab-453a-bd0c-1c5441f23664": {
+    "anomaly": null,
     "children": [
      "85f111b3-dbf6-4eb7-8709-6d4ef47f5846",
      "90779411-2bdd-4bd8-9930-738a82eab5d2",
@@ -12651,8 +13435,13 @@
   "root_id": "4c86cf34-2860-4c14-84ce-7f5c92f62262"
  },
  "mid_chain_replace3@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "2c0e4f5e-b12e-4392-aa3e-3227cea672cd": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -12679,6 +13468,7 @@
     "total_runtime_ms": 0
    },
    "573f6057-5e05-4167-8627-3890cdbc0e00": {
+    "anomaly": null,
     "children": [
      "7b5ca94e-0514-4b38-b9af-39630af1db08"
     ],
@@ -12707,6 +13497,7 @@
     "total_runtime_ms": 7
    },
    "7b5ca94e-0514-4b38-b9af-39630af1db08": {
+    "anomaly": null,
     "children": [
      "a194720c-2ee6-423b-9ef5-b6990be0362d",
      "9aa58341-3d06-4b8d-af52-da8793b087cc"
@@ -12736,6 +13527,7 @@
     "total_runtime_ms": 0
    },
    "9aa58341-3d06-4b8d-af52-da8793b087cc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -12762,6 +13554,7 @@
     "total_runtime_ms": 0
    },
    "a194720c-2ee6-423b-9ef5-b6990be0362d": {
+    "anomaly": null,
     "children": [
      "2c0e4f5e-b12e-4392-aa3e-3227cea672cd"
     ],
@@ -12793,8 +13586,13 @@
   "root_id": "573f6057-5e05-4167-8627-3890cdbc0e00"
  },
  "mid_chain_replace_names@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "36b773d9-551b-411c-ad7b-024de806c701": {
+    "anomaly": null,
     "children": [
      "a0a7f85f-8e2d-4f55-b544-89a2e11e9967",
      "51310817-5b7b-4c00-8a81-6eeba444c0ed"
@@ -12824,6 +13622,7 @@
     "total_runtime_ms": 0
    },
    "37668e3a-9cc8-4e01-a956-33b6712d36ca": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -12850,6 +13649,7 @@
     "total_runtime_ms": 0
    },
    "51310817-5b7b-4c00-8a81-6eeba444c0ed": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 0,
@@ -12876,6 +13676,7 @@
     "total_runtime_ms": 0
    },
    "a0a7f85f-8e2d-4f55-b544-89a2e11e9967": {
+    "anomaly": null,
     "children": [
      "37668e3a-9cc8-4e01-a956-33b6712d36ca"
     ],
@@ -12904,6 +13705,7 @@
     "total_runtime_ms": 0
    },
    "c87b70c0-ae06-48f8-821c-f14b553a0324": {
+    "anomaly": null,
     "children": [
      "36b773d9-551b-411c-ad7b-024de806c701"
     ],
@@ -12935,8 +13737,13 @@
   "root_id": "c87b70c0-ae06-48f8-821c-f14b553a0324"
  },
  "nested_replace@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "2d9e98ac-9856-467b-8108-3a99adb5ac37": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -12963,6 +13770,7 @@
     "total_runtime_ms": 1
    },
    "76a8251d-43b1-4255-9872-c4568dc551ec": {
+    "anomaly": null,
     "children": [
      "b5be8b06-3d67-4526-8ea4-42dcd1a92ed8"
     ],
@@ -12991,6 +13799,7 @@
     "total_runtime_ms": 7
    },
    "b5be8b06-3d67-4526-8ea4-42dcd1a92ed8": {
+    "anomaly": null,
     "children": [
      "d5105e7f-eb04-406f-8f22-33819e1dd46f"
     ],
@@ -13019,6 +13828,7 @@
     "total_runtime_ms": 0
    },
    "d5105e7f-eb04-406f-8f22-33819e1dd46f": {
+    "anomaly": null,
     "children": [
      "2d9e98ac-9856-467b-8108-3a99adb5ac37"
     ],
@@ -13050,8 +13860,13 @@
   "root_id": "76a8251d-43b1-4255-9872-c4568dc551ec"
  },
  "nested_replace_group@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "26ceda1e-dfda-46c5-beab-db5b20ebc01a": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -13078,6 +13893,7 @@
     "total_runtime_ms": 0
    },
    "2f24ba0c-26f7-40b2-ba8a-f685a72749e3": {
+    "anomaly": null,
     "children": [
      "42d35368-1e52-4183-b017-23a69d23f1b6"
     ],
@@ -13106,6 +13922,7 @@
     "total_runtime_ms": 0
    },
    "42d35368-1e52-4183-b017-23a69d23f1b6": {
+    "anomaly": null,
     "children": [
      "group:57f62fe6-7f12-48e2-92c6-05faa3db46ff"
     ],
@@ -13134,6 +13951,7 @@
     "total_runtime_ms": 0
    },
    "54a7c9b5-bd67-4e54-a522-6049f382d5c9": {
+    "anomaly": null,
     "children": [
      "2f24ba0c-26f7-40b2-ba8a-f685a72749e3"
     ],
@@ -13162,6 +13980,7 @@
     "total_runtime_ms": 13
    },
    "8e8dc207-c370-48b3-86c2-6d5d74edfb60": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 509,
@@ -13188,6 +14007,7 @@
     "total_runtime_ms": 502
    },
    "group:57f62fe6-7f12-48e2-92c6-05faa3db46ff": {
+    "anomaly": null,
     "children": [
      "26ceda1e-dfda-46c5-beab-db5b20ebc01a",
      "8e8dc207-c370-48b3-86c2-6d5d74edfb60"
@@ -13220,8 +14040,13 @@
   "root_id": "54a7c9b5-bd67-4e54-a522-6049f382d5c9"
  },
  "nested_replace_group_root@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "400c6044-37c2-4ae9-8f88-ff4b6ded9283": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -13248,6 +14073,7 @@
     "total_runtime_ms": 0
    },
    "466e7d23-2934-4bf1-b73a-3fe668124e02": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 507,
@@ -13274,6 +14100,7 @@
     "total_runtime_ms": 502
    },
    "684529e7-8e7b-4eb7-b544-e6a90300e8d0": {
+    "anomaly": null,
     "children": [
      "group:d9586e29-824f-4a80-b879-59781c604f5d"
     ],
@@ -13302,6 +14129,7 @@
     "total_runtime_ms": 0
    },
    "6c51e4cf-7500-429a-ab84-f4effec69e7d": {
+    "anomaly": null,
     "children": [
      "684529e7-8e7b-4eb7-b544-e6a90300e8d0"
     ],
@@ -13330,6 +14158,7 @@
     "total_runtime_ms": 0
    },
    "group:d9586e29-824f-4a80-b879-59781c604f5d": {
+    "anomaly": null,
     "children": [
      "400c6044-37c2-4ae9-8f88-ff4b6ded9283",
      "466e7d23-2934-4bf1-b73a-3fe668124e02"
@@ -13362,8 +14191,13 @@
   "root_id": "6c51e4cf-7500-429a-ab84-f4effec69e7d"
  },
  "nested_replace_header@worker_process": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "1c15451a-a23c-4fd8-a413-f4da61dd91a3": {
+    "anomaly": null,
     "children": [
      "ee4c402c-8ab5-4a23-ab96-94fe1c444df7",
      "776e40df-50ca-476a-8e6a-484146df47cc"
@@ -13393,6 +14227,7 @@
     "total_runtime_ms": 501
    },
    "307e456f-cc47-4b44-a444-1117ea573967": {
+    "anomaly": null,
     "children": [],
     "chord_id": "9d742a6a-b3b2-4a73-be20-480e7ed4b71b",
     "duration_ms": 1003,
@@ -13419,6 +14254,7 @@
     "total_runtime_ms": 0
    },
    "776e40df-50ca-476a-8e6a-484146df47cc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -13445,6 +14281,7 @@
     "total_runtime_ms": 0
    },
    "d79f67e3-13d2-4a50-ad1a-95949750c2b3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -13471,6 +14308,7 @@
     "total_runtime_ms": 0
    },
    "ee4c402c-8ab5-4a23-ab96-94fe1c444df7": {
+    "anomaly": null,
     "children": [
      "d79f67e3-13d2-4a50-ad1a-95949750c2b3"
     ],
@@ -13499,6 +14337,7 @@
     "total_runtime_ms": 0
    },
    "group:9d742a6a-b3b2-4a73-be20-480e7ed4b71b": {
+    "anomaly": null,
     "children": [
      "1c15451a-a23c-4fd8-a413-f4da61dd91a3",
      "307e456f-cc47-4b44-a444-1117ea573967"
@@ -13531,8 +14370,13 @@
   "root_id": "group:9d742a6a-b3b2-4a73-be20-480e7ed4b71b"
  },
  "nested_replace_header@worker_process@field": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "55e4c711-801c-4eb3-8877-f43d9930a8af": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -13559,6 +14403,7 @@
     "total_runtime_ms": 0
    },
    "8f5f773f-9a70-4528-a120-45737b96bd47": {
+    "anomaly": null,
     "children": [
      "55e4c711-801c-4eb3-8877-f43d9930a8af"
     ],
@@ -13587,6 +14432,7 @@
     "total_runtime_ms": 0
    },
    "b37ace40-1a7c-437e-a090-2fd89524babc": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -13613,6 +14459,7 @@
     "total_runtime_ms": 0
    },
    "c2419866-5d85-4c51-9b24-85ad87037fbc": {
+    "anomaly": null,
     "children": [
      "8f5f773f-9a70-4528-a120-45737b96bd47"
     ],
@@ -13641,6 +14488,7 @@
     "total_runtime_ms": 501
    },
    "dc1465c3-3319-4f23-8d23-39b75a55b0c5": {
+    "anomaly": null,
     "children": [],
     "chord_id": "e5a8bb90-3932-4e35-9615-ec259030b03b",
     "duration_ms": 43,
@@ -13667,6 +14515,7 @@
     "total_runtime_ms": 0
    },
    "group:e5a8bb90-3932-4e35-9615-ec259030b03b": {
+    "anomaly": null,
     "children": [
      "c2419866-5d85-4c51-9b24-85ad87037fbc",
      "dc1465c3-3319-4f23-8d23-39b75a55b0c5",
@@ -13700,8 +14549,13 @@
   "root_id": "group:e5a8bb90-3932-4e35-9615-ec259030b03b"
  },
  "nested_replace_last@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "2e91e450-e0d3-460e-867e-7e3b01236e05": {
+    "anomaly": null,
     "children": [
      "b49ea16e-fb9f-45f2-830f-42535bf6223b",
      "9e8d2fd6-27fe-4832-966d-101e24e9d8e6"
@@ -13731,6 +14585,7 @@
     "total_runtime_ms": 0
    },
    "9e8d2fd6-27fe-4832-966d-101e24e9d8e6": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -13757,6 +14612,7 @@
     "total_runtime_ms": 0
    },
    "b49ea16e-fb9f-45f2-830f-42535bf6223b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -13783,6 +14639,7 @@
     "total_runtime_ms": 1
    },
    "b9577f45-37ad-4c69-9632-a0ab893499f3": {
+    "anomaly": null,
     "children": [
      "2e91e450-e0d3-460e-867e-7e3b01236e05"
     ],
@@ -13814,8 +14671,13 @@
   "root_id": "b9577f45-37ad-4c69-9632-a0ab893499f3"
  },
  "nested_replace_root@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0c5f23db-2112-493f-b4d6-46fe957364e4": {
+    "anomaly": null,
     "children": [
      "428c09aa-12ce-499f-aa80-7005b343b7dc"
     ],
@@ -13844,6 +14706,7 @@
     "total_runtime_ms": 0
    },
    "428c09aa-12ce-499f-aa80-7005b343b7dc": {
+    "anomaly": null,
     "children": [
      "ed1e89c4-d0ed-4503-8ebd-a399cacf8b3e"
     ],
@@ -13872,6 +14735,7 @@
     "total_runtime_ms": 0
    },
    "ed1e89c4-d0ed-4503-8ebd-a399cacf8b3e": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -13901,8 +14765,13 @@
   "root_id": "0c5f23db-2112-493f-b4d6-46fe957364e4"
  },
  "recursive_replace@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4521c220-85ed-4fb7-9eb5-058031f539c6": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -13929,6 +14798,7 @@
     "total_runtime_ms": 0
    },
    "c3b66263-2beb-4536-9ca7-461c34cc4a31": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -13955,6 +14825,7 @@
     "total_runtime_ms": 0
    },
    "e0e9cf4d-d55f-49f2-9b09-f796c0873623": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -13981,6 +14852,7 @@
     "total_runtime_ms": 0
    },
    "e1b554d0-b30a-4d37-bba5-0c250f535d92": {
+    "anomaly": null,
     "children": [
      "4521c220-85ed-4fb7-9eb5-058031f539c6",
      "c3b66263-2beb-4536-9ca7-461c34cc4a31",
@@ -14011,6 +14883,7 @@
     "total_runtime_ms": 0
    },
    "e4e68995-7af1-4f04-aab0-2219db67dceb": {
+    "anomaly": null,
     "children": [
      "e1b554d0-b30a-4d37-bba5-0c250f535d92"
     ],
@@ -14042,8 +14915,13 @@
   "root_id": "e4e68995-7af1-4f04-aab0-2219db67dceb"
  },
  "recursive_replace_root@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "1bf71f9e-5d39-41a3-9de7-e15113b6585e": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -14070,6 +14948,7 @@
     "total_runtime_ms": 0
    },
    "2f4c701a-2b61-4156-b83e-d2450b435611": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 4,
@@ -14096,6 +14975,7 @@
     "total_runtime_ms": 0
    },
    "9135de1f-15d4-4f83-9a8d-3cd1f22ede5b": {
+    "anomaly": null,
     "children": [
      "b22ea7cb-c08d-495f-9c31-e2fb1f8f80b3",
      "2f4c701a-2b61-4156-b83e-d2450b435611",
@@ -14126,6 +15006,7 @@
     "total_runtime_ms": 0
    },
    "b22ea7cb-c08d-495f-9c31-e2fb1f8f80b3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 6,
@@ -14155,8 +15036,13 @@
   "root_id": "9135de1f-15d4-4f83-9a8d-3cd1f22ede5b"
  },
  "replace_chain": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "28183bf0-cccb-434a-b7b8-50084c973185": {
+    "anomaly": null,
     "children": [
      "30213ebd-c87d-4bda-9848-67b1024f1f05"
     ],
@@ -14185,6 +15071,7 @@
     "total_runtime_ms": 0
    },
    "30213ebd-c87d-4bda-9848-67b1024f1f05": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 18,
@@ -14214,8 +15101,13 @@
   "root_id": "28183bf0-cccb-434a-b7b8-50084c973185"
  },
  "replace_chain@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "14461e28-ef76-4161-a178-eb89d187437f": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 23,
@@ -14242,6 +15134,7 @@
     "total_runtime_ms": 1
    },
    "b1c3f62d-d5ea-4050-bbc6-9f83b66fb713": {
+    "anomaly": null,
     "children": [
      "14461e28-ef76-4161-a178-eb89d187437f"
     ],
@@ -14273,8 +15166,13 @@
   "root_id": "b1c3f62d-d5ea-4050-bbc6-9f83b66fb713"
  },
  "replace_delayed_header": {
+  "member_fields": {
+   "member_count": 2,
+   "member_name": null
+  },
   "nodes": {
    "5388197f-f8bc-4717-996d-39500f00ab8a": {
+    "anomaly": null,
     "children": [],
     "chord_id": "d20e47e4-34b2-4e94-8925-f60944123c7a",
     "duration_ms": 14,
@@ -14301,6 +15199,7 @@
     "total_runtime_ms": 0
    },
    "85459fc4-74c6-4cf7-b446-63bfaa93d2a7": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 512,
@@ -14327,6 +15226,7 @@
     "total_runtime_ms": 0
    },
    "d6d371d3-a37d-4d18-896c-4d499e0af962": {
+    "anomaly": null,
     "children": [
      "85459fc4-74c6-4cf7-b446-63bfaa93d2a7"
     ],
@@ -14355,6 +15255,7 @@
     "total_runtime_ms": 502
    },
    "group:d20e47e4-34b2-4e94-8925-f60944123c7a": {
+    "anomaly": null,
     "children": [
      "d6d371d3-a37d-4d18-896c-4d499e0af962",
      "5388197f-f8bc-4717-996d-39500f00ab8a"
@@ -14387,8 +15288,13 @@
   "root_id": "group:d20e47e4-34b2-4e94-8925-f60944123c7a"
  },
  "replace_delayed_mid_chain": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "1d454220-fcff-4188-ba96-b37f75e1dd4f": {
+    "anomaly": null,
     "children": [
      "38d5b7eb-4dbd-402a-b7f9-fb59166b66fd"
     ],
@@ -14417,6 +15323,7 @@
     "total_runtime_ms": 2
    },
    "38d5b7eb-4dbd-402a-b7f9-fb59166b66fd": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -14443,6 +15350,7 @@
     "total_runtime_ms": 0
    },
    "c0f0b055-72d3-40a6-9eef-a4d8c448beeb": {
+    "anomaly": null,
     "children": [
      "1d454220-fcff-4188-ba96-b37f75e1dd4f"
     ],
@@ -14474,8 +15382,13 @@
   "root_id": "c0f0b055-72d3-40a6-9eef-a4d8c448beeb"
  },
  "replace_delayed_nested": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "44ce91c9-9039-43b5-8b3e-c100c9d2e9cd": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1011,
@@ -14502,6 +15415,7 @@
     "total_runtime_ms": 3
    },
    "6ed8e871-bda3-4add-a869-80714cb5a03b": {
+    "anomaly": null,
     "children": [
      "44ce91c9-9039-43b5-8b3e-c100c9d2e9cd"
     ],
@@ -14533,8 +15447,13 @@
   "root_id": "6ed8e871-bda3-4add-a869-80714cb5a03b"
  },
  "replace_delayed_root": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "315f7055-d6a4-48f0-b329-f9bbed6e6f09": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2022,
@@ -14564,8 +15483,13 @@
   "root_id": "315f7055-d6a4-48f0-b329-f9bbed6e6f09"
  },
  "replace_delayed_same_name": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "8b0a8508-01d4-42f3-8502-e0fe448e505c": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 2032,
@@ -14595,8 +15519,13 @@
   "root_id": "8b0a8508-01d4-42f3-8502-e0fe448e505c"
  },
  "replace_group": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "7848d6ec-3317-4d9c-89b5-a41d8178b01b": {
+    "anomaly": null,
     "children": [
      "group:3ef4b99a-9d4f-43b4-9d93-24af4bfe6c87"
     ],
@@ -14625,6 +15554,7 @@
     "total_runtime_ms": 0
    },
    "a372b752-095e-4b2f-aae1-1358e35d1e82": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 507,
@@ -14651,6 +15581,7 @@
     "total_runtime_ms": 501
    },
    "bd08eaa2-1043-4d05-b926-8386a4e456ab": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -14677,6 +15608,7 @@
     "total_runtime_ms": 0
    },
    "group:3ef4b99a-9d4f-43b4-9d93-24af4bfe6c87": {
+    "anomaly": null,
     "children": [
      "bd08eaa2-1043-4d05-b926-8386a4e456ab",
      "a372b752-095e-4b2f-aae1-1358e35d1e82"
@@ -14709,8 +15641,13 @@
   "root_id": "7848d6ec-3317-4d9c-89b5-a41d8178b01b"
  },
  "replace_group@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "0b2dd9e2-8bdf-4c3f-9b61-5ca65f200a30": {
+    "anomaly": null,
     "children": [
      "group:1cffafc2-3478-48d5-943e-101014c5bbbe"
     ],
@@ -14739,6 +15676,7 @@
     "total_runtime_ms": 0
    },
    "49fd8387-e68f-40f5-bd89-e70ff1d7e2ad": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -14765,6 +15703,7 @@
     "total_runtime_ms": 0
    },
    "d8c42895-73ad-40eb-84bc-e056432dd8d8": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 510,
@@ -14791,6 +15730,7 @@
     "total_runtime_ms": 502
    },
    "group:1cffafc2-3478-48d5-943e-101014c5bbbe": {
+    "anomaly": null,
     "children": [
      "49fd8387-e68f-40f5-bd89-e70ff1d7e2ad",
      "d8c42895-73ad-40eb-84bc-e056432dd8d8"
@@ -14823,8 +15763,13 @@
   "root_id": "0b2dd9e2-8bdf-4c3f-9b61-5ca65f200a30"
  },
  "replace_same_name@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "3b39d517-a9df-44ec-b62c-84eeb8a7b6f3": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -14851,6 +15796,7 @@
     "total_runtime_ms": 1
    },
    "5c8fae04-a80b-4f8e-ae01-465540f39045": {
+    "anomaly": null,
     "children": [
      "3b39d517-a9df-44ec-b62c-84eeb8a7b6f3"
     ],
@@ -14882,8 +15828,13 @@
   "root_id": "5c8fae04-a80b-4f8e-ae01-465540f39045"
  },
  "replace_task@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "8554974b-c781-4e08-aea3-6942016d91ad": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1076,
@@ -14913,8 +15864,13 @@
   "root_id": "8554974b-c781-4e08-aea3-6942016d91ad"
  },
  "two_replacers@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "051fccba-0e4d-4111-b374-05fc8905f918": {
+    "anomaly": null,
     "children": [
      "19d89412-2498-4f17-9682-d710dcd3c876"
     ],
@@ -14943,6 +15899,7 @@
     "total_runtime_ms": 0
    },
    "19d89412-2498-4f17-9682-d710dcd3c876": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 5,
@@ -14969,6 +15926,7 @@
     "total_runtime_ms": 0
    },
    "7b96b1db-149a-4a76-8598-f47ee186e2dc": {
+    "anomaly": null,
     "children": [
      "a69d0d77-9304-40b0-bdec-a5020e03f0d5"
     ],
@@ -14997,6 +15955,7 @@
     "total_runtime_ms": 7
    },
    "a69d0d77-9304-40b0-bdec-a5020e03f0d5": {
+    "anomaly": null,
     "children": [
      "b59efe71-e33c-4585-8ed4-5554374587b8",
      "051fccba-0e4d-4111-b374-05fc8905f918"
@@ -15026,6 +15985,7 @@
     "total_runtime_ms": 0
    },
    "b59efe71-e33c-4585-8ed4-5554374587b8": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -15055,8 +16015,13 @@
   "root_id": "7b96b1db-149a-4a76-8598-f47ee186e2dc"
  },
  "two_replacers_root@worker_process": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "01a697d1-d2c3-4d8b-bff8-9e0fac837706": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 8,
@@ -15083,6 +16048,7 @@
     "total_runtime_ms": 1
    },
    "59966b3d-e6b8-4ce6-a72b-0340d95c77e3": {
+    "anomaly": null,
     "children": [
      "baf427a2-a7c2-46c6-a046-552b50c23748"
     ],
@@ -15111,6 +16077,7 @@
     "total_runtime_ms": 0
    },
    "b00d5a5e-de79-4961-ba63-525582157b5f": {
+    "anomaly": null,
     "children": [
      "01a697d1-d2c3-4d8b-bff8-9e0fac837706",
      "59966b3d-e6b8-4ce6-a72b-0340d95c77e3"
@@ -15140,6 +16107,7 @@
     "total_runtime_ms": 1
    },
    "baf427a2-a7c2-46c6-a046-552b50c23748": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 7,
@@ -15169,8 +16137,13 @@
   "root_id": "b00d5a5e-de79-4961-ba63-525582157b5f"
  },
  "worker_explicit_parent": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4005264e-9f28-4c57-9b14-c9c2b649120b": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 996,
@@ -15200,8 +16173,13 @@
   "root_id": "4005264e-9f28-4c57-9b14-c9c2b649120b"
  },
  "worker_explicit_parent#2": {
+  "member_fields": {
+   "member_count": null,
+   "member_name": null
+  },
   "nodes": {
    "4e8957d0-84f4-4cd2-92ed-f168ba444f15": {
+    "anomaly": null,
     "children": [],
     "chord_id": null,
     "duration_ms": 1,
@@ -15228,6 +16206,7 @@
     "total_runtime_ms": 0
    },
    "edeb88e4-f580-40fb-ae06-c4bd0fbd60ef": {
+    "anomaly": null,
     "children": [
      "4e8957d0-84f4-4cd2-92ed-f168ba444f15"
     ],

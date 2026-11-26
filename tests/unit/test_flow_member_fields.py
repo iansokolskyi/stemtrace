@@ -119,7 +119,9 @@ def test_member_fields_same_last_segment_in_different_modules_have_no_name() -> 
     assert _fields(nodes, "g") == (2, None)
 
 
-def test_member_fields_of_a_group_in_a_chord_header_do_not_count_the_inner_group() -> None:
+def test_member_fields_of_a_group_in_a_chord_header_do_not_count_the_inner_group() -> (
+    None
+):
     """Matrix 5: the inner container is drawn as its own box, not as a row."""
     nodes = _flow(
         _box("c", NodeType.CHORD, ("t1", "t2", "inner", "cb"), chord_id="cb"),
@@ -184,7 +186,9 @@ def test_member_fields_row_continues_only_through_single_task_children() -> None
     assert _fields(nodes, "g") == (2, None)
 
 
-def test_member_fields_ignore_a_self_link_and_a_child_that_is_not_in_the_graph() -> None:
+def test_member_fields_ignore_a_self_link_and_a_child_that_is_not_in_the_graph() -> (
+    None
+):
     nodes = _flow(
         _box("g", NodeType.GROUP, ("g", "gone", "a")),
         _task("a", "app.fetch", group_id="g"),
@@ -221,3 +225,37 @@ def test_root_flows_summaries_carry_the_member_fields_of_a_capture() -> None:
     summary = page.summaries[page.roots[0].task_id]
 
     assert (summary.member_count, summary.member_name) == (3, "add")
+
+
+def _fixture_graphs() -> dict[str, Any]:
+    path = Path(__file__).parents[2] / "src/stemtrace/server/ui/frontend/tests/fixtures"
+    return dict(json.loads((path / "flow-graphs.json").read_text()))
+
+
+def test_member_fields_of_recorded_graphs_equal_the_fixture_fields() -> None:
+    """The fixture's fields are what `layout-flow.spec.ts` compares with the page's container."""
+    graphs = _fixture_graphs()
+    checked = 0
+    for name, graph in graphs.items():
+        nodes = {
+            task_id: TaskNode(
+                task_id=task_id,
+                name=raw["name"],
+                state=raw["state"],
+                node_type=raw["node_type"],
+                group_id=raw["group_id"],
+                chord_id=raw["chord_id"],
+                children=raw["children"],
+            )
+            for task_id, raw in graph["nodes"].items()
+        }
+        expected = graph["member_fields"]
+
+        assert _fields(nodes, graph["root_id"]) == (
+            expected["member_count"],
+            expected["member_name"],
+        ), name
+        checked += expected["member_count"] is not None
+
+    # most captures root in a container; a count of zero would mean nothing was compared
+    assert checked >= 40

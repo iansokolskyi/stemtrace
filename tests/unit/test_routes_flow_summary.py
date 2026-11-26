@@ -58,6 +58,8 @@ def test_list_graphs_items_carry_the_flow_summary() -> None:
             "state_counts": {"SUCCESS": 1, "FAILURE": 1},
             "not_run_count": 1,
             "state": "FAILURE",
+            "member_count": 2,
+            "member_name": None,
         }
     ]
 
@@ -76,6 +78,8 @@ def test_list_graphs_flow_state_is_worse_than_a_succeeded_root() -> None:
         "state_counts": {"SUCCESS": 1, "STARTED": 1, "FAILURE": 1},
         "not_run_count": 0,
         "state": "FAILURE",
+        "member_count": None,
+        "member_name": None,
     }
 
 
@@ -84,25 +88,33 @@ def test_list_graphs_summarizes_each_listed_flow_by_its_own_graph() -> None:
 
     graphs = client.get("/api/graphs").json()["graphs"]
 
-    flows = sorted((g["flow"] for g in graphs), key=lambda f: f["state"])
+    flows = sorted(
+        (g["flow"] for g in graphs), key=lambda f: (f["state"], f["member_count"] or 0)
+    )
     assert flows == [
         {
             "task_count": 2,
             "state_counts": {"SUCCESS": 1, "REJECTED": 1},
             "not_run_count": 1,
             "state": "FAILURE",
+            "member_count": 2,
+            "member_name": None,
         },
         {
             "task_count": 3,
             "state_counts": {"SUCCESS": 3},
             "not_run_count": 0,
             "state": "SUCCESS",
+            "member_count": None,
+            "member_name": None,
         },
         {
             "task_count": 3,
             "state_counts": {"SUCCESS": 3},
             "not_run_count": 0,
             "state": "SUCCESS",
+            "member_count": 3,
+            "member_name": "add",
         },
     ]
 

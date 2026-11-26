@@ -2526,6 +2526,48 @@ class FlowSummary(BaseModel):
     state_counts: dict[str, int]
     not_run_count: int
     state: TaskState
+    member_count: int | None = None
+    member_name: str | None = None
+
+
+def _member_fields(
+    nodes: Mapping[str, TaskNode], root_id: str
+) -> tuple[int | None, str | None]:
+    """Count a container root's members and name the task they share.
+
+    Mirrors the flow page's ``layoutFlow`` (``partsOf``, ``rowFrom``): a member is a
+    row that starts at a task child, minus the chord's callback, and follows single
+    task children until a node of the root's group.
+    """
+    root = nodes[root_id]
+    if root.node_type == NodeType.TASK:
+        return None, None
+    # The callback is the child ``chord_id`` names, as ``/api/graphs`` sends it.
+    is_callback_child = (
+        root.node_type == NodeType.CHORD and root.chord_id in root.children
+    )
+    callback = root.chord_id if is_callback_child else None
+    ends: list[str] = []
+    for head in root.children:
+        if head in (root_id, callback) or head not in nodes:
+            continue
+        if nodes[head].node_type != NodeType.TASK:
+            continue
+        row = [head]
+        current = nodes[head]
+        while current.group_id != root.group_id:
+            nexts = [c for c in current.children if c != current.task_id and c in nodes]
+            if (
+                len(nexts) != 1
+                or nodes[nexts[0]].node_type != NodeType.TASK
+                or nexts[0] in row
+            ):
+                break
+            row.append(nexts[0])
+            current = nodes[nexts[0]]
+        ends.append(current.name)
+    shared = ends[0] if ends and all(name == ends[0] for name in ends) else None
+    return len(ends), None if shared is None else shared.rsplit(".", 1)[-1]
 
 
 def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
@@ -2538,10 +2580,13 @@ def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
     counts = Counter(
         node.state for node in nodes.values() if node.node_type == NodeType.TASK
     )
+    member_count, member_name = _member_fields(nodes, root_id)
     worst = {_FLOW_STATE_OF[state] for state in counts}
     return FlowSummary(
         task_count=sum(counts.values()),
         state_counts={s.value: counts[s] for s in TaskState if counts[s]},
         not_run_count=len(chord_not_run_reasons(nodes)),
         state=next((s for s in FLOW_STATE_ORDER if s in worst), nodes[root_id].state),
+        member_count=member_count,
+        member_name=member_name,
     )

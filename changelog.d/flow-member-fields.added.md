@@ -1,0 +1,1 @@
+- Each `flow` object of `GET /api/graphs` now has `member_count` and `member_name`. For a GROUP or CHORD root, they give the number of members seen so far and the last segment of the task name that ends every member (`null` when the names differ or no member exists). Both are `null` for a TASK root.

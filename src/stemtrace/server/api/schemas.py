@@ -193,6 +193,22 @@ class FlowSummaryResponse(BaseModel):
             "The root's own state when the flow has no tasks."
         )
     )
+    member_count: int | None = Field(
+        default=None,
+        description=(
+            "For a GROUP or CHORD root, the members seen so far: the rows the flow "
+            "page draws in the root, without a chord's callback and without nested "
+            "containers; a row is a task child and the single task children that "
+            "follow it. 0 until a member appears. null for a TASK root."
+        ),
+    )
+    member_name: str | None = Field(
+        default=None,
+        description=(
+            "The last segment of the task name that ends every member, or null when "
+            "the names differ, there are no members, or the root is a TASK."
+        ),
+    )
 
 
 class GraphNodeResponse(BaseModel):

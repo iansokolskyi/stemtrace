@@ -75,6 +75,11 @@ def _graph(*events: TaskEvent) -> TaskGraph:
     return graph
 
 
+def _totals(summary: FlowSummary) -> FlowSummary:
+    """The summary without the member fields (``test_flow_member_fields.py`` covers them)."""
+    return summary.model_copy(update={"member_count": None, "member_name": None})
+
+
 def _summary(graph: TaskGraph, root_id: str) -> FlowSummary:
     return flow_summary(graph.nodes, root_id)
 
@@ -165,7 +170,7 @@ def test_flow_summary_without_tasks_takes_the_roots_own_state() -> None:
 
     summary = flow_summary(nodes, "group:g")
 
-    assert summary == FlowSummary(
+    assert _totals(summary) == FlowSummary(
         task_count=0, state_counts={}, not_run_count=0, state=S.REVOKED
     )
 
@@ -297,7 +302,7 @@ def test_flow_summary_of_real_capture_matches_the_hand_derived_flow(
 
     ((_, summary),) = _listed_flows(capture).items()
 
-    assert summary == FlowSummary(
+    assert _totals(summary) == FlowSummary(
         task_count=tasks, state_counts=per_state, not_run_count=not_run, state=state
     )
 
