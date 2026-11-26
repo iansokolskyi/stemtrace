@@ -499,13 +499,14 @@ def _threshold(stats: RuntimeStats, settings: AnomalySettings) -> timedelta:
     """``max(k x p95, floor)`` with enough samples, else ``max(ceiling, floor)``."""
     if stats.p95_ms is not None and stats.runtime_samples >= settings.stuck_min_samples:
         scaled_ms = settings.stuck_factor * stats.p95_ms
-        # Total for any factor: timedelta raises OverflowError above ~8.6e16 ms,
-        # and inf x 0 is nan, which fails the comparison and takes the cap too.
-        scaled = (
-            timedelta(milliseconds=scaled_ms)
-            if scaled_ms < MAX_STUCK_THRESHOLD / _MILLISECOND
-            else MAX_STUCK_THRESHOLD
-        )
+        # Total for any factor: timedelta raises OverflowError beyond about +-8.6e16 ms.
+        # inf takes the cap; negative and nan (inf x 0) fall to the floor.
+        if scaled_ms >= MAX_STUCK_THRESHOLD / _MILLISECOND:
+            scaled = MAX_STUCK_THRESHOLD
+        elif scaled_ms >= 0:
+            scaled = timedelta(milliseconds=scaled_ms)
+        else:
+            scaled = timedelta(0)
         return max(scaled, settings.stuck_floor)
     return max(settings.stuck_ceiling, settings.stuck_floor)
 
