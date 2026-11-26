@@ -27,7 +27,12 @@ MAX_NODES = 30_000
 # 8-29k events; the pre-#172 unsliced routes took 110-250k in one turn. The budget sits
 # between.
 MAX_LOOP_WORK = 60_000
-PATHS = ["/api/overview?within=1h", "/api/failures", "/api/stats/timeseries"]
+PATHS = [
+    "/api/overview?within=1h",
+    "/api/failures",
+    "/api/stats/timeseries",
+    "/api/stats/timeseries?percentiles=p95",
+]
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
 # failing over 7 types; a storm has every run failing, over 1 or 50 types.
@@ -41,6 +46,17 @@ SHAPES = {
 def _add(store: GraphStore, i: int, *, seconds_ago: int, shape: str = "mix") -> None:
     storm, types = SHAPES[shape]
     state = TaskState.FAILURE if storm else _STATES[i % len(_STATES)]
+    # PENDING and STARTED first, so finished runs give runtime and wait samples
+    # (the p95 paths collect and sort them).
+    for earlier, extra in ((TaskState.PENDING, 3), (TaskState.STARTED, 2)):
+        store.add_event(
+            TaskEvent(
+                task_id=f"t{i}",
+                name=f"app.task{i % 50}",
+                state=earlier,
+                timestamp=NOW - timedelta(seconds=seconds_ago + extra),
+            )
+        )
     store.add_event(
         TaskEvent(
             task_id=f"t{i}",
@@ -145,7 +161,14 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("path", [*PATHS, "/api/stats/timeseries?bucket=1m&within=2h"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        *PATHS,
+        "/api/stats/timeseries?bucket=1m&within=2h",
+        "/api/stats/timeseries?bucket=1m&within=2h&percentiles=p95",
+    ],
+)
 @pytest.mark.parametrize("slice_size", [1, 7, 500])
 async def test_summary_response_is_the_same_whatever_the_slice_size(
     path: str, shape: str, slice_size: int, monkeypatch: pytest.MonkeyPatch

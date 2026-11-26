@@ -72,6 +72,9 @@ class RunRecord:
     # Milliseconds of the last run of a terminal task; None before it ends or
     # when its STARTED is missing (see ``TaskNode.runtime_ms``).
     runtime_ms: int | None = None
+    # Milliseconds the first attempt waited before starting; set on the same
+    # terminal-only gate as ``runtime_ms`` (see ``TaskNode.queue_wait_ms``).
+    queue_wait_ms: int | None = None
     # First line (at most ``MAX_MESSAGE_LENGTH`` characters) of the exception text
     # of the event that gave ``exception_type``; FAILURE runs only.
     exception_message: str | None = None
@@ -112,6 +115,10 @@ class RunRecord:
             # terminal task reads it: no calls while it runs, then one per event
             # that arrives after the terminal one (usually none).
             runtime_ms=node.runtime_ms if node.state in TERMINAL_STATES else None,
+            # The wait scans the events too, and a late sent event moves it, so it
+            # is read on every event of a terminal task and never carried forward
+            # from STARTED.
+            queue_wait_ms=node.queue_wait_ms if node.state in TERMINAL_STATES else None,
             # The rest is O(1): the node keeps the state event and per-attempt
             # and per-parent times as it ingests, so no event scan.
             state_since=current.timestamp,
@@ -280,6 +287,23 @@ def time_series(
     return series
 
 
+def bucket_placer(series: TimeSeries) -> Callable[[RunRecord], int | None]:
+    """A function giving a record's bucket in ``series``; None before the first bucket.
+
+    The last bucket takes everything after it, so a run stamped in the future lands there.
+    """
+    first = series.starts[0].timestamp()
+    size = series.bucket.total_seconds()
+    last = len(series.starts) - 1
+
+    def place(record: RunRecord) -> int | None:
+        """The bucket of ``record``'s ``last_updated``."""
+        offset = record.last_updated.timestamp() - first
+        return None if offset < 0 else min(int(offset // size), last)
+
+    return place
+
+
 def count_runs(
     series: TimeSeries,
     records: Iterable[RunRecord],
@@ -287,14 +311,12 @@ def count_runs(
     key_of: Callable[[RunRecord], str] | None = None,
 ) -> None:
     """Add ``records`` to ``series``, so a long list can be counted in slices."""
-    size = series.bucket.total_seconds()
-    first = series.starts[0].timestamp()
+    place = bucket_placer(series)
     width = len(series.starts)
     for record in records:
-        offset = record.last_updated.timestamp() - first
-        if offset < 0:
+        index = place(record)
+        if index is None:
             continue
-        index = min(int(offset // size), width - 1)
         series.counts.setdefault(record.state, [0] * width)[index] += 1
         if key_of is not None:
             per_key = series.by_key.setdefault(key_of(record), {})
@@ -437,6 +459,76 @@ def percentile(sorted_samples: Sequence[int], percent: int) -> int | None:
     return sorted_samples[rank - 1]
 
 
+def runtime_sample(record: RunRecord) -> int | None:
+    """The record's runtime sample: SUCCESS or FAILURE runs with a paired start."""
+    return record.runtime_ms if record.state in RUNTIME_SAMPLE_STATES else None
+
+
+def queue_wait_sample(record: RunRecord) -> int | None:
+    """The record's queue-wait sample: runs with an outcome that waited before starting.
+
+    A run revoked after it started did wait, so REVOKED counts here and not above.
+    """
+    return record.queue_wait_ms if record.state in OUTCOME_STATES else None
+
+
+def p95(samples: list[int]) -> int | None:
+    """Sort ``samples`` in place and return their nearest-rank p95; None when empty."""
+    samples.sort()
+    return percentile(samples, P95)
+
+
+@dataclass(slots=True)
+class WindowSamples:
+    """The runtime and queue-wait samples of one window, in arrival order."""
+
+    runtime: list[int] = field(default_factory=list)
+    queue_wait: list[int] = field(default_factory=list)
+
+
+def collect_samples(
+    samples: WindowSamples, records: Iterable[RunRecord], window: Window
+) -> None:
+    """Add the samples of the ``window``'s runs to ``samples``, so slices can be collected.
+
+    ``celery.*`` tasks give none, as in the task stats, so the runtime samples are
+    the union of the Registry rows' samples.
+    """
+    for record in records:
+        if record.name.startswith(EXCLUDED_NAME_PREFIX):
+            continue
+        if not window.contains(record.last_updated):
+            continue
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            samples.runtime.append(runtime)
+        wait = queue_wait_sample(record)
+        if wait is not None:
+            samples.queue_wait.append(wait)
+
+
+def collect_bucket_samples(
+    series: TimeSeries, buckets: list[WindowSamples], records: Iterable[RunRecord]
+) -> None:
+    """Add ``records``' samples to the ``series``' ``buckets``, placed as ``count_runs`` does.
+
+    ``buckets`` has one entry per bucket; a long list can be added in slices.
+    """
+    place = bucket_placer(series)
+    for record in records:
+        if record.name.startswith(EXCLUDED_NAME_PREFIX):
+            continue
+        index = place(record)
+        if index is None:
+            continue
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            buckets[index].runtime.append(runtime)
+        wait = queue_wait_sample(record)
+        if wait is not None:
+            buckets[index].queue_wait.append(wait)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunStats:
     """Runs, failures and runtime percentiles of a set of task names."""
@@ -492,8 +584,9 @@ class _NameTally:
             return
         self.runs += 1
         self.failures += record.state in FAILURE_STATES
-        if record.state in RUNTIME_SAMPLE_STATES and record.runtime_ms is not None:
-            self.samples.append(record.runtime_ms)
+        runtime = runtime_sample(record)
+        if runtime is not None:
+            self.samples.append(runtime)
 
 
 def task_stats(

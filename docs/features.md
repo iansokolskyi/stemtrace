@@ -633,6 +633,24 @@ tasks stamped later by a worker whose clock is ahead.
   REVOKED or REJECTED. IGNORED tasks chose not to run (for example a deduplicated task), so they
   are left out, and a burst of them doesn't hide failures; the time series counts them by state.
   `workers` counts online and known workers from worker events, without asking the workers.
+  - **p95 runtime and queue wait.** `p95_runtime_ms` and `p95_queue_wait_ms` each have `value`,
+    `baseline` (the same value for the window before), and `samples` and `baseline_samples`, the
+    number of runs each value comes from. `value` and `baseline` are `null` with no samples. A p95
+    over a few runs is close to the slowest run, so compare `samples` before you compare values.
+    The p95 is the nearest rank over all the window's samples together, as in the task stats.
+  - **Which runs give a sample.** Runtime: runs that ended SUCCESS or FAILURE with a paired
+    start, the same runs as the task stats. Queue wait (the [rule above](#queue-wait-and-runtime)):
+    runs that ended SUCCESS, FAILURE, REVOKED or REJECTED and have a wait, so a task revoked after
+    it started did wait. A task that is still running gives neither sample until it ends, and
+    IGNORED tasks and `celery.*` tasks give none. A sample sits at its run's last event, like the
+    run counts. The runtime p95 equals the p95 of all `GET /api/stats/tasks` rows' samples together
+    for the same window.
+  - **Limits.** A task retried after a long countdown, or through a long retry chain, puts its
+    first attempt's wait in the window of its last event, so an old wait can show in today's
+    window. A late event on a finished task (a redelivery, or a PENDING or STARTED that arrives
+    late) can change its wait or runtime, and the values show the latest. The server keeps a
+    bounded number of tasks and drops the oldest first, so the baseline window can be cut short
+    and read like a quiet one; compare `baseline_samples` before you trust a baseline.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket
   size since the Unix epoch, so they don't move between requests; the first bucket starts on
@@ -640,7 +658,12 @@ tasks stamped later by a worker whose clock is ahead.
   Without `within` or `from_date` it covers the last 3,650 days. Without `bucket` it
   uses the smallest of 1m, 5m, 15m, 1h, 6h, 1d and 7d that fits in 1,440 buckets; a `bucket`
   that needs more is a `422`. `group_by=task_group` adds the same counts per
-  [task group](configuration.md#task-groups).
+  [task group](configuration.md#task-groups). `percentiles=p95` adds four arrays with one entry per
+  bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
+  `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
+  last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
+  these keys. The first bucket starts on an edge before the window, so a bucket's samples need not
+  match the overview's samples at the window's edges. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of

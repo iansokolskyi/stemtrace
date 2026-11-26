@@ -150,6 +150,8 @@ def _assert_index_matches_graph(store: GraphStore) -> None:
         assert node is not None
         want = node.runtime_ms if node.state in TERMINAL_STATES else None
         assert record.runtime_ms == want, task_id
+        want_wait = node.queue_wait_ms if node.state in TERMINAL_STATES else None
+        assert record.queue_wait_ms == want_wait, task_id
         _assert_state_evidence(record, node)
 
 
@@ -263,13 +265,15 @@ def test_index_matches_the_graph_on_real_captures(flow: str, max_nodes: int) -> 
 
 def test_captures_include_runs_with_a_runtime() -> None:
     """The oracle above is not vacuous: some capture ends with a measured runtime."""
-    measured = 0
+    measured = waited = 0
     for flow in _CAPTURES:
         store = GraphStore()
         for event in _shuffled(flow, seed=0):
             store.add_event(event)
         measured += sum(r.runtime_ms is not None for r in store.run_records())
+        waited += sum(r.queue_wait_ms is not None for r in store.run_records())
     assert measured > 0
+    assert waited > 0
 
 
 def test_retry_events_never_read_the_exception_class(
