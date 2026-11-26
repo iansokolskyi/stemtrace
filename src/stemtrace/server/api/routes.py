@@ -1317,6 +1317,11 @@ def _add_graph_routes(
             from_date=start,
             to_date=to_date,
             task_names=task_names,
+            name_of=(
+                None
+                if node_alias_key is None
+                else lambda node: _resolve_node_alias(node, node_alias_key)
+            ),
         )
         return GraphListResponse(
             graphs=[

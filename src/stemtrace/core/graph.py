@@ -2531,7 +2531,9 @@ class FlowSummary(BaseModel):
 
 
 def _member_fields(
-    nodes: Mapping[str, TaskNode], root_id: str
+    nodes: Mapping[str, TaskNode],
+    root_id: str,
+    name_of: Callable[[TaskNode], str] | None = None,
 ) -> tuple[int | None, str | None]:
     """Count a container root's members and name the task they share.
 
@@ -2565,13 +2567,19 @@ def _member_fields(
                 break
             seen.add(nexts[0])
             current = nodes[nexts[0]]
-        ends.append(current.name)
+        ends.append(current.name if name_of is None else name_of(current))
     shared = ends[0] if ends and all(name == ends[0] for name in ends) else None
     return len(ends), None if shared is None else shared.rsplit(".", 1)[-1]
 
 
-def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
+def flow_summary(
+    nodes: Mapping[str, TaskNode],
+    root_id: str,
+    name_of: Callable[[TaskNode], str] | None = None,
+) -> FlowSummary:
     """Summarize the flow rooted at ``root_id``; ``nodes`` must hold its whole graph.
+
+    ``name_of`` gives the name a member shows (default ``node.name``).
 
     The state is the worst TASK state in ``FLOW_STATE_ORDER``, so a succeeded
     root can head a failed flow. Without TASK nodes it is
@@ -2580,7 +2588,7 @@ def flow_summary(nodes: Mapping[str, TaskNode], root_id: str) -> FlowSummary:
     counts = Counter(
         node.state for node in nodes.values() if node.node_type == NodeType.TASK
     )
-    member_count, member_name = _member_fields(nodes, root_id)
+    member_count, member_name = _member_fields(nodes, root_id, name_of)
     worst = {_FLOW_STATE_OF[state] for state in counts}
     return FlowSummary(
         task_count=sum(counts.values()),

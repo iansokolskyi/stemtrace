@@ -1362,8 +1362,11 @@ class GraphStore:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         task_names: Collection[str] | None = None,
+        name_of: Callable[[TaskNode], str] | None = None,
     ) -> RootFlows:
         """Get root nodes, what their graph response reads and each flow's summary.
+
+        ``name_of`` is the display name a member shows in the summary (see ``flow_summary``).
 
         With ``task_names``, only graphs with a task of one of these names
         (anywhere in the graph, not only the root) are listed. Takes the lock
@@ -1396,7 +1399,9 @@ class GraphStore:
                     ):
                         related[child_id] = _snapshot(child)
             summaries = {
-                n.task_id: flow_summary(self._graph_locked(n.task_id), n.task_id)
+                n.task_id: flow_summary(
+                    self._graph_locked(n.task_id), n.task_id, name_of
+                )
                 for n in live
             }
             return RootFlows(roots, related, summaries, total, containers)
