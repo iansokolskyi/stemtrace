@@ -628,41 +628,47 @@ test.describe('Sessions and missing items', () => {
     await expect(page.getByRole('link', { name: 'Back to executions' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Retry' })).toHaveCount(0)
     await expect(page.getByText(/404/)).toHaveCount(0)
-    // A 404 is not retried
+    // A 404 is not retried (the client's first retry would come after 1 s, the second 2 s later)
+    await page.waitForTimeout(3500)
     expect(requests).toBe(1)
   })
 
+  // With data held, a second refetch would cancel the first and send another request
+  // (TanStack's cancelRefetch), so the guard is what keeps it to one
   test('Retry reads "Retrying…" and ignores clicks while the request runs', async ({ page }) => {
-    await page.routeWebSocket(/\/ws$/, () => {})
-    await bare(page)
+    await page.clock.install()
+    await withWorker(page)
+    await page.goto('/workers')
+    await expect(page.getByRole('link', { name: HOST })).toBeVisible()
+    await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 503, body: 'x' }))
+    await page.clock.runFor(38_000)
+    const line = page.getByTestId('stale-line')
+    const retry = line.getByRole('button', { name: 'Retry', exact: true })
+    await expect(retry).toBeVisible()
+
     let requests = 0
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    let slow = false
-    await page.route(/\/api\/graphs(\?|$)/, async (route) => {
+    await page.unroute(/\/api\/workers$/)
+    await page.route(/\/api\/workers$/, async (route) => {
       requests += 1
-      if (slow) await gate
-      return route.fulfill({ status: 500, body: 'x' })
+      await gate
+      return route.fallback()
     })
-    await page.goto('/flows')
-    const retry = page.getByRole('button', { name: 'Retry', exact: true })
-    await expect(retry).toBeVisible(AFTER_RETRIES)
-    slow = true
     await retry.click()
-    const busy = page.getByRole('button', { name: 'Retrying…' })
+    const busy = line.getByRole('button', { name: 'Retrying…' })
     await expect(busy).toBeVisible()
     await expect(busy).toHaveAttribute('aria-disabled', 'true')
-    const whileBusy = requests
+    await expect.poll(() => requests).toBe(1)
     await busy.click({ force: true })
     await busy.click({ force: true })
-    // The clicks while the request ran sent none (the request is held, so nothing else asks)
     await page.waitForTimeout(300)
-    expect(requests).toBe(whileBusy)
+    expect(requests).toBe(1)
     release()
-    await expect(retry).toBeVisible(AFTER_RETRIES)
-    await expect(retry).toBeFocused()
+    await expect(line).toHaveCount(0)
+    await expect(page.getByRole('heading', { level: 1, name: 'Workers' })).toBeFocused()
   })
 
   test('a held 503 and a 401 without form login show both lines', async ({ page }) => {
