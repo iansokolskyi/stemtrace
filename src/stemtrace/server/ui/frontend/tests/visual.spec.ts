@@ -585,6 +585,18 @@ for (const theme of ['light', 'dark'] as const) {
             concurrency: 8,
             active: null,
           },
+          // Online with pool info but no live count: keeps its seen line, pool line below
+          {
+            hostname: 'celery@billing-3',
+            pid: 102,
+            registered_tasks: ['tests.flow.step_1'],
+            status: 'online',
+            registered_at: '2026-10-17T09:30:00Z',
+            last_seen: '2026-10-17T11:58:00Z',
+            pool: 'prefork',
+            concurrency: 4,
+            active: null,
+          },
         ])
         await mockOverview(page, scenario)
         await page.clock.setFixedTime(now)

@@ -103,16 +103,16 @@ there are neither failures nor anomalies, it says **All clear**.
 The strip shows a card for each worker host with its status, how many tasks it registered and when
 the server last saw it. A card opens the worker in the triage panel.
 
-When `GET /api/workers` returns pool information, the card shows a pool line in place of the
-registered tasks line, with a meter when it can:
+When `GET /api/workers` returns pool information, the card adds a pool line:
 
-- With `pool`, `concurrency` and `active`, the line reads `prefork pool, 3 of 8 slots active`, and
-  the meter fills by the share of busy slots.
+- With a live `active` count, the pool line replaces the registered tasks line. With `pool`,
+  `concurrency` and `active`, it reads `prefork pool, 3 of 8 slots active`, and a meter fills by
+  the share of busy slots.
 - When `active` is more than `concurrency`, the line reads `prefork pool, 9 active, 8 slots`, and
   the meter is full.
-- Without `active`, which is the case for an offline host, the line reads `prefork pool, 8 slots`
-  and the card has no meter.
 - Without `concurrency`, the line reads `prefork pool, 3 active` and the card has no meter.
+- Without `active`, which is the case for an offline host, the card keeps the registered tasks
+  line, shows the pool line below it (`prefork pool, 8 slots`) and has no meter.
 - Without `pool`, the line leaves out the pool name.
 - With neither `pool` nor `concurrency`, including a server that doesn't send the fields, the
   card has no pool line and no meter, and keeps the registered tasks line.
@@ -336,7 +336,8 @@ so the list is current when the page loads.
 - Until an inspect reply names a new worker, the server can show it offline. The rules for when
   the server asks, how a restarted node is handled and when a silent worker goes offline are in
   [Workers and registry inspect](features.md#workers-and-registry-inspect).
-- The [Workers](#workers) page and the Worker page don't show the pool or the active slots.
+- The **Workers online** tile, the [Workers](#workers) page, the Worker page and the single-worker
+  triage panel don't show the pool or the active slots.
 
 ## Worker page
 
