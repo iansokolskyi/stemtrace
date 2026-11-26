@@ -738,6 +738,10 @@ for (const theme of ['light', 'dark'] as const) {
         if (state === 'error') {
           // A first load is retried 3 times (1 s, 2 s, 4 s) before its box shows
           await expect(page.getByRole('alert')).toHaveCount(5, { timeout: 20_000 })
+          // The boxes read "Retrying…" while the retries run; the baseline is after them
+          await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(5, {
+            timeout: 20_000,
+          })
         } else if (state === 'empty') {
           await expect(page.getByTestId('workers-tile')).toContainText('No workers registered')
         } else {
