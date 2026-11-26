@@ -108,6 +108,7 @@ class InspectProbe:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._started = False
         self._next_allowed = float("-inf")
 
     def bind(self, target: ProbeTarget) -> None:
@@ -121,8 +122,16 @@ class InspectProbe:
         return self._target if self._bound else None
 
     def start(self) -> None:
-        """Probe once now (the server just started). Safe to call again."""
+        """Probe once now (the server just started); a no-op until ``stop``.
+
+        FastAPI 0.162 runs a router's startup handler once per include level
+        (``fastapi/routing.py`` ``_merge_lifespan_context`` plus the copied
+        handlers), so one app start can call this several times.
+        """
         with self._lock:
+            if self._started:
+                return
+            self._started = True
             if self._stop.is_set():
                 # Fresh events: an abandoned thread must stay stopped.
                 self._stop = threading.Event()
@@ -173,6 +182,7 @@ class InspectProbe:
         """
         limit = INSPECT_PROBE_STOP_TIMEOUT_SECONDS if timeout is None else timeout
         with self._lock:
+            self._started = False
             self._stop.set()
             self._wake.set()
             thread, self._thread = self._thread, None

@@ -262,7 +262,7 @@ def test_start_runs_one_refresh_and_does_not_repeat_on_its_own(
     assert len(refresh.starts) == 1
 
 
-def test_start_twice_gives_one_refresh_for_one_startup(
+def test_start_twice_while_running_gives_one_refresh_for_one_startup(
     clock: FakeClock, probes: list[InspectProbe]
 ) -> None:
     refresh = FakeRefresh(clock, block_first=True)
@@ -273,12 +273,10 @@ def test_start_twice_gives_one_refresh_for_one_startup(
     probe.start()
     refresh.gate.set()
     take(refresh.finished)
-    take(refresh.started)
-    take(refresh.finished)
     probe.stop(timeout=BOUND_S)
 
-    # The second start() coalesced into the follow-up, which is one refresh.
-    assert len(refresh.starts) == 2
+    # The second start() is a no-op while the first lifespan runs.
+    assert len(refresh.starts) == 1
 
 
 def test_trigger_and_start_without_a_bound_refresh_do_nothing() -> None:
