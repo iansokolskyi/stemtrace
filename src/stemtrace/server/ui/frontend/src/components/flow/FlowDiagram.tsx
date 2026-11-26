@@ -3,6 +3,7 @@ import type { GraphNode } from '@/api/client'
 import { IconGlyph } from '@/components/Icon'
 import { stateLook } from '@/components/StatusChip'
 import { formatSpan } from '@/utils/format'
+import { containerTitle } from '@/components/flows/flowSummary'
 import { activate, shortNamesOf, taskSubtitle, toneOf, truncate, wrapTwo } from './flowFacts'
 import { type FlowLayout, lastNameSegment, type PlacedContainer } from './layoutFlow'
 import { trackPath } from './trackPath'
@@ -301,8 +302,7 @@ interface ContainerNodeProps {
 /** A GROUP or CHORD: a hit area over the whole box, its state mark and its title. */
 function ContainerNode({ box, node, selected, onSelect }: ContainerNodeProps): ReactElement {
   const look = stateLook(node.state)
-  const kind = box.type === 'CHORD' ? 'Chord' : 'Group'
-  const title = `${kind} of ${box.memberCount} ${box.sharedName ?? 'tasks'}`
+  const title = containerTitle(box.type, box.memberCount, box.sharedName)
   const counts =
     `${box.succeeded} succeeded` +
     (box.failed > 0 ? `, ${box.failed} failed` : '') +

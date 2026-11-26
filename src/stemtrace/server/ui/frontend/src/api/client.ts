@@ -254,6 +254,10 @@ export interface FlowSummary {
   not_run_count: number
   /** The worst task state in the flow (the root's own when it has no tasks). */
   state: string
+  /** Rows of a GROUP or CHORD root; null for a TASK root and absent on an older server. */
+  member_count?: number | null
+  /** The last name segment the rows share; null when they differ or have no name. */
+  member_name?: string | null
 }
 
 export interface GraphNode {
