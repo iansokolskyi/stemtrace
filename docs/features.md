@@ -631,8 +631,11 @@ tasks stamped later by a worker whose clock is ahead.
   [task group](configuration.md#task-groups).
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
-  names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
-  class form one group with `exception_type: null`.
+  names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of
+  its newest failure, cut to the first line and 300 characters (`null` when that failure has no
+  message). Failure messages can contain task arguments; see
+  [Security](security.md#sensitive-data-scrubbing). Tasks from workers that don't report the
+  exception class form one group with `exception_type: null`.
 - `GET /api/stats/tasks?within=1h&name=`: one row per task name and one rollup per
   [task group](configuration.md#task-groups), for the Registry and health views. Each row has
   `runs`, `failures`, `failure_rate` (`null` with no runs), `runtime_samples`, `p50_ms`, `p95_ms`,
