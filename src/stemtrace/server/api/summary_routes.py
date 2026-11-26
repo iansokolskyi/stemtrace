@@ -4,7 +4,7 @@ Each request copies the store's run records once (``GraphStore.run_records``,
 references only) and aggregates outside the store lock: O(n) in the records
 held (at most the store's ``max_nodes``), plus O(buckets) for time series.
 The aggregation runs in slices that yield to the event loop between them; the
-task stats and the p95 values sort samples, so they run in a worker thread instead.
+task stats and the p95 values sort samples, so the sorts run in a worker thread.
 """
 
 from __future__ import annotations
@@ -250,7 +250,9 @@ async def _add_percentiles(
     response: TimeSeriesResponse, series: TimeSeries, records: list[RunRecord]
 ) -> None:
     """Set the p95 fields of ``response`` (setting them is what puts them in the output)."""
-    buckets = collect_bucket_samples(series, records)
+    buckets = [WindowSamples() for _ in series.starts]
+    async for part in _slices(records):
+        collect_bucket_samples(series, buckets, part)
     # Sorts every bucket's samples: off the event loop.
     runtime, queue_wait, runtime_n, queue_wait_n = await run_in_threadpool(
         _bucket_percentiles, buckets

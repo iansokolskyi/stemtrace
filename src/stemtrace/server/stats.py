@@ -475,10 +475,12 @@ def collect_samples(
 
 
 def collect_bucket_samples(
-    series: TimeSeries, records: Iterable[RunRecord]
-) -> list[WindowSamples]:
-    """The samples of each of ``series``' buckets, placed as ``count_runs`` places runs."""
-    buckets = [WindowSamples() for _ in series.starts]
+    series: TimeSeries, buckets: list[WindowSamples], records: Iterable[RunRecord]
+) -> None:
+    """Add ``records``' samples to the ``series``' ``buckets``, placed as ``count_runs`` does.
+
+    ``buckets`` has one entry per bucket; a long list can be added in slices.
+    """
     place = bucket_placer(series)
     for record in records:
         if record.name.startswith(EXCLUDED_NAME_PREFIX):
@@ -492,7 +494,6 @@ def collect_bucket_samples(
         wait = queue_wait_sample(record)
         if wait is not None:
             buckets[index].queue_wait.append(wait)
-    return buckets
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

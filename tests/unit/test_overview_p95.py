@@ -23,8 +23,6 @@ from stemtrace.core.graph import NodeType
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.stats import (
-    OUTCOME_STATES,
-    RUNTIME_SAMPLE_STATES,
     Window,
     WindowSamples,
     collect_samples,
@@ -431,6 +429,16 @@ def _all_flows_store(seed: int) -> GraphStore:
     return store
 
 
+# Written out here, not imported: the oracle must not share the code under test.
+_OUTCOME = {
+    TaskState.SUCCESS,
+    TaskState.FAILURE,
+    TaskState.REVOKED,
+    TaskState.REJECTED,
+}
+_RUNTIME = {TaskState.SUCCESS, TaskState.FAILURE}
+
+
 def _oracle_samples(store: GraphStore, window: Window) -> tuple[list[int], list[int]]:
     """Sorted runtime and wait samples read off the nodes, not through ``RunRecord``."""
     runtime: list[int] = []
@@ -445,9 +453,9 @@ def _oracle_samples(store: GraphStore, window: Window) -> tuple[list[int], list[
             or not window.contains(node.last_updated)
         ):
             continue
-        if node.state in RUNTIME_SAMPLE_STATES and node.runtime_ms is not None:
+        if node.state in _RUNTIME and node.runtime_ms is not None:
             runtime.append(node.runtime_ms)
-        if node.state in OUTCOME_STATES and node.queue_wait_ms is not None:
+        if node.state in _OUTCOME and node.queue_wait_ms is not None:
             wait.append(node.queue_wait_ms)
     return sorted(runtime), sorted(wait)
 

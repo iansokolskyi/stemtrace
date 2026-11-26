@@ -633,6 +633,12 @@ tasks stamped later by a worker whose clock is ahead.
     IGNORED tasks and `celery.*` tasks give none. A sample sits at its run's last event, like the
     run counts. The runtime p95 equals the p95 of all `GET /api/stats/tasks` rows' samples together
     for the same window.
+  - **Limits.** A task retried after a long countdown, or through a long retry chain, puts its
+    first attempt's wait in the window of its last event, so an old wait can show in today's
+    window. A late event on a finished task (a redelivery, or a PENDING or STARTED that arrives
+    late) can change its wait or runtime, and the values show the latest. The server keeps a
+    bounded number of tasks and drops the oldest first, so the baseline window can be cut short
+    and read like a quiet one; compare `baseline_samples` before you trust a baseline.
 - `GET /api/stats/timeseries?bucket=5m&within=6h`: runs by state per bucket, as one array per
   state (states with no run in range are left out). Bucket edges are multiples of the bucket
   size since the Unix epoch, so they don't move between requests; the first bucket starts on
@@ -644,7 +650,8 @@ tasks stamped later by a worker whose clock is ahead.
   bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
   `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
   last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
-  these keys. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
+  these keys. The first bucket starts on an edge before the window, so a bucket's samples need not
+  match the overview's samples at the window's edges. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception

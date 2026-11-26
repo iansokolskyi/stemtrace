@@ -141,6 +141,14 @@ def test_r9_revoked_after_start_waited_but_gives_no_runtime_sample() -> None:
     assert runtime_sample(record) is None
 
 
+def test_r9_rejected_after_start_waited_but_gives_no_runtime_sample() -> None:
+    record = _record(_event(P, 0), _event(S, 2), _event(TaskState.REJECTED, 3))
+
+    assert record.queue_wait_ms == 2000
+    assert queue_wait_sample(record) == 2000
+    assert runtime_sample(record) is None
+
+
 def test_r10_ignored_gives_no_sample() -> None:
     record = _record(_event(P, 0), _event(S, 2), _event(TaskState.IGNORED, 3))
 
