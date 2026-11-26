@@ -430,6 +430,8 @@ class WorkerResponse(BaseModel):
     status: WorkerStatus
     registered_at: datetime
     last_seen: datetime
+    pool: str | None = None
+    concurrency: int | None = None
 
 
 class WorkerListResponse(BaseModel):

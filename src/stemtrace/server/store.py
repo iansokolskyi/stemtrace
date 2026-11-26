@@ -17,6 +17,7 @@ from stemtrace.core.graph import NodeType, TaskGraph, TaskNode
 from stemtrace.server.api.schemas import WorkerStatus
 from stemtrace.server.inspect_probe import INSPECT_REFRESH_MIN_INTERVAL_SECONDS
 from stemtrace.server.stats import RunRecord
+from stemtrace.server.worker_pool import NO_POOL_INFO
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         TaskEvent,
         WorkerEvent,
     )
+    from stemtrace.server.worker_pool import PoolInfo
 
 
 class WorkerInfo(BaseModel):
@@ -46,6 +48,9 @@ class WorkerInfo(BaseModel):
     # seen in a stats reply (D4e reading 5: a stop for an unlisted pid is
     # compared with this, else with registered_at).
     ready_at: datetime | None = None
+    # From the newest stats() reply naming this pid; None where it said nothing.
+    pool: str | None = None
+    concurrency: int | None = None
 
 
 def ensure_tz_aware(dt: datetime) -> datetime:
@@ -745,6 +750,7 @@ class WorkerRegistry:
         seen: Mapping[str, int],
         replies: Mapping[str, tuple[int | None, list[str] | None]],
         *,
+        pools: Mapping[str, PoolInfo] | None = None,
         now: datetime | None = None,
         monotonic: float | None = None,
     ) -> None:
@@ -765,6 +771,9 @@ class WorkerRegistry:
             seen: ``event_generations()`` taken before the inspect call.
             replies: Nodename -> (pid or None, registered task names or None).
                 None tasks keep the worker's current list.
+            pools: Nodename -> pool info from the same reply. Given, it replaces
+                the stored pool info of each applied pid (a missing nodename
+                clears it); None leaves the stored info alone.
             now: When the reply arrived (tests); defaults to now.
             monotonic: The monotonic reading at that moment (tests); defaults to now.
         """
@@ -791,6 +800,12 @@ class WorkerRegistry:
                     self._register(
                         nodename, pid, current if tasks is None else tasks, None, now
                     )
+                    if pools is not None:
+                        # The reply is the newest word on this pid: what it
+                        # doesn't say is cleared, not carried over.
+                        info = pools.get(nodename, NO_POOL_INFO)
+                        worker = self._workers[f"{nodename}:{pid}"]
+                        worker.pool, worker.concurrency = info
                 self.mark_node_alive(nodename, pid, now=now)
             # The broadcast completed: stamped here, after its answers are
             # applied and in the same locked step, so no evaluation sees it
