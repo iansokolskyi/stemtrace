@@ -784,6 +784,8 @@ def test_record_message_keeps_only_the_first_line() -> None:
         ("ValueError: \nreal cause", "real cause"),
         ("\nreal cause", "real cause"),
         ("ValueError:\n\n  real cause\nmore", "real cause"),
+        ("ValueError: \nErrors:\n- a", "Errors:"),
+        ("Errors:\n- a", "- a"),
         ("ValueError: ", None),
         ("\n\n", None),
     ],
