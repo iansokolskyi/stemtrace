@@ -146,7 +146,10 @@ def make_script(seed: int) -> list[Op]:
         elif roll < 0.35 and known[node]:
             script.append(Op(now, "silent", node, rng.choice(sorted(known[node]))))
         else:
-            script.append(task_op(rng, now, node, i))
+            # Sometimes stamped exactly at a worker_ready of this nodename.
+            stamps = [at for (n, _), at in readied.items() if n == node]
+            start = rng.choice(stamps) if stamps and rng.random() < 0.25 else now
+            script.append(task_op(rng, start, node, i))
     return script
 
 
@@ -397,6 +400,13 @@ def hit_cells(
     scripted = stuck_starts(
         delivered, {e.task_id: op.events for op in delivered for e in op.events}
     )
+    for node in NODES:
+        live = oracle.live(node)
+        hits["started-exactly-at-ready"] += (
+            live is not None
+            and live[1] is not None
+            and any(h == node and at == live[1] for h, at in starts)
+        )
     hits["eviction-dropped-a-stuck-run"] += len(scripted) > len(starts)
     return hits
 
@@ -419,5 +429,7 @@ def test_generator_reaches_every_cell_over_the_default_seeds() -> None:
         "replayed-ready-keeps-newest-stamp", "replayed-ready-keeps-pool",
         "pool-cleared-by-newer-ready", "revived-by-task-event",
         "retried-started-counts", "eviction-dropped-a-stuck-run",
+        "started-exactly-at-ready",
+        "started-exactly-at-ready",
     ]  # fmt: skip
     assert {cell: total[cell] for cell in wanted if total[cell] == 0} == {}
