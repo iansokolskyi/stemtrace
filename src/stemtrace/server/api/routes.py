@@ -1166,6 +1166,7 @@ def _add_task_routes(
         )
 
         def build() -> TaskListResponse:
+            """Scan the store and build the task page (runs in a worker thread)."""
             nodes, total = find(sort_key=sort_key)
             return TaskListResponse(
                 tasks=[
@@ -1331,6 +1332,7 @@ def _add_graph_routes(
 
         # Roots plus the children the response reads, from one snapshot
         def build() -> GraphListResponse:
+            """Scan the store and build the graph page (runs in a worker thread)."""
             page = store.get_root_nodes_with_children(
                 limit=limit,
                 offset=offset,
