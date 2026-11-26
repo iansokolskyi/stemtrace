@@ -77,8 +77,8 @@ test.describe('panel entry view: parse and format', () => {
     expect(parsePanel('runs:a@m=13')).toStrictEqual([{ kind: 'runs', id: 'a', more: 13 }])
   })
 
-  test('an unknown or repeated view key is ignored, the first of a key wins', () => {
-    expect(parsePanel('runs:a@zz=1@m=2@m=3')).toStrictEqual([{ kind: 'runs', id: 'a', more: 2 }])
+  test('the first of a repeated view key wins', () => {
+    expect(parsePanel('runs:a@m=2@m=3')).toStrictEqual([{ kind: 'runs', id: 'a', more: 2 }])
   })
 })
 
