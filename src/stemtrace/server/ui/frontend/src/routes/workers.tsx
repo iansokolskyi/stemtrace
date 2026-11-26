@@ -2,9 +2,11 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useWorkers } from '@/api/queries'
 import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { TableSkeleton } from '@/components/TableSkeleton'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { hostsOf, NUM, registeredTasks, TD, TH } from '@/components/workers/workers'
+import { useViewState } from '@/hooks/useViewState'
 import { formatAgo } from '@/utils/format'
 
 export const Route = createFileRoute('/workers')({
@@ -17,29 +19,29 @@ const PROBLEM_ROW =
   'bg-[color-mix(in_srgb,var(--failure)_9%,var(--surface))] hover:bg-[color-mix(in_srgb,var(--failure)_15%,var(--surface))]'
 
 function WorkersPage() {
-  const { data, isLoading, error, refetch } = useWorkers()
+  const query = useWorkers()
+  const view = useViewState(query, 'workers')
+  const { data } = query
   const hosts = hostsOf(data?.workers ?? [])
   const online = hosts.filter((host) => host.leading.status === 'online').length
 
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-ink">Workers</h1>
+        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
+          Workers
+        </h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
           {hosts.length > 0 && `${online} of ${hosts.length} online`}
         </p>
       </div>
 
-      {error && data && (
-        <p role="alert" data-testid="refresh-failed" className="m-0 text-xs text-failure-t">
-          Couldn't refresh workers; showing the last result.
-        </p>
-      )}
+      <PageStale views={[view]} className="" />
 
-      {isLoading ? (
+      {view.phase === 'loading' ? (
         <TableSkeleton label="workers" />
-      ) : error && !data ? (
-        <LoadFailure what="workers" error={error} onRetry={refetch} />
+      ) : view.phase === 'error' ? (
+        <LoadFailure what="workers" view={view} />
       ) : hosts.length === 0 ? (
         <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
           <p className="m-0">No workers registered</p>

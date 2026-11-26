@@ -7,8 +7,10 @@ import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
 import { explain, sinceText } from '@/components/anomalies/anomalies'
 import { Icon } from '@/components/Icon'
 import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskName } from '@/components/TaskName'
+import { useViewState } from '@/hooks/useViewState'
 
 export const Route = createFileRoute('/anomalies')({
   component: AnomaliesPage,
@@ -30,13 +32,21 @@ function AnomaliesSkeleton(): ReactElement {
 }
 
 function AnomaliesPage(): ReactElement {
-  const { data, isLoading, error, refetch } = useAnomalies()
+  const query = useAnomalies()
+  const { data } = query
   // The fleet item is one banner above the list, whatever its `since` sorts it to.
   // The list is capped and sorted by `since`, so a full list may not hold it: `counts` says
   // whether there is one, and a request of its own fetches it. That request does not ask the
   // workers again (`refresh=false`): the list request has just asked them.
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
-  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
+  const fleetAsked = Boolean(data?.counts.no_workers_online) && !inList
+  const fleetQuery = useFleetAnomaly(fleetAsked)
+  const view = useViewState(query, 'anomalies/list')
+  const fleetView = useViewState(fleetQuery, 'anomalies/fleet')
+  // A fleet query nobody asks for has nothing to refresh, so its old error must not show
+  const views = fleetAsked ? [view, fleetView] : [view]
+  // "All clear" and the counts say the answer is current: not while a refresh has failed
+  const fresh = !views.some((v) => v.stale)
   const fleet = inList ?? fleetQuery.data?.anomalies[0]
   const items = data?.anomalies.filter((a) => a.kind !== 'no_workers_online') ?? []
   const total = data ? anomalyTotal(data.counts) : 0
@@ -44,23 +54,19 @@ function AnomaliesPage(): ReactElement {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-ink">Anomalies</h1>
+        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
+          Anomalies
+        </h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
-          {data && `${total} active: tasks that are stuck, interrupted or unregistered`}
+          {data && fresh && `${total} active: tasks that are stuck, interrupted or unregistered`}
         </p>
       </div>
 
-      {error && (
-        <LoadFailure
-          what="anomalies"
-          error={error}
-          onRetry={refetch}
-          note={data ? 'Showing the last result.' : undefined}
-        />
-      )}
-      {isLoading && <AnomaliesSkeleton />}
+      <PageStale views={views} className="" />
+      {view.phase === 'error' && <LoadFailure what="anomalies" view={view} />}
+      {view.phase === 'loading' && <AnomaliesSkeleton />}
 
-      {data && total === 0 && (
+      {data && fresh && total === 0 && (
         <section
           aria-label="Anomalies"
           data-testid="anomalies-empty"
@@ -72,12 +78,8 @@ function AnomaliesPage(): ReactElement {
       )}
 
       {fleet && <AnomalyCallout anomaly={fleet} placement="fleet" />}
-      {fleetQuery.isError && !fleet && (
-        <LoadFailure
-          what="the notice that no workers are online"
-          error={fleetQuery.error}
-          onRetry={fleetQuery.refetch}
-        />
+      {fleetAsked && fleetView.phase === 'error' && !fleet && (
+        <LoadFailure what="the notice that no workers are online" view={fleetView} />
       )}
 
       {data && data.total > data.anomalies.length && (

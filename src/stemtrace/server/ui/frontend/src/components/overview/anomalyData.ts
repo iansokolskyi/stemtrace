@@ -36,10 +36,13 @@ export function useOverviewAnomalies(): {
   const data = list.data
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   // The list is capped and sorted by `since`, so a full one may not hold the fleet item
-  const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
-  const listView = useViewState(list)
-  const fleetView = useViewState(fleetQuery)
-  const views = [listView, fleetView]
+  const fleetAsked = Boolean(data?.counts.no_workers_online) && !inList
+  const fleetQuery = useFleetAnomaly(fleetAsked)
+  const listView = useViewState(list, 'anomalies/badge')
+  const fleetView = useViewState(fleetQuery, 'anomalies/fleet')
+  // A fleet query that is no longer asked for keeps its last error but has nothing to refresh,
+  // so it must not hold the stale line
+  const views = fleetAsked ? [listView, fleetView] : [listView]
   const stale = views.some((v) => v.stale)
   if (!data) return { data: undefined, failed: listView.phase === 'error', stale, views }
   return {

@@ -4,12 +4,14 @@ import { useState } from 'react'
 import { useRegistryPage } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { RegistryStatus } from '@/components/registry/RegistryStatus'
 import { matchesQuery, noteOf } from '@/components/registry/registry'
 import { TableSkeleton } from '@/components/TableSkeleton'
 import { TaskName } from '@/components/TaskName'
 import { NUM, TD, TH } from '@/components/workers/workers'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { useViewState } from '@/hooks/useViewState'
 import { formatAgo, formatCount, formatPercent, formatSpan } from '@/utils/format'
 
 export const Route = createFileRoute('/registry')({
@@ -34,7 +36,9 @@ function spanCell(statsKnown: boolean, ms: number | null | undefined): string {
 }
 
 function RegistryPage() {
-  const { data: page, isLoading, error, refetch } = useRegistryPage(STATS_WITHIN)
+  const registryQuery = useRegistryPage(STATS_WITHIN)
+  const view = useViewState(registryQuery, 'registry')
+  const page = registryQuery.data
   const data = page?.registry
   const stats = page?.stats
   // Joined by exact name. While loading, or when the request fails, no cell shows a number.
@@ -51,7 +55,9 @@ function RegistryPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-ink">Registry</h1>
+        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
+          Registry
+        </h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
           {data &&
             `${formatCount(tasks.length)} task ${tasks.length === 1 ? 'name' : 'names'} known to workers or seen on the broker`}
@@ -80,10 +86,12 @@ function RegistryPage() {
         </div>
       )}
 
-      {isLoading ? (
+      <PageStale views={[view]} className="" />
+
+      {view.phase === 'loading' ? (
         <TableSkeleton label="task registry" />
-      ) : error ? (
-        <LoadFailure what="the task registry" error={error} onRetry={refetch} />
+      ) : view.phase === 'error' ? (
+        <LoadFailure what="the task registry" view={view} />
       ) : tasks.length === 0 ? (
         <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
           <p className="m-0">No tasks discovered yet</p>

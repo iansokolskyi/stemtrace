@@ -42,10 +42,21 @@ Every page sits in the same frame:
   session was signed by a different server process) are the other states. The Overview, the sidebar
   badges, Registry and Anomalies refresh on their own timers, with or without a WebSocket.
 - **Loading and errors.** On Executions (the table and the Timeline view), Flows, the Flow page, the
-  Task page, Workers, the Worker page, Registry, Anomalies and the triage panel's run list, a
-  loading page shows placeholder blocks in the shape of its content. A failed request shows
-  `Couldn't load the thing: the reason.` with a **Retry** button that sends the request again. The
-  reason is the HTTP status the server answered, or says that the server couldn't be reached.
+  Task page, Workers, the Worker page, Registry, Anomalies and the triage panel's run list:
+  - While a page loads, it shows placeholder blocks in the shape of its content.
+  - A page that has no data and can't load it shows one box: `Couldn't load workers.` and a reason
+    sentence (`The server answered 503.`, `No response from the server.` or, on Anomalies, `The
+    server took too long to answer.`), with a **Retry** button. When the cause is unknown there is
+    no reason sentence. The button reads **Retrying…** and ignores clicks while the request runs.
+  - A page that already has data keeps it when a refresh fails, and shows one line at the top:
+    `Couldn't refresh. Showing data from HH:MM UTC.` with **Retry**. On Anomalies, **All clear** and
+    the count in the subtitle are hidden while that line shows.
+  - When the next page of Executions or Flows fails, the loaded rows stay and **Couldn't load
+    more.** with **Retry** appears below the list.
+  - On the Task and Flow pages, a 404 says that the task or flow is no longer stored and may have
+    left the retention window, with a link back and no **Retry**. A 404 isn't retried.
+  - A 401 with the built-in login shows nothing, because the browser goes to the login page.
+    Without it, the page says **The server needs a valid API key.** with no **Retry**.
 - **Old links.** `/?state=FAILURE` and other task-list links at `/` open Executions with the same
   filters. `/graphs` opens Flows, and `/graph/<id>` opens `/flows/<id>`.
 

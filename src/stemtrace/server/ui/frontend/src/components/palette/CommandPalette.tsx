@@ -201,7 +201,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
     // Not "No results": the answer may be in a source that did not load
     emptyText = `Couldn't load ${joinWords(failed as string[])}`
   } else if (items.length === 0) {
-    if (waitingForId || (loading && !text)) emptyText = 'Searching…'
+    // "No results" only once every source has answered: a slow first load may hold the match
+    if (waitingForId || loading) emptyText = 'Searching…'
     else emptyText = text ? `No results for “${text}”` : 'No flows or workers yet'
   }
 

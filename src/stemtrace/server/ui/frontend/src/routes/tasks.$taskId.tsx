@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { isNotFound } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { AnomalyCallout } from '@/components/anomalies/AnomalyCallout'
-import { LoadFailure } from '@/components/Notice'
+import { LoadFailure, Notice } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskOutput } from '@/components/TaskOutput'
 import { ChildTasks } from '@/components/task/ChildTasks'
@@ -14,6 +16,7 @@ import { TaskFacts } from '@/components/task/TaskFacts'
 import { TaskHeader } from '@/components/task/TaskHeader'
 import { TimingBar } from '@/components/task/TimingBar'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { useViewState } from '@/hooks/useViewState'
 
 export const Route = createFileRoute('/tasks/$taskId')({
   component: TaskDetailPage,
@@ -23,30 +26,32 @@ export const Route = createFileRoute('/tasks/$taskId')({
 function TaskDetailPage() {
   const carried = useCarriedRange()
   const { taskId } = Route.useParams()
-  const { data, isLoading, error, refetch } = useTask(taskId)
+  const query = useTask(taskId)
+  const view = useViewState(query, `tasks/${taskId}`)
+  const { data } = query
 
-  if (isLoading) {
-    return <TaskDetailSkeleton />
-  }
+  if (view.phase === 'loading') return <TaskDetailSkeleton />
 
-  if (error || !data) {
-    return (
-      <LoadFailure
-        what="the task"
-        error={error}
-        onRetry={refetch}
-        action={
-          <Link to="/executions" search={carried} className="link">
-            Back to executions
-          </Link>
-        }
-      />
+  if (view.phase === 'error' || !data) {
+    const back = (
+      <Link to="/executions" search={carried} className="link">
+        Back to executions
+      </Link>
     )
+    if (isNotFound(view.error)) {
+      return (
+        <Notice action={back}>
+          This task is no longer stored. It may have left the retention window.
+        </Notice>
+      )
+    }
+    return <LoadFailure what="the task" view={view} action={back} />
   }
 
   const { task, children } = data
   return (
     <div>
+      <PageStale views={[view]} />
       <TaskHeader task={task} flowRootId={data.flow_root_id} childCount={children.length} />
       {data.anomaly_detail && <AnomalyCallout anomaly={data.anomaly_detail} placement="task" />}
       <div className="grid items-start gap-x-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">

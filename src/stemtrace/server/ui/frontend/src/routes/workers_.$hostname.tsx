@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMemo } from 'react'
 import type { Worker } from '@/api/client'
-import { useGroups, useWorkers } from '@/api/queries'
+import { useGroups, useRecentExecutions, useWorkers } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskName } from '@/components/TaskName'
 import { Panel } from '@/components/task/Panel'
@@ -11,6 +12,7 @@ import { RecentRuns } from '@/components/workers/RecentRuns'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { leadingWorker, registeredTasks, TD, TH } from '@/components/workers/workers'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import { useViewState } from '@/hooks/useViewState'
 import { formatAgo, formatDateTime } from '@/utils/format'
 
 export const Route = createFileRoute('/workers_/$hostname')({
@@ -24,14 +26,18 @@ const BUTTON =
 function WorkerPage() {
   const { hostname } = Route.useParams()
   // The list, not the per-host route: only the list asks Celery for the current state first
-  const { data, isLoading, error, refetch } = useWorkers()
+  const query = useWorkers()
+  const { data } = query
+  const view = useViewState(query, 'workers')
+  const recent = useRecentExecutions(hostname)
+  const recentView = useViewState(recent, `executions/recent/${hostname}`)
   const processes = useMemo(
     () => (data?.workers ?? []).filter((worker) => worker.hostname === hostname),
     [data, hostname],
   )
 
-  if (isLoading) return <WorkerSkeleton />
-  if (error && !data) return <LoadFailure what="the worker" error={error} onRetry={refetch} />
+  if (view.phase === 'loading') return <WorkerSkeleton />
+  if (view.phase === 'error') return <LoadFailure what="the worker" view={view} />
   if (processes.length === 0) {
     return (
       <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
@@ -46,16 +52,12 @@ function WorkerPage() {
   const worker = leadingWorker(processes)
   return (
     <div>
-      {error && (
-        <p role="alert" data-testid="refresh-failed" className="mt-0 mb-3 text-xs text-failure-t">
-          Couldn't refresh this worker; showing the last result.
-        </p>
-      )}
+      <PageStale views={[view, recentView]} />
       <WorkerHeader worker={worker} />
       <div className="grid grid-cols-1 items-start gap-x-4 xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="min-w-0">
           <RegisteredTasks tasks={registeredTasks(processes)} />
-          <RecentRuns key={hostname} hostname={hostname} />
+          <RecentRuns key={hostname} runs={recent.data?.tasks} view={recentView} />
         </div>
         <Details worker={worker} />
       </div>
@@ -85,7 +87,10 @@ function WorkerHeader({ worker }: { worker: Worker }) {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="m-0 min-w-0 font-mono text-2xl font-bold [overflow-wrap:anywhere]">
+        <h1
+          tabIndex={-1}
+          className="m-0 min-w-0 font-mono text-2xl font-bold [overflow-wrap:anywhere]"
+        >
           {worker.hostname}
         </h1>
         <WorkerStatus status={worker.status} />

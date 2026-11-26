@@ -29,6 +29,11 @@ export class HttpError extends Error {
   }
 }
 
+/** A 404 for one item: it was evicted or never stored, which is not a failure to retry. */
+export function isNotFound(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 404
+}
+
 /** Thrown when a request gets no response (server down, network cut). */
 export class NetworkError extends Error {
   constructor() {

@@ -197,7 +197,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   return (
     <div>
       <header className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="m-0 min-w-0 text-2xl font-bold text-ink [overflow-wrap:anywhere]">
+        <h1 tabIndex={-1} className="m-0 min-w-0 text-2xl font-bold text-ink [overflow-wrap:anywhere]">
           {flowTitle(root.name)}
         </h1>
         <StatusChip state={summary.state} />

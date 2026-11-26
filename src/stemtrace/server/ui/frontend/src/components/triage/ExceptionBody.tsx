@@ -45,7 +45,7 @@ export function ExceptionBody({ id, data }: { id: string; data: PanelData }): Re
                             id: encodeScope({ kind: 'name', name, ...stateOnly }),
                           })
                         }
-                        className="max-w-full text-left hover:underline"
+                        className="link max-w-full text-left"
                       >
                         <TaskName name={name} />
                       </button>

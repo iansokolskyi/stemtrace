@@ -1,11 +1,15 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
+import { isNotFound } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { Icon } from '@/components/Icon'
+import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { retryCount } from '@/components/task/retryCount'
+import { useViewState } from '@/hooks/useViewState'
 import { sortEventsChronologically } from '@/utils/events'
 import { formatDateTime, formatSpan, shortHost } from '@/utils/format'
 import { usePanel } from './PanelContext'
@@ -14,11 +18,19 @@ import { BUTTON_PRIMARY, BUTTON_QUIET, Facts, Section } from './PanelParts'
 /** A task in brief, with the two ways out of the panel: its page and its flow. */
 export function TaskBody({ id }: { id: string }): ReactElement {
   const panel = usePanel()
-  const { data, isError } = useTask(id)
-  if (isError)
-    return (
-      <p className="m-0 pt-4 text-xs text-muted">This task is no longer in the retention window.</p>
-    )
+  const query = useTask(id)
+  const { data } = query
+  const state = useViewState(query, `tasks/${id}`)
+  if (state.phase === 'error') {
+    if (isNotFound(state.error)) {
+      return (
+        <p className="m-0 pt-4 text-xs text-muted">
+          This task is no longer stored. It may have left the retention window.
+        </p>
+      )
+    }
+    return <LoadFailure what="the task" view={state} />
+  }
   if (!data)
     return (
       <SkeletonRegion label="task" className="pt-4">
@@ -39,6 +51,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
 
   return (
     <>
+      <PageStale views={[state]} className="mt-3" />
       <Section>
         <TaskName name={task.name} />
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">

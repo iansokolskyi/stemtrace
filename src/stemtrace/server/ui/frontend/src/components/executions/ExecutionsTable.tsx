@@ -4,10 +4,12 @@ import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { useExecutions, useRegisteredTask } from '@/api/queries'
+import { useViewState } from '@/hooks/useViewState'
 import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
 import { AnomalyFlag } from '../anomalies/AnomalyFlag'
-import { LoadFailure } from '../Notice'
+import { LoadFailure, MoreFailed } from '../Notice'
+import { PageStale } from '../PageStale'
 import { StatusChip } from '../StatusChip'
 import { TableSkeleton } from '../TableSkeleton'
 import { TaskName } from '../TaskName'
@@ -67,8 +69,9 @@ function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number
 }
 
 function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
-  const { data, isLoading, error, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
-    useExecutions(params)
+  const query = useExecutions(params)
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage, isFetchNextPageError } = query
+  const view = useViewState(query, `executions/${JSON.stringify(params)}`)
 
   const rows = useMemo(() => {
     const seen = new Set<string>()
@@ -91,20 +94,27 @@ function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactE
   const firstPage = data?.pages[0]?.tasks
   if (columns === null && firstPage && firstPage.length > 0) setColumns(columnsFor(firstPage))
 
-  if (isLoading) return <TableSkeleton label="executions" rows={8} />
-  if (error) return <LoadFailure what="executions" error={error} onRetry={refetch} />
+  if (view.phase === 'loading') return <TableSkeleton label="executions" rows={8} />
+  if (view.phase === 'error') return <LoadFailure what="executions" view={view} />
   if (!rows.length || !columns) return <EmptyTable params={params} onClear={onClear} />
 
   return (
-    <TableBox
-      rows={rows}
-      total={total}
-      columns={columns}
-      density={density}
-      hasNextPage={hasNextPage}
-      isFetchingNextPage={isFetchingNextPage}
-      fetchNextPage={fetchNextPage}
-    />
+    <>
+      <PageStale views={[view]} className="mb-3" />
+      <TableBox
+        rows={rows}
+        total={total}
+        columns={columns}
+        density={density}
+        // A failed next page is asked again by its Retry, not by scrolling
+        hasNextPage={hasNextPage && !isFetchNextPageError}
+        isFetchingNextPage={isFetchingNextPage}
+        fetchNextPage={fetchNextPage}
+      />
+      {isFetchNextPageError && (
+        <MoreFailed error={query.error} retry={fetchNextPage} busy={isFetchingNextPage} />
+      )}
+    </>
   )
 }
 
