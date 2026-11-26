@@ -1195,7 +1195,7 @@ test.describe('Overview failure message line', () => {
     await openOverview(page, '/', ({ scenario }) => {
       for (const group of scenario.failures) {
         const key = group.exception_type ?? 'none'
-        if (key in messages) group.latest_message = messages[key]
+        group.latest_message = messages[key]
       }
     })
     await expect(page.getByRole('table', { name: 'Failures by exception' })).toBeVisible()

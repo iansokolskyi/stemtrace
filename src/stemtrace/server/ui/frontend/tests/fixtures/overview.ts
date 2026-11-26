@@ -62,13 +62,25 @@ export function spikeScenario(now = Date.now()): OverviewScenario {
     start: end - 12 * FIVE_MINUTES,
     buckets,
     failures: [
-      { exception_type: 'ValueError', count: 14, task_names: ['tests.flow.step_2'] },
+      {
+        exception_type: 'ValueError',
+        count: 14,
+        task_names: ['tests.flow.step_2'],
+        latest_message: 'ValueError: invalid literal for int() with base 10: "abc"',
+      },
       {
         exception_type: 'TimeoutError',
         count: 1,
         task_names: ['tests.other.fetch', 'tests.flow.step_2'],
+        latest_message:
+          'TimeoutError: upstream timed out after 30s waiting for the billing gateway',
       },
-      { exception_type: null, count: 2, task_names: ['tests.other.fetch'] },
+      {
+        exception_type: null,
+        count: 2,
+        task_names: ['tests.other.fetch'],
+        latest_message: 'Traceback (most recent call last)',
+      },
     ],
     tasks: [
       {
