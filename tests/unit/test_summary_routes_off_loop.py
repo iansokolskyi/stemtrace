@@ -67,6 +67,7 @@ TASK_LIST_PATHS = [
     "/api/graphs?limit=100",
     "/api/graphs?limit=100&within=1h",
 ]
+ENCODE_NODES = 600
 _STATES = [TaskState.FAILURE, TaskState.SUCCESS, TaskState.SUCCESS, TaskState.REVOKED]
 # (name, failure_share_is_all, exception types): the mix has a quarter of the runs
 # failing over 7 types; a storm has every run failing, over 1 or 50 types.
@@ -102,11 +103,15 @@ def _add(store: GraphStore, i: int, *, seconds_ago: int, shape: str = "mix") -> 
     )
 
 
-# Near max_data_size (10 KB): one shared string, so 30k runs don't hold 1 GB.
+# Near max_data_size (10 KB), for the few encode cases. The 30k-node store carries
+# a short payload: loop work is counted in profile events, not bytes.
 PAYLOAD = "x" * 10_000
+SHORT_PAYLOAD = "x"
 
 
-def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
+def _add_realistic(
+    store: GraphStore, i: int, *, seconds_ago: int, payload: str = SHORT_PAYLOAD
+) -> None:
     """One run of 10 events (2 retries) with worker, queue, exception and payloads set.
 
     Every third run is a root and the next two its children, so graphs have
@@ -136,10 +141,10 @@ def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
         store.add_event(
             TaskEvent(
                 state=state,
-                args=[PAYLOAD] if state == TaskState.PENDING else None,
-                kwargs={"data": PAYLOAD} if state == TaskState.PENDING else None,
-                result=PAYLOAD if state == TaskState.SUCCESS else None,
-                traceback=PAYLOAD if failed else None,
+                args=[payload] if state == TaskState.PENDING else None,
+                kwargs={"data": payload} if state == TaskState.PENDING else None,
+                result=payload if state == TaskState.SUCCESS else None,
+                traceback=payload if failed else None,
                 timestamp=NOW - timedelta(seconds=seconds_ago + len(steps) - n),
                 retries=retries,
                 exception_type=f"Err{i % 7}" if failed else None,
@@ -149,10 +154,10 @@ def _add_realistic(store: GraphStore, i: int, *, seconds_ago: int) -> None:
         )
 
 
-def _populated_realistic(count: int) -> GraphStore:
+def _populated_realistic(count: int, payload: str = SHORT_PAYLOAD) -> GraphStore:
     store = GraphStore(max_nodes=count + 5_000)
     for i in range(count):
-        _add_realistic(store, i, seconds_ago=(i * 7) % 7200)
+        _add_realistic(store, i, seconds_ago=(i * 7) % 7200, payload=payload)
     return store
 
 
@@ -304,13 +309,14 @@ async def test_task_and_graph_lists_at_30k_nodes_return_matches(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("path", TASK_LIST_PATHS)
-async def test_task_and_graph_lists_at_30k_nodes_encode_nothing_on_the_loop(
-    path: str, big_stores: dict[str, GraphStore], monkeypatch: pytest.MonkeyPatch
+async def test_task_and_graph_lists_with_10kb_payloads_encode_nothing_on_the_loop(
+    path: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A big body is encoded in the worker thread: profile events can't see it.
 
     One ``dump_json`` call counts as about one profile event whatever its size,
-    and 18 to 76 ms of loop CPU go into a 2 to 28 MB body.
+    and 18 to 76 ms of loop CPU go into a 2 to 28 MB body; ``ENCODE_NODES``
+    runs with 10 KB payloads are enough to cross the size check below.
     """
     loop_thread = threading.get_ident()
     on_loop: list[int] = []
@@ -329,7 +335,7 @@ async def test_task_and_graph_lists_at_30k_nodes_encode_nothing_on_the_loop(
             on_loop.append(len(out))
         return out
 
-    app = _app(_big_store(big_stores, "realistic"))
+    app = _app(_populated_realistic(ENCODE_NODES, PAYLOAD))
     assert (await _get(app, "/api/health")).status_code == 200
     on_loop.clear()  # the health response is small and ours to ignore
     monkeypatch.setattr(TypeAdapter, "dump_json", dump_json)
