@@ -145,7 +145,14 @@ async def test_summary_request_at_30k_nodes_keeps_loop_lag_within_budget(
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("path", [*PATHS, "/api/stats/timeseries?bucket=1m&within=2h"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        *PATHS,
+        "/api/stats/timeseries?bucket=1m&within=2h",
+        "/api/stats/timeseries?bucket=1m&within=2h&percentiles=p95",
+    ],
+)
 @pytest.mark.parametrize("slice_size", [1, 7, 500])
 async def test_summary_response_is_the_same_whatever_the_slice_size(
     path: str, shape: str, slice_size: int, monkeypatch: pytest.MonkeyPatch
