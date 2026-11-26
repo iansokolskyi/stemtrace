@@ -9,11 +9,12 @@ import { formatPercent, formatSpan, shortHost } from '@/utils/format'
 import { AnomaliesTile } from './AnomaliesTile'
 import type { OverviewAnomalies } from './anomalyData'
 import { type Bucket, baselineNote, formatRate, type Grade, gradeOf } from './model'
+import { PercentileTile } from './PercentileTile'
 import { Sparkline } from './Sparkline'
 import { TILE, TileFace } from './TileFace'
 
-/** How many tiles the row holds; the grid is laid out for it before any data arrives. */
-const TILE_COUNT = 4
+/** The tiles every server gives; the two p95 tiles come with the p95 fields (Degrade). */
+const BASE_TILE_COUNT = 4
 
 interface KpiTilesProps {
   overview: OverviewResponse | undefined
@@ -28,7 +29,8 @@ interface KpiTilesProps {
 /**
  * The tiles over the chart: each a number for the window, how far it is from the window before
  * it, and a sparkline of the same series the chart draws. A run tile opens its runs in the
- * triage panel, the Workers and Anomalies tiles their lists. Fixed height, so a tile never moves when its numbers arrive.
+ * triage panel (the p95 tiles slowest first), the Workers and Anomalies tiles their lists. Fixed
+ * height, so a tile never moves when its numbers arrive.
  */
 export function KpiTiles({
   overview,
@@ -40,11 +42,18 @@ export function KpiTiles({
 }: KpiTilesProps): ReactElement {
   const panel = usePanel()
   const compare = within !== undefined
+  // Laid out for all six before the overview arrives; an older server without the p95 fields
+  // gives four, in rows of equal length
+  const hasRuntime = overview === undefined || overview.p95_runtime_ms !== undefined
+  const hasWait = overview === undefined || overview.p95_queue_wait_ms !== undefined
+  const tileCount = BASE_TILE_COUNT + Number(hasRuntime) + Number(hasWait)
   const style = {
-    '--tiles': TILE_COUNT,
+    '--tiles': tileCount,
     // Rows of equal length: three across for six tiles, else two
-    '--tiles-md': TILE_COUNT % 3 === 0 ? 3 : 2,
+    '--tiles-md': tileCount % 3 === 0 ? 3 : 2,
   } as CSSProperties
+  const series = (pick: (b: Bucket) => number | null | undefined): (number | null)[] | undefined =>
+    buckets.some((b) => pick(b) !== undefined) ? buckets.map((b) => pick(b) ?? null) : undefined
 
   const runsTile = (() => {
     const kpi = overview?.runs_per_minute
@@ -106,6 +115,30 @@ export function KpiTiles({
     >
       {runsTile}
       {rateTile}
+      {hasRuntime && (
+        <PercentileTile
+          label="p95 runtime"
+          sort="runtime"
+          panelLabel="Slowest runs"
+          thresholds={[1.4, 2.5]}
+          emptyNote="No finished runs with a runtime"
+          kpi={overview?.p95_runtime_ms}
+          series={series((b) => b.p95Runtime)}
+          within={within}
+        />
+      )}
+      {hasWait && (
+        <PercentileTile
+          label="p95 queue wait"
+          sort="queue_wait"
+          panelLabel="Longest queue waits"
+          thresholds={[1.5, 3]}
+          emptyNote="No runs with a measured wait"
+          kpi={overview?.p95_queue_wait_ms}
+          series={series((b) => b.p95Wait)}
+          within={within}
+        />
+      )}
       <WorkersTile hosts={hosts} overview={overview} />
       <AnomaliesTile anomalies={anomalies} failed={anomaliesFailed} className={TILE} />
     </div>

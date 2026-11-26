@@ -862,14 +862,14 @@ test.describe('Overview anomalies', () => {
     await expect(page.getByText('No failures in the last 6h.')).toBeVisible()
   })
 
-  test('the four tiles keep their place when the anomalies arrive late', async ({ page }) => {
+  test('the six tiles keep their place when the anomalies arrive late', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 })
     await openOverview(page, '/', (setup) => {
       setup.api.setAnomalyDelay(1500)
       withAnomalies(setup)
     })
     const tiles = page.getByTestId('kpi-tiles').locator('> *')
-    await expect(tiles).toHaveCount(4)
+    await expect(tiles).toHaveCount(6)
     const before = await tiles.nth(0).boundingBox()
     await expect(
       page.getByTestId('kpi-tiles').getByRole('button', { name: /Anomalies/ }),
@@ -885,10 +885,10 @@ test.describe('Workers tile', () => {
   const panelValue = (page: Page): string =>
     decodeURIComponent(new URL(page.url()).searchParams.get('panel') ?? '')
 
-  test('the Overview has four tiles, and none is Failures', async ({ page }) => {
+  test('the Overview has six tiles, and none is Failures', async ({ page }) => {
     await openOverview(page)
     const tiles = page.getByTestId('kpi-tiles')
-    await expect(tiles.locator('> *')).toHaveCount(4)
+    await expect(tiles.locator('> *')).toHaveCount(6)
     await expect(tiles.getByRole('button', { name: /^Failures/ })).toHaveCount(0)
     await expect(tiles.getByText('Failures', { exact: true })).toHaveCount(0)
   })

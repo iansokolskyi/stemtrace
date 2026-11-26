@@ -1,4 +1,4 @@
-import type { FetchExecutionsParams } from '@/api/client'
+import type { FetchExecutionsParams, RunSort } from '@/api/client'
 
 /**
  * Which runs a `runs` panel entry lists. It is the entry's id, so it reads the same wherever the
@@ -17,9 +17,11 @@ export interface RunsScope {
   name?: string
   /** What a tile called itself (the entry's title). */
   label?: string
+  /** Slowest first by this p95 tile's sample (a p95 tile); none: newest first. */
+  sort?: RunSort
 }
 
-const KEYS = ['kind', 'from', 'to', 'within', 'state', 'name', 'label'] as const
+const KEYS = ['kind', 'from', 'to', 'within', 'state', 'name', 'label', 'sort'] as const
 
 /** The entry id for a scope: query-string text with the keys in a fixed order. */
 export function encodeScope(scope: RunsScope): string {
@@ -39,7 +41,10 @@ export function decodeScope(id: string): RunsScope | undefined {
   const scope: RunsScope = { kind }
   for (const key of KEYS) {
     const value = params.get(key)
-    if (key !== 'kind' && value) scope[key] = value
+    if (key === 'sort') {
+      // An unknown order (a hand-written link) is the default one
+      if (value === 'runtime' || value === 'queue_wait') scope.sort = value
+    } else if (key !== 'kind' && value) scope[key] = value
   }
   return scope
 }
@@ -54,6 +59,7 @@ export function scopeFilters(scope: RunsScope, unbounded: boolean): FetchExecuti
     within: scope.within,
     state: scope.state,
     name_exact: scope.name,
+    sort: scope.sort,
   }
 }
 

@@ -104,8 +104,14 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
             The chart is unavailable, so this list has no upper time limit.
           </p>
         )}
+        {scope.sort && (
+          <p data-testid="runs-order" className="mb-2 text-xs text-muted">
+            {scope.sort === 'runtime' ? 'Slowest runtime first' : 'Longest queue wait first'}. Runs
+            the tile does not count come last.
+          </p>
+        )}
         <RunRows filters={filters} enabled={!waiting} />
-        {toExecutions && (
+        {toExecutions && !scope.sort && (
           <div className="mt-2.5">
             <Link to="/executions" search={toExecutions} className={BUTTON_QUIET}>
               Open in Executions

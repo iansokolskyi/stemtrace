@@ -368,7 +368,13 @@ export interface FetchTasksParams extends TimedFilters {
 }
 
 /** The filters of the Executions list; paging and `compact` are fixed by `fetchExecutions`. */
-export type FetchExecutionsParams = TimedFilters
+export type FetchExecutionsParams = TimedFilters & {
+  /** Slowest first by the p95 tile's sample (`sort` of `GET /api/tasks`); none: newest first. */
+  sort?: RunSort
+}
+
+/** The orders `GET /api/tasks` takes besides the default. */
+export type RunSort = 'runtime' | 'queue_wait'
 
 const FILTER_KEYS = [
   'within',
@@ -426,6 +432,7 @@ export async function fetchExecutions(
     compact: '1',
   })
   setFilterParams(searchParams, params)
+  if (params.sort) searchParams.set('sort', params.sort)
   return apiFetch(`${API_BASE}/tasks?${searchParams}`, 'Failed to fetch tasks')
 }
 
@@ -558,6 +565,15 @@ export interface Kpi {
   baseline: number
 }
 
+/** A p95 for the window and for the window before it, with the runs each is taken from. */
+export interface PercentileKpi {
+  /** Null with no sample. */
+  value: number | null
+  baseline: number | null
+  samples: number
+  baseline_samples: number
+}
+
 /** `GET /api/overview`: the KPIs over `within`, each with the window before it. */
 export interface OverviewResponse {
   window: { start: string; end: string }
@@ -567,6 +583,9 @@ export interface OverviewResponse {
   runs_per_minute: Kpi
   failure_rate: Kpi
   workers: { online: number; total: number }
+  /** The p95 KPIs are absent from an older server. */
+  p95_runtime_ms?: PercentileKpi
+  p95_queue_wait_ms?: PercentileKpi
 }
 
 /** `GET /api/overview?within=`. The API takes no start date here; All is the longest window it allows. */
@@ -585,6 +604,9 @@ export interface TimeseriesResponse {
   starts: string[]
   /** State name -> runs per bucket (aligned with `starts`); states with no run are absent. */
   counts: Record<string, number[]>
+  /** With `percentiles=p95` on a server that has it: the p95 per bucket (null: no sample). */
+  p95_runtime_ms?: (number | null)[]
+  p95_queue_wait_ms?: (number | null)[]
 }
 
 /** Runs per bucket over `within`; `bucket` (`5m`) fixes the bucket size, else the server picks one. */
@@ -595,6 +617,8 @@ export async function fetchTimeseries(
   const searchParams = new URLSearchParams()
   if (within) searchParams.set('within', within)
   if (bucket) searchParams.set('bucket', bucket)
+  // An older server ignores the parameter and sends the counts alone
+  searchParams.set('percentiles', 'p95')
   return apiFetch(`${API_BASE}/stats/timeseries?${searchParams}`, 'Failed to fetch runs over time')
 }
 

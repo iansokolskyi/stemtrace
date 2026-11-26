@@ -1,7 +1,7 @@
 import type { TimeseriesResponse } from '@/api/client'
 
 /** The states a run's outcome is (what the overview's rates divide by); mirrors `OUTCOME_STATES` in `server/stats.py`. */
-const OUTCOME_STATES = ['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED'] as const
+export const OUTCOME_STATES = ['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED'] as const
 
 /** One bucket of the Runs chart. */
 export interface Bucket {
@@ -13,6 +13,9 @@ export interface Bucket {
   retry: number
   /** Runs with an outcome: the base of the rates and of the sparklines. */
   outcomes: number
+  /** The bucket's p95 runtime and queue wait (null: no sample); absent from an older server. */
+  p95Runtime?: number | null
+  p95Wait?: number | null
 }
 
 /** The buckets of a time series, in order, with each one's counts by what the chart draws. */
@@ -31,6 +34,8 @@ export function bucketsOf(series: TimeseriesResponse): Bucket[] {
       failure: count('FAILURE', i),
       retry: count('RETRY', i),
       outcomes: OUTCOME_STATES.reduce((sum, state) => sum + count(state, i), 0),
+      p95Runtime: series.p95_runtime_ms?.[i],
+      p95Wait: series.p95_queue_wait_ms?.[i],
     }
   })
 }
@@ -67,7 +72,8 @@ export function baselineNote(grade: Grade, value: number, baseline: number): str
   const amount = far
     ? `${ratio.toFixed(1)}×`
     : `${ratio > 1 ? '+' : '−'}${Math.abs((ratio - 1) * 100).toFixed(0)}%`
-  return `${grade === 'bad' ? 'Well ' : ''}${ratio > 1 ? 'above' : 'below'} baseline: ${amount}`
+  const side = ratio > 1 ? 'above' : 'below'
+  return `${grade === 'bad' ? `Well ${side}` : `${side[0].toUpperCase()}${side.slice(1)}`} baseline: ${amount}`
 }
 
 /** Runs per minute, `2.4`; `0` stays `0`. */
@@ -83,3 +89,9 @@ export const endsOpen = (buckets: Bucket[], to: string): boolean => {
 
 /** Whether two ISO times are the same instant, whatever their spelling. */
 export const sameInstant = (a: string, b: string): boolean => Date.parse(a) === Date.parse(b)
+
+/** The fewest runs in each window for a p95 to be compared: below it a p95 is nearly one run's time. */
+export const P95_MIN_SAMPLES = 20
+
+/** The smallest rise, in ms, a p95 tile flags: a p95 that moves by less is noise at any ratio. */
+export const P95_MIN_RISE_MS = 50
