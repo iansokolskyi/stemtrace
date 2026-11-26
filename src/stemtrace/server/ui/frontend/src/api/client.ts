@@ -601,6 +601,8 @@ export interface FailureGroup {
   last_seen: string
   task_names: string[]
   sample_task_ids: string[]
+  /** The newest failure's first message line, as stored. Absent from older servers. */
+  latest_message?: string | null
 }
 
 export interface FailureListResponse {

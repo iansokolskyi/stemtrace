@@ -4,6 +4,7 @@ import { Icon } from '@/components/Icon'
 import { TaskName } from '@/components/TaskName'
 import { exceptionId } from '@/components/triage/exceptionId'
 import { openerProps, usePanel } from '@/components/triage/PanelContext'
+import { failureLine } from '@/utils/failureMessage'
 import { formatAgo, formatCount } from '@/utils/format'
 import { AnomalyList } from './AnomalyList'
 import type { OverviewAnomalies } from './anomalyData'
@@ -89,40 +90,55 @@ export function WhatsWrong({ groups, windowWords, anomalies }: WhatsWrongProps):
                     </tr>
                   </thead>
                   <tbody>
-                    {(groups ?? []).map((group) => (
-                      <tr
-                        key={group.exception_type ?? ''}
-                        className="relative border-b border-rule last:border-b-0 hover:bg-hover has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
-                      >
-                        <td className={TD}>
-                          <button
-                            type="button"
-                            {...openerProps(panel, {
-                              kind: 'exception',
-                              id: exceptionId(group.exception_type),
-                            })}
-                            className="font-mono font-bold text-failure-t after:absolute after:inset-0"
-                          >
-                            {group.exception_type ?? 'No exception class'}
-                          </button>
-                        </td>
-                        <td className={`${TD} max-w-[320px]`}>
-                          <TaskName name={group.task_names[0] ?? ''} />
-                          {group.task_names.length > 1 && (
-                            <span className="text-muted">+{group.task_names.length - 1} more</span>
-                          )}
-                        </td>
-                        <td className={`${TD} text-right font-bold tabular-nums`}>
-                          {formatCount(group.count)}
-                        </td>
-                        <td className={`${TD} whitespace-nowrap text-muted`}>
-                          {formatAgo(group.first_seen)}
-                        </td>
-                        <td className={`${TD} whitespace-nowrap text-muted`}>
-                          {formatAgo(group.last_seen)}
-                        </td>
-                      </tr>
-                    ))}
+                    {(groups ?? []).map((group) => {
+                      const message = failureLine(group)
+                      return (
+                        <tr
+                          key={group.exception_type ?? ''}
+                          className="relative border-b border-rule last:border-b-0 hover:bg-hover has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
+                        >
+                          <td className={TD}>
+                            <button
+                              type="button"
+                              {...openerProps(panel, {
+                                kind: 'exception',
+                                id: exceptionId(group.exception_type),
+                              })}
+                              // The overlay covers the message line, so the hover text lives here.
+                              title={message}
+                              className="font-mono font-bold text-failure-t after:absolute after:inset-0"
+                            >
+                              {group.exception_type ?? 'No exception class'}
+                            </button>
+                            {message && (
+                              <div
+                                data-testid="failure-message"
+                                className="max-w-[300px] truncate text-[11px] text-muted"
+                              >
+                                {message}
+                              </div>
+                            )}
+                          </td>
+                          <td className={`${TD} max-w-[320px]`}>
+                            <TaskName name={group.task_names[0] ?? ''} />
+                            {group.task_names.length > 1 && (
+                              <span className="text-muted">
+                                +{group.task_names.length - 1} more
+                              </span>
+                            )}
+                          </td>
+                          <td className={`${TD} text-right font-bold tabular-nums`}>
+                            {formatCount(group.count)}
+                          </td>
+                          <td className={`${TD} whitespace-nowrap text-muted`}>
+                            {formatAgo(group.first_seen)}
+                          </td>
+                          <td className={`${TD} whitespace-nowrap text-muted`}>
+                            {formatAgo(group.last_seen)}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
