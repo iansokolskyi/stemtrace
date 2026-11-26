@@ -1683,7 +1683,7 @@ class GraphStore:
 
     @property
     def node_count(self) -> int:
-        """Current node count, read without the store lock (may lag by one event)."""
+        """Current node count, read without the store lock (may read mid-update or mid-eviction)."""
         # Lock-free on purpose: /health reads it on the event loop, which must
         # never wait on a long scan or eviction. ``len`` of a dict is one
         # atomic read under the GIL (nodes is a plain dict).
