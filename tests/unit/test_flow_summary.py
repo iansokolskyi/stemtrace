@@ -285,8 +285,8 @@ def _listed_flows(capture: str) -> dict[str, FlowSummary]:
     store = GraphStore()
     for raw in _CAPTURES[capture]:
         store.add_event(TaskEvent.model_validate(raw))
-    roots, _, summaries, _ = store.get_root_flows(limit=100)
-    return {r.task_id: summaries[r.task_id] for r in roots}
+    page = store.get_root_flows(limit=100)
+    return {r.task_id: page.summaries[r.task_id] for r in page.roots}
 
 
 @pytest.mark.parametrize("capture", sorted(_CAPTURED))
