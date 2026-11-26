@@ -287,7 +287,7 @@ class TestSecondLifespan:
 
         assert first.send_text.await_count == 1
         assert second.send_text.await_count == 1
-        assert len(log.records) <= 4
+        assert [r.getMessage() for r in log.records if r.levelno >= logging.ERROR] == []
 
     def test_extension_second_lifespan_delivers_store_event(
         self, sample_event: TaskEvent
@@ -317,7 +317,7 @@ class TestSecondLifespan:
             ws_logger.removeHandler(log)
 
         assert second.send_text.await_count == 1
-        assert len(log.records) <= 4
+        assert [r.getMessage() for r in log.records if r.levelno >= logging.ERROR] == []
 
     @pytest.mark.asyncio
     async def test_queue_event_after_stop_is_dropped(
@@ -399,7 +399,9 @@ class TestBroadcastLoopErrors:
             with caplog.at_level(logging.DEBUG, logger="stemtrace.server.websocket"):
                 for i in range(failures):
                     manager.queue_event(sample_event)
-                    while len(sleeps) <= i:
+                    for _ in range(1000):  # bounded: a missing backoff fails, not hangs
+                        if len(sleeps) > i:
+                            break
                         await asyncio.sleep(0)
                     if i == 5:
                         now[0] += LOOP_ERROR_LOG_INTERVAL_S
