@@ -364,6 +364,7 @@ class FailureGroupResponse(BaseModel):
     last_seen: datetime
     task_names: list[str]
     sample_task_ids: list[str]
+    latest_message: str | None = None
 
 
 class FailureGroupListResponse(BaseModel):
