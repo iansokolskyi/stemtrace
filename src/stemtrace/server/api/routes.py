@@ -64,6 +64,7 @@ from stemtrace.server.inspect_probe import (
     INSPECT_REFRESH_MIN_INTERVAL_SECONDS,
     InspectProbe,
 )
+from stemtrace.server.worker_pool import pool_from_stats_payload
 from stemtrace.transports import broker_kind
 
 if TYPE_CHECKING:
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
     from stemtrace.server.consumer import AsyncEventConsumer
     from stemtrace.server.store import GraphStore, WorkerRegistry, WorkerTimeline
     from stemtrace.server.websocket import WebSocketManager
+    from stemtrace.server.worker_pool import PoolInfo
 
 logger = logging.getLogger(__name__)
 
@@ -593,11 +595,13 @@ def _refresh_worker_registry_from_inspect(
     # worker_shutdown, then restarted). A node that answers without a pid is
     # treated like a ping reply.
     replies: dict[str, tuple[int | None, list[str] | None]] = {}
+    pools: dict[str, PoolInfo] = {}
     for nodename, payload in stats.items():
         pid = _pid_from_stats_payload(payload)
         tasks = _tasks_for_worker_key(registered, nodename) if pid else None
         replies[nodename] = (pid, tasks)
-    worker_registry.apply_stats_reply(seen, replies)
+        pools[nodename] = pool_from_stats_payload(payload)
+    worker_registry.apply_stats_reply(seen, replies, pools=pools)
     return _InspectOutcome(frozenset(replies), complete)
 
 

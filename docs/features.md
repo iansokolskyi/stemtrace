@@ -99,6 +99,18 @@ pages work even if the server missed `worker_ready` events.
   bring back the newest pid, never one that sent `worker_shutdown`. When the stream and an
   inspect reply disagree, whichever is newer wins: events that arrive while the server waits
   for a reply beat that reply.
+- `GET /api/workers` returns `pool` and `concurrency` for each worker. They come from the newest
+  `stats()` reply that names the worker's pid, and later reads return them without asking
+  Celery again. `pool` is the last module segment of the pool's `implementation`
+  (`celery.concurrency.prefork:TaskPool` gives `prefork`; the `thread` pool shows as
+  `threads`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
+  autoscaler's `max`, because Celery then reports the minimum as `max-concurrency`. Both are
+  `null` for a worker the server knows only from events, and for a reply that has no pool
+  dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery
+  5.2.2 doesn't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
+  new pid on the same nodename starts with `null` and doesn't inherit its predecessor's values.
+  Limitation: a new process that reuses the same pid keeps the old values until an inspect reply
+  names it.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
   nodename's listed pid as stopped, if the shutdown event is stamped at or after that pid's
