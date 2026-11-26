@@ -374,6 +374,20 @@ def test_timeseries_places_a_future_run_in_the_last_bucket(store: GraphStore) ->
     assert [v for v in body["p95_runtime_ms"] if v is not None] == [111]
 
 
+def test_timeseries_celery_builtin_tasks_give_no_samples(store: GraphStore) -> None:
+    _run(store, end=NOW - timedelta(minutes=5), name="celery.chord_unlock")
+
+    body = (
+        _client(store)
+        .get("/api/stats/timeseries?within=1h&bucket=5m&percentiles=p95")
+        .json()
+    )
+
+    assert sum(body["runtime_samples"]) == 0
+    assert sum(body["queue_wait_samples"]) == 0
+    assert body["counts"]["SUCCESS"][-2] == 1  # still counted as a run by state
+
+
 def test_timeseries_skips_runs_before_the_first_bucket(store: GraphStore) -> None:
     _run(store, end=NOW - timedelta(hours=3), runtime_ms=111)
 
