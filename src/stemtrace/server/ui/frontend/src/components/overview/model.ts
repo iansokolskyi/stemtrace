@@ -72,7 +72,8 @@ export function baselineNote(grade: Grade, value: number, baseline: number): str
   const amount = far
     ? `${ratio.toFixed(1)}×`
     : `${ratio > 1 ? '+' : '−'}${Math.abs((ratio - 1) * 100).toFixed(0)}%`
-  return `${grade === 'bad' ? 'Well ' : ''}${ratio > 1 ? 'above' : 'below'} baseline: ${amount}`
+  const side = ratio > 1 ? 'above' : 'below'
+  return `${grade === 'bad' ? `Well ${side}` : `${side[0].toUpperCase()}${side.slice(1)}`} baseline: ${amount}`
 }
 
 /** Runs per minute, `2.4`; `0` stays `0`. */

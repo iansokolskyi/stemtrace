@@ -136,7 +136,7 @@ test.describe('p95 tiles', () => {
     const t = runtimeTile(page)
     await expect(t).toContainText('1.7s')
     // 1680 / 1200 = 1.4 exactly: the warn threshold
-    await expect(t).toContainText('above baseline: +40%')
+    await expect(t).toContainText('Above baseline: +40%')
     await expect(t).toContainText('earlier: 1.2s')
     await expect(t).toHaveAttribute('data-grade', 'warn')
     await expect(t.locator('polyline')).toHaveCount(1)
