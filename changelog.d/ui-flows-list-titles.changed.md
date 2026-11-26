@@ -1,0 +1,1 @@
+- The Flows list titles a flow that starts with a group or chord as the flow page does, for example "Chord of 12 fetch" or "Group of 3 tasks". A flow that starts with a task keeps the task's short name, and so does a server that doesn't send `member_count` and `member_name`.

@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { flowNode } from './fixtures/flow'
 import { allCaptures, serveFlow } from './fixtures/flow-graphs'
+import { type ListRoot, serveList } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
 
 /**
@@ -14,51 +15,6 @@ test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
 
 const rows = (page: Page): Locator => page.getByTestId('flow-row')
 const titleOf = (row: Locator): Locator => row.locator('b')
-
-interface ListRoot {
-  id: string
-  name: string
-  type: 'TASK' | 'GROUP' | 'CHORD'
-  state?: string
-  /** Omit for a server that sends no member fields */
-  members?: { member_count: number | null; member_name: string | null }
-}
-
-/** The list item the server sends for a root. */
-function listItem(root: ListRoot): Record<string, unknown> {
-  const state = root.state ?? 'SUCCESS'
-  return {
-    task_id: root.id,
-    name: root.name,
-    state,
-    node_type: root.type,
-    group_id: null,
-    chord_id: null,
-    parent_id: null,
-    reported_parent_id: null,
-    children: [],
-    duration_ms: null,
-    first_seen: '2026-10-17T11:00:00Z',
-    last_updated: '2026-10-17T11:00:00Z',
-    flow: {
-      task_count: 3,
-      state_counts: { [state]: 3 },
-      not_run_count: 0,
-      state,
-      ...root.members,
-    },
-  }
-}
-
-/** Answers GET /api/graphs with what `roots()` returns at the time of each request. */
-async function serveList(page: Page, roots: () => ListRoot[]): Promise<void> {
-  await page.route(/\/api\/graphs(\?|$)/, (route) => {
-    const list = roots()
-    return route.fulfill({
-      json: { graphs: list.map(listItem), total: list.length, limit: 50, offset: 0 },
-    })
-  })
-}
 
 async function openList(page: Page, roots: ListRoot[]): Promise<void> {
   await setupMockApi(page, { useDefaults: false })
@@ -149,9 +105,7 @@ test.describe('Flows list titles', () => {
   })
 
   test('a container root with a null count falls back to the root short name', async ({ page }) => {
-    await openList(page, [
-      { ...container(null, null), id: 'r-null', name: 'tools.fan_out' },
-    ])
+    await openList(page, [{ ...container(null, null), id: 'r-null', name: 'tools.fan_out' }])
     await expect(titleOf(rows(page).first())).toHaveText('fan_out')
   })
 
@@ -180,7 +134,12 @@ test.describe('Flows list titles', () => {
 test.describe('List title equals the flow page title', () => {
   // Captured flows: a shared member name (chord, group) and mixed names (chord_failed_header),
   // a GROUP and a CHORD root
-  for (const wanted of ['chord', 'group', 'chord_failed_header', 'chain_group_tsum_add@celery5.2']) {
+  for (const wanted of [
+    'chord',
+    'group',
+    'chord_failed_header',
+    'chain_group_tsum_add@celery5.2',
+  ]) {
     test(`capture ${wanted}: the row's title is the root box's title`, async ({ page }) => {
       const found = allCaptures()[wanted]
       expect(found, wanted).toBeTruthy()
