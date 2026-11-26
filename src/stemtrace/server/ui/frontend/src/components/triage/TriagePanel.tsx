@@ -11,7 +11,7 @@ import { ALL_ANOMALIES_ID } from './anomalyId'
 import { ExceptionBody } from './ExceptionBody'
 import { exceptionOfId } from './exceptionId'
 import { GroupBody } from './GroupBody'
-import { EntryScope, openerKey, usePanel } from './PanelContext'
+import { EntryIndex, openerKey, usePanel } from './PanelContext'
 import type { PanelData } from './PanelParts'
 import type { PanelEntry } from './panelState'
 import { RunsBody } from './RunsBody'
@@ -254,9 +254,9 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
         {topText.sub && (
           <div className="text-xs text-muted [overflow-wrap:anywhere]">{topText.sub}</div>
         )}
-        <EntryScope.Provider value={`${stack.length - 1}|${openerKey(top)}`}>
+        <EntryIndex.Provider value={stack.length - 1}>
           <Body key={`${stack.length - 1}|${openerKey(top)}`} entry={top} data={data} />
-        </EntryScope.Provider>
+        </EntryIndex.Provider>
       </div>
     </aside>,
     document.body,

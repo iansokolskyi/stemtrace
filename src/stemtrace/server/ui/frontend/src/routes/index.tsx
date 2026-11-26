@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import {
   CHART_BUCKET,
   overviewWithin,
@@ -12,6 +12,7 @@ import {
   useWorkersStrip,
 } from '@/api/overviewQueries'
 import { useOverviewAnomalies } from '@/components/overview/anomalyData'
+import { formatBrush, parseBrush } from '@/components/overview/brushSpan'
 import { HealthTable } from '@/components/overview/HealthTable'
 import { KpiTiles } from '@/components/overview/KpiTiles'
 import { bucketsOf } from '@/components/overview/model'
@@ -39,7 +40,8 @@ export const Route = createFileRoute('/')({
 })
 
 function OverviewPage() {
-  const { range } = Route.useSearch()
+  const { range, brush: brushValue } = Route.useSearch()
+  const navigate = Route.useNavigate()
   const effective = range ?? DEFAULT_RANGE
   const isAll = effective === 'all'
   const within = statsWithin(effective)
@@ -61,8 +63,11 @@ function OverviewPage() {
     () => (workers.data ? hostsOf(workers.data.workers) : undefined),
     [workers.data],
   )
-  // The brush is a view of this page only: Back restores the panel from the URL, not the span
-  const [brush, setBrush] = useState<Brush | null>(null)
+  // The brush is in the URL as absolute instants. A change replaces the history entry: a drag
+  // refines the view, so Back leaves the page's state instead of stepping through brushes.
+  const brush = useMemo(() => parseBrush(brushValue), [brushValue])
+  const setBrush = (next: Brush | null) =>
+    navigate({ search: (prev) => ({ ...prev, brush: formatBrush(next) }), replace: true })
 
   const data: PanelData = {
     buckets,
