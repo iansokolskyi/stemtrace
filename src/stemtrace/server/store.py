@@ -1672,9 +1672,11 @@ class GraphStore:
 
     @property
     def node_count(self) -> int:
-        """Current node count."""
-        with self._lock:
-            return len(self._graph.nodes)
+        """Current node count, read without the store lock (may lag by one event)."""
+        # Lock-free on purpose: /health reads it on the event loop, which must
+        # never wait on a long scan or eviction. ``len`` of a dict is one
+        # atomic read under the GIL (nodes is a plain dict).
+        return len(self._graph.nodes)
 
     def get_unique_task_names(self) -> set[str]:
         """Get all unique task names seen in events.

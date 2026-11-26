@@ -201,7 +201,7 @@ def _add_overview_route(
         now = params.utcnow()
         window = Window(now - params.parse_within(within), now, open_end=True)
         baseline = window.previous()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         current, previous = WindowStats(0, 0, 0.0), WindowStats(0, 0, 0.0)
         current_samples, previous_samples = WindowSamples(), WindowSamples()
         async for part in _slices(records):
@@ -317,7 +317,7 @@ def _add_timeseries_route(
         """
         _check_split_options(group_by, percentiles)
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
@@ -393,7 +393,7 @@ def _add_failures_route(router: APIRouter, *, store: GraphStore) -> None:
         if group_by != "exception":
             raise _unprocessable("group_by must be exception")
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )
@@ -440,7 +440,7 @@ def _add_task_stats_route(
         reads the server's own records and never asks the workers.
         """
         now = params.utcnow()
-        records = store.run_records()
+        records = await run_in_threadpool(store.run_records)
         window = _recent_window(
             within, from_date, now, min(await _oldest(records, now), now)
         )

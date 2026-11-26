@@ -116,9 +116,10 @@ class AnomalyEvaluator:
     async def evaluate(self) -> Evaluation:
         """Copy the facts under their locks, then classify them off both and the loop."""
         now = params.utcnow()
-        # Copies under three locks, microseconds apart: a worker event that
-        # lands between them only adds evidence, which the next poll sees.
-        records = self._store.run_records()
+        # The worker facts are read before the first await, as before: the
+        # registry gate must see what the request's own probe has applied by
+        # now, not by the time the records copy returns. Task events that land
+        # while the records copy waits only add evidence for the next poll.
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}
         registry = (
             self._registry.registry_facts(
@@ -127,6 +128,8 @@ class AnomalyEvaluator:
             if self._registry is not None
             else None
         )
+        # In a worker thread: the store lock may be held by a long scan.
+        records = await run_in_threadpool(self._store.run_records)
         report = await run_in_threadpool(
             self._classify, records, snapshot, registry, now
         )
