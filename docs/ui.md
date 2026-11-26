@@ -246,11 +246,15 @@ their last update. A bar opens the task. The view doesn't page.
 ## Flows
 
 One row for each workflow that the server holds: a root task and everything it started. A row shows
-the worst state in the flow, the root's short name, a summary such as "50 tasks, 1 failed, chord
-callback not run", the root's full name and when the flow started. A row opens the
+the worst state in the flow, a title, a summary such as "50 tasks, 1 failed, chord callback not
+run", the root's full name and when the flow started. The title is the root's short name. When the
+root is a group or chord, the title is the one the flow page draws on that box, such as "Chord of 12
+fetch" (the members share the name `fetch`) or "Group of 2 tasks" (the names differ). A row opens the
 [flow page](#flow-page). The list loads 50 flows at a time as you scroll.
 
-**Data:** `GET /api/graphs?limit=50`. The `flow` field of each item holds the summary. See
+**Data:** `GET /api/graphs?limit=50`. The `flow` field of each item holds the summary, and for a
+group or chord root its `member_count` and `member_name`. A server that doesn't send them gets the
+root's short name as the title. See
 [Graphs](graphs.md#canvas-graph-visualization).
 
 ### Limits

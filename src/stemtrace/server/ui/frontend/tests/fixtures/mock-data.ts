@@ -46,6 +46,10 @@ export interface MockFlowSummary {
   state_counts: Record<string, number>
   not_run_count: number
   state: string
+  /** Rows of a GROUP or CHORD root; null for a TASK root, absent on a server without the field */
+  member_count?: number | null
+  /** The shared last name segment of the rows; null when they differ */
+  member_name?: string | null
 }
 
 export interface MockEvent {

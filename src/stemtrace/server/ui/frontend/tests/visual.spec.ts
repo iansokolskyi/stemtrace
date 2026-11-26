@@ -1,7 +1,7 @@
 import { expect, type Page, test } from '@playwright/test'
 
 import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
-import { flowListRoots } from './fixtures/flows-list'
+import { flowListRoots, type ListRoot, serveList } from './fixtures/flows-list'
 import { type MockApiContext, setupMockApi } from './fixtures/mock-api'
 import {
   createAnomaly,
@@ -483,6 +483,46 @@ for (const theme of ['light', 'dark'] as const) {
     api.addTasks(flowListRoots())
     await snapshot(page, `flows-${theme}-1280`, { theme, width: 1280, path: '/flows' })
   })
+}
+
+// The Flows list titles: a chord with a shared name, a group of mixed names, an empty group and a
+// task root, then a long name at 400 px.
+const TITLE_ROOTS: ListRoot[] = [
+  {
+    id: 'r1',
+    name: 'billing.invoices.close_month',
+    type: 'CHORD',
+    members: { member_count: 12, member_name: 'fetch' },
+  },
+  {
+    id: 'r2',
+    name: 'search.reindex.rebuild_all',
+    type: 'GROUP',
+    members: { member_count: 2, member_name: null },
+  },
+  {
+    id: 'r3',
+    name: 'media.thumbs.resize_all',
+    type: 'GROUP',
+    members: { member_count: 0, member_name: null },
+  },
+  { id: 'r4', name: 'reports.digest.build_digest', type: 'TASK' },
+  {
+    id: 'r5',
+    name: 'ops.bulk.run',
+    type: 'CHORD',
+    members: { member_count: 7, member_name: 'process_the_very_long_named_member_task_for_ever' },
+  },
+]
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    test(`flows titles, ${theme}, ${width}px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      await setupMockApi(page, { useDefaults: false })
+      await serveList(page, () => TITLE_ROOTS)
+      await snapshot(page, `flows-titles-${theme}-${width}`, { theme, width, path: '/flows' })
+    })
+  }
 }
 
 // The Flow page: a chord of 48 whose third header failed (so its callback did not run), the
