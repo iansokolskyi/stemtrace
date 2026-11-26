@@ -73,15 +73,15 @@ def _state_set(state: TaskState | Collection[TaskState]) -> set[TaskState]:
 
 
 class _Ranked(NamedTuple):
-    """A task's sort value and tie-breakers, read under the lock, with its live node."""
+    """A run's sort value and tie-breakers, with its record."""
 
     value: int | None
     updated: datetime
     task_id: str
-    node: TaskNode
+    row: RunRecord
 
 
-def _slowest_first(ranked: list[_Ranked]) -> list[TaskNode]:
+def _slowest_first(ranked: list[_Ranked]) -> list[RunRecord]:
     """Order by value, largest first, those with None last.
 
     Stable passes make the order total: value, then newest update, then task id.
@@ -90,7 +90,7 @@ def _slowest_first(ranked: list[_Ranked]) -> list[TaskNode]:
     ranked.sort(key=operator.attrgetter("updated"), reverse=True)
     keyed = [r for r in ranked if r.value is not None]
     keyed.sort(key=operator.attrgetter("value"), reverse=True)
-    return [r.node for r in keyed] + [r.node for r in ranked if r.value is None]
+    return [r.row for r in keyed] + [r.row for r in ranked if r.value is None]
 
 
 def _ensure_end_of_day(dt: datetime) -> datetime:
@@ -1307,15 +1307,19 @@ class GraphStore:
         Celery's task registry (``app.add`` does not match ``app.add_numbers``
         or ``app.Add``). Both can be given; a node must pass each.
         ``hostname``, ``queue`` and ``exception_type`` match the node's
-        value (see ``TaskNode._latest``) exactly; computing it reads all of
-        a node's events, so these cost several times the name filters.
+        value (see ``TaskNode._latest``) exactly.
         ``task_names`` keeps the tasks with one of these names (the API's
-        task group and tag filters resolve names to it beforehand, outside
-        the lock); pass a set for O(1) lookups.
+        task group and tag filters resolve names to it beforehand); pass a
+        set for O(1) lookups.
         ``sort_key`` maps a run record to its sort value (a ``stats`` sample
         function): matches go largest first, those with None last, ties by
-        newest update then task id. It sorts every match, so call it off the
-        event loop; the sort runs outside the store lock.
+        newest update then task id. Filtering and sorting cost O(n) and
+        O(n log n) outside the store lock, so call this off the event loop.
+
+        The page is the rows at the filter instant, in that order. A row that
+        changed since shows its current state, even if it no longer matches;
+        one that was evicted since is left out. ``total`` counts the matches
+        at the filter instant.
 
         Returns:
             Tuple of (filtered nodes, total count matching filters).
@@ -1325,59 +1329,46 @@ class GraphStore:
         to_dt = None if to_date is None else _ensure_end_of_day(to_date)
         from_dt = None if from_date is None else ensure_tz_aware(from_date)
 
-        def matches(n: TaskNode) -> bool:
-            """Whether the task passes every filter; the cheap ones are checked first."""
+        def matches(r: RunRecord) -> bool:
+            """Whether the run passes every filter; the cheap ones are checked first."""
             return (
-                n.node_type == NodeType.TASK
-                and (wanted is None or n.state in wanted)
-                and (name_lower is None or name_lower in n.name.lower())
-                and (name_exact is None or n.name == name_exact)
-                and (task_names is None or n.name in task_names)
-                and (
-                    from_dt is None
-                    or (n.last_updated is not None and n.last_updated >= from_dt)
-                )
+                (wanted is None or r.state in wanted)
+                and (name_lower is None or name_lower in r.name.lower())
+                and (name_exact is None or r.name == name_exact)
+                and (task_names is None or r.name in task_names)
+                and (from_dt is None or r.last_updated >= from_dt)
                 and (
                     to_dt is None
-                    or (n.first_seen is not None and n.first_seen <= to_dt)
+                    or (r.first_seen is not None and r.first_seen <= to_dt)
                 )
-                and (hostname is None or n.hostname == hostname)
-                and (queue is None or n.queue == queue)
-                and (exception_type is None or n.exception_type == exception_type)
+                and (hostname is None or r.hostname == hostname)
+                and (queue is None or r.queue == queue)
+                and (
+                    exception_type is None or r.latest_exception_type == exception_type
+                )
             )
 
-        # Without a sort key, filter and copy in one critical section: the
-        # consumer thread mutates live nodes, so a node could otherwise change
-        # state between passing the filter and being copied. The sorted path
-        # copies in a second section and applies the whole filter again there.
+        # Phase 1, outside the lock: filter and order immutable run records
+        # copied in one O(n) reference copy, so ingestion never waits on the
+        # filter. Phase 2, under the lock: snapshot only the page's live nodes.
+        rows = self.run_records()
+        matched = [r for r in rows if matches(r)]
+        if sort_key is None:
+            matched.sort(key=operator.attrgetter("last_updated"), reverse=True)
+            ordered = matched
+        else:
+            ordered = _slowest_first(
+                [_Ranked(sort_key(r), r.last_updated, r.task_id, r) for r in matched]
+            )
+        # Events may have been ingested since the copy. A page row that
+        # changed shows its current state even if it no longer matches; one
+        # that was evicted is dropped; ``total`` counts the phase-1 matches.
         with self._lock:
-            nodes = [n for n in self._graph.nodes.values() if matches(n)]
-
-            if sort_key is None:
-                nodes.sort(key=lambda n: n.last_updated or _MIN_DATETIME, reverse=True)
-                total = len(nodes)
-                page = [_snapshot(n) for n in nodes[offset : offset + limit]]
-                return page, total
-            # One cheap pass under the lock copies what the sort reads (records are
-            # immutable, ``last_updated`` is read now, as the nodes keep changing);
-            # keys and the O(n log n) sort run outside it.
-            rows = [
-                (self._runs.get(n.task_id), n.last_updated or _MIN_DATETIME, n)
-                for n in nodes
-            ]
-        ranked = [
-            _Ranked(None if r is None else sort_key(r), u, n.task_id, n)
-            for r, u, n in rows
-        ]
-        ordered = _slowest_first(ranked)
-        with self._lock:
-            # Events were ingested while the sort ran: a page row may have
-            # stopped matching or been evicted. ``total`` still counts the
-            # matches of the first section.
+            nodes = self._graph.nodes
             page = [
-                _snapshot(n)
-                for n in ordered[offset : offset + limit]
-                if self._graph.nodes.get(n.task_id) is n and matches(n)
+                _snapshot(node)
+                for r in ordered[offset : offset + limit]
+                if (node := nodes.get(r.task_id)) is not None
             ]
         return page, len(ordered)
 
@@ -1394,11 +1385,11 @@ class GraphStore:
         Returns:
             Tuple of (filtered root nodes, total count matching filters).
         """
+        ids, total = self._root_ids_page(
+            limit=limit, offset=offset, from_date=from_date, to_date=to_date
+        )
         with self._lock:
-            live, total = self._root_nodes_locked(
-                limit=limit, offset=offset, from_date=from_date, to_date=to_date
-            )
-            return [_snapshot(n) for n in live], total
+            return [_snapshot(n) for n in self._live_roots_locked(ids)], total
 
     def get_root_nodes_with_children(
         self,
@@ -1423,14 +1414,15 @@ class GraphStore:
             The roots, a map of task_id to node for them (and those children),
             the total count matching the filters, and the container children.
         """
+        ids, total = self._root_ids_page(
+            limit=limit,
+            offset=offset,
+            from_date=from_date,
+            to_date=to_date,
+            task_names=task_names,
+        )
         with self._lock:
-            live, total = self._root_nodes_locked(
-                limit=limit,
-                offset=offset,
-                from_date=from_date,
-                to_date=to_date,
-                task_names=task_names,
-            )
+            live = self._live_roots_locked(ids)
             nodes = self._graph.nodes
             roots = [_snapshot(n) for n in live]
             related = {root.task_id: root for root in roots}
@@ -1448,7 +1440,7 @@ class GraphStore:
                         related[child_id] = _snapshot(child)
             return FlowListPage(roots, related, total, containers)
 
-    def _root_nodes_locked(
+    def _root_ids_page(
         self,
         *,
         limit: int,
@@ -1456,23 +1448,34 @@ class GraphStore:
         from_date: datetime | None,
         to_date: datetime | None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[TaskNode], int]:
-        """Filter, sort and page live root nodes. Call with the lock held."""
+    ) -> tuple[list[str], int]:
+        """Filter, sort and page the root IDs; the date filters run outside the lock.
+
+        The ``task_names`` filter still walks every node under the lock.
+        """
         # A flow's time is over its whole graph, not the root's own events. The
         # times may be up to the gate old; which roots exist is always live.
-        flows = self._cached_flow_times_locked()
-        nodes = self._graph.nodes
-        times = flows.times
-        roots = self._graph.root_ids
-        if not all(map(times.__contains__, roots)):
-            for rid in sorted(set(roots).difference(times)):
-                self._time_unseen_root_locked(flows, rid)
-        if task_names is None and from_date is None and to_date is None:
-            return self._unfiltered_page_locked(flows, offset, limit), len(roots)
-        live = set(roots)
-        root_ids = [rid for rid in flows.order if rid in live]
-        if task_names is not None:
-            matching = self._roots_with_task_locked(task_names)
+        with self._lock:
+            flows = self._cached_flow_times_locked()
+            times = flows.times
+            roots = self._graph.root_ids
+            if not all(map(times.__contains__, roots)):
+                for rid in sorted(set(roots).difference(times)):
+                    self._time_unseen_root_locked(flows, rid)
+            if task_names is None and from_date is None and to_date is None:
+                return self._unfiltered_page_ids_locked(flows, offset, limit), len(
+                    roots
+                )
+            matching = (
+                None if task_names is None else self._roots_with_task_locked(task_names)
+            )
+            # Copies: the filters below run without the lock, and
+            # ``_time_unseen_root_locked`` adds to the cache's own.
+            live = set(roots)
+            order = list(flows.order)
+            times = dict(times)
+        root_ids = [rid for rid in order if rid in live]
+        if matching is not None:
             root_ids = [rid for rid in root_ids if rid in matching]
         if from_date is not None:
             from_dt = ensure_tz_aware(from_date)
@@ -1480,18 +1483,22 @@ class GraphStore:
         if to_date is not None:
             to_dt = _ensure_end_of_day(to_date)
             root_ids = [rid for rid in root_ids if times[rid][0] <= to_dt]
-        total = len(root_ids)
-        return [nodes[rid] for rid in root_ids[offset : offset + limit]], total
+        return root_ids[offset : offset + limit], len(root_ids)
 
-    def _unfiltered_page_locked(
+    def _live_roots_locked(self, ids: Iterable[str]) -> list[TaskNode]:
+        """The nodes of ``ids`` that are still roots; the others left meanwhile."""
+        nodes = self._graph.nodes
+        return [nodes[rid] for rid in ids if rid in nodes and self._graph.is_root(rid)]
+
+    def _unfiltered_page_ids_locked(
         self, flows: _FlowTimes, offset: int, limit: int
-    ) -> list[TaskNode]:
-        """The page of live roots in the cached order; reads only the page's nodes.
+    ) -> list[str]:
+        """The page of live root IDs in the cached order; reads only the page.
 
         Roots that left since the compute are skipped. Call with the lock held.
         """
         nodes = self._graph.nodes
-        page: list[TaskNode] = []
+        page: list[str] = []
         skipped = 0
         for rid in flows.order:
             if not self._graph.is_root(rid) or rid not in nodes:
@@ -1501,7 +1508,7 @@ class GraphStore:
                 continue
             if len(page) >= limit:
                 break
-            page.append(nodes[rid])
+            page.append(rid)
         return page
 
     def _cached_flow_times_locked(self) -> _FlowTimes:
@@ -1687,30 +1694,21 @@ class GraphStore:
         Excludes synthetic nodes (GROUP, CHORD) which have placeholder
         names like 'group' or 'chord'.
         """
-        with self._lock:
-            return {
-                node.name
-                for node in self._graph.nodes.values()
-                if node.node_type == NodeType.TASK
-            }
+        return {r.name for r in self.run_records()}
 
     def get_task_run_summaries(self) -> dict[str, TaskRunSummary]:
         """Count runs and find the latest activity of every task name, in one pass.
 
-        Takes the lock once. Excludes synthetic nodes (GROUP, CHORD). A run
-        counts in any state, and ``last_run`` is the newest ``last_updated``.
+        Copies the run records under the lock and aggregates outside it.
+        Excludes synthetic nodes (GROUP, CHORD). A run counts in any state, and ``last_run`` is the newest ``last_updated``.
         """
         counts: dict[str, int] = {}
         last_runs: dict[str, datetime | None] = {}
-        with self._lock:
-            for node in self._graph.nodes.values():
-                if node.node_type != NodeType.TASK:
-                    continue
-                counts[node.name] = counts.get(node.name, 0) + 1
-                best = last_runs.setdefault(node.name, None)
-                updated = node.last_updated
-                if updated is not None and (best is None or updated > best):
-                    last_runs[node.name] = updated
+        for r in self.run_records():
+            counts[r.name] = counts.get(r.name, 0) + 1
+            best = last_runs.get(r.name)
+            if best is None or r.last_updated > best:
+                last_runs[r.name] = r.last_updated
         return {
             name: TaskRunSummary(count, last_runs[name])
             for name, count in counts.items()

@@ -86,6 +86,18 @@ class NodeType(str, Enum):
     CHORD = "CHORD"
 
 
+class RunFacts(NamedTuple):
+    """A node's index-backed facts for its run record (see ``TaskNode.run_facts``)."""
+
+    state_event: TaskEvent | None
+    attempt_started: datetime | None
+    replaced_progress: datetime | None
+    hostname: str | None
+    queue: str | None
+    exception_type: str | None
+    first_seen: datetime | None
+
+
 class TaskNode(BaseModel):
     """Mutable node in the task graph. Tracks event history and child relationships.
 
@@ -157,7 +169,10 @@ class TaskNode(BaseModel):
         terminal event from the main process has ``retries=0``, so then it is
         the first attempt's STARTED, not necessarily the last run's.
         """
-        index = self._ensure_index()
+        return self._attempt_started(self._ensure_index())
+
+    @staticmethod
+    def _attempt_started(index: "_EventIndex") -> datetime | None:
         current = index.state_event
         return None if current is None else index.started_at.get(current.retries)
 
@@ -170,10 +185,33 @@ class TaskNode(BaseModel):
         was due to run. None when there is none. O(1): the index keeps the two
         latest by distinct parent.
         """
-        best, second = self._ensure_index().due
+        return self._replaced_progress(self._ensure_index())
+
+    def _replaced_progress(self, index: "_EventIndex") -> datetime | None:
+        best, second = index.due
         if best is not None and best[1] != self.reported_parent_id:
             return best[0]
         return None if second is None else second[0]
+
+    def run_facts(self) -> "RunFacts":
+        """What a run record reads from the insert index, in one O(1) lookup.
+
+        The index keeps these as events arrive, so a record doesn't rescan the
+        events: ``hostname``, ``queue`` and ``exception_type`` are the
+        furthest-along values (see ``attribution.latest``), ``first_seen`` the
+        earliest event time.
+        """
+        index = self._ensure_index()
+        hostname, queue, exception_type = index.latest
+        return RunFacts(
+            index.state_event,
+            self._attempt_started(index),
+            self._replaced_progress(index),
+            hostname and hostname[2],
+            queue and queue[2],
+            exception_type and exception_type[2],
+            index.first_ts,
+        )
 
     @property
     def exception_type(self) -> str | None:
@@ -287,6 +325,10 @@ class TaskNode(BaseModel):
         self.events.insert(position, event)
         index.by_key[key] = event
         index.observe(event)
+        rank = attribution.precedence(event)
+        index.fold_latest(rank, key, event)
+        if index.first_ts is None or event.timestamp < index.first_ts:
+            index.first_ts = event.timestamp
         index.last_position = position
         index.last_key = key
         parent = event.parent_id if event.parent_id != self.task_id else None
@@ -305,8 +347,7 @@ class TaskNode(BaseModel):
         if (
             current is None
             or index.state_key is None
-            or (attribution.precedence(event), key)
-            > (attribution.precedence(current), index.state_key)
+            or (rank, key) > (attribution.precedence(current), index.state_key)
         ):
             current = event
             index.state_event = event
@@ -417,6 +458,7 @@ class TaskNode(BaseModel):
 
 
 _Due = tuple[datetime, str]  # a due time and the parent that sent it
+_Best = tuple[tuple[int, int, int, datetime, int], attribution.EventKey, str]
 
 
 class _EventIndex:
@@ -427,9 +469,11 @@ class _EventIndex:
         "by_key",
         "due",
         "first_own",
+        "first_ts",
         "keys",
         "last_key",
         "last_position",
+        "latest",
         "names",
         "new_identity",
         "parent_key",
@@ -479,6 +523,43 @@ class _EventIndex:
             self.state_key, self.state_event = max(
                 pairs, key=lambda p: (attribution.precedence(p[1]), p[0])
             )
+        # (rank, key, value) of the furthest-along event with a hostname,
+        # queue and exception class: what ``attribution.latest`` returns.
+        self.latest: list[_Best | None] = [None, None, None]
+        self.first_ts: datetime | None = min(
+            (e.timestamp for e in events), default=None
+        )
+        for key, event in pairs:
+            self.fold_latest(attribution.precedence(event), key, event)
+
+    def fold_latest(
+        self,
+        rank: tuple[int, int, int, datetime, int],
+        key: attribution.EventKey,
+        event: TaskEvent,
+    ) -> None:
+        """Fold one event into the furthest-along hostname, queue and exception class.
+
+        A tie in rank goes to the earlier event key: the first in lifecycle
+        order, as ``max`` over the sorted events picks it.
+        """
+        # Unrolled: this runs on every ingested event.
+        latest = self.latest
+        value = event.hostname
+        if value is not None:
+            best = latest[0]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[0] = (rank, key, value)
+        value = event.queue
+        if value is not None:
+            best = latest[1]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[1] = (rank, key, value)
+        value = event.exception_type
+        if value is not None:
+            best = latest[2]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[2] = (rank, key, value)
 
     def observe(self, event: TaskEvent) -> None:
         """Fold one event into ``due`` and ``started_at``."""
