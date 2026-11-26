@@ -102,7 +102,9 @@ function TasksPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">Executions</h1>
+        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
+          Executions
+        </h1>
         <p className="mt-1 min-h-5 text-sm text-muted">
           {total !== undefined && runsSummary(total, params.within)}
         </p>
