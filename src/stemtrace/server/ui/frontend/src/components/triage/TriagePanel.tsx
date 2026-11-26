@@ -101,7 +101,7 @@ function Crumb({
         type="button"
         onClick={onClick}
         title={title}
-        className="max-w-[150px] truncate text-xs text-muted hover:text-ink hover:underline"
+        className="link-quiet max-w-[150px] truncate text-xs"
       >
         {title}
       </button>
@@ -249,7 +249,7 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
         <h2
           ref={titleRef}
           tabIndex={-1}
-          className="m-0 text-lg leading-snug font-extrabold tracking-[-0.01em] [overflow-wrap:anywhere] focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-ink"
+          className="m-0 text-lg leading-snug font-extrabold tracking-[-0.01em] [overflow-wrap:anywhere]"
         >
           {topText.title}
         </h2>

@@ -19,10 +19,7 @@ export function SessionRejectedNotice() {
         long random value on all of them.
       </p>
       {loginPath && (
-        <a
-          href={getLoginUrl(loginPath)}
-          className="mt-4 inline-block text-xs font-semibold text-ink underline underline-offset-2"
-        >
+        <a href={getLoginUrl(loginPath)} className="link mt-4 inline-block text-xs">
           Sign in again
         </a>
       )}

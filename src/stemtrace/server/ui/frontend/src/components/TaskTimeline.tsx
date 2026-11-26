@@ -1,11 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
-import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactElement, useEffect, useMemo, useState } from 'react'
 import type { TaskNode, TimedFilters } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { toneOf } from '@/components/flow/flowFacts'
 import { axisEnd } from '@/components/flow/timeline'
 import { Icon } from '@/components/Icon'
+import { LoadFailure, Notice } from '@/components/Notice'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { stateLook } from '@/components/StatusChip'
 import { Tooltip } from '@/components/Tooltip'
 import { formatSpan } from '@/utils/format'
@@ -43,7 +45,7 @@ interface Scale {
  * page's rule (`axisEnd`): they run to now.
  */
 export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
-  const { data, isLoading, error } = useTasks(filters)
+  const { data, isLoading, error, refetch } = useTasks(filters)
 
   const rows = useMemo<TimelineRowData[]>(() => {
     const timed = (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated)
@@ -66,7 +68,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
   }, [anyOpen])
 
   if (isLoading) return <TimelineSkeleton />
-  if (error) return <Notice tone="error">Failed to load timeline</Notice>
+  if (error) return <LoadFailure what="the timeline" error={error} onRetry={refetch} />
   if (!data?.tasks.length) return <Notice>No executions to display</Notice>
   if (rows.length === 0) return <Notice>No timing data available</Notice>
 
@@ -261,31 +263,18 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
   )
 }
 
-function Notice({ children, tone }: { children: ReactNode; tone?: 'error' }): ReactElement {
-  return (
-    <div
-      className={clsx(
-        'rounded-lg bg-surface px-4 py-10 text-center text-xs',
-        tone === 'error' ? 'font-semibold text-failure-t' : 'text-muted',
-      )}
-    >
-      {children}
-    </div>
-  )
-}
-
-/** The view's own shape while the runs load: five rows, no motion. */
+/** The view's own shape while the runs load: an axis row and five run rows. */
 function TimelineSkeleton(): ReactElement {
   return (
-    <div aria-hidden="true" className="rounded-lg bg-surface px-4 py-3.5">
-      <div className="mb-3 h-4 rounded-[3px] bg-raised" />
+    <SkeletonRegion label="timeline" className="rounded-lg bg-surface px-4 py-3.5">
+      <Skeleton className="mb-3 h-4" />
       {[0, 1, 2, 3, 4].map((i) => (
         <div key={i} className={clsx(COLUMNS, 'h-6 items-center')}>
-          <div className="h-3 rounded-[3px] bg-raised" />
-          <div className="h-3 rounded-[3px] bg-raised" />
-          <div className="h-3 rounded-[3px] bg-raised" />
+          <Skeleton className="h-3" />
+          <Skeleton className="h-3" />
+          <Skeleton className="h-3" />
         </div>
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }

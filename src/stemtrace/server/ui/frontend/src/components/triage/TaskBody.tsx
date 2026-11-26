@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
 import { useTask } from '@/api/queries'
 import { Icon } from '@/components/Icon'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { retryCount } from '@/components/task/retryCount'
@@ -18,7 +19,14 @@ export function TaskBody({ id }: { id: string }): ReactElement {
     return (
       <p className="m-0 pt-4 text-xs text-muted">This task is no longer in the retention window.</p>
     )
-  if (!data) return <div className="h-32" aria-hidden="true" />
+  if (!data)
+    return (
+      <SkeletonRegion label="task" className="pt-4">
+        <Skeleton className="mb-2 h-4 w-48" />
+        <Skeleton className="mb-3 h-3 w-64 max-w-full" />
+        <Skeleton className="h-7 w-32" />
+      </SkeletonRegion>
+    )
 
   const { task, children, flow_root_id: flowRootId } = data
   // A flow of one task (its own root, no parent, no children) has nothing more to show
@@ -60,7 +68,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
                 <button
                   type="button"
                   onClick={() => panel.push({ kind: 'worker', id: task.hostname ?? '' })}
-                  className="font-mono hover:underline"
+                  className="link font-mono"
                 >
                   {shortHost(task.hostname)}
                 </button>

@@ -3,6 +3,7 @@ import { clsx } from 'clsx'
 import { useState } from 'react'
 import { useRegistryPage } from '@/api/queries'
 import { Icon } from '@/components/Icon'
+import { LoadFailure } from '@/components/Notice'
 import { RegistryStatus } from '@/components/registry/RegistryStatus'
 import { matchesQuery, noteOf } from '@/components/registry/registry'
 import { TableSkeleton } from '@/components/TableSkeleton'
@@ -33,7 +34,7 @@ function spanCell(statsKnown: boolean, ms: number | null | undefined): string {
 }
 
 function RegistryPage() {
-  const { data: page, isLoading, error } = useRegistryPage(STATS_WITHIN)
+  const { data: page, isLoading, error, refetch } = useRegistryPage(STATS_WITHIN)
   const data = page?.registry
   const stats = page?.stats
   // Joined by exact name. While loading, or when the request fails, no cell shows a number.
@@ -80,11 +81,9 @@ function RegistryPage() {
       )}
 
       {isLoading ? (
-        <TableSkeleton />
+        <TableSkeleton label="task registry" />
       ) : error ? (
-        <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
-          Failed to load task registry
-        </p>
+        <LoadFailure what="the task registry" error={error} onRetry={refetch} />
       ) : tasks.length === 0 ? (
         <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
           <p className="m-0">No tasks discovered yet</p>

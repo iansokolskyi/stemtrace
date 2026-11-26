@@ -127,7 +127,7 @@ function TaskInspector({ node }: { node: GraphNode }): ReactElement {
                 <Link
                   to="/executions"
                   search={{ hostname: node.hostname, ...carried }}
-                  className="underline decoration-muted underline-offset-2 hover:decoration-ink"
+                  className="link"
                 >
                   {node.hostname}
                 </Link>

@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 import type { ExecutionRow, FetchExecutionsParams, RunSort } from '@/api/client'
 import { usePanelRuns } from '@/api/overviewQueries'
+import { LoadFailure } from '@/components/Notice'
 import { OUTCOME_STATES } from '@/components/overview/model'
 import { StatusChip } from '@/components/StatusChip'
+import { TableSkeleton } from '@/components/TableSkeleton'
 import { TaskName } from '@/components/TaskName'
 import { formatAgo, formatCount, formatSpan, shortHost } from '@/utils/format'
 import { useEntryView, usePanel } from './PanelContext'
@@ -95,9 +97,9 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
   // The API takes at most MAX_LIMIT rows per request
   const limit = Math.min(MAX_LIMIT, initial + more * PAGE)
   const capped = limit >= MAX_LIMIT
-  const { data, isError } = usePanelRuns(filters, limit, { enabled })
-  if (isError) return <p className="m-0 py-3 text-xs text-failure-t">Failed to load runs</p>
-  if (!data) return <div className="h-24" aria-hidden="true" />
+  const { data, error, isError, refetch } = usePanelRuns(filters, limit, { enabled })
+  if (isError) return <LoadFailure what="runs" error={error} onRetry={refetch} />
+  if (!data) return <TableSkeleton label="runs" rows={3} bare />
   if (data.tasks.length === 0)
     return <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
   return (

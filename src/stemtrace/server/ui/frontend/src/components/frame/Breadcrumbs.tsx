@@ -8,7 +8,7 @@ import { useCrumbTitle } from '@/hooks/useCrumbTitle'
 /** The characters of a task ID the breadcrumb shows (the full ID is its title). */
 const SHORT_ID_LENGTH = 8
 
-const LINK = 'text-muted hover:text-ink hover:underline'
+const LINK = 'link-quiet'
 
 interface Crumb {
   key: string

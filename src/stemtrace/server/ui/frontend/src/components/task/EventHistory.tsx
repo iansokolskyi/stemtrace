@@ -4,6 +4,7 @@ import { StatusChip } from '@/components/StatusChip'
 import { sortEventsChronologically } from '@/utils/events'
 import { formatTime } from '@/utils/format'
 import { Panel } from './Panel'
+import { TracebackToggle } from './TracebackToggle'
 
 /**
  * A key that follows the event, not its position: an earlier event arriving live shifts every
@@ -58,14 +59,7 @@ function EventRow({ event, loud }: { event: TaskEvent; loud: boolean }): ReactEl
         {reason && <div className="mt-0.5 text-muted [overflow-wrap:anywhere]">{reason}</div>}
         {traceback && (
           <>
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => setOpen(!open)}
-              className="mt-1 block rounded-[3px] text-muted underline hover:text-ink"
-            >
-              {open ? 'Hide traceback' : 'Show traceback'}
-            </button>
+            <TracebackToggle open={open} onToggle={() => setOpen(!open)} className="mt-1.5" />
             {open && (
               <pre className="mt-2 mb-0 max-w-full overflow-x-auto rounded-[3px] bg-ground px-3 py-2.5 font-mono whitespace-pre">
                 {traceback}

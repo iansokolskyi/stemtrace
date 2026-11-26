@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useWorkers } from '@/api/queries'
+import { LoadFailure } from '@/components/Notice'
 import { TableSkeleton } from '@/components/TableSkeleton'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { hostsOf, NUM, registeredTasks, TD, TH } from '@/components/workers/workers'
@@ -16,7 +17,7 @@ const PROBLEM_ROW =
   'bg-[color-mix(in_srgb,var(--failure)_9%,var(--surface))] hover:bg-[color-mix(in_srgb,var(--failure)_15%,var(--surface))]'
 
 function WorkersPage() {
-  const { data, isLoading, error } = useWorkers()
+  const { data, isLoading, error, refetch } = useWorkers()
   const hosts = hostsOf(data?.workers ?? [])
   const online = hosts.filter((host) => host.leading.status === 'online').length
 
@@ -36,11 +37,9 @@ function WorkersPage() {
       )}
 
       {isLoading ? (
-        <TableSkeleton />
+        <TableSkeleton label="workers" />
       ) : error && !data ? (
-        <p className="rounded-lg bg-surface px-4 py-10 text-center text-xs font-semibold text-failure-t">
-          Failed to load workers
-        </p>
+        <LoadFailure what="workers" error={error} onRetry={refetch} />
       ) : hosts.length === 0 ? (
         <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
           <p className="m-0">No workers registered</p>

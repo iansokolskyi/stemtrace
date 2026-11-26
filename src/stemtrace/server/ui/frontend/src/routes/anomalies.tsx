@@ -1,17 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
-import {
-  AnomaliesTimeoutError,
-  type Anomaly,
-  anomalyTotal,
-  useAnomalies,
-  useFleetAnomaly,
-} from '@/api/anomalies'
+import { type Anomaly, anomalyTotal, useAnomalies, useFleetAnomaly } from '@/api/anomalies'
 import { AnomalyActions } from '@/components/anomalies/AnomalyActions'
 import { AnomalyCallout } from '@/components/anomalies/AnomalyCallout'
 import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
 import { explain, sinceText } from '@/components/anomalies/anomalies'
 import { Icon } from '@/components/Icon'
+import { LoadFailure } from '@/components/Notice'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskName } from '@/components/TaskName'
 
 export const Route = createFileRoute('/anomalies')({
@@ -19,8 +15,22 @@ export const Route = createFileRoute('/anomalies')({
   staticData: { crumb: 'Anomalies' },
 })
 
+/** Three list rows while the anomalies load. */
+function AnomaliesSkeleton(): ReactElement {
+  return (
+    <SkeletonRegion label="anomalies" className="rounded-lg bg-surface">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="space-y-2 border-t border-rule px-4 py-3 first:border-t-0">
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-3 w-80 max-w-full" />
+        </div>
+      ))}
+    </SkeletonRegion>
+  )
+}
+
 function AnomaliesPage(): ReactElement {
-  const { data, isLoading, error } = useAnomalies()
+  const { data, isLoading, error, refetch } = useAnomalies()
   // The fleet item is one banner above the list, whatever its `since` sorts it to.
   // The list is capped and sorted by `since`, so a full list may not hold it: `counts` says
   // whether there is one, and a request of its own fetches it. That request does not ask the
@@ -41,14 +51,14 @@ function AnomaliesPage(): ReactElement {
       </div>
 
       {error && (
-        <p role="alert" data-testid="anomalies-error" className="text-failure-t">
-          {error instanceof AnomaliesTimeoutError
-            ? 'Anomalies are taking a long time to load'
-            : 'Failed to load anomalies'}
-          {data ? '; showing the last result.' : '.'}
-        </p>
+        <LoadFailure
+          what="anomalies"
+          error={error}
+          onRetry={refetch}
+          note={data ? 'Showing the last result.' : undefined}
+        />
       )}
-      {isLoading && <div aria-hidden="true" className="h-24 rounded-lg bg-surface" />}
+      {isLoading && <AnomaliesSkeleton />}
 
       {data && total === 0 && (
         <section
@@ -63,9 +73,11 @@ function AnomaliesPage(): ReactElement {
 
       {fleet && <AnomalyCallout anomaly={fleet} placement="fleet" />}
       {fleetQuery.isError && !fleet && (
-        <p role="alert" data-testid="anomalies-fleet-error" className="text-failure-t">
-          Couldn't load the notice that no workers are online.
-        </p>
+        <LoadFailure
+          what="the notice that no workers are online"
+          error={fleetQuery.error}
+          onRetry={fleetQuery.refetch}
+        />
       )}
 
       {data && data.total > data.anomalies.length && (

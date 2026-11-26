@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useTask } from '@/api/queries'
 import { AnomalyCallout } from '@/components/anomalies/AnomalyCallout'
+import { LoadFailure } from '@/components/Notice'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskOutput } from '@/components/TaskOutput'
 import { ChildTasks } from '@/components/task/ChildTasks'
 import { EventHistory } from '@/components/task/EventHistory'
@@ -21,7 +23,7 @@ export const Route = createFileRoute('/tasks/$taskId')({
 function TaskDetailPage() {
   const carried = useCarriedRange()
   const { taskId } = Route.useParams()
-  const { data, isLoading, error } = useTask(taskId)
+  const { data, isLoading, error, refetch } = useTask(taskId)
 
   if (isLoading) {
     return <TaskDetailSkeleton />
@@ -29,16 +31,16 @@ function TaskDetailPage() {
 
   if (error || !data) {
     return (
-      <div className="py-12 text-center">
-        <p className="text-failure-t">Failed to load task</p>
-        <Link
-          to="/executions"
-          search={carried}
-          className="mt-2 inline-block underline hover:text-muted"
-        >
-          Back to executions
-        </Link>
-      </div>
+      <LoadFailure
+        what="the task"
+        error={error}
+        onRetry={refetch}
+        action={
+          <Link to="/executions" search={carried} className="link">
+            Back to executions
+          </Link>
+        }
+      />
     )
   }
 
@@ -72,15 +74,15 @@ function TaskDetailPage() {
   )
 }
 
-/** The page's own shape while the task loads: a title bar and two panels, no motion. */
+/** The page's own shape while the task loads: a title bar and two panels. */
 function TaskDetailSkeleton() {
   return (
-    <div aria-hidden="true">
-      <div className="mb-2 h-3 w-40 rounded-[3px] bg-raised" />
-      <div className="mb-3 h-6 w-64 rounded-[3px] bg-raised" />
-      <div className="mb-4 h-5 w-80 max-w-full rounded-[3px] bg-raised" />
-      <div className="mb-4 h-24 rounded-lg bg-surface" />
-      <div className="h-40 rounded-lg bg-surface" />
-    </div>
+    <SkeletonRegion label="task">
+      <Skeleton className="mb-2 h-3 w-40" />
+      <Skeleton className="mb-3 h-6 w-64" />
+      <Skeleton className="mb-4 h-5 w-80 max-w-full" />
+      <Skeleton card className="mb-4 h-24" />
+      <Skeleton card className="h-40" />
+    </SkeletonRegion>
   )
 }

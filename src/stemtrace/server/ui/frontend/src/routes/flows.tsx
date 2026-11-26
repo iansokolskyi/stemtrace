@@ -1,6 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useGraphsInfinite } from '@/api/queries'
 import { FlowRow } from '@/components/flows/FlowRow'
+import { LoadFailure } from '@/components/Notice'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 import { formatCount } from '@/utils/format'
 import { flowsSearch, hasDates } from './-search'
@@ -15,7 +17,7 @@ function FlowsPage() {
   const { from_date, to_date } = Route.useSearch()
   const dates = { from_date, to_date }
 
-  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
+  const { data, isLoading, error, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useGraphsInfinite(dates)
 
   const { lastElementRef } = useInfiniteScroll({ hasNextPage, isFetchingNextPage, fetchNextPage })
@@ -36,7 +38,7 @@ function FlowsPage() {
       {isLoading ? (
         <FlowListSkeleton />
       ) : error ? (
-        <div className="py-12 text-center text-failure-t">Failed to load flows</div>
+        <LoadFailure what="flows" error={error} onRetry={refetch} />
       ) : graphs.length === 0 ? (
         <p className="rounded-lg bg-surface px-4 py-10 text-center text-muted">
           {hasDates(dates) ? 'No flows in this time window.' : 'No flows yet.'}
@@ -59,15 +61,16 @@ function FlowsPage() {
   )
 }
 
+/** Three rows with a title line and a detail line, like a flow row. */
 function FlowListSkeleton() {
   return (
-    <div aria-hidden="true" className="animate-pulse overflow-hidden rounded-lg bg-surface">
+    <SkeletonRegion label="flows" className="overflow-hidden rounded-lg bg-surface">
       {[0, 1, 2].map((i) => (
         <div key={i} className="space-y-2 border-t border-rule px-4 py-3 first:border-t-0">
-          <div className="h-4 w-48 rounded-[3px] bg-raised" />
-          <div className="h-3 w-64 rounded-[3px] bg-raised" />
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-3 w-64" />
         </div>
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }

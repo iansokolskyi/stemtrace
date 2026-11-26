@@ -7,7 +7,9 @@ import { useExecutions, useRegisteredTask } from '@/api/queries'
 import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
 import { AnomalyFlag } from '../anomalies/AnomalyFlag'
+import { LoadFailure } from '../Notice'
 import { StatusChip } from '../StatusChip'
+import { TableSkeleton } from '../TableSkeleton'
 import { TaskName } from '../TaskName'
 import { type Column, columnsFor } from './columns'
 import { type Density, ROW_HEIGHT } from './density'
@@ -65,7 +67,7 @@ function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number
 }
 
 function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
-  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
+  const { data, isLoading, error, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useExecutions(params)
 
   const rows = useMemo(() => {
@@ -89,8 +91,8 @@ function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactE
   const firstPage = data?.pages[0]?.tasks
   if (columns === null && firstPage && firstPage.length > 0) setColumns(columnsFor(firstPage))
 
-  if (isLoading) return <Notice>Loading executions...</Notice>
-  if (error) return <Notice tone="error">Failed to load tasks. Is the server running?</Notice>
+  if (isLoading) return <TableSkeleton label="executions" rows={8} />
+  if (error) return <LoadFailure what="executions" error={error} onRetry={refetch} />
   if (!rows.length || !columns) return <EmptyTable params={params} onClear={onClear} />
 
   return (
@@ -163,19 +165,6 @@ function HeaderRow({ columns, template }: { columns: Column[]; template: string 
           {column.label}
         </div>
       ))}
-    </div>
-  )
-}
-
-function Notice({ children, tone }: { children: React.ReactNode; tone?: 'error' }): ReactElement {
-  return (
-    <div
-      className={clsx(
-        'rounded-lg bg-surface px-4 py-10 text-center text-xs',
-        tone === 'error' ? 'font-semibold text-failure-t' : 'text-muted',
-      )}
-    >
-      {children}
     </div>
   )
 }
