@@ -126,7 +126,7 @@ pages work even if the server missed `worker_ready` events.
   - The number can read high. A run whose final event never reached the server, for example after
     a `kill -9`, stays `STARTED` and counts until a new `worker_ready` for that nodename.
   - The number can read low. A task whose `STARTED` event the server never received has no
-    record (for example on RabbitMQ, or past the Redis stream's retention), and when the server
+    record (on RabbitMQ: events sent before the server's queue existed or older than its TTL; on Redis: events past the stream's retention), and when the server
     drops the oldest flows at its node limit, their running tasks stop counting.
   - A pid the server knows only from an inspect reply has no `worker_ready` time, so every
     `STARTED` run on its nodename counts, including a previous process's.
@@ -692,7 +692,7 @@ tasks stamped later by a worker whose clock is ahead.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of
-  its newest failure, cut to the first line and 300 characters (`null` when that failure has no
+  its newest failure, cut to the first line with content and 300 characters (`null` when that failure has no
   message). Failure messages can contain task arguments; see
   [Security](security.md#sensitive-data-scrubbing). Tasks from workers that don't report the
   exception class form one group with `exception_type: null`.
@@ -738,7 +738,8 @@ The task list also takes:
   while no event arrives, consecutive pages neither overlap nor skip a task. While events arrive,
   a page can shift; load more rows with a larger `limit` (at most 500; a larger value is a `422`)
   instead of paging. The filters apply
-  first, and `total` counts the matches. Any other value is a `422`. Without `sort`, the order
+  first, and `total` counts the matches the scan found. A task that stops matching while the
+  sorted request runs (it moved to another worker, say) is left out of the page but still counted. Any other value is a `422`. Without `sort`, the order
   is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.

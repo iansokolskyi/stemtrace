@@ -138,14 +138,14 @@ _BARE_PREFIX = re.compile(r"[\w.]+:")
 def _first_line(text: str | None) -> str | None:
     """The first line with content, cut to ``MAX_MESSAGE_LENGTH`` characters.
 
-    Blank lines and a line holding only the ``Class:`` prefix are skipped;
-    ``None`` when no line is left.
+    Blank lines are skipped, and so is the first content line when it is only the
+    ``Class:`` prefix; ``None`` when no line is left.
     """
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if line and not _BARE_PREFIX.fullmatch(line):
-            return line[:MAX_MESSAGE_LENGTH]
-    return None
+    lines = [line.strip() for line in (text or "").splitlines()]
+    content = [line for line in lines if line]
+    if content and _BARE_PREFIX.fullmatch(content[0]):
+        content = content[1:]
+    return content[0][:MAX_MESSAGE_LENGTH] if content else None
 
 
 def parse_duration(text: str) -> timedelta:
