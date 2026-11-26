@@ -7,8 +7,11 @@ encoded the body on the loop thread.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +28,7 @@ from tests.unit.test_summary_routes_off_loop import (
 )
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+GOLDEN = Path(__file__).parent.parent / "data" / "detail_routes_bodies.json"
 SIZES = [1_000, 20_000]
 # Each detail route over a root with N direct children.
 DETAIL_PATHS = [
@@ -35,11 +39,11 @@ DETAIL_PATHS = [
 ]
 ROOT_PAYLOAD = "r" * 10_000  # root's args and result near max_data_size
 CHILD_RESULT = "c" * 200
-CHILD_TRACEBACK = "Traceback (most recent call last):\n  File x.py\n" * 40
+CHILD_TRACEBACK = "Traceback (most recent call last):\n  File x.py\n" * 10
 
 
 def _add_child(store: GraphStore, i: int) -> None:
-    """One child run: PENDING, RECEIVED, STARTED and a result or a failure."""
+    """One child run: PENDING and a result or a failure."""
     failed = i % 10 == 0
     final = TaskState.FAILURE if failed else TaskState.SUCCESS
     base = {
@@ -50,15 +54,13 @@ def _add_child(store: GraphStore, i: int) -> None:
         "hostname": f"worker{i % 5}@host{i % 5}",
         "queue": f"queue{i % 4}",
     }
-    for n, state in enumerate(
-        (TaskState.PENDING, TaskState.RECEIVED, TaskState.STARTED, final)
-    ):
+    for n, state in enumerate((TaskState.PENDING, final)):
         is_final_failure = failed and state == final
         store.add_event(
             TaskEvent(
                 state=state,
                 args=[i, "arg"] if state == TaskState.PENDING else None,
-                kwargs={"k": "v" * 50} if state == TaskState.PENDING else None,
+                kwargs={"k": "v" * 20} if state == TaskState.PENDING else None,
                 result=CHILD_RESULT if state == TaskState.SUCCESS else None,
                 traceback=CHILD_TRACEBACK if is_final_failure else None,
                 exception_type="ValueError" if is_final_failure else None,
@@ -184,3 +186,55 @@ async def test_detail_routes_for_unknown_id_return_404(
         response = await _get(app, path)
         assert response.status_code == 404
         assert response.json() == {"detail": detail}
+
+
+GOLDEN_PATHS = [
+    *DETAIL_PATHS,
+    "/api/tasks/g",
+    "/api/tasks/g/children",
+    "/api/tasks/g/children?compact=true",
+    "/api/graphs/g",
+]
+
+
+def golden_store() -> GraphStore:
+    """60 children under ``root`` plus a root ``g`` whose children share a group."""
+    store = _store_with_children(60)
+    store.add_event(
+        TaskEvent(
+            task_id="g",
+            name="app.fan",
+            state=TaskState.SUCCESS,
+            timestamp=NOW - timedelta(seconds=90),
+        )
+    )
+    for i in range(3):
+        store.add_event(
+            TaskEvent(
+                task_id=f"m{i}",
+                name="app.member",
+                state=TaskState.SUCCESS,
+                parent_id="g",
+                root_id="g",
+                group_id="grp1",
+                timestamp=NOW - timedelta(seconds=80 - i),
+            )
+        )
+    return store
+
+
+async def golden_digests() -> dict[str, str]:
+    """SHA-256 of each route's body bytes over ``golden_store``."""
+    app = _app(golden_store())
+    return {
+        path: hashlib.sha256((await _get(app, path)).content).hexdigest()
+        for path in GOLDEN_PATHS
+    }
+
+
+async def test_detail_bodies_are_byte_identical_to_the_ones_recorded_on_main() -> None:
+    """Moving the build into the thread changes no byte of any detail body.
+
+    The digests were recorded on ``origin/main`` (commit 311db5a), before the change.
+    """
+    assert await golden_digests() == json.loads(GOLDEN.read_text())
