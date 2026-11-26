@@ -1150,7 +1150,7 @@ class GraphStore:
         # One immutable record per TASK node, kept in step with the graph
         # under the same lock, so summaries never walk the live graph. An
         # event changes its own node's state and events; names can also
-        # change on other nodes, which the graph reports (take_renamed).
+        # change on other nodes, which the graph reports (take_changed).
         self._runs: dict[str, RunRecord] = {}
         # Counts stored events and evictions: the flow-time cache's key.
         self._changes = 0
@@ -1174,7 +1174,7 @@ class GraphStore:
             self._maybe_evict()
             # A task.replace() reuse can rename other tasks (here or while
             # evicting); refresh those records too.
-            for task_id in self._graph.take_renamed():
+            for task_id in self._graph.take_changed():
                 self._index_run(task_id)
 
         for listener in self._listeners:
