@@ -65,11 +65,11 @@ test.describe('Workers page', () => {
     )
     // The 30 s poll, then the query's three retries (1 s, 2 s and 4 s) before it reports the error
     await page.clock.runFor(40_000)
-    await expect(page.getByTestId('refresh-failed')).toHaveText(
-      "Couldn't refresh workers; showing the last result.",
+    await expect(page.getByTestId('stale-line')).toContainText(
+      "Couldn't refresh. Showing data from",
     )
     await expect(rowOf(page, 'celery@alpha')).toBeVisible()
-    await expect(page.getByText(/^Couldn't load workers:/)).toHaveCount(0)
+    await expect(page.getByText(/^Couldn't load workers\./)).toHaveCount(0)
   })
 
   test('a worker that goes offline while Live shows on the next poll', async ({ page }) => {
@@ -319,7 +319,7 @@ test.describe('Workers page', () => {
     test.skip(isRealMode, 'Mock-only test')
     await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto('/workers')
-    await expect(page.getByText(/^Couldn't load workers:/)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load workers\./)).toBeVisible({ timeout: 15_000 })
   })
 
   for (const theme of ['light', 'dark'] as const) {

@@ -516,9 +516,13 @@ for (const theme of ['light', 'dark'] as const) {
     await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
     await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
     await page.setViewportSize({ width: 1280, height: 900 })
+    await page.route(/\/api\/graphs\/abc/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto('/flows/abc')
-    // The query retries three times before it gives up
+    // The box shows from the first failed attempt
     await expect(page.getByRole('alert')).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
+      timeout: 20_000,
+    })
     await page.evaluate(() => document.fonts.ready)
     await expect(page).toHaveScreenshot(`flow-error-${theme}-1280.png`, { fullPage: true })
   })
@@ -542,6 +546,10 @@ for (const theme of ['light', 'dark'] as const) {
       await page.goto(state.path)
       // The query retries three times before it gives up
       await expect(page.getByTestId('notice')).toBeVisible({ timeout: 20_000 })
+      // Past the client's retries: the button reads Retry again
+      await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
+        timeout: 20_000,
+      })
       await page.evaluate(() => document.fonts.ready)
       await expect(page).toHaveScreenshot(`${state.name}-error-${theme}-1280.png`, {
         fullPage: true,

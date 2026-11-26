@@ -115,7 +115,7 @@ test.describe('Executions timeline: rows', () => {
     )
     await page.goto('/executions?view=timeline')
 
-    await expect(page.getByText(/^Couldn't load the timeline:/)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load the timeline\./)).toBeVisible({ timeout: 15_000 })
   })
 })
 
