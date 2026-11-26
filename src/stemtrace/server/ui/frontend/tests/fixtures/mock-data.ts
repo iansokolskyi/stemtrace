@@ -98,6 +98,10 @@ export interface MockWorker {
   status: 'online' | 'offline'
   registered_at: string
   last_seen: string
+  /** Left out by a test that models a server older than the pool fields. */
+  pool?: string | null
+  concurrency?: number | null
+  active?: number | null
 }
 
 /**

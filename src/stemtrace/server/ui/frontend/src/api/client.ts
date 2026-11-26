@@ -318,6 +318,12 @@ export interface Worker {
   status: 'online' | 'offline'
   registered_at: string
   last_seen: string
+  /** Pool kind (`prefork`, `threads`); absent from an older server, null when unknown. */
+  pool?: string | null
+  /** Slots of the pool (the autoscale ceiling when set); absent from an older server. */
+  concurrency?: number | null
+  /** Busy slots, null unless this is the live process; absent from an older server. */
+  active?: number | null
 }
 
 export interface WorkerListResponse {

@@ -1,0 +1,1 @@
+- The Overview worker cards show a pool line and a slot meter, and the Workers panel rows show the busy slots, when `GET /api/workers` returns `pool`, `concurrency` and `active`.

@@ -570,6 +570,9 @@ for (const theme of ['light', 'dark'] as const) {
             status: 'online',
             registered_at: '2026-10-17T09:00:00Z',
             last_seen: '2026-10-17T11:59:00Z',
+            pool: 'prefork',
+            concurrency: 8,
+            active: 3,
           },
           {
             hostname: 'celery@billing-2',
@@ -578,6 +581,9 @@ for (const theme of ['light', 'dark'] as const) {
             status: 'offline',
             registered_at: '2026-10-17T08:00:00Z',
             last_seen: '2026-10-17T10:55:00Z',
+            pool: 'prefork',
+            concurrency: 8,
+            active: null,
           },
         ])
         await mockOverview(page, scenario)
