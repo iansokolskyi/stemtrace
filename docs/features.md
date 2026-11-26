@@ -704,12 +704,16 @@ The task list also takes:
   lists the valid ones.
 - `within=1h` (also on `GET /api/graphs`), as above. On `GET /api/graphs` it, `from_date` and
   `to_date` apply to the whole flow (see [Graph list time](graphs.md#graph-list-time)).
-- `sort=runtime` or `sort=queue_wait`: slowest first, by each task's `runtime_ms` or
-  `queue_wait_ms`, the per-run values behind the overview's p95 tiles. A task that hasn't
-  finished, or whose value can't be measured, comes after all the others. Equal values
-  sort by newest update, then task ID, so while no event arrives, consecutive pages neither
-  overlap nor skip a task. The filters apply first, and `total` counts the matches. Any
-  other value is a `422`. Without `sort`, the order is the same as before: newest update first.
+- `sort=runtime` or `sort=queue_wait`: slowest first, by the same per-run samples as the
+  overview's p95 tiles (see [Summary endpoints](#summary-endpoints)). Runs a tile leaves out
+  have no value and come after all the others: runs that haven't finished, `celery.*` tasks,
+  IGNORED runs, REVOKED and REJECTED runs for `runtime`, and runs with no measurable value.
+  A task's `runtime_ms` and `queue_wait_ms` fields still show their own values, so a running
+  task can show a queue wait and sort last. Equal values sort by newest update, then task ID, so
+  while no event arrives, consecutive pages neither overlap nor skip a task. While events arrive,
+  a page can shift; load more rows with a larger `limit` instead of paging. The filters apply
+  first, and `total` counts the matches. Any other value is a `422`. Without `sort`, the order
+  is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.
 

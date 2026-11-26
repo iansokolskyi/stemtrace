@@ -241,6 +241,10 @@ def _tile_poc_store() -> GraphStore:
         end=NOW - timedelta(seconds=3),
     )  # fmt: skip
     _run(store, "running", wait=5, runtime=None, end=NOW - timedelta(seconds=4))
+    _run(
+        store, "rejected", wait=5, runtime=700_000, state=TaskState.REJECTED,
+        end=NOW - timedelta(seconds=6),
+    )  # fmt: skip
     return store
 
 
@@ -252,7 +256,7 @@ def test_sort_runtime_ranks_only_the_runs_the_p95_tile_samples(
     ids = _ids(client, "&sort=runtime")
 
     # REVOKED, IGNORED, celery.* and running runs have no runtime sample: newest first.
-    assert ids == ["counted", "revoked", "builtin", "ignored", "running"]
+    assert ids == ["counted", "revoked", "builtin", "ignored", "running", "rejected"]
 
 
 def test_sort_queue_wait_ranks_only_the_runs_the_p95_tile_samples(
@@ -262,9 +266,9 @@ def test_sort_queue_wait_ranks_only_the_runs_the_p95_tile_samples(
 
     ids = _ids(client, "&sort=queue_wait")
 
-    # A REVOKED run did wait (it counts); IGNORED, celery.* and running runs do not.
-    assert ids[:2] == ["counted", "revoked"]
-    assert ids[2:] == ["builtin", "ignored", "running"]
+    # REVOKED and REJECTED runs did wait (they count); IGNORED, celery.* and running runs do not.
+    assert ids[:3] == ["counted", "revoked", "rejected"]
+    assert ids[3:] == ["builtin", "ignored", "running"]
 
 
 @pytest.mark.parametrize(

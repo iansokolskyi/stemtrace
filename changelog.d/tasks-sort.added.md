@@ -1,1 +1,1 @@
-- `GET /api/tasks` takes `sort=runtime` or `sort=queue_wait` to list the slowest runs first (runs with no value last). Without `sort`, the order is unchanged. See [Summary endpoints](docs/features.md#summary-endpoints).
+- `GET /api/tasks` takes `sort=runtime` or `sort=queue_wait` to list the slowest runs first, by the samples the overview's p95 tiles use. Runs the tiles leave out come last. Without `sort`, the order is unchanged. See [Summary endpoints](docs/features.md#summary-endpoints).

@@ -10,15 +10,20 @@ import asyncio
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from stemtrace.core.events import TaskEvent, TaskState
+from stemtrace.server import store as store_module
 from stemtrace.server.api import params, summary_routes
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
+
+if TYPE_CHECKING:
+    from stemtrace.core.graph import TaskNode
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
@@ -299,3 +304,25 @@ async def test_sorted_task_list_holds_the_store_lock_no_longer_than_the_default(
         f"sorted request held the lock for {sorted_hold} events "
         f"(default list: {default})"
     )
+
+
+async def test_sorted_task_list_sorts_while_the_store_lock_is_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The O(n log n) sort is C code the profile-event count can't see: check the lock itself."""
+    store = _populated(300)
+    counting = _CountingLock()
+    held_during_sort: list[int] = []
+    real_sort = store_module._slowest_first
+
+    def spy(ranked: list[store_module._Ranked]) -> list[TaskNode]:
+        held_during_sort.append(counting._depth)
+        return real_sort(ranked)
+
+    monkeypatch.setattr(store_module, "_slowest_first", spy)
+    store._lock = counting  # type: ignore[assignment]  # a stand-in with the same protocol
+
+    response = await _get(_app(store), "/api/tasks?sort=runtime")
+
+    assert response.status_code == 200
+    assert held_during_sort == [0]
