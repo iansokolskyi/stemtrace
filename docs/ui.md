@@ -56,7 +56,10 @@ and the group trends), `GET /api/failures` (What's wrong), `GET /api/stats/tasks
 
 ### KPI tiles
 
-Four tiles sit above the chart:
+Six tiles sit above the chart: **Runs / min**, **Failure rate**, **p95 runtime**, **p95 queue
+wait**, **Workers online** and **Anomalies**. They fill rows of six (1280 px and wider), three
+(900 to 1279 px) or two (narrower). If the server doesn't send the p95 fields, the two p95 tiles
+are hidden and the other four fill rows of four, two or two.
 
 - **Runs / min** and **Failure rate** for the range, each with a sparkline. A run is
   a task that ended with SUCCESS, FAILURE, REVOKED or REJECTED. IGNORED tasks aren't runs. The
@@ -67,6 +70,13 @@ Four tiles sit above the chart:
   1.3 times its baseline (1.4 times for runs per minute, up or down) and flagged more strongly at
   2 times. When the baseline is 0, **Failure rate** says **Above baseline** for
   any value over 0, and **Runs / min** has no note. With **All**, the tiles show no comparison.
+- **p95 runtime** and **p95 queue wait** show the 95th percentile of the window, with a sparkline of
+  the p95 of each chart bucket. The window's value comes from all its runs, not from the buckets.
+  A tile compares with the window before it only when both windows have at least 20 samples. Then
+  it is flagged at 1.4 times (runtime) or 1.5 times (queue wait) its baseline, and flagged more
+  strongly at 2.5 times or 3 times. A fall isn't flagged. With fewer samples, or with **All**,
+  the tile shows the value and **from N runs**, with no note. With no samples, it says **No data**
+  and why. See [Summary endpoints](features.md#summary-endpoints) for which runs are samples.
 - **Workers online** shows online and known worker hosts. It opens the list of hosts in the
   triage panel and reads worker state without asking the workers.
 - **Anomalies** counts the flagged items, by kind. It opens the list in the triage panel.
@@ -74,6 +84,13 @@ Four tiles sit above the chart:
 Clicking **Runs / min** or **Failure rate** opens the matching runs in the
 [triage panel](#triage-panel). The **Failure rate** tile lists failures only, so that list has no
 state chips.
+
+Clicking **p95 runtime** or **p95 queue wait** opens the window's runs, slowest first, with
+`sort=runtime` or `sort=queue_wait` on `GET /api/tasks`. A run the tile doesn't count comes last and
+says **Not counted in the p95 runtime tile** (or **queue wait tile**). That includes a run that is
+still running, which shows its wait so far, and `celery.` tasks. **Show more** asks for one longer
+list from the start, never a second page, so the order holds. The list has no **Open in
+Executions** link, because the Executions page has no slowest-first order.
 
 Clicking **Workers online** opens a row for each worker host, offline hosts first and then by
 name, each with its status and, when the server sends both `active` and `concurrency`, the busy

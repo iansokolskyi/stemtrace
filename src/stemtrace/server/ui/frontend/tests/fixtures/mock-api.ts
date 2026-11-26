@@ -652,6 +652,40 @@ export async function setupMockApi(
       filtered = filtered.filter((t) => t.name === nameExact)
     }
 
+    // `sort` as the server reads it (stats.py runtime_sort_value / queue_wait_sort_value): the key is the
+    // p95 tile's sample, so a run has one only when it ended in a state the tile counts, has the
+    // field and is not a `celery.` task. Descending; keyless runs last; ties by last_updated newest, then
+    // task_id ascending. Any other value is a 422 (a Literal).
+    const sort = url.searchParams.get('sort')
+    if (sort !== null) {
+      if (sort !== 'runtime' && sort !== 'queue_wait') {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'sort must be runtime or queue_wait' }),
+        })
+        return
+      }
+      const states =
+        sort === 'runtime' ? ['SUCCESS', 'FAILURE'] : ['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED']
+      const keyOf = (t: MockTask): number | null => {
+        const value = sort === 'runtime' ? t.runtime_ms : t.queue_wait_ms
+        if (t.name.startsWith('celery.') || !states.includes(t.state)) return null
+        return value ?? null
+      }
+      filtered = [...filtered].sort((a, b) => {
+        const ka = keyOf(a)
+        const kb = keyOf(b)
+        if (ka !== kb) {
+          if (ka === null) return 1
+          if (kb === null) return -1
+          return kb - ka
+        }
+        if (updatedAt(a) !== updatedAt(b)) return updatedAt(b) - updatedAt(a)
+        return a.task_id < b.task_id ? -1 : a.task_id > b.task_id ? 1 : 0
+      })
+    }
+
     const paginated = filtered.slice(offset, offset + limit)
 
     await route.fulfill({

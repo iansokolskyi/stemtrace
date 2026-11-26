@@ -15,7 +15,28 @@ export interface Bucket {
   retry: number
 }
 
+/** A p95 KPI as `/api/overview` sends it (`KpiPercentileResponse`). */
+export interface Percentile {
+  value: number | null
+  baseline: number | null
+  samples: number
+  baseline_samples: number
+}
+
+/** The p95 fields of an up-to-date server; a scenario without them models an older one. */
+export interface P95Scenario {
+  runtime: Percentile
+  queue_wait: Percentile
+  /** The p95 per bucket (null: no sample in it) that `percentiles=p95` adds to the series. */
+  runtime_series: (number | null)[]
+  queue_wait_series: (number | null)[]
+  /** False: the series answers without the p95 arrays (an older server ignores `percentiles`). */
+  series_has_p95?: boolean
+}
+
 export interface OverviewScenario {
+  /** Left out: an older server, whose overview and series carry no p95. */
+  p95?: P95Scenario
   /** Hold the runs-over-time answer this long (ms), or fail it with this HTTP status. */
   seriesDelayMs?: number
   seriesStatus?: number
@@ -102,6 +123,12 @@ export function spikeScenario(now = Date.now()): OverviewScenario {
       },
     ],
     overview: { runs_per_minute: [8.4, 7.9], failures: [18, 4], failure_rate: [0.04, 0.01] },
+    p95: {
+      runtime: { value: 1680, baseline: 1200, samples: 480, baseline_samples: 470 },
+      queue_wait: { value: 300, baseline: 280, samples: 480, baseline_samples: 470 },
+      runtime_series: Array.from({ length: 12 }, (_, i) => 900 + i * 70),
+      queue_wait_series: Array.from({ length: 12 }, (_, i) => 200 + (i % 4) * 40),
+    },
   }
 }
 
@@ -192,6 +219,9 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
       runs_per_minute: { value: rpm[0], baseline: rpm[1] },
       failure_rate: { value: rate[0], baseline: rate[1] },
       workers: { online: 1, total: 2 },
+      ...(scenario.p95
+        ? { p95_runtime_ms: scenario.p95.runtime, p95_queue_wait_ms: scenario.p95.queue_wait }
+        : {}),
     })
   })
 
@@ -232,6 +262,17 @@ export async function mockOverview(page: Page, scenario: OverviewScenario): Prom
         FAILURE: column((b) => b.failure),
         RETRY: column((b) => b.retry),
       },
+      // Only on request, as the server does (`percentiles=p95`)
+      ...(scenario.p95?.series_has_p95 !== false &&
+      scenario.p95 &&
+      url.searchParams.get('percentiles') === 'p95'
+        ? {
+            p95_runtime_ms: scenario.p95.runtime_series,
+            p95_queue_wait_ms: scenario.p95.queue_wait_series,
+            runtime_samples: scenario.p95.runtime_series.map((v) => (v === null ? 0 : 20)),
+            queue_wait_samples: scenario.p95.queue_wait_series.map((v) => (v === null ? 0 : 20)),
+          }
+        : {}),
     })
   })
 

@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
-import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
+import type { ExecutionRow, FetchExecutionsParams, RunSort } from '@/api/client'
 import { usePanelRuns } from '@/api/overviewQueries'
+import { OUTCOME_STATES } from '@/components/overview/model'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { formatAgo, formatCount, formatSpan, shortHost } from '@/utils/format'
@@ -16,7 +17,23 @@ const MAX_LIMIT = 500
 const TH =
   'h-8 whitespace-nowrap border-b border-rule px-2.5 text-left text-xs font-semibold text-muted first:pl-2.5'
 
-function RunRow({ run }: { run: ExecutionRow }): ReactElement {
+/** The tile's name for each order, as the marker on a run it leaves out says it. */
+const TILE_NAME: Record<RunSort, string> = { runtime: 'p95 runtime', queue_wait: 'p95 queue wait' }
+
+/**
+ * Whether the p95 tile of `sort` takes this run as a sample: the server's rule (`stats.py`
+ * `runtime_sample` and `queue_wait_sample`, with the `celery.` tasks left out). A running task
+ * shows its live wait but is not one.
+ */
+function isCounted(run: ExecutionRow, sort: RunSort): boolean {
+  if (run.name.startsWith('celery.')) return false
+  if (sort === 'runtime') {
+    return (run.state === 'SUCCESS' || run.state === 'FAILURE') && run.runtime_ms != null
+  }
+  return (OUTCOME_STATES as readonly string[]).includes(run.state) && run.queue_wait_ms != null
+}
+
+function RunRow({ run, sort }: { run: ExecutionRow; sort?: RunSort }): ReactElement {
   const panel = usePanel()
   return (
     <tr
@@ -40,6 +57,11 @@ function RunRow({ run }: { run: ExecutionRow }): ReactElement {
           {run.task_group ? ` in ${run.task_group}` : ''}
           {run.hostname ? ` on ${shortHost(run.hostname)}` : ''}
         </div>
+        {sort && !isCounted(run, sort) && (
+          <div data-testid="panel-run-uncounted" className="text-[11.5px] text-muted italic">
+            Not counted in the {TILE_NAME[sort]} tile
+          </div>
+        )}
       </td>
       <td className="px-2.5 py-1.5 text-right text-xs whitespace-nowrap tabular-nums">
         {run.queue_wait_ms == null ? '' : formatSpan(run.queue_wait_ms)}
@@ -103,7 +125,7 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
           </thead>
           <tbody>
             {data.tasks.map((run) => (
-              <RunRow key={run.task_id} run={run} />
+              <RunRow key={run.task_id} run={run} sort={filters.sort} />
             ))}
           </tbody>
         </table>
