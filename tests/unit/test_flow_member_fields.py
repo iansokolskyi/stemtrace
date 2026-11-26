@@ -259,3 +259,18 @@ def test_member_fields_of_recorded_graphs_equal_the_fixture_fields() -> None:
 
     # most captures root in a container; a count of zero would mean nothing was compared
     assert checked >= 40
+
+
+def test_member_fields_use_the_name_function_when_given() -> None:
+    """Matrix 9 at the core level: the names compared are the function's, not `node.name`."""
+    nodes = _flow(
+        _box("g", NodeType.GROUP, ("x", "y")),
+        _task("x", "app.x", group_id="g"),
+        _task("y", "app.y", group_id="g"),
+    )
+
+    same = flow_summary(nodes, "g", name_of=lambda node: "shop.eu")
+    differ = flow_summary(nodes, "g", name_of=lambda node: node.task_id)
+
+    assert (same.member_count, same.member_name) == (2, "eu")
+    assert (differ.member_count, differ.member_name) == (2, None)

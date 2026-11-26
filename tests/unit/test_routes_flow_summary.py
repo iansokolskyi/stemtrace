@@ -180,3 +180,82 @@ def test_list_graphs_filtered_out_everything_lists_nothing() -> None:
 
     assert body["graphs"] == []
     assert body["total"] == 0
+
+
+def _member_event(
+    task_id: str,
+    name: str,
+    seconds: int,
+    *,
+    args: list[Any] | None = None,
+    kwargs: dict[str, Any] | None = None,
+) -> TaskEvent:
+    return TaskEvent(
+        task_id=task_id,
+        name=name,
+        state=TaskState.SUCCESS,
+        timestamp=_T0 + timedelta(seconds=seconds),
+        group_id="g1",
+        args=args,
+        kwargs=kwargs,
+    )
+
+
+def _member_fields_listed(
+    members: list[TaskEvent], key: str | None
+) -> tuple[int | None, str | None]:
+    store = GraphStore()
+    for member in members:
+        store.add_event(member)
+    app = FastAPI()
+    app.include_router(create_api_router(store, node_alias_from_arguments=key))
+    (graph,) = TestClient(app).get("/api/graphs").json()["graphs"]
+    return graph["flow"]["member_count"], graph["flow"]["member_name"]
+
+
+def test_list_graphs_member_name_uses_the_alias_when_members_alias_to_one_value() -> (
+    None
+):
+    """Matrix 9: the page draws the alias, so the title names the alias's last segment."""
+    members = [
+        _member_event("a", "app.x", 0, kwargs={"site": "shop.eu"}),
+        _member_event("b", "app.y", 1, kwargs={"site": "shop.eu"}),
+    ]
+
+    assert _member_fields_listed(members, "site") == (2, "eu")
+    assert _member_fields_listed(members, None) == (2, None)
+
+
+def test_list_graphs_member_name_with_positional_alias_key() -> None:
+    members = [
+        _member_event("a", "app.x", 0, args=["same"]),
+        _member_event("b", "app.y", 1, args=["same"]),
+    ]
+
+    assert _member_fields_listed(members, "0") == (2, "same")
+
+
+def test_list_graphs_member_name_is_none_when_aliases_differ() -> None:
+    members = [
+        _member_event("a", "app.x", 0, kwargs={"site": "eu"}),
+        _member_event("b", "app.x", 1, kwargs={"site": "us"}),
+    ]
+
+    assert _member_fields_listed(members, "site") == (2, None)
+    assert _member_fields_listed(members, None) == (2, "x")
+
+
+def test_list_graphs_member_name_falls_back_to_the_task_name_when_the_key_is_missing() -> (
+    None
+):
+    same = [
+        _member_event("a", "app.fetch", 0, kwargs={"site": "app.fetch"}),
+        _member_event("b", "app.fetch", 1),
+    ]
+    other = [
+        _member_event("a", "app.fetch", 0, kwargs={"site": "eu"}),
+        _member_event("b", "app.fetch", 1, kwargs={"other": "eu"}),
+    ]
+
+    assert _member_fields_listed(same, "site") == (2, "fetch")
+    assert _member_fields_listed(other, "site") == (2, None)
