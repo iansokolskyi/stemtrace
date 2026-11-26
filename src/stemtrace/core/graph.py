@@ -125,6 +125,13 @@ class TaskNode(BaseModel):
     # Insert index (not serialized; rebuilt on first use, e.g. after
     # deserialization or when ``events`` was changed directly).
     _index: "_EventIndex | None" = PrivateAttr(default=None)
+    # Which creation this node is (see ``TaskGraph.birth_mark``); 0 until stamped.
+    _born: int = PrivateAttr(default=0)
+
+    @property
+    def born(self) -> int:
+        """The graph's creation count when this node was added; a re-created ID gets a new one."""
+        return self._born
 
     @property
     def first_seen(self) -> datetime | None:
@@ -959,6 +966,8 @@ class TaskGraph(BaseModel):
     # Existing tasks whose name or reported parent changed since the last take_changed(): a
     # task.replace() reuse can re-pick a task's name on another task's event.
     _changed_ids: set[str] = PrivateAttr(default_factory=set)
+    # Nodes created so far (+1): a node born before a mark read earlier is the same node.
+    _births: int = PrivateAttr(default=1)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
@@ -1438,6 +1447,15 @@ class TaskGraph(BaseModel):
 
     # -- placement ---------------------------------------------------------
 
+    @property
+    def birth_mark(self) -> int:
+        """Read now, then ``node.born < mark`` says the node existed at this read, O(1)."""
+        return self._births
+
+    def _stamp_birth(self, node: TaskNode) -> None:
+        node._born = self._births
+        self._births += 1
+
     def _insert_node(self, event: TaskEvent) -> TaskNode:
         """Create the node for a task's first event and link it."""
         node = TaskNode(
@@ -1450,6 +1468,7 @@ class TaskGraph(BaseModel):
         node._record_event(event)
         node._note_reported_parent(self._replacement_check(node))
         self.nodes[event.task_id] = node
+        self._stamp_birth(node)
         node.parent_id = self._safe_parent(node, self._desired_parent(node))
         self._link(node)
         self._adopt_waiting_children(node.task_id)
@@ -1913,6 +1932,7 @@ class TaskGraph(BaseModel):
             chord_callback_id=self._named_stamp(tally) if is_chord else None,
         )
         self.nodes[group_node.task_id] = group_node
+        self._stamp_birth(group_node)
         group_node.parent_id = self._safe_parent(
             group_node, self._desired_parent(group_node)
         )

@@ -445,6 +445,8 @@ def test_page_under_concurrent_ingestion_is_the_filter_instants_rows_as_they_are
             filters["offset"] : filters["offset"] + filters["limit"]
         ]
 
+        same_run = dict(store._graph.nodes)
+
         def ingest(store: GraphStore = store) -> None:
             for _ in range(rng.choice([1, 5, 30])):
                 store.add_event(_random_event(rng, 40, hits))
@@ -452,7 +454,10 @@ def test_page_under_concurrent_ingestion_is_the_filter_instants_rows_as_they_are
         page, got_total = _scan_with(store, ingest, sort_key=sort_key, **filters)
 
         live = store._graph.nodes
-        assert [n.task_id for n in page] == [i for i in want_ids if i in live]
+        # An ID evicted and re-created meanwhile is another run: dropped too.
+        assert [n.task_id for n in page] == [
+            i for i in want_ids if live.get(i) is same_run[i]
+        ]
         assert got_total == total
         for node in page:
             assert (

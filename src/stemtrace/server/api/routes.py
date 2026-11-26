@@ -1203,7 +1203,9 @@ def _add_task_routes(
         task's furthest-along event that has one (a later retry beats an
         earlier one). ``task_group`` matches the task's group name exactly and
         ``tag`` one of its group's tags. ``within`` is a relative ``from_date``
-        (now minus it); pass one or the other.
+        (now minus it); pass one or the other. A returned row shows the task's
+        current values, which can differ from the filter if the task changed
+        while the list was built.
         """
         states = params.parse_states(state)
         start = params.start_from(within, from_date, params.utcnow())

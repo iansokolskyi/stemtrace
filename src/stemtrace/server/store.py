@@ -8,7 +8,7 @@ import operator
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -1191,6 +1191,9 @@ class _FlowTimes(NamedTuple):
     order: list[str]
 
 
+_T = TypeVar("_T")
+
+
 class FlowListPage(NamedTuple):
     """One page of ``get_root_nodes_with_children``."""
 
@@ -1351,7 +1354,9 @@ class GraphStore:
         # Phase 1, outside the lock: filter and order immutable run records
         # copied in one O(n) reference copy, so ingestion never waits on the
         # filter. Phase 2, under the lock: snapshot only the page's live nodes.
-        rows = self.run_records()
+        with self._lock:
+            rows = list(self._runs.values())
+            mark = self._graph.birth_mark
         matched = [r for r in rows if matches(r)]
         if sort_key is None:
             matched.sort(key=operator.attrgetter("last_updated"), reverse=True)
@@ -1362,13 +1367,14 @@ class GraphStore:
             )
         # Events may have been ingested since the copy. A page row that
         # changed shows its current state even if it no longer matches; one
-        # that was evicted is dropped; ``total`` counts the phase-1 matches.
+        # that was evicted, even if its ID came back, is dropped (another
+        # run); ``total`` counts the phase-1 matches.
         with self._lock:
             nodes = self._graph.nodes
             page = [
                 _snapshot(node)
                 for r in ordered[offset : offset + limit]
-                if (node := nodes.get(r.task_id)) is not None
+                if (node := nodes.get(r.task_id)) is not None and node.born < mark
             ]
         return page, len(ordered)
 
@@ -1385,11 +1391,13 @@ class GraphStore:
         Returns:
             Tuple of (filtered root nodes, total count matching filters).
         """
-        ids, total = self._root_ids_page(
-            limit=limit, offset=offset, from_date=from_date, to_date=to_date
+        return self._page_of_roots(
+            lambda live: [_snapshot(n) for n in live],
+            limit=limit,
+            offset=offset,
+            from_date=from_date,
+            to_date=to_date,
         )
-        with self._lock:
-            return [_snapshot(n) for n in self._live_roots_locked(ids)], total
 
     def get_root_nodes_with_children(
         self,
@@ -1414,15 +1422,8 @@ class GraphStore:
             The roots, a map of task_id to node for them (and those children),
             the total count matching the filters, and the container children.
         """
-        ids, total = self._root_ids_page(
-            limit=limit,
-            offset=offset,
-            from_date=from_date,
-            to_date=to_date,
-            task_names=task_names,
-        )
-        with self._lock:
-            live = self._live_roots_locked(ids)
+
+        def build(live: list[TaskNode]) -> FlowListPage:
             nodes = self._graph.nodes
             roots = [_snapshot(n) for n in live]
             related = {root.task_id: root for root in roots}
@@ -1438,20 +1439,34 @@ class GraphStore:
                         and child_id not in related
                     ):
                         related[child_id] = _snapshot(child)
-            return FlowListPage(roots, related, total, containers)
+            return FlowListPage(roots, related, 0, containers)
 
-    def _root_ids_page(
+        page, total = self._page_of_roots(
+            build,
+            limit=limit,
+            offset=offset,
+            from_date=from_date,
+            to_date=to_date,
+            task_names=task_names,
+        )
+        return page._replace(total=total)
+
+    def _page_of_roots(
         self,
+        build: Callable[[list[TaskNode]], _T],
         *,
         limit: int,
         offset: int,
         from_date: datetime | None,
         to_date: datetime | None,
         task_names: Collection[str] | None = None,
-    ) -> tuple[list[str], int]:
-        """Filter, sort and page the root IDs; the date filters run outside the lock.
+    ) -> tuple[_T, int]:
+        """Filter, sort and page the live roots, then ``build`` the result under the lock.
 
-        The ``task_names`` filter still walks every node under the lock.
+        An unfiltered page is one hold. Date filters run outside the lock, and
+        the second hold keeps the selected roots that are still the same live
+        roots; ``total`` counts the matches at the filter instant. The
+        ``task_names`` filter still walks every node under the lock.
         """
         # A flow's time is over its whole graph, not the root's own events. The
         # times may be up to the gate old; which roots exist is always live.
@@ -1463,9 +1478,8 @@ class GraphStore:
                 for rid in sorted(set(roots).difference(times)):
                     self._time_unseen_root_locked(flows, rid)
             if task_names is None and from_date is None and to_date is None:
-                return self._unfiltered_page_ids_locked(flows, offset, limit), len(
-                    roots
-                )
+                page = self._unfiltered_page_locked(flows, offset, limit)
+                return build(page), len(roots)
             matching = (
                 None if task_names is None else self._roots_with_task_locked(task_names)
             )
@@ -1474,6 +1488,7 @@ class GraphStore:
             live = set(roots)
             order = list(flows.order)
             times = dict(times)
+            mark = self._graph.birth_mark
         root_ids = [rid for rid in order if rid in live]
         if matching is not None:
             root_ids = [rid for rid in root_ids if rid in matching]
@@ -1483,22 +1498,27 @@ class GraphStore:
         if to_date is not None:
             to_dt = _ensure_end_of_day(to_date)
             root_ids = [rid for rid in root_ids if times[rid][0] <= to_dt]
-        return root_ids[offset : offset + limit], len(root_ids)
+        with self._lock:
+            # A root evicted, re-created under its ID or no longer a root left.
+            nodes = self._graph.nodes
+            kept = [
+                node
+                for rid in root_ids[offset : offset + limit]
+                if (node := nodes.get(rid)) is not None
+                and node.born < mark
+                and self._graph.is_root(rid)
+            ]
+            return build(kept), len(root_ids)
 
-    def _live_roots_locked(self, ids: Iterable[str]) -> list[TaskNode]:
-        """The nodes of ``ids`` that are still roots; the others left meanwhile."""
-        nodes = self._graph.nodes
-        return [nodes[rid] for rid in ids if rid in nodes and self._graph.is_root(rid)]
-
-    def _unfiltered_page_ids_locked(
+    def _unfiltered_page_locked(
         self, flows: _FlowTimes, offset: int, limit: int
-    ) -> list[str]:
-        """The page of live root IDs in the cached order; reads only the page.
+    ) -> list[TaskNode]:
+        """The page of live roots in the cached order; reads only the page's nodes.
 
         Roots that left since the compute are skipped. Call with the lock held.
         """
         nodes = self._graph.nodes
-        page: list[str] = []
+        page: list[TaskNode] = []
         skipped = 0
         for rid in flows.order:
             if not self._graph.is_root(rid) or rid not in nodes:
@@ -1508,7 +1528,7 @@ class GraphStore:
                 continue
             if len(page) >= limit:
                 break
-            page.append(rid)
+            page.append(nodes[rid])
         return page
 
     def _cached_flow_times_locked(self) -> _FlowTimes:
