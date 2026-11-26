@@ -23,13 +23,18 @@ export interface OverviewAnomalies {
  * joins one already running; inside a backoff window it answers at once). `failed` is true when the
  * request fails (an older server answers 404): the page then says nothing about anomalies.
  */
-export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; failed: boolean } {
+export function useOverviewAnomalies(): {
+  data: OverviewAnomalies | undefined
+  failed: boolean
+  /** The last refresh failed while the data of an earlier one is still held. */
+  stale: boolean
+} {
   const list = useAnomalyBadge()
   const data = list.data
   const inList = data?.anomalies.find((a) => a.kind === 'no_workers_online')
   // The list is capped and sorted by `since`, so a full one may not hold the fleet item
   const fleetQuery = useFleetAnomaly(Boolean(data?.counts.no_workers_online) && !inList)
-  if (!data) return { data: undefined, failed: list.isError }
+  if (!data) return { data: undefined, failed: list.isError, stale: false }
   return {
     data: {
       items: data.anomalies.filter((a) => a.kind !== 'no_workers_online'),
@@ -38,5 +43,6 @@ export function useOverviewAnomalies(): { data: OverviewAnomalies | undefined; f
       total: anomalyTotal(data.counts),
     },
     failed: false,
+    stale: list.isError,
   }
 }

@@ -2,28 +2,52 @@ import type { Page, Route } from '@playwright/test'
 
 /** Mock-API shapes for the Overview's error and empty states (spec and visual baselines). */
 
-const SUMMARY_ENDPOINTS = [
+export const SUMMARY_ENDPOINTS = [
   /\/api\/overview(\?|$)/,
   /\/api\/stats\/timeseries(\?|$)/,
   /\/api\/failures(\?|$)/,
   /\/api\/stats\/tasks(\?|$)/,
   /\/api\/workers(\?|$)/,
 ]
+export const FAILURES_ENDPOINT = SUMMARY_ENDPOINTS[2]
+export const SERIES_ENDPOINT = SUMMARY_ENDPOINTS[1]
 
 const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
 
-/** Every summary endpoint answers 500 until `state.failing` is turned off, then the mock answers. */
-export async function failSummaryEndpoints(page: Page): Promise<{ failing: boolean }> {
+export type FailureMode = 'http' | 'network' | 'unauthorized'
+
+/**
+ * The endpoints answer with `mode` until `state.failing` is turned off, then the mock answers.
+ * Routes added later win, so this can follow a page that has already loaded.
+ */
+export async function failSummaryEndpoints(
+  page: Page,
+  {
+    endpoints = SUMMARY_ENDPOINTS,
+    mode = 'http',
+  }: { endpoints?: RegExp[]; mode?: FailureMode } = {},
+): Promise<{ failing: boolean }> {
   const state = { failing: true }
-  for (const endpoint of SUMMARY_ENDPOINTS) {
-    await page.route(endpoint, (route) =>
-      state.failing
-        ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' })
-        : route.fallback(),
-    )
+  for (const endpoint of endpoints) {
+    await page.route(endpoint, (route) => {
+      if (!state.failing) return route.fallback()
+      if (mode === 'network') return route.abort('failed')
+      const status = mode === 'unauthorized' ? 401 : 500
+      return route.fulfill({ status, contentType: 'application/json', body: '{"detail":"boom"}' })
+    })
   }
   return state
+}
+
+/** Answers from the mock after `ms`: a request that is still in flight when a test looks. */
+export async function delayEndpoints(page: Page, endpoints: RegExp[], ms: number): Promise<void> {
+  for (const endpoint of endpoints) {
+    await page.route(endpoint, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, ms))
+      await route.fallback()
+    })
+  }
 }
 
 /** A server that holds no runs and no workers: every summary endpoint answers, with nothing. */
@@ -36,7 +60,8 @@ export async function emptySummaryEndpoints(page: Page): Promise<void> {
       runs: { value: 0, baseline: 0 },
       failures: { value: 0, baseline: 0 },
       runs_per_minute: { value: 0, baseline: 0 },
-      failure_rate: { value: null, baseline: null },
+      // The server sends 0.0 for a window with no runs, not null
+      failure_rate: { value: 0, baseline: 0 },
       workers: { online: 0, total: 0 },
     }),
   )

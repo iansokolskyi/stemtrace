@@ -8,12 +8,14 @@ import { failureLine } from '@/utils/failureMessage'
 import { formatAgo, formatCount } from '@/utils/format'
 import { AnomalyList } from './AnomalyList'
 import type { OverviewAnomalies } from './anomalyData'
-import { LoadError } from './LoadError'
+import { LoadError, type LoadFailure } from './LoadError'
 
 interface WhatsWrongProps {
   groups: FailureGroup[] | undefined
   /** Set when the failures request failed; the section says so instead of showing headers. */
-  failed: { error: unknown; retry: () => unknown } | undefined
+  failed: LoadFailure | undefined
+  /** A refresh failed with earlier data held: neither the counts nor "All clear" are current. */
+  stale: boolean
   /** "the last 6h"; none for All. */
   windowWords: string | undefined
   /** Undefined while loading and when the server has no anomalies endpoint. */
@@ -31,6 +33,7 @@ const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
 export function WhatsWrong({
   groups,
   failed,
+  stale,
   windowWords,
   anomalies,
 }: WhatsWrongProps): ReactElement {
@@ -39,7 +42,7 @@ export function WhatsWrong({
   const count = groups?.length ?? 0
   const failuresNone = groups !== undefined && count === 0
   const hasAnomalies = (anomalies?.total ?? 0) > 0
-  const allClear = failuresNone && anomalies !== undefined && !hasAnomalies
+  const allClear = failuresNone && !stale && anomalies !== undefined && !hasAnomalies
   return (
     <section aria-labelledby="h-wrong" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
@@ -48,6 +51,7 @@ export function WhatsWrong({
         </h2>
         <span className="min-h-4 text-xs text-muted">
           {groups &&
+            !stale &&
             `${count} failing exception${count === 1 ? '' : 's'}${scope}.${
               anomalies
                 ? ` ${anomalies.total} anomal${anomalies.total === 1 ? 'y' : 'ies'} now.`
@@ -71,7 +75,7 @@ export function WhatsWrong({
           <div className="min-w-0">
             <h3 className="px-4 pt-2 pb-1.5 text-[13px] font-bold">Failures by exception</h3>
             {failed ? (
-              <LoadError what="the failures" error={failed.error} onRetry={failed.retry} />
+              <LoadError what="the failures" failure={failed} />
             ) : groups === undefined ? (
               <p className="m-0 px-4 py-3 text-xs text-muted">Loading failures…</p>
             ) : failuresNone ? (

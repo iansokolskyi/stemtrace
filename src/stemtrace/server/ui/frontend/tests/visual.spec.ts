@@ -712,30 +712,50 @@ for (const theme of ['light', 'dark'] as const) {
   }
 }
 
-// The Overview when its requests fail, and when the server holds nothing yet (G3).
+// The Overview when its first requests fail, when the server holds nothing yet, and when a
+// refresh fails after data loaded (G3, readings O1-O6).
 for (const theme of ['light', 'dark'] as const) {
-  for (const state of ['error', 'empty'] as const) {
-    test(`overview ${state}, ${theme}, 1280px`, async ({ page }) => {
-      await page.routeWebSocket(/\/ws$/, () => {})
-      const now = new Date('2026-10-17T12:00:00Z')
-      const api = await setupMockApi(page, { useDefaults: false })
-      api.setBroker('redis')
-      await mockOverview(page, spikeScenario(now.getTime()))
-      await (state === 'error' ? failSummaryEndpoints : emptySummaryEndpoints)(page)
-      await page.clock.setFixedTime(now)
-      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
-      await page.setViewportSize({ width: 1280, height: 900 })
-      await page.goto('/')
-      await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-      await expect(
-        state === 'error' ? page.getByRole('alert').first() : page.getByTestId('workers-tile'),
-      ).toBeVisible()
-      await page.waitForLoadState('networkidle')
-      await page.evaluate(() => document.fonts.ready)
-      await expect(page).toHaveScreenshot(`overview-${state}-${theme}-1280.png`, {
-        fullPage: true,
+  for (const width of [1280, 400]) {
+    for (const state of ['error', 'empty', 'stale'] as const) {
+      test(`overview ${state}, ${theme}, ${width}px`, async ({ page }) => {
+        await page.routeWebSocket(/\/ws$/, () => {})
+        const now = new Date('2026-10-17T12:00:00Z')
+        const api = await setupMockApi(page, { useDefaults: false })
+        api.setBroker('redis')
+        const scenario = spikeScenario(now.getTime())
+        const { tasks } = spikeTasks(scenario)
+        api.addTasks(tasks)
+        await mockOverview(page, scenario)
+        if (state === 'error') await failSummaryEndpoints(page)
+        if (state === 'empty') await emptySummaryEndpoints(page)
+        // Stale needs time to move on (a poll, then its retries); the others only a fixed one
+        if (state === 'stale') await page.clock.install({ time: now })
+        else await page.clock.setFixedTime(now)
+        await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto('/')
+        await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
+        if (state === 'error') {
+          // A first load is retried 3 times (1 s, 2 s, 4 s) before its box shows
+          await expect(page.getByRole('alert')).toHaveCount(5, { timeout: 20_000 })
+        } else if (state === 'empty') {
+          await expect(page.getByTestId('workers-tile')).toContainText('No workers registered')
+        } else {
+          await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+          await failSummaryEndpoints(page)
+          await page.clock.runFor(16_000)
+          await page.clock.runFor(10_000)
+          await expect(
+            page.getByRole('status').filter({ hasText: "Couldn't refresh." }),
+          ).toBeVisible({ timeout: 20_000 })
+        }
+        await page.waitForLoadState('networkidle')
+        await page.evaluate(() => document.fonts.ready)
+        await expect(page).toHaveScreenshot(`overview-${state}-${theme}-${width}.png`, {
+          fullPage: true,
+        })
       })
-    })
+    }
   }
 }
 

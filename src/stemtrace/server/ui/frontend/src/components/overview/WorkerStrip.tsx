@@ -6,7 +6,7 @@ import { poolUsage } from '@/components/workers/slots'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
 import { type Host, registeredTasks } from '@/components/workers/workers'
 import { formatAgo, shortHost } from '@/utils/format'
-import { LoadError } from './LoadError'
+import { LoadError, type LoadFailure } from './LoadError'
 
 /**
  * A cell per worker host: name, status (offline is the loud one) and what the server knows of
@@ -19,7 +19,7 @@ export function WorkerStrip({
 }: {
   hosts: Host[] | undefined
   /** Set when the workers request failed; the strip says so instead of drawing nothing. */
-  failed: { error: unknown; retry: () => unknown } | undefined
+  failed: LoadFailure | undefined
 }): ReactElement {
   const panel = usePanel()
   return (
@@ -37,8 +37,10 @@ export function WorkerStrip({
         </Link>
       </div>
       {failed ? (
-        <LoadError what="the workers" error={failed.error} onRetry={failed.retry} />
-      ) : hosts && hosts.length === 0 ? (
+        <LoadError what="the workers" failure={failed} />
+      ) : hosts === undefined ? (
+        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading workers…</p>
+      ) : hosts.length === 0 ? (
         <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">No workers registered.</p>
       ) : (
         <div
