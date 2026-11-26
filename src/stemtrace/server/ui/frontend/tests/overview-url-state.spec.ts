@@ -386,13 +386,18 @@ test.describe('Overview view state in the URL', () => {
     page,
   }) => {
     await openOverview(page)
-    await clickBar(page, 8)
+    const chart = page.locator('[data-testid="runs-chart"] svg')
+    // Enter opens the runs of the last bar, which the open panel leaves reachable by keyboard
+    await chart.focus()
+    await page.keyboard.press('Enter')
     await chip(page, 'Failure').click()
-    await expect(panelOf(page).getByTestId('panel-run')).toHaveCount(1)
+    await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
     const before = await historyLength(page)
     const url = page.url()
-    await panelOf(page).getByRole('button', { name: 'Expand' }).click()
-    await clickBar(page, 8)
+    expect(search(page).get('panel')).toContain('@s=FAILURE')
+
+    await chart.focus()
+    await page.keyboard.press('Enter')
     await expect(chip(page, 'Failure')).toHaveAttribute('aria-pressed', 'true')
     expect(page.url()).toBe(url)
     expect(await historyLength(page)).toBe(before)
