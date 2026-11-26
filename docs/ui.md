@@ -56,24 +56,29 @@ and the group trends), `GET /api/failures` (What's wrong), `GET /api/stats/tasks
 
 ### KPI tiles
 
-Five tiles sit above the chart:
+Four tiles sit above the chart:
 
-- **Runs / min**, **Failures** and **Failure rate** for the range, each with a sparkline. A run is
+- **Runs / min** and **Failure rate** for the range, each with a sparkline. A run is
   a task that ended with SUCCESS, FAILURE, REVOKED or REJECTED. IGNORED tasks aren't runs. The
   failure rate is FAILURE runs divided by runs. See
   [Summary endpoints](features.md#summary-endpoints).
 - A tile compares its value with the window of equal length immediately before it ("earlier: 2.4/min").
   The note says **In baseline**, or how far above or below it the value is. A tile is flagged at
   1.3 times its baseline (1.4 times for runs per minute, up or down) and flagged more strongly at
-  2 times. When the baseline is 0, **Failures** and **Failure rate** say **Above baseline** for
+  2 times. When the baseline is 0, **Failure rate** says **Above baseline** for
   any value over 0, and **Runs / min** has no note. With **All**, the tiles show no comparison.
-- **Workers online** shows online and known worker hosts and links to [Workers](#workers). It
-  reads worker state without asking the workers.
+- **Workers online** shows online and known worker hosts. It opens the list of hosts in the
+  triage panel and reads worker state without asking the workers.
 - **Anomalies** counts the flagged items, by kind. It opens the list in the triage panel.
 
-Clicking **Runs / min**, **Failures** or **Failure rate** opens the matching runs in the
-[triage panel](#triage-panel). The **Failures** and **Failure rate** tiles list failures only, so
-that list has no state chips.
+Clicking **Runs / min** or **Failure rate** opens the matching runs in the
+[triage panel](#triage-panel). The **Failure rate** tile lists failures only, so that list has no
+state chips.
+
+Clicking **Workers online** opens a row for each worker host, offline hosts first and then by
+name, each with its status. A row opens that host, and **All workers** links to
+[Workers](#workers). With no workers, the list says **No workers registered.** The entry is
+`panel=worker:all` in the URL, so a reload restores it.
 
 ### Runs chart
 
@@ -117,7 +122,7 @@ the next entry on top of it.
   **Collapse** change its width.
 - The stack is the `panel` URL parameter, so a link, **Back** and a reload restore it.
 - A runs entry shows the counts of its span and a list of runs that you narrow with state chips
-  (failure, retry, started, pending and success), except for the failure tiles. A task entry links to the task page and
+  (failure, retry, started, pending and success), except for the **Failure rate** tile. A task entry links to the task page and
   to its flow.
 
 ### Overview link state
@@ -131,7 +136,7 @@ restore it.
 | `panel` | The panel stack. After an entry, `@s=` lists its state chips and `@m=` counts how many times you chose **Show more** in it. | `panel=runs:...@s=FAILURE,RETRY@m=2` |
 | `brush` | The span you dragged on the chart, as two epoch-second instants, `<from>-<to>`. | `brush=1764151500-1764152400` |
 
-- Opening the entry at the bottom of the stack again, such as clicking the same bar, keeps its chips and **Show more** count. With only that entry open it adds no history entry. With entries above it, it closes them and adds one history entry. A tile that fixes a state, such as **Failures**, ignores `@s=`. Each panel entry keeps its own chips and **Show more** count. An entry with no chips and no
+- Opening the entry at the bottom of the stack again, such as clicking the same bar, keeps its chips and **Show more** count. With only that entry open it adds no history entry. With entries above it, it closes them and adds one history entry. A tile that fixes a state, such as **Failure rate**, ignores `@s=`. Each panel entry keeps its own chips and **Show more** count. An entry with no chips and no
   **Show more** writes neither.
 - Choosing a chip, choosing **Show more**, brushing and clearing the brush replace the current
   history entry, also while a panel is open. Opening or closing a panel entry adds one, so **Back** from the runs of a brushed
