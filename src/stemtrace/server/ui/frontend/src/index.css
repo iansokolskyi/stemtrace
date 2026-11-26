@@ -77,46 +77,6 @@ body {
   background-image: repeating-linear-gradient(45deg, var(--retry) 0 3px, var(--surface) 3px 5px);
 }
 
-.task-state-badge {
-  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
-}
-
-.task-state-pending {
-  @apply bg-gray-500/20 text-gray-400;
-}
-
-.task-state-received {
-  @apply bg-gray-500/20 text-gray-400;
-}
-
-.task-state-started {
-  @apply bg-blue-500/20 text-blue-400;
-}
-
-.task-state-success {
-  @apply bg-green-500/20 text-green-400;
-}
-
-.task-state-failure {
-  @apply bg-red-500/20 text-red-400;
-}
-
-.task-state-retry {
-  @apply bg-amber-500/20 text-amber-400;
-}
-
-.task-state-revoked {
-  @apply bg-purple-500/20 text-purple-400;
-}
-
-.task-state-rejected {
-  @apply bg-red-600/20 text-red-500;
-}
-
-.task-state-ignored {
-  @apply bg-zinc-500/20 text-zinc-400;
-}
-
 /* Flow timeline (components/flow/Gantt.tsx): rows lit by state through --c / --on like the
    diagram's blocks; text 12 px sans with tabular figures. */
 .gantt-box {

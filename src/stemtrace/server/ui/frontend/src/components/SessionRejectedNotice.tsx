@@ -9,19 +9,19 @@ export function SessionRejectedNotice() {
   const loginPath = getLoginPath()
 
   return (
-    <div role="alert" className="text-center py-12">
-      <p className="text-red-400">
+    <div role="alert" className="rounded-lg bg-surface px-4 py-10 text-center">
+      <p className="m-0 text-sm font-semibold text-failure-t">
         Your session was rejected because it was signed by a different server process (another
         worker or replica).
       </p>
-      <p className="text-sm text-slate-400 mt-2">
+      <p className="mx-auto mt-2 mb-0 max-w-xl text-xs text-muted">
         If stemtrace runs with several workers or replicas, set STEMTRACE_LOGIN_SECRET to the same
         long random value on all of them.
       </p>
       {loginPath && (
         <a
           href={getLoginUrl(loginPath)}
-          className="text-blue-400 hover:underline mt-4 inline-block"
+          className="mt-4 inline-block text-xs font-semibold text-ink underline underline-offset-2"
         >
           Sign in again
         </a>

@@ -1,7 +1,7 @@
 import { type ReactElement, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { StatusChip } from '@/components/StatusChip'
-import { sortEventsChronologically } from '@/components/TimelineBar'
+import { sortEventsChronologically } from '@/utils/events'
 import { formatTime } from '@/utils/format'
 import { Panel } from './Panel'
 

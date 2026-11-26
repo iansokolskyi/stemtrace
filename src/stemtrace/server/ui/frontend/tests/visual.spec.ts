@@ -15,6 +15,7 @@ import {
   type MockWorker,
 } from './fixtures/mock-data'
 import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
+import { threeRuns } from './fixtures/timeline'
 
 /**
  * Visual snapshots of the Signal box frame. Runs only in the `visual` project (PW_VISUAL=1),
@@ -471,6 +472,54 @@ for (const theme of ['light', 'dark'] as const) {
       width: 1280,
       path: '/executions?state=FAILURE&queue=payments',
     })
+  })
+}
+
+// The Executions page in its Timeline view: success, failure and a retried run on one UTC axis.
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1280, 400]) {
+    test(`executions timeline, ${theme}, ${width}px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      withBrokerAndGroups(api)
+      api.addTasks(threeRuns())
+      await snapshot(page, `executions-timeline-${theme}-${width}`, {
+        theme,
+        width,
+        path: '/executions?view=timeline',
+      })
+    })
+  }
+}
+
+// The Flow page while its graph loads (the request never answers) and after it fails.
+for (const theme of ['light', 'dark'] as const) {
+  test(`flow loading, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    withBrokerAndGroups(api)
+    await page.route(/\/api\/graphs\/[^/?]+(\?.*)?$/, () => {})
+    await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+    await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto('/flows/abc')
+    await expect(page.getByTestId('flow-skeleton')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await expect(page).toHaveScreenshot(`flow-loading-${theme}-1280.png`, { fullPage: true })
+  })
+
+  test(`flow error, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    withBrokerAndGroups(api)
+    await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+    await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto('/flows/abc')
+    // The query retries three times before it gives up
+    await expect(page.getByRole('alert')).toBeVisible({ timeout: 20_000 })
+    await page.evaluate(() => document.fonts.ready)
+    await expect(page).toHaveScreenshot(`flow-error-${theme}-1280.png`, { fullPage: true })
   })
 }
 
