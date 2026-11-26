@@ -85,11 +85,11 @@ pages work even if the server missed `worker_ready` events.
   `stats()` reply that names the worker's pid, and later reads return them without asking
   Celery again. `pool` is the last module segment of the pool's `implementation`
   (`celery.concurrency.prefork:TaskPool` gives `prefork`; the `thread` pool shows as
-  `threads`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
+  `threads`; a module named just `pool` gives `null`), and `concurrency` is the pool's `max-concurrency`. With `--autoscale`, it is the
   autoscaler's `max`, because Celery then reports the minimum as `max-concurrency`. Both are
   `null` for a worker the server knows only from events, and for a reply that has no pool
   dictionary or no usable value (a missing key, or a value that isn't a positive integer). Celery
-  5.2.2 doesn't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
+  5.2 releases don't send `implementation`, so `pool` is `null` there while `concurrency` is set. A
   new pid on the same nodename starts with `null` and doesn't inherit its predecessor's values.
   When a `worker_ready` with a later time arrives for a pid the server already saw ready (a restart
   that reuses the pid number), the values are cleared until the next inspect reply. Limitation: if
@@ -107,12 +107,15 @@ pages work even if the server missed `worker_ready` events.
   Limitations:
   - The number can read high. A run whose final event never reached the server, for example after
     a `kill -9`, stays `STARTED` and counts until a new `worker_ready` for that nodename.
-  - The number can read low. Tasks that started before the server saw the worker have no record,
-    and when the server drops the oldest flows at its node limit, their running tasks stop
-    counting.
+  - The number can read low. A task whose `STARTED` event the server never received has no
+    record (on RabbitMQ: events sent before the server's queue existed or older than its TTL; on Redis: events past the stream's retention), and when the server
+    drops the oldest flows at its node limit, their running tasks stop counting.
   - A pid the server knows only from an inspect reply has no `worker_ready` time, so every
     `STARTED` run on its nodename counts, including a previous process's.
-  - If the host clock steps back across a restart, runs of the previous process can count.
+  - If the host clock steps back across a restart, runs of the previous process can count. If a
+    restart that reuses the pid number is stamped no later than the pid's earlier `worker_ready`,
+    the number can read low (the earlier stamp stays the lower bound) and the old pool size stays
+    until the next `stats()` reply.
   - The number can exceed `concurrency`.
 - When a worker restarts under the same nodename and the server misses its `worker_ready`, the
   later `worker_shutdown` names a pid the server doesn't list. The server then also marks the
@@ -665,12 +668,13 @@ tasks stamped later by a worker whose clock is ahead.
   bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
   `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
   last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
-  these keys. The first bucket starts on an edge before the window, so a bucket's samples need not
-  match the overview's samples at the window's edges. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
+  these keys. The first bucket starts on an edge at or before the window, so a bucket's samples
+  need not match the overview's samples at the window's edges. Combined with `group_by`, or with a
+  value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Each group also has `latest_message`: the message of
-  its newest failure, cut to the first line and 300 characters (`null` when that failure has no
+  its newest failure, cut to the first line with content and 300 characters (`null` when that failure has no
   message). Failure messages can contain task arguments; see
   [Security](security.md#sensitive-data-scrubbing). Tasks from workers that don't report the
   exception class form one group with `exception_type: null`.
@@ -714,8 +718,10 @@ The task list also takes:
   A task's `runtime_ms` and `queue_wait_ms` fields still show their own values, so a running
   task can show a queue wait and sort last. Equal values sort by newest update, then task ID, so
   while no event arrives, consecutive pages neither overlap nor skip a task. While events arrive,
-  a page can shift; load more rows with a larger `limit` instead of paging. The filters apply
-  first, and `total` counts the matches. Any other value is a `422`. Without `sort`, the order
+  a page can shift; load more rows with a larger `limit` (at most 500; a larger value is a `422`)
+  instead of paging. The filters apply
+  first, and `total` counts the matches the scan found. A task that stops matching while the
+  sorted request runs (it moved to another worker, say) is left out of the page but still counted. Any other value is a `422`. Without `sort`, the order
   is the same as before: newest update first.
 - `compact=1` (also on `GET /api/tasks/{id}/children`): `events` is `null` instead of each
   task's event list. The task detail always includes them.

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.routing import APIRoute
 from kombu import Connection
 from kombu.connection import ConnectionPool
+from pydantic import TypeAdapter
 
 # Not asyncio.to_thread: under uvloop (which uvicorn picks when installed) that
 # goes through loop.run_in_executor, which on Python 3.14 calls the deprecated
@@ -173,8 +174,66 @@ def _json_response(model: BaseModel) -> Response:
     """Encode ``model`` as the JSON body FastAPI would send, in the calling thread.
 
     Returning a model makes FastAPI validate and encode it on the event loop.
+    The JSON values are the same; on FastAPI before its ``dump_json`` path only
+    floats from 1e-5 to 1e-9 print differently (``1e-05`` becomes ``0.00001``,
+    ``1e-07`` becomes ``1e-7``). The response also bypasses a host app's
+    ``default_response_class``.
     """
     return Response(model.model_dump_json(by_alias=True), media_type="application/json")
+
+
+_TASK_NODE_LIST: TypeAdapter[list[TaskNodeResponse]] = TypeAdapter(
+    list[TaskNodeResponse]
+)
+
+
+def _json_list_response(models: list[TaskNodeResponse]) -> Response:
+    """Encode a list of responses as the JSON body FastAPI would send, in this thread."""
+    return Response(
+        _TASK_NODE_LIST.dump_json(models, by_alias=True),
+        media_type="application/json",
+    )
+
+
+def _detail_response(
+    node: TaskNode,
+    children: list[TaskNode],
+    group_of: Callable[[str], ResolvedGroup],
+    anomalies: Mapping[str, Anomaly],
+    flow_root_id: str | None,
+) -> Response:
+    """Build and encode a task's detail body, in the calling (worker) thread."""
+    anomaly = _anomaly_of(node, anomalies)
+    return _json_response(
+        TaskDetailResponse(
+            task=_node_to_response(
+                node, include_output=True, group_of=group_of, anomalies=anomalies
+            ),
+            children=[
+                _node_to_response(c, group_of=group_of, anomalies=anomalies)
+                for c in children
+            ],
+            flow_root_id=flow_root_id,
+            anomaly_detail=anomaly_response(anomaly) if anomaly is not None else None,
+        )
+    )
+
+
+def _children_response(
+    children: list[TaskNode],
+    compact: bool,
+    group_of: Callable[[str], ResolvedGroup],
+    anomalies: Mapping[str, Anomaly],
+) -> Response:
+    """Build and encode a task's child list, in the calling (worker) thread."""
+    return _json_list_response(
+        [
+            _node_to_response(
+                c, include_events=not compact, group_of=group_of, anomalies=anomalies
+            )
+            for c in children
+        ]
+    )
 
 
 async def _filter_task_names(
@@ -1175,8 +1234,8 @@ def _add_task_routes(
                 description=(
                     "Slowest first by runtime or queue wait: the samples the "
                     "overview's p95 tiles use. Runs the tiles leave out (not "
-                    "finished, REVOKED or IGNORED for runtime, celery.* tasks) "
-                    "come last. Default: newest update first."
+                    "finished, IGNORED, celery.* tasks, and REVOKED or REJECTED "
+                    "for runtime) come last. Default: newest update first."
                 )
             ),
         ] = None,
@@ -1294,26 +1353,17 @@ def _add_task_routes(
         response_model=TaskDetailResponse,
         responses={404: {"model": ErrorResponse}},
     )
-    async def get_task(task_id: str) -> TaskDetailResponse:
+    async def get_task(task_id: str) -> Response:
         """Get detailed information for a specific task including children."""
-        found = store.get_node_with_children(task_id)
+        found = await run_in_threadpool(store.get_node_with_children, task_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         node, children, flow_root_id = found
         group_of = group_lookup(groups)
         anomalies = (await evaluator.evaluate()).anomalies
-        anomaly = _anomaly_of(node, anomalies)
-        return TaskDetailResponse(
-            task=_node_to_response(
-                node, include_output=True, group_of=group_of, anomalies=anomalies
-            ),
-            children=[
-                _node_to_response(c, group_of=group_of, anomalies=anomalies)
-                for c in children
-            ],
-            flow_root_id=flow_root_id,
-            anomaly_detail=anomaly_response(anomaly) if anomaly is not None else None,
+        return await run_in_threadpool(
+            _detail_response, node, children, group_of, anomalies, flow_root_id
         )
 
     @router.get(
@@ -1326,21 +1376,19 @@ def _add_task_routes(
         compact: Annotated[
             bool, Query(description="Leave out each task's events (events: null)")
         ] = False,
-    ) -> list[TaskNodeResponse]:
+    ) -> Response:
         """Get child tasks for a specific task."""
-        found = store.get_node_with_children(task_id)
+        found = await run_in_threadpool(store.get_node_with_children, task_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         children = found.children
         group_of = group_lookup(groups)
         anomalies = (await evaluator.evaluate()).anomalies
-        return [
-            _node_to_response(
-                c, include_events=not compact, group_of=group_of, anomalies=anomalies
-            )
-            for c in children
-        ]
+
+        return await run_in_threadpool(
+            _children_response, children, compact, group_of, anomalies
+        )
 
 
 def _add_graph_routes(
@@ -1430,32 +1478,38 @@ def _add_graph_routes(
         response_model=GraphResponse,
         responses={404: {"model": ErrorResponse}},
     )
-    async def get_graph(root_id: str) -> GraphResponse:
+    async def get_graph(root_id: str) -> Response:
         """Get complete task graph starting from a root task."""
-        graph = store.get_graph_from_root(root_id)
+        graph = await run_in_threadpool(store.get_graph_from_root, root_id)
         if not graph:
             raise HTTPException(status_code=404, detail=f"Graph {root_id} not found")
 
         all_nodes: dict[str, TaskNode] = dict(graph)
         group_of = group_lookup(groups)
-        # The whole graph is here, so every header that has run is known. A
-        # pass over every node and event: off the event loop.
-        not_run = await run_in_threadpool(chord_not_run_reasons, all_nodes)
         anomalies = (await evaluator.evaluate()).anomalies
-        return GraphResponse(
-            root_id=root_id,
-            nodes={
-                tid: _node_to_graph_response(
-                    n,
-                    all_nodes,
-                    node_alias_key=node_alias_key,
-                    group_of=group_of,
-                    not_run_reason=not_run.get(tid),
-                    anomalies=anomalies,
+
+        def build() -> Response:
+            """Build and encode the graph (runs in a worker thread)."""
+            # The whole graph is here, so every header that has run is known.
+            not_run = chord_not_run_reasons(all_nodes)
+            return _json_response(
+                GraphResponse(
+                    root_id=root_id,
+                    nodes={
+                        tid: _node_to_graph_response(
+                            n,
+                            all_nodes,
+                            node_alias_key=node_alias_key,
+                            group_of=group_of,
+                            not_run_reason=not_run.get(tid),
+                            anomalies=anomalies,
+                        )
+                        for tid, n in graph.items()
+                    },
                 )
-                for tid, n in graph.items()
-            },
-        )
+            )
+
+        return await run_in_threadpool(build)
 
 
 def _add_group_routes(

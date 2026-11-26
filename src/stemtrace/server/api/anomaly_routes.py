@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 
     from stemtrace.core.anomalies import Anomaly
     from stemtrace.server.api.routes import _InspectRefresher
-    from stemtrace.server.stats import RunRecord
     from stemtrace.server.store import (
         GraphStore,
         WorkerRegistry,
@@ -116,9 +115,10 @@ class AnomalyEvaluator:
     async def evaluate(self) -> Evaluation:
         """Copy the facts under their locks, then classify them off both and the loop."""
         now = params.utcnow()
-        # Copies under three locks, microseconds apart: a worker event that
-        # lands between them only adds evidence, which the next poll sees.
-        records = self._store.run_records()
+        # The worker facts are read first, before the thread hop: the registry
+        # gate must see what the request's own probe has applied by now. The
+        # records are copied later, in the thread, so they can be newer than
+        # these facts; task events that land meanwhile only add evidence.
         snapshot = self._timeline.snapshot() if self._timeline is not None else {}
         registry = (
             self._registry.registry_facts(
@@ -127,19 +127,17 @@ class AnomalyEvaluator:
             if self._registry is not None
             else None
         )
-        report = await run_in_threadpool(
-            self._classify, records, snapshot, registry, now
-        )
+        report = await run_in_threadpool(self._classify, snapshot, registry, now)
         return Evaluation(report, now)
 
     def _classify(
         self,
-        records: list[RunRecord],
         snapshot: Mapping[str, Sequence[WorkerTimelineEntry]],
         registry: RegistryFacts | None,
         now: datetime,
     ) -> AnomalyReport:
-        facts = classifier_facts(records, snapshot, now)
+        # The store lock may be held by a long scan, so the records copy waits here.
+        facts = classifier_facts(self._store.run_records(), snapshot, now)
         return classify_anomalies(
             **facts._asdict(), now=now, settings=self._settings, registry=registry
         )

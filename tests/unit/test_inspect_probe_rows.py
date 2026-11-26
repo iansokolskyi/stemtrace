@@ -47,6 +47,21 @@ class FakeClock:
         # Set while the probe thread waits with nothing owed: it has run every
         # attempt it was asked for, including the answer's registry apply.
         self.idle = threading.Event()
+        self._wake: threading.Event | None = None
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait until the probe is idle with no trigger pending.
+
+        ``idle`` alone can be stale: a trigger that lands after it was set has
+        not cleared it yet, though an attempt is owed.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            wake = self._wake
+            if self.idle.is_set() and wake is not None and not wake.is_set():
+                return True
+            time.sleep(0.005)
+        return False
 
     def now(self) -> float:
         with self._lock:
@@ -54,6 +69,7 @@ class FakeClock:
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
         if seconds is None:
+            self._wake = event
             self.idle.set()
             try:
                 # A trigger that landed before the set owes an attempt: not idle.
@@ -239,12 +255,12 @@ def test_p1_create_router_with_a_consumer_passed_in_probes_when_a_worker_joins(
     with TestClient(app):
         # Startup attempts still owed (the app's startup handler runs more than
         # once) must end first, so only the join can cause the next attempt.
-        assert fleet.clock.idle.wait(BOUND_S), "the probe never went idle"
+        assert fleet.clock.wait_idle(BOUND_S), "the probe never went idle"
         fleet.nodes = {NODE_B: (22, ["app.b"])}
         registry.register_worker(NODE_B, 22, [])
         fleet.wait_for_answer_naming(NODE_B)
         # Idle again means that answer's registry apply is done.
-        assert fleet.clock.idle.wait(BOUND_S), "the probe never finished applying"
+        assert fleet.clock.wait_idle(BOUND_S), "the probe never finished applying"
 
     assert registry.get_registered_tasks(NODE_B, 22) == ["app.b"]
 

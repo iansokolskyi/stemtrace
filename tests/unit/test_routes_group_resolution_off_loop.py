@@ -134,17 +134,17 @@ def _client_counting_pool(
     return TestClient(app), calls
 
 
-def test_unfiltered_time_series_never_waits_for_a_worker_thread(
+def test_unfiltered_time_series_hops_only_to_copy_the_run_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With the host app's sync handlers holding every thread, it would stall."""
+    """The store lock stays off the loop, so the copy needs one thread; counting does not."""
     client, calls = _client_counting_pool(summary_routes, monkeypatch)
     path = "/api/stats/timeseries"
     with client:
         assert client.get(path).status_code == 200
-        assert calls == []
+        assert calls == ["run_records"]
         assert client.get(f"{path}?group_by=task_group").status_code == 200
-        assert calls == ["time_series"]
+        assert calls == ["run_records", "run_records", "time_series"]
 
 
 @pytest.mark.parametrize("path", ["/api/tasks", "/api/graphs"])

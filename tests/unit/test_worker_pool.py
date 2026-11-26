@@ -26,6 +26,13 @@ NODE = "celery@a"
 T = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
 
 
+def section(payload: dict[str, object], key: str) -> dict[str, object]:
+    """The ``pool`` or ``autoscaler`` dict of a payload, narrowed for the type checker."""
+    value = payload[key]
+    assert isinstance(value, dict)
+    return value
+
+
 def capture(version: str, pool: str) -> dict[str, object]:
     reply: dict[str, object] = json.loads(
         (DATA / f"celery-{version}" / f"{pool}.json").read_text()
@@ -70,8 +77,8 @@ def test_pool_from_stats_on_celery_5_2_2_capture_returns_slots_without_pool_name
 def test_autoscale_capture_reports_the_minimum_as_max_concurrency() -> None:
     # The reason the ceiling comes from autoscaler.max: the capture's pool dict says 3.
     reply = capture("5.6.3", "autoscale")
-    assert reply["pool"]["max-concurrency"] == 3  # type: ignore[index]
-    assert reply["autoscaler"]["max"] == 10  # type: ignore[index]
+    assert section(reply, "pool")["max-concurrency"] == 3
+    assert section(reply, "autoscaler")["max"] == 10
 
 
 def pool_payload(**pool: object) -> dict[str, object]:
@@ -102,7 +109,7 @@ def test_pool_from_stats_with_unusable_max_concurrency_returns_null_slots(
     bad: object,
 ) -> None:
     payload = pool_payload(implementation="celery.concurrency.prefork:TaskPool")
-    payload["pool"]["max-concurrency"] = bad  # type: ignore[index]
+    section(payload, "pool")["max-concurrency"] = bad
     assert pool_from_stats_payload(payload) == PoolInfo("prefork", None)
 
 
@@ -140,7 +147,7 @@ def test_pool_from_stats_with_unusable_autoscaler_max_returns_null_slots(
 ) -> None:
     # max-concurrency is the autoscaler's minimum, so it must not stand in for the ceiling.
     payload = capture("5.6.3", "autoscale")
-    payload["autoscaler"]["max"] = ceiling  # type: ignore[index]
+    section(payload, "autoscaler")["max"] = ceiling
     assert pool_from_stats_payload(payload) == PoolInfo("prefork", None)
 
 
@@ -371,3 +378,13 @@ def test_worker_ready_for_a_pid_with_stored_values_keeps_them_until_the_next_rep
         NODE, 10, ["app.t"], event_timestamp=T + timedelta(minutes=1)
     )
     assert row(registry, 10) == ("prefork", 8)
+
+
+@pytest.mark.parametrize(
+    "implementation", ["pool", "my.pool:TaskPool", "pool:TaskPool"]
+)
+def test_pool_from_stats_with_a_module_named_pool_returns_null_name(
+    implementation: str,
+) -> None:
+    payload = pool_payload(implementation=implementation, **{"max-concurrency": 4})
+    assert pool_from_stats_payload(payload) == PoolInfo(None, 4)

@@ -28,15 +28,17 @@ def count_active_by_node(
         Nodename to count, with 0 for a nodename that has none.
     """
     counts = dict.fromkeys(since, 0)
+    bounds = {
+        host: None if stamp is None else ensure_tz_aware(stamp)
+        for host, stamp in since.items()
+    }
     for record in records:
         host = record.state_host
-        if record.state != TaskState.STARTED or host is None or host not in since:
+        if record.state != TaskState.STARTED or host is None or host not in bounds:
             continue
-        bound = since[host]
+        bound = bounds[host]
         started = record.state_since
-        if bound is not None and (
-            started is None or ensure_tz_aware(started) < ensure_tz_aware(bound)
-        ):
+        if bound is not None and (started is None or ensure_tz_aware(started) < bound):
             continue
         counts[host] += 1
     return counts
