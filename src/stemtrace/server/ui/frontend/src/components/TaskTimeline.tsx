@@ -76,9 +76,9 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
   const { t1, cut } = axisEnd(start, settledEnd, anyOpen, now)
   const scale: Scale = { start, end: t1, cut, now }
   const span = t1 - start
-  const states = legendStates(
-    rows.filter((row) => row.parts.some((part) => part.kind === 'run')).map((r) => r.task.state),
-  )
+  // Every row's state, as its mark shows; a hatch is Retry, also for an earlier attempt alone
+  const hasTries = parts.some((part) => part.kind === 'tries')
+  const states = legendStates([...rows.map((r) => r.task.state), ...(hasTries ? ['RETRY'] : [])])
 
   return (
     <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
@@ -132,9 +132,6 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
           {parts.some((part) => part.kind === 'queued') && (
             <LegendItem word="Waiting" swatch="bg-track" />
           )}
-          {parts.some((part) => part.kind === 'tries') && (
-            <LegendItem word="Earlier attempt" swatch="retry-hatch" />
-          )}
         </ul>
       </div>
     </section>
@@ -164,7 +161,9 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
   const placement = pct(parts[0].from) > 60 ? 'bottom-end' : 'bottom'
   const openPart = parts.find((part) => part.open)
   // Held at the latest event, so a clock behind the server never reads as a negative time
-  const elapsed = openPart ? Math.max(0, Math.max(scale.now, openPart.to) - openPart.from) : null
+  const elapsed = openPart ? Math.max(scale.now, openPart.to) - openPart.from : null
+  // A clock behind the run's start gives no time to show: the words alone
+  const hasElapsed = elapsed !== null && elapsed > 0
   const lastIndex = parts.length - 1
 
   return (
@@ -204,7 +203,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
                 : look.word
           const time = `${utcLabel(part.from, span)} UTC`
           const content = part.open
-            ? `${words} for ${formatSpan(elapsed)} · ${time}`
+            ? `${words}${hasElapsed ? ` for ${formatSpan(elapsed)}` : ''} · ${time}`
             : `${words} · ${formatSpan(part.to - part.from)} · ${time}`
           return (
             <div
@@ -247,9 +246,13 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
         })}
       </div>
 
-      <div className="text-right text-xs text-muted tabular-nums">
-        {elapsed !== null
-          ? formatSpan(elapsed)
+      <div data-testid="timeline-duration" className="text-right text-xs text-muted tabular-nums">
+        {openPart
+          ? hasElapsed
+            ? formatSpan(elapsed)
+            : openPart.kind === 'queued'
+              ? 'Waiting'
+              : look.word
           : task.duration_ms !== null
             ? formatSpan(task.duration_ms)
             : '–'}

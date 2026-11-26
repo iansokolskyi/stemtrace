@@ -128,7 +128,44 @@ test.describe('Executions timeline: legend', () => {
       'Failure',
       'Retry',
       'Waiting',
-      'Earlier attempt',
+    ])
+  })
+
+  for (const [state, steps, word] of [
+    ['PENDING', [{ state: 'PENDING', s: 1 }], 'Pending'],
+    [
+      'RECEIVED',
+      [
+        { state: 'PENDING', s: 1 },
+        { state: 'RECEIVED', s: 2 },
+      ],
+      'Received',
+    ],
+  ] as const) {
+    test(`lists a ${word} row, as its row mark shows`, async ({ page }) => {
+      const row = run('11110000-0000-4000-8000-000000000011', 'shop.p', state, [...steps])
+      await openTimeline(page, [row])
+
+      await expect(page.getByTestId('timeline-legend-item')).toHaveText([word, 'Waiting'])
+    })
+  }
+
+  test('shows one Retry entry for a hatch, also when only an earlier attempt draws it', async ({
+    page,
+  }) => {
+    const retried = run('33330000-0000-4000-8000-000000000013', 'shop.again', 'SUCCESS', [
+      { state: 'PENDING', s: 0 },
+      { state: 'STARTED', s: 1 },
+      { state: 'RETRY', s: 2, retries: 1 },
+      { state: 'STARTED', s: 3, retries: 1 },
+      { state: 'SUCCESS', s: 4, retries: 1 },
+    ])
+    await openTimeline(page, [retried])
+
+    await expect(page.getByTestId('timeline-legend-item')).toHaveText([
+      'Success',
+      'Retry',
+      'Waiting',
     ])
   })
 
@@ -305,6 +342,26 @@ test.describe('Executions timeline: open runs', () => {
     expect(width).toBeGreaterThan(100)
     await row.locator('[data-part="queued"] [data-fill]').hover()
     await expect(row.getByText(/^Waiting for 30s · /)).toBeVisible()
+  })
+})
+
+test.describe('Executions timeline: clock behind the run', () => {
+  test('a started run says Running with no time when the clock is before its start', async ({
+    page,
+  }) => {
+    const job = run('99990000-0000-4000-8000-000000000009', 'shop.long_job', 'STARTED', [
+      { state: 'PENDING', s: 0 },
+      { state: 'STARTED', s: 2 },
+    ])
+    // 8 s before the run's start
+    await page.clock.setFixedTime(new Date(T0 - 6000))
+    await openTimeline(page, [...threeRuns(), job])
+
+    const row = rowOf(page, 'shop.long_job')
+    await expect(row).not.toContainText('0ms')
+    await expect(row).not.toContainText(' for ')
+    await expect(row.getByTestId('timeline-duration')).toHaveText('Running')
+    await expect(row.getByText('Running · 23:58:02 UTC')).toHaveCount(1)
   })
 })
 

@@ -1,3 +1,3 @@
-- The **Timeline** view on the Executions page uses the same colors, bars and tooltip as the rest of the UI. The axis shows UTC times in 24-hour format, and the legend lists only the states in the rows.
+- The **Timeline** view on the Executions page uses the same colors, bars and tooltip as the rest of the UI. The axis shows UTC times in 24-hour format. The legend lists the state of every row, plus **Waiting** when a row draws a grey wait bar. Runs that are still going run to the current time and show how long they have run.
 - The flow page shows a skeleton while it loads, and "Failed to load flow" in the app's error style when the request fails.
 - The notice for a session signed by a different secret uses the app's colors.
