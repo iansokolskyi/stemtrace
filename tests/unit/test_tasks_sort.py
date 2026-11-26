@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi import FastAPI
@@ -13,8 +13,12 @@ from fastapi.testclient import TestClient
 from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
-from stemtrace.server.stats import RunRecord
 from stemtrace.server.store import GraphStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from stemtrace.server.stats import RunRecord
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
