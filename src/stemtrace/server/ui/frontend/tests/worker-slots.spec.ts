@@ -129,21 +129,42 @@ test.describe('Worker cell pool line and meter', () => {
     await expect(meterOf(web)).toHaveCount(0)
   })
 
-  const withPoolInfo: [string, Partial<MockWorker>][] = [
+  // A live count replaces the registered/seen line; without one the cell keeps it and the pool
+  // line goes below it, with no meter.
+  const counted: [string, Partial<MockWorker>][] = [
     ['pool, slots and active', { pool: 'prefork', concurrency: 8, active: 3 }],
-    ['pool and slots', { pool: 'prefork', concurrency: 8, active: null }],
+    ['pool and active', { pool: 'prefork', concurrency: null, active: 3 }],
+  ]
+  for (const [name, fields] of counted) {
+    test(`with a live count (${name}) the pool line replaces the registered tasks line`, async ({
+      page,
+    }) => {
+      await openOverview(page, [worker({ hostname: 'web-1', ...fields })])
+      const web = cell(page, 'web-1')
+      await expect(poolLine(web)).toBeVisible()
+      await expect(web).not.toContainText('registered tasks')
+    })
+  }
+
+  const uncounted: [string, Partial<MockWorker>][] = [
+    ['pool and slots, active null', { pool: 'prefork', concurrency: 8, active: null }],
     ['pool only', { pool: 'prefork', concurrency: null, active: null }],
     ['slots only', { pool: null, concurrency: 8, active: null }],
     ['an offline host', { status: 'offline', pool: 'prefork', concurrency: 8, active: null }],
   ]
-  for (const [name, fields] of withPoolInfo) {
-    test(`with pool info (${name}) the pool line replaces the registered tasks line`, async ({
+  for (const [name, fields] of uncounted) {
+    test(`without a live count (${name}) the cell keeps its seen line and the pool line sits below it`, async ({
       page,
     }) => {
-      await openOverview(page, [worker({ hostname: 'web-1', last_seen: minutesAgo(1), ...fields })])
+      await openOverview(page, [worker({ hostname: 'web-1', ...fields })])
       const web = cell(page, 'web-1')
+      const seen = web.getByText('1 registered tasks, seen')
+      await expect(seen).toBeVisible()
       await expect(poolLine(web)).toBeVisible()
-      await expect(web).not.toContainText('registered tasks')
+      await expect(meterOf(web)).toHaveCount(0)
+      const seenBox = await seen.boundingBox()
+      const lineBox = await poolLine(web).boundingBox()
+      expect(lineBox?.y).toBeGreaterThan(seenBox?.y ?? Infinity)
     })
   }
 
