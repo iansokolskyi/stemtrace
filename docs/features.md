@@ -644,7 +644,7 @@ tasks stamped later by a worker whose clock is ahead.
   bucket: `p95_runtime_ms` and `p95_queue_wait_ms` (`null` for a bucket with no samples), and
   `runtime_samples` and `queue_wait_samples`. Samples and placement follow the overview, and the
   last bucket also takes runs stamped after now. Without `percentiles`, the response has none of
-  these keys. Combined with `group_by`, or with any value other than `p95`, it is a `422`.
+  these keys. Combined with `group_by`, or with a value other than `p95`, it is a `422`.
 - `GET /api/failures?group_by=exception&within=1h`: tasks whose state is FAILURE, grouped by
   `exception_type`, most failures first. Each group has its count, first and last failure, task
   names and up to 5 of the latest task IDs. Tasks from workers that don't report the exception
