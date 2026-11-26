@@ -13,8 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -25,6 +24,9 @@ from stemtrace.core.events import TaskEvent, TaskState
 from stemtrace.server.api import params
 from stemtrace.server.api.routes import create_api_router
 from stemtrace.server.store import GraphStore, WorkerRegistry
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 GOLDEN = Path(__file__).parent.parent / "data" / "store_lock_routes.json"
@@ -68,7 +70,12 @@ FILL = {"task_id": "root", "root_id": "root", "hostname": "w1@host"}
 # Routes that answer 404 on the seeded store (no worker with that name).
 ALLOWED_404 = {"/api/workers/{hostname}"}
 # Routes that never touch the store, so they have nothing to record.
-NO_STORE_READ = {"/api/health", "/api/health/live", "/api/workers", "/api/workers/{hostname}"}
+NO_STORE_READ = {
+    "/api/health",
+    "/api/health/live",
+    "/api/workers",
+    "/api/workers/{hostname}",
+}
 
 
 class RecordingLock:
@@ -119,9 +126,7 @@ def _seeded() -> GraphStore:
     store.add_event(_event("c0", TaskState.STARTED, 15, **link))
     store.add_event(_event("c0", TaskState.SUCCESS, 10, **link))
     store.add_event(_event("c1", TaskState.STARTED, 14, **link))
-    store.add_event(
-        _event("c1", TaskState.FAILURE, 9, exception_type="Err", **link)
-    )
+    store.add_event(_event("c1", TaskState.FAILURE, 9, exception_type="Err", **link))
     return store
 
 
