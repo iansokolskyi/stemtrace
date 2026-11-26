@@ -1,9 +1,9 @@
 """Differential fuzz: classifier vs the independent reference (see ``anomaly_fuzz``).
 
-CI runs a seeded sample. The full sweep is opt-in and sharded so each locked run
-stays under 10 minutes::
+CI runs a seeded sample. The full sweep is opt-in and sharded (16 shards, ``0/16``
+to ``15/16``) so each locked run stays under 10 minutes::
 
-    ANOMALY_FUZZ_SHARD=0/40 pytest tests/unit/test_anomaly_differential.py -k full
+    ANOMALY_FUZZ_FULL=1 ANOMALY_FUZZ_SHARD=0/16 pytest tests/unit/test_anomaly_differential.py -k full
 """
 
 import os

@@ -1,0 +1,1 @@
+- Fix the inspect probe starting and stopping three times per app start when you add `create_router` to a FastAPI app (seen on FastAPI 0.162.0, not on 0.112.1), which could send one extra inspect broadcast. Starting a running probe and stopping a stopped one now do nothing, and the probe still starts on the next app start.

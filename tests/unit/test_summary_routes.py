@@ -23,6 +23,7 @@ def _event(
     *,
     name: str = "billing.tasks.charge",
     exception_type: str | None = None,
+    exception: str | None = None,
     parent_id: str | None = None,
 ) -> TaskEvent:
     return TaskEvent(
@@ -31,6 +32,7 @@ def _event(
         state=state,
         timestamp=NOW - timedelta(minutes=minutes_ago),
         exception_type=exception_type,
+        exception=exception,
         parent_id=parent_id,
         root_id=parent_id,
     )
@@ -284,6 +286,7 @@ def test_failures_grouped_by_exception(store: GraphStore) -> None:
             "last_seen": "2026-10-18T11:50:00Z",
             "task_names": ["b.y", "billing.tasks.charge"],
             "sample_task_ids": ["v2", "v1"],
+            "latest_message": None,
         },
         {
             "exception_type": "KeyError",
@@ -292,8 +295,83 @@ def test_failures_grouped_by_exception(store: GraphStore) -> None:
             "last_seen": "2026-10-18T11:40:00Z",
             "task_names": ["billing.tasks.charge"],
             "sample_task_ids": ["k1"],
+            "latest_message": None,
         },
     ]
+
+
+def _latest_messages(store: GraphStore) -> dict[str | None, str | None]:
+    body = _client(store).get("/api/failures?within=1h").json()
+    return {g["exception_type"]: g["latest_message"] for g in body["groups"]}
+
+
+def test_failures_latest_message_is_the_only_failures_text(store: GraphStore) -> None:
+    store.add_event(
+        _event(
+            "a",
+            TaskState.FAILURE,
+            5,
+            exception_type="ValueError",
+            exception="ValueError: bad id 7",
+        )
+    )
+    assert _latest_messages(store) == {"ValueError": "ValueError: bad id 7"}
+
+
+def test_failures_latest_message_is_the_newer_failures(store: GraphStore) -> None:
+    for task_id, minutes, text in (("a", 30, "old"), ("b", 5, "new"), ("c", 20, "mid")):
+        store.add_event(
+            _event(
+                task_id,
+                TaskState.FAILURE,
+                minutes,
+                exception_type="ValueError",
+                exception=text,
+            )
+        )
+    assert _latest_messages(store) == {"ValueError": "new"}
+
+
+def test_failures_latest_message_ties_go_to_the_higher_task_id(
+    store: GraphStore,
+) -> None:
+    for task_id in ("a", "c", "b"):
+        store.add_event(
+            _event(
+                task_id,
+                TaskState.FAILURE,
+                10,
+                exception_type="ValueError",
+                exception=f"msg-{task_id}",
+            )
+        )
+    assert _latest_messages(store) == {"ValueError": "msg-c"}
+
+
+def test_failures_latest_message_of_the_newest_may_be_null(store: GraphStore) -> None:
+    """The newest run's message, even when it is null: not an older run's."""
+    store.add_event(
+        _event("a", TaskState.FAILURE, 30, exception_type="E", exception="E: older")
+    )
+    store.add_event(_event("b", TaskState.FAILURE, 5, exception_type="E"))
+    assert _latest_messages(store) == {"E": None}
+
+
+def test_failures_latest_message_is_cut_to_its_first_300_characters(
+    store: GraphStore,
+) -> None:
+    text = "E: " + "z" * 10_000 + "\nlater line"
+    store.add_event(
+        _event("a", TaskState.FAILURE, 5, exception_type="E", exception=text)
+    )
+    assert _latest_messages(store) == {"E": text[:300]}
+
+
+def test_failures_null_class_group_shows_the_newest_message_unchanged(
+    store: GraphStore,
+) -> None:
+    store.add_event(_event("a", TaskState.FAILURE, 5, exception="plain einfo text"))
+    assert _latest_messages(store) == {None: "plain einfo text"}
 
 
 def test_failures_without_within_cover_all_retained(store: GraphStore) -> None:
