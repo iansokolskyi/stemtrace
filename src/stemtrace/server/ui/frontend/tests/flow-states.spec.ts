@@ -59,10 +59,10 @@ for (const theme of ['light', 'dark'] as const) {
       // The query retries three times before it gives up
       const alert = page.getByRole('alert')
       await expect(alert).toBeVisible({ timeout: 15_000 })
-      await expect(alert).toContainText('Failed to load flow')
+      await expect(alert).toContainText("Couldn't load the flow:")
       await expect(alert).not.toContainText(/graph/i)
       await expect(alert).toHaveCSS('background-color', await token(page, 'surface'))
-      await expect(alert.getByText('Failed to load flow')).toHaveCSS(
+      await expect(alert.getByTestId('notice-message')).toHaveCSS(
         'color',
         await token(page, 'failure-t'),
       )

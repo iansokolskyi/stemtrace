@@ -285,7 +285,7 @@ test.describe('Worker page', () => {
   test('says so when the workers cannot be loaded', async ({ page }) => {
     await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto(`/workers/${encodeURIComponent(HOST)}`)
-    await expect(page.getByText('Failed to load worker')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load the worker:/)).toBeVisible({ timeout: 15_000 })
   })
 
   test('a failed background refresh keeps the page and says so', async ({ page }) => {
@@ -302,7 +302,7 @@ test.describe('Worker page', () => {
       "Couldn't refresh this worker; showing the last result.",
     )
     await expect(page.getByRole('heading', { name: HOST, level: 1 })).toBeVisible()
-    await expect(page.getByText('Failed to load worker')).toHaveCount(0)
+    await expect(page.getByText(/^Couldn't load the worker:/)).toHaveCount(0)
   })
 
   test('the recent runs keep their columns when a refetch brings a value for a new one', async ({

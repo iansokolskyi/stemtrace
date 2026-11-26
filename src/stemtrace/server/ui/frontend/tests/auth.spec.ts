@@ -89,7 +89,7 @@ test.describe('Unauthorized API responses', () => {
       'href',
       '/login?next=%2Fworkers',
     )
-    await expect(page.getByText('Failed to load workers')).toHaveCount(0)
+    await expect(page.getByText(/^Couldn't load workers:/)).toHaveCount(0)
   })
 
   test('mismatch notice offers sign-in and a reload recovers', async ({ page }) => {

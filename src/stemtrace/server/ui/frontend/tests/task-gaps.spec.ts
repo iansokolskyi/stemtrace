@@ -47,7 +47,7 @@ test.describe('Breadcrumb on a task page', () => {
   }) => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/tasks/0123456789abcdef')
-    await expect(page.getByText('Failed to load task')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load the task:/)).toBeVisible({ timeout: 15_000 })
     await expect(crumbs(page).getByRole('link')).toHaveText(['Executions'])
     await expect(crumbs(page).locator('span[aria-current="page"]')).toHaveText('01234567')
   })

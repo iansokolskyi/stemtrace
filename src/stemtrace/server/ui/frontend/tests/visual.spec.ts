@@ -523,6 +523,48 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
+// The shared notice and skeleton on list pages: Workers and Executions fail, Executions loads.
+const LIST_STATES = [
+  { name: 'workers', path: '/workers', api: /\/api\/workers$/ },
+  { name: 'executions', path: '/executions', api: /\/api\/tasks(\?|$)/ },
+] as const
+for (const theme of ['light', 'dark'] as const) {
+  for (const state of LIST_STATES) {
+    test(`${state.name} error, ${theme}, 1280px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      withBrokerAndGroups(api)
+      await page.route(state.api, (route) => route.fulfill({ status: 500, body: 'boom' }))
+      await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await page.goto(state.path)
+      // The query retries three times before it gives up
+      await expect(page.getByTestId('notice')).toBeVisible({ timeout: 20_000 })
+      await page.evaluate(() => document.fonts.ready)
+      await expect(page).toHaveScreenshot(`${state.name}-error-${theme}-1280.png`, {
+        fullPage: true,
+      })
+    })
+  }
+
+  test(`executions loading, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    withBrokerAndGroups(api)
+    await page.route(/\/api\/tasks(\?|$)/, () => {})
+    await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+    await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto('/executions')
+    await expect(page.getByTestId('skeleton')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await expect(page).toHaveScreenshot(`executions-loading-${theme}-1280.png`, {
+      fullPage: true,
+    })
+  })
+}
+
 // The Flows list: every kind of row (failed chord with a callback that did not run, success,
 // running, and a root the server has no summary for), against the fixed clock.
 for (const theme of ['light', 'dark'] as const) {

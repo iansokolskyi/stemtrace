@@ -69,7 +69,7 @@ test.describe('Workers page', () => {
       "Couldn't refresh workers; showing the last result.",
     )
     await expect(rowOf(page, 'celery@alpha')).toBeVisible()
-    await expect(page.getByText('Failed to load workers')).toHaveCount(0)
+    await expect(page.getByText(/^Couldn't load workers:/)).toHaveCount(0)
   })
 
   test('a worker that goes offline while Live shows on the next poll', async ({ page }) => {
@@ -319,7 +319,7 @@ test.describe('Workers page', () => {
     test.skip(isRealMode, 'Mock-only test')
     await page.route(/\/api\/workers$/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto('/workers')
-    await expect(page.getByText('Failed to load workers')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load workers:/)).toBeVisible({ timeout: 15_000 })
   })
 
   for (const theme of ['light', 'dark'] as const) {

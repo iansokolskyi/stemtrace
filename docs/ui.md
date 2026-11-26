@@ -41,6 +41,11 @@ Every page sits in the same frame:
   5 seconds. **Connecting**, **Offline** (the server is unreachable) and **Unauthorized** (your
   session was signed by a different server process) are the other states. The Overview, the sidebar
   badges, Registry and Anomalies refresh on their own timers, with or without a WebSocket.
+- **Loading and errors.** On Executions (the table and the Timeline view), Flows, the Flow page, the
+  Task page, Workers, the Worker page, Registry, Anomalies and the triage panel's run list, a
+  loading page shows placeholder blocks in the shape of its content. A failed request shows
+  `Couldn't load the thing: the reason.` with a **Retry** button that sends the request again. The
+  reason is the HTTP status the server answered, or says that the server couldn't be reached.
 - **Old links.** `/?state=FAILURE` and other task-list links at `/` open Executions with the same
   filters. `/graphs` opens Flows, and `/graph/<id>` opens `/flows/<id>`.
 

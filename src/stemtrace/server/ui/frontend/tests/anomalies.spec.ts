@@ -167,7 +167,9 @@ test.describe('Anomalies page', () => {
 
   test('a failing endpoint says so instead of showing all clear', async ({ page }) => {
     await open(page, 'error')
-    await expect(page.getByTestId('anomalies-error')).toHaveText('Failed to load anomalies.')
+    await expect(page.getByTestId('notice-message')).toHaveText(
+      "Couldn't load anomalies: the server answered 500.",
+    )
     await expect(page.getByTestId('anomalies-empty')).toHaveCount(0)
   })
 
@@ -176,8 +178,8 @@ test.describe('Anomalies page', () => {
     const api = await open(page, [])
     api.setAnomalyDelay(14_000)
     await page.goto('/anomalies')
-    await expect(page.getByTestId('anomalies-error')).toHaveText(
-      'Anomalies are taking a long time to load.',
+    await expect(page.getByTestId('notice-message')).toHaveText(
+      "Couldn't load anomalies: the server took too long to answer.",
       { timeout: 20_000 },
     )
     await expect(page.getByTestId('anomalies-empty')).toHaveCount(0)
@@ -231,8 +233,8 @@ test.describe('Anomalies page', () => {
       route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"boom"}' }),
     )
     await page.goto('/anomalies')
-    await expect(page.getByTestId('anomalies-fleet-error')).toHaveText(
-      "Couldn't load the notice that no workers are online.",
+    await expect(page.getByTestId('notice-message')).toHaveText(
+      "Couldn't load the notice that no workers are online: the server answered 500.",
     )
     await expect(page.getByTestId('fleet-banner')).toHaveCount(0)
   })

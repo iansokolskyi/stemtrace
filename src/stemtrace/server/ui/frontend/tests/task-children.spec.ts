@@ -55,7 +55,7 @@ test.describe('ChildTasks', () => {
     await setupMockApi(page, { useDefaults: false })
     await page.goto('/tasks/no-such-task')
     // The query retries a failed request (1 s, 2 s, 4 s) before it gives up
-    await expect(page.getByText('Failed to load task')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load the task:/)).toBeVisible({ timeout: 15_000 })
     await expect(page.getByRole('link', { name: 'Back to executions' })).toHaveAttribute(
       'href',
       '/executions',
