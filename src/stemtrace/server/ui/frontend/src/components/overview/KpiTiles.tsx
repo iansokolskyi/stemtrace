@@ -161,7 +161,9 @@ function WorkersTile({
   const grade: Grade = offline.length ? 'bad' : 'ok'
   const note = first
     ? `${offline.length} offline: ${shortHost(first.hostname)} for ${formatSpan(Date.now() - Date.parse(first.leading.last_seen))}`
-    : 'All online'
+    : total === 0
+      ? 'No workers registered'
+      : 'All online'
   return (
     <button
       type="button"
@@ -171,7 +173,7 @@ function WorkersTile({
     >
       <TileFace
         label="Workers online"
-        value={hosts || overview ? `${online}/${total}` : ''}
+        value={hosts || overview ? (total === 0 ? '0' : `${online}/${total}`) : ''}
         grade={grade}
         note={hosts || overview ? note : ''}
         noteIcon="x"

@@ -48,8 +48,6 @@ export function useRunsSeries(within: string | undefined, bucket: string | undef
     queryKey: ['overview', 'series', within, bucket],
     queryFn: () => fetchTimeseries(within, bucket),
     refetchInterval: OVERVIEW_POLL_MS,
-    // A span list waits for this answer, so a failure must show at once, not after retries
-    retry: false,
   })
 }
 
@@ -78,7 +76,6 @@ export function useGroupSeries(within: string | undefined, enabled: boolean) {
     queryKey: ['overview', 'group-series', within],
     queryFn: () => fetchGroupTimeseries(within),
     refetchInterval: OVERVIEW_POLL_MS,
-    retry: false,
   })
 }
 

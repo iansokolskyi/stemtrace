@@ -17,7 +17,8 @@ export function useProblemCounts(): {
   const workers = useQuery({
     ...workersSnapshot,
     refetchInterval: BADGE_POLL_MS,
-    retry: false,
+    // No `retry: false`: this key is shared with the Overview's Workers part, which uses the
+    // client's default retries and would otherwise fail on the first miss
   })
   const registry = useQuery({
     ...registrySnapshot,
