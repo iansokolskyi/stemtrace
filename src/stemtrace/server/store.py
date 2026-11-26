@@ -1326,7 +1326,7 @@ class GraphStore:
         from_dt = None if from_date is None else ensure_tz_aware(from_date)
 
         def matches(n: TaskNode) -> bool:
-            # Every filter, in the order of cost: the cheap ones first.
+            """Whether the task passes every filter; the cheap ones are checked first."""
             return (
                 n.node_type == NodeType.TASK
                 and (wanted is None or n.state in wanted)
