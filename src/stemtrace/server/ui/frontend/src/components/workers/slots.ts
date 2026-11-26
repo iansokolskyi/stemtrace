@@ -6,7 +6,7 @@ export interface PoolUsage {
   line: string | null
   /** True when a live `active` count backs the line: it then replaces the registered/seen line. */
   counted: boolean
-  /** `3 of 8 slots`, for a row; null unless both numbers are known. */
+  /** `3 of 8 slots` (`9 active, 8 slots` over capacity), for a row; null unless both are known. */
   count: string | null
   /** Busy share of the slots, clamped to 0..1; null unless both numbers are known. */
   fill: number | null

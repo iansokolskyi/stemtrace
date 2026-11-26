@@ -70,6 +70,7 @@ test.describe('Worker cell pool line and meter', () => {
     const web = cell(page, 'web-1')
     await expect(poolLine(web)).toHaveText('threads pool, 0 of 4 slots active')
     await expect(fillOf(web)).toHaveAttribute('style', /width:\s*0%/)
+    await expect(web).not.toContainText('seen')
   })
 
   test('active above concurrency shows the real numbers and a full bar', async ({ page }) => {
@@ -134,6 +135,8 @@ test.describe('Worker cell pool line and meter', () => {
   const counted: [string, Partial<MockWorker>][] = [
     ['pool, slots and active', { pool: 'prefork', concurrency: 8, active: 3 }],
     ['pool and active', { pool: 'prefork', concurrency: null, active: 3 }],
+    ['slots and active, no pool', { pool: null, concurrency: 8, active: 3 }],
+    ['pool, slots and active 0', { pool: 'prefork', concurrency: 8, active: 0 }],
   ]
   for (const [name, fields] of counted) {
     test(`with a live count (${name}) the pool line replaces the registered tasks line`, async ({
@@ -197,6 +200,8 @@ test.describe('Worker cell pool line and meter', () => {
     const web = cell(page, 'web-1')
     await expect(poolLine(web)).toHaveCount(0)
     await expect(meterOf(web)).toHaveCount(0)
+    // An inspect-off server sends this for every live row: the card must not go empty
+    await expect(web).toContainText('1 registered tasks, seen')
   })
 
   test('a host with a stopped old pid and a live new one shows the live pid', async ({ page }) => {
