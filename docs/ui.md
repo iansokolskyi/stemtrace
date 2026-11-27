@@ -55,10 +55,15 @@ Every page sits in the same frame:
     the stale line shows above it (Executions, the Timeline view, the triage panel's run list, and
     the Worker page when the worker isn't listed).
   - When the next page of Executions or Flows fails, the loaded rows stay and **Couldn't load
-    more.** with **Retry** appears below the list. The next page's failure and a failed refresh of
-    the first page are independent, so both lines can show. A poll never asks again for a next
-    page that failed; only **Retry** does. In the triage panel, **Show more** that fails also
-    keeps the rows and says **Couldn't load more.**, with no stale line.
+    more.** with **Retry** appears below the list. If the first page's refresh fails after that,
+    both lines show. A poll never asks again for a next page that failed; only **Retry** does.
+  - Known limitations in 0.5:
+    - If you scroll to the end of Executions or Flows while the first page can't refresh, the list
+      can show **Couldn't load more.** even after the next page loads, until you select **Retry**.
+      The **Couldn't refresh** line is hidden while that next page loads.
+    - In the triage panel, when **Show more** or a state filter can't load, the list shows
+      **Couldn't load more.** while the automatic retries run. After them, the rows are replaced by
+      `Couldn't load runs.` with **Retry**.
   - On the Task and Flow pages, with no data, a 404 says that the task or flow is no longer stored
     and may have left the retention window, with a link back and no **Retry**. A 404 isn't
     retried. With data held, a 404 on a refresh replaces the stale line with `This task is no
