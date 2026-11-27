@@ -122,7 +122,7 @@ test.describe('Task page layout', () => {
   test('mono type is for IDs, names, tracebacks, arguments and output only', async ({ page }) => {
     const { task, child } = fullTask()
     await openTask(page, task, child)
-    const MONO = /Overpass Mono Variable/
+    const MONO = /JetBrains Mono Variable/
     const page_ = page.getByTestId('task-header')
 
     for (const mono of [

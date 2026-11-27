@@ -9,7 +9,7 @@ import { useCarriedRange } from '@/hooks/useCarriedRange'
 import { shortHost } from '@/utils/format'
 
 const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-medium whitespace-nowrap'
 const BUTTON_QUIET = `${BUTTON} bg-raised text-ink hover:bg-press`
 const BUTTON_PRIMARY = `${BUTTON} bg-ink text-on-ink hover:opacity-90`
 

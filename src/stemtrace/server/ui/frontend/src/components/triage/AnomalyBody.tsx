@@ -57,7 +57,7 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
                   {anomaly.name ? (
                     <TaskName name={anomaly.name} />
                   ) : (
-                    <span className="text-small font-semibold">Fleet</span>
+                    <span className="text-small font-medium">Fleet</span>
                   )}
                 </button>
                 <p className="m-0 text-small text-muted [overflow-wrap:anywhere]">
@@ -85,7 +85,7 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
             <Icon name="alert" size={18} className="[stroke-width:2.6]" />
           </div>
           <div className="min-w-0">
-            <h3 className="m-0 mb-0.5 text-body font-bold">{kindHeading(anomaly)}</h3>
+            <h3 className="m-0 mb-0.5 text-body font-medium">{kindHeading(anomaly)}</h3>
             <p className="m-0 mb-2 text-body [overflow-wrap:anywhere]">
               {explain(anomaly)}{' '}
               <span className="text-muted">Since {sinceText(anomaly.since)}.</span>

@@ -26,13 +26,13 @@ export function WorkerStrip({
   return (
     <section aria-labelledby="h-workers" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-workers" className="text-title font-bold">
+        <h2 id="h-workers" className="text-title font-semibold">
           Workers
         </h2>
         <span className="grow" />
         <Link
           to="/workers"
-          className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
+          className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press"
         >
           All workers
         </Link>
@@ -61,7 +61,7 @@ export function WorkerStrip({
                   offline ? 'bg-[color-mix(in_srgb,var(--failure)_8%,var(--raised))]' : 'bg-raised',
                 )}
               >
-                <span title={hostname} className="max-w-full truncate text-body font-bold">
+                <span title={hostname} className="max-w-full truncate text-body font-medium">
                   {shortHost(hostname)}
                 </span>
                 <WorkerStatus status={leading.status} />

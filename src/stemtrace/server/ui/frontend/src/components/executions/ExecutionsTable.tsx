@@ -163,7 +163,7 @@ function EmptyTable({
           <button
             type="button"
             onClick={onClear}
-            className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-semibold text-ink hover:bg-press"
+            className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-medium text-ink hover:bg-press"
           >
             Clear filters
           </button>
@@ -176,7 +176,7 @@ function EmptyTable({
 function HeaderRow({ columns, template }: { columns: Column[]; template: string }): ReactElement {
   return (
     <div
-      className="sticky top-0 z-10 grid items-center border-b border-rule bg-surface text-small font-semibold text-muted"
+      className="th-band sticky top-0 z-10 grid items-center"
       style={{ gridTemplateColumns: template, height: 36 }}
     >
       {columns.map((column, index) => (
@@ -255,7 +255,7 @@ function TableBox({
           <button
             type="button"
             onClick={showNew}
-            className="h-6 rounded-[3px] bg-ink px-2.5 text-small font-semibold text-on-ink"
+            className="h-6 rounded-[3px] bg-ink px-2.5 text-small font-medium text-on-ink"
           >
             {newCount} new
           </button>

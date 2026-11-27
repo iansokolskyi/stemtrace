@@ -6,9 +6,9 @@ import { DEFAULT_RANGE, type Range, WINDOW_WORDS } from '@/routes/-search'
 import { formatPercent } from '@/utils/format'
 
 const CHIP =
-  'rounded-[3px] bg-raised px-2 py-0.5 text-small text-muted hover:bg-press hover:text-ink aria-[current=page]:font-semibold aria-[current=page]:text-ink aria-[current=page]:[outline-offset:-1.5px] aria-[current=page]:[outline:1.5px_solid_var(--ink)]'
+  'rounded-[3px] bg-raised px-2 py-0.5 text-small text-muted hover:bg-press hover:text-ink aria-[current=page]:font-medium aria-[current=page]:text-ink aria-[current=page]:[outline-offset:-1.5px] aria-[current=page]:[outline:1.5px_solid_var(--ink)]'
 const LINK =
-  'flex items-center justify-between gap-2 rounded-[3px] px-2.5 py-[5px] text-body text-muted hover:bg-hover hover:text-ink aria-[current=page]:bg-raised aria-[current=page]:font-semibold aria-[current=page]:text-ink'
+  'flex items-center justify-between gap-2 rounded-[3px] px-2.5 py-[5px] text-body text-muted hover:bg-hover hover:text-ink aria-[current=page]:bg-raised aria-[current=page]:font-medium aria-[current=page]:text-ink'
 
 /** Over this a group's failure rate is drawn as a failure. */
 const HIGH_FAILURE_RATE = 0.01
@@ -38,7 +38,7 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
   return (
     <>
       <nav aria-label="Groups" className="mt-4 flex flex-col gap-0.5">
-        <p className="px-2.5 pb-1 text-small font-semibold text-muted">Groups</p>
+        <p className="px-2.5 pb-1 text-small font-medium text-muted">Groups</p>
         {groups.map((group) => (
           <Link
             key={group.name}
@@ -54,7 +54,7 @@ export function SidebarGroups({ onNavigate }: { onNavigate?: () => void }): Reac
       </nav>
       {tags.length > 0 && (
         <nav aria-label="Tags" className="mt-4">
-          <p className="px-2.5 pb-1 text-small font-semibold text-muted">Tags</p>
+          <p className="px-2.5 pb-1 text-small font-medium text-muted">Tags</p>
           <div className="flex flex-wrap gap-1.5 px-2.5">
             {tags.map((tag) => (
               <Link
@@ -88,7 +88,7 @@ function FailureRate({
       title={`Failure rate${window ? `, ${window}` : ''}`}
       className={
         rate > HIGH_FAILURE_RATE
-          ? 'flex-none text-meta font-bold text-failure-t'
+          ? 'flex-none text-meta font-medium text-failure-t'
           : 'flex-none text-meta text-muted'
       }
     >

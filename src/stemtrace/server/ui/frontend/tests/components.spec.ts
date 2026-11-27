@@ -44,14 +44,14 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(page.locator('[data-state]').first()).toBeVisible()
     })
 
-    test('failure is loud: ink bold word and a filled failure block', async ({ page }) => {
+    test('failure is loud: ink medium-weight word and a filled failure block', async ({ page }) => {
       const failure = chip(page, 'FAILURE')
       await expect(failure).toHaveAttribute('data-variant', 'loud')
       const block = failure.locator('[data-status-icon]')
       await expect(block).toHaveCSS('background-color', await tokenColour(page, 'failure'))
       await expect(block).toHaveCSS('color', await tokenColour(page, 'on-failure'))
       await expect(failure).toHaveCSS('color', await tokenColour(page, 'ink'))
-      await expect(failure).toHaveCSS('font-weight', '700')
+      await expect(failure).toHaveCSS('font-weight', '500')
     })
 
     test('success is quiet: muted regular word and no filled block', async ({ page }) => {
@@ -86,7 +86,7 @@ for (const theme of ['light', 'dark'] as const) {
 test.describe('TaskName', () => {
   const LONG = 'billing.invoices.tasks.reminders.overdue.send_reminder'
 
-  test('module is muted and the last segment is semibold, text is the full name', async ({
+  test('module is muted and the last segment is medium weight, text is the full name', async ({
     page,
   }) => {
     const api = await setupMockApi(page, { useDefaults: false })
@@ -94,14 +94,14 @@ test.describe('TaskName', () => {
     await page.goto('/executions')
     const name = page.getByText('app.billing.send', { exact: true })
     await expect(name).toHaveAttribute('title', 'app.billing.send')
-    await expect(name).toHaveCSS('font-family', /Overpass Mono Variable/)
+    await expect(name).toHaveCSS('font-family', /JetBrains Mono Variable/)
     await expect(name.locator('[data-task-module]')).toHaveText('app.billing.')
     await expect(name.locator('[data-task-module]')).toHaveCSS(
       'color',
       await tokenColour(page, 'muted'),
     )
     await expect(name.locator('[data-task-last]')).toHaveText('send')
-    await expect(name.locator('[data-task-last]')).toHaveCSS('font-weight', '600')
+    await expect(name.locator('[data-task-last]')).toHaveCSS('font-weight', '500')
   })
 
   test('at 400px a long name keeps its last segment whole and cuts the module', async ({

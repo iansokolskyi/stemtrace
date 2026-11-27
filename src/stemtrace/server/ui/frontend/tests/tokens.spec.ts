@@ -76,6 +76,32 @@ for (const mode of ['light', 'dark'] as const) {
       expect(contrast(t[`on-${s}`], t[s]), `on-${s} on ${s}`).toBeGreaterThanOrEqual(4.5)
     }
     expect(contrast(t['on-ink'], t.ink), 'on-ink on ink').toBeGreaterThanOrEqual(4.5)
+    expect(
+      contrast(t['on-success'], t['success-quiet']),
+      'on-success on success-quiet',
+    ).toBeGreaterThanOrEqual(4.5)
+  })
+
+  test(`the quiet success fill is a visible graphical object on the surface (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    // WCAG 1.4.11: a bar or block needs 3:1 against what it sits on.
+    expect(
+      contrast(t['success-quiet'], t.surface),
+      'success-quiet on surface',
+    ).toBeGreaterThanOrEqual(3)
+    expect(contrast(t.failure, t.surface), 'failure on surface').toBeGreaterThanOrEqual(3)
+  })
+
+  test(`the header band is a tint of the surface that keeps column headers readable (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    expect(t.band).not.toBe(t.surface)
+    expect(contrast(t.muted, t.band), 'muted on band').toBeGreaterThanOrEqual(4.5)
+  })
+
+  test(`success and failure keep one hue in both themes (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    expect(t.success).toBe('#30a46c')
+    expect(t.failure).toBe('#e5484d')
   })
 }
 

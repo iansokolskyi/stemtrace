@@ -26,7 +26,7 @@ export function TaskName({ name, className }: TaskNameProps): ReactElement {
           {module}
         </span>
       )}
-      <span data-task-last className="max-w-full shrink-0 truncate font-semibold">
+      <span data-task-last className="max-w-full shrink-0 truncate font-medium">
         {last}
       </span>
     </span>

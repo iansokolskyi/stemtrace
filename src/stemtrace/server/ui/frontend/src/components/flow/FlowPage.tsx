@@ -27,7 +27,7 @@ const ZOOM_MAX = 1.4
 const NOW_TICK_MS = 1000
 
 const BUTTON =
-  'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
+  'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-small font-medium whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
 
 const reducedMotion = (): boolean => {
   try {

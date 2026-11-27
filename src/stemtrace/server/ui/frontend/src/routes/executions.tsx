@@ -92,7 +92,7 @@ function TasksPage() {
           type="button"
           aria-pressed={viewMode === mode}
           onClick={() => handleViewModeChange(mode)}
-          className="h-[26px] rounded-[2px] px-[11px] text-small font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+          className="h-[26px] rounded-[2px] px-[11px] text-small font-medium text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
         >
           {mode === 'list' ? 'List' : 'Timeline'}
         </button>

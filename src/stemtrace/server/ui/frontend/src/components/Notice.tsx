@@ -38,7 +38,7 @@ export function Notice({ tone, action, children }: NoticeProps): ReactElement {
       className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-lg bg-surface px-4 py-8 text-small"
     >
       <Icon name="alert" size={16} className="flex-none text-failure-t" />
-      <span data-testid="notice-message" className="font-semibold text-failure-t">
+      <span data-testid="notice-message" className="font-medium text-failure-t">
         {children}
       </span>
       {action}
@@ -75,7 +75,7 @@ export function MoreFailed({
       data-testid="more-failed"
       className="m-0 mt-3 flex flex-wrap items-center justify-center gap-x-2 text-small text-failure-t"
     >
-      <span className="font-semibold">Couldn&apos;t load more.{reason && ` ${reason}`}</span>
+      <span className="font-medium">Couldn&apos;t load more.{reason && ` ${reason}`}</span>
       <RetryButton retry={retry} busy={busy} />
     </p>
   )

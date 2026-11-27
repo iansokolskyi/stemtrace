@@ -75,7 +75,7 @@ export function FilterPopover(props: FilterPopoverProps): ReactElement {
 function FieldList({ onPickField }: FilterPopoverProps): ReactElement {
   return (
     <div className="flex flex-col gap-0.5">
-      <p className="m-0 px-2 pt-1.5 pb-1 text-small font-bold text-muted">Filter by</p>
+      <p className="m-0 px-2 pt-1.5 pb-1 text-small font-medium text-muted">Filter by</p>
       {FIELDS.map((field) => (
         <button key={field} type="button" className={itemButton} onClick={() => onPickField(field)}>
           {FIELD_LABEL[field]}
@@ -213,7 +213,7 @@ function ApplyButton({ disabled = false }: { disabled?: boolean }): ReactElement
     <button
       type="submit"
       disabled={disabled}
-      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-small font-semibold text-on-ink disabled:cursor-not-allowed disabled:opacity-40"
+      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-small font-medium text-on-ink disabled:cursor-not-allowed disabled:opacity-40"
     >
       Apply
     </button>
@@ -271,7 +271,7 @@ function TimeEditor({ filters, onCommit, onClose }: FilterPopoverProps): ReactEl
           <button
             key={preset.label}
             type="button"
-            className="h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-semibold text-ink hover:bg-press"
+            className="h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-medium text-ink hover:bg-press"
             onClick={() => {
               const today = new Date()
               onCommit(

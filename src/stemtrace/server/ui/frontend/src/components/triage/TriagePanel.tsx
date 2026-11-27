@@ -91,7 +91,7 @@ function Crumb({
     <span
       aria-current="page"
       title={title}
-      className="max-w-[280px] truncate text-small font-bold text-ink"
+      className="max-w-[280px] truncate text-small font-medium text-ink"
     >
       {title}
     </span>
@@ -198,7 +198,7 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
             type="button"
             onClick={panel.pop}
             aria-label={`Back to ${prev ? prevText.title : 'Overview'}`}
-            className="inline-flex h-[30px] items-center gap-1.5 rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
+            className="inline-flex h-[30px] items-center gap-1.5 rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press"
           >
             <Icon name="back" size={14} />
             Back
@@ -230,7 +230,7 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
             type="button"
             aria-pressed={wide}
             onClick={() => setWide(!wide)}
-            className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press aria-pressed:bg-ink aria-pressed:text-on-ink"
+            className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press aria-pressed:bg-ink aria-pressed:text-on-ink"
           >
             {wide ? 'Collapse' : 'Expand'}
           </button>
@@ -249,7 +249,7 @@ export function TriagePanel({ data }: { data: PanelData }): ReactElement | null 
         <h2
           ref={titleRef}
           tabIndex={-1}
-          className="m-0 text-title leading-snug font-bold [overflow-wrap:anywhere]"
+          className="m-0 text-title leading-snug font-semibold [overflow-wrap:anywhere]"
         >
           {topText.title}
         </h2>

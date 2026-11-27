@@ -84,7 +84,7 @@ function WorkersPage() {
                       <Link
                         to="/workers/$hostname"
                         params={{ hostname }}
-                        className="font-mono font-bold after:absolute after:inset-0"
+                        className="font-mono font-medium after:absolute after:inset-0"
                       >
                         {hostname}
                       </Link>

@@ -15,7 +15,7 @@ export function AnomalyFlag({ kind, className }: AnomalyFlagProps): ReactElement
     <span
       data-anomaly-flag={kind}
       className={clsx(
-        'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-small leading-5 font-bold text-ink',
+        'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-small leading-5 font-medium text-ink',
         className,
       )}
     >

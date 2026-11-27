@@ -83,7 +83,7 @@ function Figure({ term, value }: { term: string; value: string }): ReactElement 
   return (
     <div className="flex gap-1.5">
       <dt className="text-muted">{term}</dt>
-      <dd className="font-bold">{value}</dd>
+      <dd className="font-medium">{value}</dd>
     </div>
   )
 }

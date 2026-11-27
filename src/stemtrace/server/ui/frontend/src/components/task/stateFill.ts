@@ -6,7 +6,7 @@
 export function stateFill(state: string): string {
   switch (state) {
     case 'SUCCESS':
-      return 'bg-success'
+      return 'bg-success-quiet'
     case 'FAILURE':
       return 'bg-failure'
     case 'RETRY':

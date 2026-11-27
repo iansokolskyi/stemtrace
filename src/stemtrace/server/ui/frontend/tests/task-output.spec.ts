@@ -25,7 +25,7 @@ test.describe('TaskOutput', () => {
     await expect(page.getByRole('region', { name: 'Output' })).toBeVisible()
     const text = section(page).getByTestId('output-text')
     await expect(text).toHaveText('hello\nworld')
-    await expect(text).toHaveCSS('font-family', /Overpass Mono Variable/)
+    await expect(text).toHaveCSS('font-family', /JetBrains Mono Variable/)
     await expect(text).toHaveCSS('background-color', await tokenColour(page, 'bg'))
     await expect(text).toHaveCSS('color', await tokenColour(page, 'ink'))
   })

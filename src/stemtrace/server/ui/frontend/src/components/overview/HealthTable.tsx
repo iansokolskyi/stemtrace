@@ -18,8 +18,7 @@ import { Sparkline } from './Sparkline'
 /** A failure rate above this tints the row and makes the figure loud (the prototype's `prob`). */
 const PROBLEM_RATE = 0.01
 
-const TH =
-  'h-9 whitespace-nowrap border-b border-rule bg-surface px-2.5 text-left text-small font-semibold text-muted first:pl-4 last:pr-4'
+const TH = 'th-band h-9 whitespace-nowrap px-2.5 text-left first:pl-4 last:pr-4'
 const TD = 'whitespace-nowrap px-2.5 py-1 text-small first:pl-4 last:pr-4'
 const NUM = 'text-right tabular-nums'
 
@@ -76,7 +75,7 @@ export function HealthTable({
   return (
     <section aria-labelledby="h-health" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-health" className="text-title font-bold">
+        <h2 id="h-health" className="text-title font-semibold">
           Task health by group
         </h2>
         <span className="min-h-4 text-small text-muted">{windowWords ?? 'all runs held'}</span>
@@ -126,7 +125,7 @@ export function HealthTable({
                   <Fragment key={group.name}>
                     <tr
                       data-testid="health-group"
-                      className="relative bg-raised font-bold has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
+                      className="relative bg-raised font-medium has-[[data-on]]:bg-[color-mix(in_srgb,var(--ink)_10%,var(--surface))]"
                     >
                       <td className={TD}>
                         <button
@@ -195,7 +194,7 @@ export function HealthTable({
                               </button>
                             </td>
                             <td className={clsx(TD, NUM)}>{formatCount(task.runs)}</td>
-                            <td className={clsx(TD, NUM, bad && 'font-bold text-failure-t')}>
+                            <td className={clsx(TD, NUM, bad && 'font-medium text-failure-t')}>
                               {bad && (
                                 <Icon name="x" size={12} className="mr-1 inline align-[-1px]" />
                               )}

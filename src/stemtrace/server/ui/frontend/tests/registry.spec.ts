@@ -279,7 +279,7 @@ test.describe('Registry page', () => {
     await expect(rowOf(page, 'app.add').getByRole('cell').nth(STATS_COLUMNS.runs)).toHaveText('0')
   })
 
-  test('a failure rate above 1% is bold and in the failure colour; 1% and under is not', async ({
+  test('a failure rate above 1% is medium weight and in the failure colour; 1% and under is not', async ({
     page,
   }) => {
     test.skip(isRealMode, 'Mock-only test')
@@ -292,11 +292,11 @@ test.describe('Registry page', () => {
     await loadRegistryPage(page, () => page.goto('/registry'))
     const fail = (name: string) => rowOf(page, name).getByRole('cell').nth(STATS_COLUMNS.fail)
     await expect(fail('a.high')).toHaveText('2.0%')
-    await expect(fail('a.high')).toHaveCSS('font-weight', '700')
+    await expect(fail('a.high')).toHaveCSS('font-weight', '500')
     await expect(fail('a.edge')).toHaveText('1.0%')
-    await expect(fail('a.edge')).not.toHaveCSS('font-weight', '700')
+    await expect(fail('a.edge')).not.toHaveCSS('font-weight', '500')
     await expect(fail('a.none')).toHaveText('0%')
-    await expect(fail('a.none')).not.toHaveCSS('font-weight', '700')
+    await expect(fail('a.none')).not.toHaveCSS('font-weight', '500')
   })
 
   test('when the stats request fails the table still shows, with empty stats cells', async ({
@@ -319,7 +319,7 @@ test.describe('Registry page', () => {
     await expect(table(page).getByText('0', { exact: true })).toHaveCount(0)
   })
 
-  test('a task name shows its module muted and the task in semibold, full name on hover', async ({
+  test('a task name shows its module muted and the task in medium weight, full name on hover', async ({
     page,
   }) => {
     test.skip(isRealMode, 'Mock-only test')

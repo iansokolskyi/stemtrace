@@ -90,7 +90,7 @@ export function Breadcrumbs(): ReactElement {
     crumbs.push({
       key: 'crumb',
       node: (
-        <span aria-current="page" className="font-bold">
+        <span aria-current="page" className="font-medium">
           {crumb}
         </span>
       ),
@@ -118,7 +118,7 @@ function Last({ title, children }: { title: string; children: ReactNode }): Reac
     <span
       aria-current="page"
       title={title}
-      className="min-w-0 overflow-hidden text-ellipsis font-mono text-small font-bold"
+      className="min-w-0 overflow-hidden text-ellipsis font-mono text-small font-medium"
     >
       {children}
     </span>

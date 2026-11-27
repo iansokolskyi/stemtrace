@@ -8,7 +8,7 @@ import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /**
  * The type scale and weight roles (restyle PR 3): every page title is one `PageHeader` at
- * 22 px / 800, section heads are 15 px / 700 and sub-headings are muted 12 px / 600. Mock mode
+ * 22 px / 600, section heads are 15 px / 600 and sub-headings are muted 12 px / 500. Mock mode
  * only: the Overview numbers come from `fixtures/overview.ts`.
  */
 
@@ -28,7 +28,7 @@ async function open(page: Page, path: string): Promise<void> {
 async function expectTitleStyle(page: Page): Promise<void> {
   const title = page.getByRole('heading', { level: 1 })
   await expect(title).toHaveCSS('font-size', '22px')
-  await expect(title).toHaveCSS('font-weight', '800')
+  await expect(title).toHaveCSS('font-weight', '600')
   await expect(title).toHaveCSS('letter-spacing', '-0.33px')
 }
 
@@ -42,7 +42,7 @@ async function expectSummaryOnTitleRow(page: Page, summary: Locator): Promise<vo
 }
 
 for (const path of PAGES) {
-  test(`page title on ${path} is 22 px, weight 800, tracked -0.015em`, async ({ page }) => {
+  test(`page title on ${path} is 22 px, weight 600, tracked -0.015em`, async ({ page }) => {
     await open(page, path)
     await expectTitleStyle(page)
   })
@@ -62,22 +62,22 @@ test.describe('Overview heading levels', () => {
     await open(page, '/')
     const wrong = page.getByRole('heading', { name: 'What’s wrong', level: 2 })
     await expect(wrong).toHaveCSS('font-size', '15px')
-    await expect(wrong).toHaveCSS('font-weight', '700')
+    await expect(wrong).toHaveCSS('font-weight', '600')
 
     const sub = page.getByRole('heading', { name: 'Failures by exception', level: 3 })
     await expect(sub).toHaveCSS('font-size', '12px')
-    await expect(sub).toHaveCSS('font-weight', '600')
+    await expect(sub).toHaveCSS('font-weight', '500')
 
     const table = page.getByRole('table', { name: 'Failures by exception' })
     const exception = table.getByRole('button').first()
-    await expect(exception).toHaveCSS('font-family', /Overpass Variable/)
-    await expect(exception).toHaveCSS('font-weight', '600')
+    await expect(exception).toHaveCSS('font-family', /Inter Variable/)
+    await expect(exception).toHaveCSS('font-weight', '500')
     await expect(exception).not.toHaveCSS('font-family', /Mono/)
   })
 })
 
 test.describe('Header variants', () => {
-  test('Task page title (stacked header) is 22 px / 800 and sits under the module line', async ({
+  test('Task page title (stacked header) is 22 px / 600 and sits under the module line', async ({
     page,
   }) => {
     await openTask(page, successTask())
@@ -87,7 +87,7 @@ test.describe('Header variants', () => {
     expect((module?.y ?? 0) + (module?.height ?? 0)).toBeLessThanOrEqual(title?.y ?? 0)
   })
 
-  test('Task page exception class is ink, sans, 600 (not failure red or mono)', async ({
+  test('Task page exception class is ink, sans, 500 (not failure red or mono)', async ({
     page,
   }) => {
     await openTask(
@@ -97,13 +97,13 @@ test.describe('Header variants', () => {
     const exception = page.getByRole('region', { name: 'Exception' }).getByText('GatewayTimeout', {
       exact: true,
     })
-    await expect(exception).toHaveCSS('font-weight', '600')
-    await expect(exception).toHaveCSS('font-family', /Overpass Variable/)
+    await expect(exception).toHaveCSS('font-weight', '500')
+    await expect(exception).toHaveCSS('font-family', /Inter Variable/)
     await expect(exception).not.toHaveCSS('font-family', /Mono/)
     await expect(exception).toHaveCSS('color', await tokenColour(page, 'ink'))
   })
 
-  test('Flow page title is 22 px / 800 with its summary on the title row', async ({ page }) => {
+  test('Flow page title is 22 px / 600 with its summary on the title row', async ({ page }) => {
     const graph = reallocationFlow()
     await setupMockApi(page, { useDefaults: false })
     await serveFlow(page, graph, {})
@@ -116,7 +116,7 @@ test.describe('Header variants', () => {
     )
   })
 
-  test('Worker page title is 22 px / 800 and set in mono', async ({ page }) => {
+  test('Worker page title is 22 px / 600 and set in mono', async ({ page }) => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setWorkers([
       {
@@ -152,5 +152,39 @@ test.describe('Header variants', () => {
     await expect(header.locator('p')).toContainText('task name')
     const after = (await header.boundingBox())?.height ?? 0
     expect(after).toBe(before)
+  })
+})
+
+test.describe('Weight roles', () => {
+  test('no text on any page is heavier than 600, and the roles hold on the Overview', async ({
+    page,
+  }) => {
+    await open(page, '/')
+    await expect(page.getByRole('heading', { name: 'What’s wrong', level: 2 })).toBeVisible()
+    await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+    const tooHeavy = await page.evaluate(() =>
+      // The router devtools (dev server only) are styled with goober `go<digits>` classes.
+      [...document.querySelectorAll('#root *')]
+        .filter((el) => !/\bgo\d+\b/.test(el.className?.toString() ?? ''))
+        .filter((el) => Number.parseInt(getComputedStyle(el).fontWeight, 10) > 600)
+        .map((el) => `${el.tagName} ${el.getAttribute('class')}: ${el.textContent?.slice(0, 30)}`),
+    )
+    expect(tooHeavy).toEqual([])
+
+    // Column header: 12 px / 500 muted on the band (H2, H3).
+    const header = page.getByRole('columnheader', { name: 'Exception' }).first()
+    await expect(header).toHaveCSS('font-size', '12px')
+    await expect(header).toHaveCSS('font-weight', '500')
+    await expect(header).toHaveCSS('background-color', await tokenColour(page, 'band'))
+    await expect(header).toHaveCSS('color', await tokenColour(page, 'muted'))
+    // Body text is 400.
+    await expect(page.locator('body')).toHaveCSS('font-weight', '400')
+  })
+
+  test('a KPI figure is 26 px / 500', async ({ page }) => {
+    await open(page, '/')
+    const figure = page.locator('.text-figure').first()
+    await expect(figure).toHaveCSS('font-size', '26px')
+    await expect(figure).toHaveCSS('font-weight', '500')
   })
 })
