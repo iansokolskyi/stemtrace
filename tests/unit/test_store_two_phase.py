@@ -524,7 +524,7 @@ def _firing_date(action: Callable[[], None]) -> datetime:
 
 
 def _flow_page(store: GraphStore, action: Callable[[], None], **kw: Any) -> Any:
-    return store.get_root_nodes_with_children(from_date=_firing_date(action), **kw)
+    return store.get_root_flows(from_date=_firing_date(action), **kw)
 
 
 def test_filtered_graph_page_drops_a_root_that_got_a_parent_meanwhile() -> None:
@@ -605,7 +605,7 @@ def test_unfiltered_graph_page_is_one_hold_so_a_parent_cannot_arrive_between() -
     store = GraphStore()
     _flows(store, 11)
     store.add_event(_ev("anchor", TaskState.STARTED, 650))
-    order = [r.task_id for r in store.get_root_nodes_with_children(limit=12).roots]
+    order = [r.task_id for r in store.get_root_flows(limit=12).roots]
     victims = iter(o for o in order if o != "anchor")
 
     def top_root_gets_a_parent() -> None:
@@ -622,7 +622,7 @@ def test_unfiltered_graph_page_is_one_hold_so_a_parent_cannot_arrive_between() -
     lock = InterleavingLock(store._lock, top_root_gets_a_parent)
     store._lock = lock  # type: ignore[assignment]  # same protocol
 
-    page = store.get_root_nodes_with_children(limit=3)
+    page = store.get_root_flows(limit=3)
 
     assert lock.interleavings == 1  # one acquisition: no point between two holds
     assert len(page.roots) == 3
@@ -649,7 +649,7 @@ def test_root_delta_is_the_net_change_since_the_mark() -> None:
 
 
 def _warm(store: GraphStore) -> None:
-    store.get_root_nodes_with_children(limit=1)  # computes and publishes the times
+    store.get_root_flows(limit=1)  # computes and publishes the times
 
 
 def test_graph_page_inside_the_gate_lists_a_new_root_in_its_time_order() -> None:
@@ -659,7 +659,7 @@ def test_graph_page_inside_the_gate_lists_a_new_root_in_its_time_order() -> None
     store.add_event(_ev("mid", TaskState.STARTED, 1))  # newer than r0, older than r2
 
     for kwargs in ({}, {"from_date": T0 - timedelta(days=1)}):
-        page = store.get_root_nodes_with_children(limit=10, **kwargs)
+        page = store.get_root_flows(limit=10, **kwargs)
         assert [n.task_id for n in page.roots] == ["r2", "mid", "r1", "r0"], kwargs
         assert page.total == 4
 
@@ -671,7 +671,7 @@ def test_graph_page_inside_the_gate_drops_a_root_that_got_a_parent() -> None:
     store.add_event(_ev("r1", TaskState.STARTED, 50, parent_id="r0", root_id="r0"))
 
     for kwargs in ({}, {"from_date": T0 - timedelta(days=1)}):
-        page = store.get_root_nodes_with_children(limit=10, **kwargs)
+        page = store.get_root_flows(limit=10, **kwargs)
         assert [n.task_id for n in page.roots] == ["r2", "r0"], kwargs
         assert page.total == 2
 

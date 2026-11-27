@@ -155,16 +155,10 @@ SCANS: dict[str, Callable[[GraphStore], object]] = {
     ),
     # Graph pages are 2 roots: the hold is then the snapshot reads alone, so a
     # copy of every root or node stands out against it.
-    "root_flows_from": lambda s: s.get_root_nodes_with_children(
-        limit=GRAPH_LIMIT, from_date=_FROM
-    ),
-    "root_flows_to": lambda s: s.get_root_nodes_with_children(
-        limit=GRAPH_LIMIT, to_date=_TO
-    ),
+    "root_flows_from": lambda s: s.get_root_flows(limit=GRAPH_LIMIT, from_date=_FROM),
+    "root_flows_to": lambda s: s.get_root_flows(limit=GRAPH_LIMIT, to_date=_TO),
     "root_nodes_from": lambda s: s.get_root_nodes(limit=GRAPH_LIMIT, from_date=_FROM),
-    "root_flows_unfiltered": lambda s: s.get_root_nodes_with_children(
-        limit=GRAPH_LIMIT
-    ),
+    "root_flows_unfiltered": lambda s: s.get_root_flows(limit=GRAPH_LIMIT),
     "run_summaries": lambda s: s.get_task_run_summaries(),
     "unique_task_names": lambda s: s.get_unique_task_names(),
 }
