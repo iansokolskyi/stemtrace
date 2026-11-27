@@ -849,6 +849,10 @@ test.describe('Show more in the triage panel', () => {
       AFTER_RETRIES,
     )
     await expect(rows).toHaveCount(before)
+    // The client's retries are over once the button reads Retry again
+    await expect(failed.getByRole('button', { name: 'Retry', exact: true })).toBeVisible(
+      AFTER_RETRIES,
+    )
     // The rows are the shorter list's, so no time of its own to show
     await expect(panel.getByTestId('stale-line')).toHaveCount(0)
     await expect(panel.getByTestId('notice')).toHaveCount(0)
@@ -1065,7 +1069,7 @@ test.describe('An item that is no longer stored, with data held', () => {
       name: 'Triage panel task',
       what: 'task',
       path: '',
-      api: /\/api\/tasks\/[^/?]+(\?.*)?$/,
+      api: /\/api\/tasks\/(?!registry)[^/?]+(\?.*)?$/,
       setup: async (page: Page) => {
         const api = await setupMockApi(page)
         const scenario = spikeScenario()

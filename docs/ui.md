@@ -51,13 +51,27 @@ Every page sits in the same frame:
   - A page that already has data keeps it when a refresh fails, and shows one line at the top:
     `Couldn't refresh. Showing data from HH:MM UTC.` with **Retry**. On Anomalies, **All clear** and
     the count in the subtitle are hidden while that line shows.
+  - A list that loaded empty is held data too. If a refresh then fails, its empty message stays and
+    the stale line shows above it (Executions, the Timeline view, the triage panel's run list, and
+    the Worker page when the worker isn't listed).
   - When the next page of Executions or Flows fails, the loaded rows stay and **Couldn't load
-    more.** with **Retry** appears below the list.
-  - On the Task and Flow pages, a 404 says that the task or flow is no longer stored and may have
-    left the retention window, with a link back and no **Retry**. A 404 isn't retried.
-  - A page's stale line covers the queries that page renders, not the sidebar badges.
+    more.** with **Retry** appears below the list. The next page's failure and a failed refresh of
+    the first page are independent, so both lines can show. A poll never asks again for a next
+    page that failed; only **Retry** does. In the triage panel, **Show more** that fails also
+    keeps the rows and says **Couldn't load more.**, with no stale line.
+  - On the Task and Flow pages, with no data, a 404 says that the task or flow is no longer stored
+    and may have left the retention window, with a link back and no **Retry**. A 404 isn't
+    retried. With data held, a 404 on a refresh replaces the stale line with `This task is no
+    longer stored. Showing data from HH:MM UTC.` (`This flow …` on the Flow page), with no
+    **Retry**, and the page stops polling for it. The triage panel's task view does the same.
+  - A page's stale line covers the queries that page renders, not the sidebar badges. On the Flow
+    page that includes the inspector's task query; with no task data the inspector says
+    **Couldn't load the task details.** in place of the missing fields. The task-group and
+    registered-task lookups are the exceptions: when they fail, there are no groups or no registry
+    entry to show, and the page says nothing.
   - A 401 with the built-in login shows nothing, because the browser goes to the login page.
-    Without it, the page says **The server needs a valid API key.** with no **Retry**.
+    Without it, the page says **The server needs a valid API key.** with no **Retry**. This holds
+    for a next page too.
 - **Old links.** `/?state=FAILURE` and other task-list links at `/` open Executions with the same
   filters. `/graphs` opens Flows, and `/graph/<id>` opens `/flows/<id>`.
 
