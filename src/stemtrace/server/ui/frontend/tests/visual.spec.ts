@@ -516,11 +516,61 @@ for (const theme of ['light', 'dark'] as const) {
     await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
     await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
     await page.setViewportSize({ width: 1280, height: 900 })
+    await page.route(/\/api\/graphs\/abc/, (route) => route.fulfill({ status: 500, body: 'boom' }))
     await page.goto('/flows/abc')
-    // The query retries three times before it gives up
+    // The box shows from the first failed attempt
     await expect(page.getByRole('alert')).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
+      timeout: 20_000,
+    })
     await page.evaluate(() => document.fonts.ready)
     await expect(page).toHaveScreenshot(`flow-error-${theme}-1280.png`, { fullPage: true })
+  })
+}
+
+// The shared notice and skeleton on list pages: Workers and Executions fail, Executions loads.
+const LIST_STATES = [
+  { name: 'workers', path: '/workers', api: /\/api\/workers$/ },
+  { name: 'executions', path: '/executions', api: /\/api\/tasks(\?|$)/ },
+] as const
+for (const theme of ['light', 'dark'] as const) {
+  for (const state of LIST_STATES) {
+    test(`${state.name} error, ${theme}, 1280px`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      const api = await setupMockApi(page, { useDefaults: false })
+      withBrokerAndGroups(api)
+      await page.route(state.api, (route) => route.fulfill({ status: 500, body: 'boom' }))
+      await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+      await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await page.goto(state.path)
+      // The query retries three times before it gives up
+      await expect(page.getByTestId('notice')).toBeVisible({ timeout: 20_000 })
+      // Past the client's retries: the button reads Retry again
+      await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
+        timeout: 20_000,
+      })
+      await page.evaluate(() => document.fonts.ready)
+      await expect(page).toHaveScreenshot(`${state.name}-error-${theme}-1280.png`, {
+        fullPage: true,
+      })
+    })
+  }
+
+  test(`executions loading, ${theme}, 1280px`, async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page, { useDefaults: false })
+    withBrokerAndGroups(api)
+    await page.route(/\/api\/tasks(\?|$)/, () => {})
+    await page.clock.setFixedTime(new Date('2026-10-17T12:00:00Z'))
+    await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto('/executions')
+    await expect(page.getByTestId('skeleton')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await expect(page).toHaveScreenshot(`executions-loading-${theme}-1280.png`, {
+      fullPage: true,
+    })
   })
 }
 
@@ -772,8 +822,11 @@ function visualAnomalies() {
   const ago = (minutes: number) =>
     new Date(Date.parse('2026-10-17T12:00:00Z') - minutes * 60_000).toISOString()
   const stuckRun = createSuccessTask('media.tasks.transcode_upload')
+  // A fixed id: the task page shows it, so a random one would change the baseline
+  stuckRun.task_id = '5f1c0a3e-7b2d-4c19-9a40-3d8e6b1f0a01'
   Object.assign(stuckRun, { state: 'STARTED', hostname: 'celery@media-gpu-2', anomaly: 'stuck' })
   const lostRun = createSuccessTask('media.tasks.transcode_upload')
+  lostRun.task_id = '5f1c0a3e-7b2d-4c19-9a40-3d8e6b1f0a02'
   Object.assign(lostRun, {
     state: 'STARTED',
     hostname: 'celery@media-gpu-1',

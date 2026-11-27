@@ -50,23 +50,20 @@ test.describe('Flow page: loading', () => {
 
 for (const theme of ['light', 'dark'] as const) {
   test.describe(`Flow page: error, ${theme}`, () => {
-    test('says flow, in the app error colour, with a link in ink and no blue', async ({ page }) => {
+    test('a flow that is not stored says so, with a link in ink and no blue', async ({ page }) => {
       await page.addInitScript((t) => localStorage.setItem('stemtrace-theme', t), theme)
       await page.routeWebSocket(/\/ws$/, () => {})
       await setupMockApi(page, { useDefaults: false })
       await page.goto('/flows/nope')
 
-      // The query retries three times before it gives up
-      const alert = page.getByRole('alert')
-      await expect(alert).toBeVisible({ timeout: 15_000 })
-      await expect(alert).toContainText('Failed to load flow')
-      await expect(alert).not.toContainText(/graph/i)
-      await expect(alert).toHaveCSS('background-color', await token(page, 'surface'))
-      await expect(alert.getByText('Failed to load flow')).toHaveCSS(
-        'color',
-        await token(page, 'failure-t'),
+      // A 404 is not retried
+      const gone = page.getByText(
+        'This flow is no longer stored. It may have left the retention window.',
       )
-      const back = alert.getByRole('link', { name: 'Back to flows' })
+      await expect(gone).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Retry' })).toHaveCount(0)
+      await expect(gone).not.toContainText(/graph/i)
+      const back = page.getByRole('link', { name: 'Back to flows' })
       await expect(back).toHaveAttribute('href', '/flows')
       await expect(back).toHaveCSS('color', await token(page, 'ink'))
     })

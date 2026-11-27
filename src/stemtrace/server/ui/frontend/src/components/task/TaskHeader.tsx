@@ -44,7 +44,9 @@ export function TaskHeader({ task, flowRootId, childCount = 0 }: TaskHeaderProps
           {module}
         </div>
       )}
-      <h1 className="text-xl font-bold leading-tight [overflow-wrap:anywhere]">{title}</h1>
+      <h1 tabIndex={-1} className="text-xl font-bold leading-tight [overflow-wrap:anywhere]">
+        {title}
+      </h1>
       <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1.5">
         <StatusChip state={task.state} />
         {task.anomaly && <AnomalyFlag kind={task.anomaly} />}

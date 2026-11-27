@@ -307,7 +307,7 @@ test.describe('Registry page', () => {
     mockApi?.setTaskStats('error')
     await loadRegistryPage(page, () => page.goto('/registry'))
     await expect.poll(() => mockApi?.taskStatsRequests.length).toBe(1)
-    await expect(page.getByText('Failed to load task registry')).toHaveCount(0)
+    await expect(page.getByText(/^Couldn't load the task registry\./)).toHaveCount(0)
     expect(await table(page).getByRole('row').count()).toBe(4)
     const add = rowOf(page, 'app.jobs.add').getByRole('cell')
     await expect(add.nth(2)).toHaveText('Active')
@@ -569,7 +569,9 @@ test.describe('Registry page', () => {
       route.fulfill({ status: 500, body: 'boom' }),
     )
     await page.goto('/registry')
-    await expect(page.getByText('Failed to load task registry')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/^Couldn't load the task registry\./)).toBeVisible({
+      timeout: 15_000,
+    })
   })
 
   for (const theme of ['light', 'dark'] as const) {

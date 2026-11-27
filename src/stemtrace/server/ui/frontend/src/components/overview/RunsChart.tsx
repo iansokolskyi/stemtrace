@@ -525,7 +525,7 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
                 <button
                   type="button"
                   {...openerProps(panel, { kind: 'runs', id: encodeScope(barScope(b)) })}
-                  className="font-semibold hover:underline data-[on]:underline"
+                  className="link font-semibold"
                 >
                   {spanLabel(b.start, b.end)}
                 </button>

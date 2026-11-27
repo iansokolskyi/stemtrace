@@ -4,10 +4,15 @@ import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { useExecutions, useRegisteredTask } from '@/api/queries'
+import { useNextPage } from '@/hooks/useNextPage'
+import { useViewState } from '@/hooks/useViewState'
 import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
 import { AnomalyFlag } from '../anomalies/AnomalyFlag'
+import { LoadFailure, MoreFailed } from '../Notice'
+import { PageStale } from '../PageStale'
 import { StatusChip } from '../StatusChip'
+import { TableSkeleton } from '../TableSkeleton'
 import { TaskName } from '../TaskName'
 import { type Column, columnsFor } from './columns'
 import { type Density, ROW_HEIGHT } from './density'
@@ -65,8 +70,11 @@ function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number
 }
 
 function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
-  const { data, isLoading, error, hasNextPage, isFetchingNextPage, fetchNextPage } =
-    useExecutions(params)
+  const query = useExecutions(params)
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = query
+  const listKey = JSON.stringify(params)
+  const view = useViewState(query, `executions/${listKey}`)
+  const next = useNextPage(query, listKey)
 
   const rows = useMemo(() => {
     const seen = new Set<string>()
@@ -89,20 +97,33 @@ function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactE
   const firstPage = data?.pages[0]?.tasks
   if (columns === null && firstPage && firstPage.length > 0) setColumns(columnsFor(firstPage))
 
-  if (isLoading) return <Notice>Loading executions...</Notice>
-  if (error) return <Notice tone="error">Failed to load tasks. Is the server running?</Notice>
-  if (!rows.length || !columns) return <EmptyTable params={params} onClear={onClear} />
+  if (view.phase === 'loading') return <TableSkeleton label="executions" rows={8} />
+  if (view.phase === 'error') return <LoadFailure what="executions" view={view} />
+  // An empty list that loaded is data too: a failed refresh shows over it
+  if (!rows.length || !columns) {
+    return (
+      <>
+        <PageStale views={[view]} className="mb-3" />
+        <EmptyTable params={params} onClear={onClear} />
+      </>
+    )
+  }
 
   return (
-    <TableBox
-      rows={rows}
-      total={total}
-      columns={columns}
-      density={density}
-      hasNextPage={hasNextPage}
-      isFetchingNextPage={isFetchingNextPage}
-      fetchNextPage={fetchNextPage}
-    />
+    <>
+      <PageStale views={[view]} className="mb-3" />
+      <TableBox
+        rows={rows}
+        total={total}
+        columns={columns}
+        density={density}
+        // A failed next page is asked again by its Retry, not by scrolling
+        hasNextPage={hasNextPage && !next.failed}
+        isFetchingNextPage={isFetchingNextPage}
+        fetchNextPage={fetchNextPage}
+      />
+      {next.failed && <MoreFailed error={next.error} retry={next.retry} busy={next.busy} />}
+    </>
   )
 }
 
@@ -163,19 +184,6 @@ function HeaderRow({ columns, template }: { columns: Column[]; template: string 
           {column.label}
         </div>
       ))}
-    </div>
-  )
-}
-
-function Notice({ children, tone }: { children: React.ReactNode; tone?: 'error' }): ReactElement {
-  return (
-    <div
-      className={clsx(
-        'rounded-lg bg-surface px-4 py-10 text-center text-xs',
-        tone === 'error' ? 'font-semibold text-failure-t' : 'text-muted',
-      )}
-    >
-      {children}
     </div>
   )
 }

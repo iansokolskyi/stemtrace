@@ -74,7 +74,11 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
   const workers = useQuery(workersSnapshot)
   const flows = useGraphs(undefined, { retry: false })
   // A source with no data that is retrying has failed, not "no results" (useViewState)
-  const sources = [useViewState(names), useViewState(workers), useViewState(flows)]
+  const sources = [
+    useViewState(names, 'palette/names'),
+    useViewState(workers, 'palette/workers'),
+    useViewState(flows, 'palette/flows'),
+  ]
 
   const text = query.trim()
   const [rested, setRested] = useState('')
@@ -201,7 +205,8 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
     // Not "No results": the answer may be in a source that did not load
     emptyText = `Couldn't load ${joinWords(failed as string[])}`
   } else if (items.length === 0) {
-    if (waitingForId || (loading && !text)) emptyText = 'Searching…'
+    // "No results" only once every source has answered: a slow first load may hold the match
+    if (waitingForId || loading) emptyText = 'Searching…'
     else emptyText = text ? `No results for “${text}”` : 'No flows or workers yet'
   }
 

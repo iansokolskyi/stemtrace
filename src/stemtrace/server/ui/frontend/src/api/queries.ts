@@ -11,6 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
+import { isNotFound } from '@/api/client'
 import { useWebSocketContext } from '@/hooks/WebSocketContext'
 import {
   type ExecutionListResponse,
@@ -108,8 +109,9 @@ export function useTask(taskId: string) {
     queryKey: ['tasks', taskId],
     queryFn: () => fetchTask(taskId),
     enabled: !!taskId,
-    // Only poll when WS is disconnected
-    refetchInterval: isConnected ? false : POLL_INTERVAL,
+    // Only poll when WS is disconnected; a task that is no longer stored won't come back
+    refetchInterval: (query) =>
+      isConnected || isNotFound(query.state.error) ? false : POLL_INTERVAL,
   })
 }
 
@@ -162,8 +164,9 @@ export function useGraph(rootId: string) {
     queryKey: ['graphs', rootId],
     queryFn: () => fetchGraph(rootId),
     enabled: !!rootId,
-    // Only poll when WS is disconnected
-    refetchInterval: isConnected ? false : POLL_INTERVAL,
+    // Only poll when WS is disconnected; a flow that is no longer stored won't come back
+    refetchInterval: (query) =>
+      isConnected || isNotFound(query.state.error) ? false : POLL_INTERVAL,
   })
 }
 

@@ -1,6 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { isNotFound } from '@/api/client'
 import { useGraph } from '@/api/queries'
 import { FlowPage } from '@/components/flow/FlowPage'
+import { LoadFailure, Notice } from '@/components/Notice'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
+import { useViewState } from '@/hooks/useViewState'
 
 export const Route = createFileRoute('/flows_/$rootId')({
   component: GraphDetailPage,
@@ -9,36 +13,42 @@ export const Route = createFileRoute('/flows_/$rootId')({
 
 function GraphDetailPage() {
   const { rootId } = Route.useParams()
-  const { data, isLoading, error } = useGraph(rootId)
+  const query = useGraph(rootId)
+  const view = useViewState(query, `graphs/${rootId}`, 'flow')
+  const { data } = query
 
-  if (isLoading) return <FlowSkeleton />
+  if (view.phase === 'loading') return <FlowSkeleton />
 
-  if (error || !data) {
-    return (
-      <div role="alert" className="rounded-lg bg-surface px-4 py-10 text-center text-xs">
-        <p className="m-0 font-semibold text-failure-t">Failed to load flow</p>
-        <Link
-          to="/flows"
-          className="mt-2 inline-block font-semibold text-ink underline underline-offset-2"
-        >
-          Back to flows
-        </Link>
-      </div>
+  if (view.phase === 'error' || !data) {
+    const back = (
+      <Link to="/flows" className="link">
+        Back to flows
+      </Link>
     )
+    if (isNotFound(view.error)) {
+      return (
+        <Notice action={back}>
+          This flow is no longer stored. It may have left the retention window.
+        </Notice>
+      )
+    }
+    return <LoadFailure what="the flow" view={view} action={back} />
   }
 
-  return <FlowPage key={data.root_id} nodes={data.nodes} rootId={data.root_id} />
+  return <FlowPage key={data.root_id} nodes={data.nodes} rootId={data.root_id} view={view} />
 }
 
-/** The page's own shape while the flow loads: a title bar, the diagram and the timeline, no motion. */
+/** The page's own shape while the flow loads: a title bar, the diagram and the timeline. */
 function FlowSkeleton() {
   return (
-    <div data-testid="flow-skeleton" aria-hidden="true">
-      <div className="mb-2 h-3 w-40 rounded-[3px] bg-raised" />
-      <div className="mb-3 h-6 w-64 rounded-[3px] bg-raised" />
-      <div className="mb-4 h-5 w-80 max-w-full rounded-[3px] bg-raised" />
-      <div className="mb-4 h-64 rounded-lg bg-surface" />
-      <div className="h-40 rounded-lg bg-surface" />
+    <div data-testid="flow-skeleton">
+      <SkeletonRegion label="flow">
+        <Skeleton className="mb-2 h-3 w-40" />
+        <Skeleton className="mb-3 h-6 w-64" />
+        <Skeleton className="mb-4 h-5 w-80 max-w-full" />
+        <Skeleton card className="mb-4 h-64" />
+        <Skeleton card className="h-40" />
+      </SkeletonRegion>
     </div>
   )
 }

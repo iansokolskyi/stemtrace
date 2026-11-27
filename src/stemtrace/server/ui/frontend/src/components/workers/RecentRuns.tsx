@@ -1,21 +1,25 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { type ReactElement, useState } from 'react'
-import { useRecentExecutions } from '@/api/queries'
+import type { ExecutionRow } from '@/api/client'
 import { type Column, columnsFor } from '@/components/executions/columns'
 import { Panel } from '@/components/task/Panel'
+import type { ViewState } from '@/hooks/useViewState'
+import { LoadFailure } from '../Notice'
 import { StatusChip } from '../StatusChip'
+import { TableSkeleton } from '../TableSkeleton'
 import { TaskName } from '../TaskName'
 import { NUM, TD, TH } from './workers'
 
 interface RecentRunsProps {
-  hostname: string
+  runs: ExecutionRow[] | undefined
+  /** The worker page's recent-runs query: its page shows the stale line. */
+  view: ViewState
 }
 
 /** The worker's latest runs: the Executions columns that have a value, each row opening its task. */
-export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
-  const { data, isLoading, error } = useRecentExecutions(hostname)
-  const runs = data?.tasks ?? []
+export function RecentRuns({ runs: held, view }: RecentRunsProps): ReactElement {
+  const runs = held ?? []
   // Decided once, from the first runs that arrive, like the Executions table: a refetch never
   // adds or drops a column. The Worker column would repeat this page's own host on every row.
   const [columns, setColumns] = useState<Column[] | null>(null)
@@ -28,12 +32,10 @@ export function RecentRuns({ hostname }: RecentRunsProps): ReactElement {
       title="Recent executions"
       aside={runs.length > 0 && <span className="text-xs text-muted">latest {runs.length}</span>}
     >
-      {isLoading ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading executions...</p>
-      ) : error && !data ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs font-semibold text-failure-t">
-          Failed to load executions
-        </p>
+      {view.phase === 'loading' ? (
+        <TableSkeleton label="recent executions" rows={3} bare />
+      ) : view.phase === 'error' ? (
+        <LoadFailure what="recent executions" view={view} />
       ) : runs.length === 0 || !columns ? (
         <p className="m-0 px-4 pt-2 pb-5 text-xs text-muted">No executions from this worker.</p>
       ) : (

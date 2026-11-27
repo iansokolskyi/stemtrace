@@ -2,6 +2,7 @@ import { type ReactElement, useState } from 'react'
 import type { TaskEvent } from '@/api/client'
 import { sortEventsChronologically } from '@/utils/events'
 import { Panel } from './Panel'
+import { TracebackToggle } from './TracebackToggle'
 
 interface ExceptionBlockProps {
   events: TaskEvent[]
@@ -33,14 +34,7 @@ export function ExceptionBlock({
       )}
       {last.traceback && (
         <div className={open ? undefined : 'pb-3.5'}>
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-            className="mx-4 inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-xs font-semibold hover:bg-press"
-          >
-            {open ? 'Hide traceback' : 'Show traceback'}
-          </button>
+          <TracebackToggle open={open} onToggle={() => setOpen(!open)} className="mx-4" />
           {open && (
             <pre className="m-0 mt-3 max-w-full overflow-x-auto rounded-b-lg bg-ground px-4 py-3.5 font-mono text-xs leading-relaxed whitespace-pre">
               {last.traceback}

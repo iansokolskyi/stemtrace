@@ -1,11 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactElement, type ReactNode, useEffect, useState } from 'react'
-import type { GraphNode, TaskNode } from '@/api/client'
-import { useTask } from '@/api/queries'
+import type { GraphNode, TaskDetailResponse, TaskNode } from '@/api/client'
 import { Icon } from '@/components/Icon'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
+import type { ViewState } from '@/hooks/useViewState'
 import { sortEventsChronologically } from '@/utils/events'
 import { formatSpan } from '@/utils/format'
 import { type FlowLayout, lastNameSegment, notRunText, type PlacedContainer } from './layoutFlow'
@@ -21,6 +21,8 @@ interface InspectorProps {
   layout: FlowLayout
   /** The chosen node; none (or one the graph no longer holds) shows the empty text. */
   selectedId: string | null
+  /** The chosen task's own query (kwargs and exception), owned by the page. */
+  task: { data: TaskDetailResponse | undefined; view: ViewState }
   onToggleExpanded: (containerId: string) => void
 }
 
@@ -32,6 +34,7 @@ export function Inspector({
   nodes,
   layout,
   selectedId,
+  task,
   onToggleExpanded,
 }: InspectorProps): ReactElement {
   const node = selectedId ? nodes[selectedId] : undefined
@@ -41,7 +44,7 @@ export function Inspector({
       {!node ? (
         <p className="m-0 px-4 py-6 text-muted">Select a node to inspect it.</p>
       ) : (node.node_type ?? 'TASK') === 'TASK' ? (
-        <TaskInspector key={node.task_id} node={node} />
+        <TaskInspector key={node.task_id} node={node} task={task} />
       ) : (
         <ContainerInspector
           node={node}
@@ -105,10 +108,16 @@ function exceptionOf(task: TaskNode | undefined): string | undefined {
   )
 }
 
-function TaskInspector({ node }: { node: GraphNode }): ReactElement {
+function TaskInspector({
+  node,
+  task,
+}: {
+  node: GraphNode
+  task: InspectorProps['task']
+}): ReactElement {
   const carried = useCarriedRange()
   // Kwargs and the exception message are not on graph nodes: they come from the task itself
-  const { data } = useTask(node.task_id)
+  const { data } = task
   const kwargs = kwargsOf(data?.task)
   const exception = exceptionOf(data?.task)
   return (
@@ -127,7 +136,7 @@ function TaskInspector({ node }: { node: GraphNode }): ReactElement {
                 <Link
                   to="/executions"
                   search={{ hostname: node.hostname, ...carried }}
-                  className="underline decoration-muted underline-offset-2 hover:decoration-ink"
+                  className="link"
                 >
                   {node.hostname}
                 </Link>
@@ -146,6 +155,11 @@ function TaskInspector({ node }: { node: GraphNode }): ReactElement {
             },
           ]}
         />
+        {task.view.phase === 'error' && (
+          <p role="status" className="m-0 text-xs text-muted">
+            Couldn&apos;t load the task details.
+          </p>
+        )}
         {exception && (
           <div>
             <div className="text-muted">Exception</div>

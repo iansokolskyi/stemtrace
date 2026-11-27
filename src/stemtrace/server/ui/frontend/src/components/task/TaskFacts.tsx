@@ -38,11 +38,7 @@ interface TaskFactsProps {
 export function TaskFacts({ task }: TaskFactsProps): ReactElement | null {
   const carried = useCarriedRange()
   const workerLink = task.hostname && (
-    <Link
-      to="/executions"
-      search={{ hostname: task.hostname, ...carried }}
-      className="underline hover:text-muted"
-    >
+    <Link to="/executions" search={{ hostname: task.hostname, ...carried }} className="link">
       {task.hostname}
     </Link>
   )

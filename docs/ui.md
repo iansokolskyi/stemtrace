@@ -41,6 +41,42 @@ Every page sits in the same frame:
   5 seconds. **Connecting**, **Offline** (the server is unreachable) and **Unauthorized** (your
   session was signed by a different server process) are the other states. The Overview, the sidebar
   badges, Registry and Anomalies refresh on their own timers, with or without a WebSocket.
+- **Loading and errors.** On Executions (the table and the Timeline view), Flows, the Flow page, the
+  Task page, Workers, the Worker page, Registry, Anomalies and the triage panel's run list:
+  - While a page loads, it shows placeholder blocks in the shape of its content.
+  - A page that has no data and can't load it shows one box: `Couldn't load workers.` and a reason
+    sentence (`The server answered 503.`, `No response from the server.` or, on Anomalies, `The
+    server took too long to answer.`), with a **Retry** button. When the cause is unknown there is
+    no reason sentence. The button reads **Retrying…** and ignores clicks while the request runs.
+  - A page that already has data keeps it when a refresh fails, and shows one line at the top:
+    `Couldn't refresh. Showing data from HH:MM UTC.` with **Retry**. On Anomalies, **All clear** and
+    the count in the subtitle are hidden while that line shows.
+  - A list that loaded empty is held data too. If a refresh then fails, its empty message stays and
+    the stale line shows above it (Executions, the Timeline view, the triage panel's run list, and
+    the Worker page when the worker isn't listed).
+  - When the next page of Executions or Flows fails, the loaded rows stay and **Couldn't load
+    more.** with **Retry** appears below the list. If the first page's refresh fails after that,
+    both lines show. A poll never asks again for a next page that failed; only **Retry** does.
+  - Known limitations in 0.5:
+    - If you scroll to the end of Executions or Flows while the first page can't refresh, the list
+      can show **Couldn't load more.** even after the next page loads, until you select **Retry**.
+      The **Couldn't refresh** line is hidden while that next page loads.
+    - In the triage panel, when **Show more** or a state filter can't load, the list shows
+      **Couldn't load more.** while the automatic retries run. After them, the rows are replaced by
+      `Couldn't load runs.` with **Retry**.
+  - On the Task and Flow pages, with no data, a 404 says that the task or flow is no longer stored
+    and may have left the retention window, with a link back and no **Retry**. A 404 isn't
+    retried. With data held, a 404 on a refresh replaces the stale line with `This task is no
+    longer stored. Showing data from HH:MM UTC.` (`This flow …` on the Flow page), with no
+    **Retry**, and the page stops polling for it. The triage panel's task view does the same.
+  - A page's stale line covers the queries that page renders, not the sidebar badges. On the Flow
+    page that includes the inspector's task query; with no task data the inspector says
+    **Couldn't load the task details.** in place of the missing fields. The task-group and
+    registered-task lookups are the exceptions: when they fail, there are no groups or no registry
+    entry to show, and the page says nothing.
+  - A 401 with the built-in login shows nothing, because the browser goes to the login page.
+    Without it, the page says **The server needs a valid API key.** with no **Retry**. This holds
+    for a next page too.
 - **Old links.** `/?state=FAILURE` and other task-list links at `/` open Executions with the same
   filters. `/graphs` opens Flows, and `/graph/<id>` opens `/flows/<id>`.
 

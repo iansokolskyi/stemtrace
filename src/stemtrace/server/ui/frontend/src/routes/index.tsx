@@ -18,16 +18,16 @@ import { KpiTiles } from '@/components/overview/KpiTiles'
 import { LoadError, showsError } from '@/components/overview/LoadError'
 import { bucketsOf } from '@/components/overview/model'
 import { type Brush, RunsChart } from '@/components/overview/RunsChart'
-import { StaleNotice } from '@/components/overview/StaleNotice'
 import { WhatsWrong } from '@/components/overview/WhatsWrong'
 import { WorkerStrip } from '@/components/overview/WorkerStrip'
+import { PageStale } from '@/components/PageStale'
 import { PanelProvider } from '@/components/triage/PanelContext'
 import type { PanelData } from '@/components/triage/PanelParts'
 import { clock } from '@/components/triage/runsScope'
 import { TriagePanel } from '@/components/triage/TriagePanel'
 import { hostsOf } from '@/components/workers/workers'
 import { carryRange } from '@/hooks/useCarriedRange'
-import { staleOf, useViewState } from '@/hooks/useViewState'
+import { useViewState } from '@/hooks/useViewState'
 import { DEFAULT_RANGE, legacyExecutionsSearch, overviewSearch, WINDOW_WORDS } from './-search'
 
 export const Route = createFileRoute('/')({
@@ -68,15 +68,14 @@ function OverviewPage() {
 
   // One rule decides each part (useViewState); the stale line covers every query rendered here
   const views = {
-    overview: useViewState(overview),
-    series: useViewState(series),
-    failures: useViewState(failures),
-    stats: useViewState(stats),
-    workers: useViewState(workers),
+    overview: useViewState(overview, `overview/overview/${effective}`),
+    series: useViewState(series, `overview/series/${effective}`),
+    failures: useViewState(failures, `overview/failures/${effective}`),
+    stats: useViewState(stats, `overview/stats/${effective}`),
+    workers: useViewState(workers, `overview/workers/${effective}`),
     // Only while it is asked for (not on All): a disabled query has nothing to fail
-    groupSeries: useViewState(groupSeries),
+    groupSeries: useViewState(groupSeries, `overview/group-series/${effective}`),
   }
-  const stale = staleOf([...Object.values(views), ...anomalyViews])
   const seriesStatus = series.data ? 'ready' : views.series.phase === 'error' ? 'failed' : 'loading'
   const buckets = useMemo(() => (series.data ? bucketsOf(series.data) : []), [series.data])
   const hosts = useMemo(
@@ -119,14 +118,7 @@ function OverviewPage() {
           </h1>
           <p className="mt-1 min-h-5 text-sm text-muted">{subtitle}</p>
         </div>
-        {stale?.kind === 'stale' && (
-          <StaleNotice since={stale.since} retrying={stale.retrying} onRetry={stale.retry} />
-        )}
-        {stale?.kind === 'key' && (
-          <p role="status" className="m-0 mb-4 text-xs text-muted">
-            The server needs a valid API key.
-          </p>
-        )}
+        <PageStale views={[...Object.values(views), ...anomalyViews]} />
         {views.overview.phase === 'error' && showsError(views.overview.error) && (
           <div data-testid="overview-error" className="mb-4 rounded-lg bg-surface">
             <LoadError what="the overview" view={views.overview} />

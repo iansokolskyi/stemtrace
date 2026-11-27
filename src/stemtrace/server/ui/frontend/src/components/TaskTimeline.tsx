@@ -1,13 +1,17 @@
 import { Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
-import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactElement, useEffect, useMemo, useState } from 'react'
 import type { TaskNode, TimedFilters } from '@/api/client'
 import { useTasks } from '@/api/queries'
 import { toneOf } from '@/components/flow/flowFacts'
 import { axisEnd } from '@/components/flow/timeline'
 import { Icon } from '@/components/Icon'
+import { LoadFailure, Notice } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { stateLook } from '@/components/StatusChip'
 import { Tooltip } from '@/components/Tooltip'
+import { useViewState } from '@/hooks/useViewState'
 import { formatSpan } from '@/utils/format'
 import { shortestUniqueSuffixes } from '@/utils/taskNames'
 import { type BarPart, barParts, legendStates, utcLabel } from './timelineBars'
@@ -43,7 +47,9 @@ interface Scale {
  * page's rule (`axisEnd`): they run to now.
  */
 export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
-  const { data, isLoading, error } = useTasks(filters)
+  const query = useTasks(filters)
+  const { data } = query
+  const view = useViewState(query, `tasks/timeline/${JSON.stringify(filters)}`)
 
   const rows = useMemo<TimelineRowData[]>(() => {
     const timed = (data?.tasks ?? []).filter((t) => t.first_seen && t.last_updated)
@@ -65,10 +71,26 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
     return () => clearInterval(timer)
   }, [anyOpen])
 
-  if (isLoading) return <TimelineSkeleton />
-  if (error) return <Notice tone="error">Failed to load timeline</Notice>
-  if (!data?.tasks.length) return <Notice>No executions to display</Notice>
-  if (rows.length === 0) return <Notice>No timing data available</Notice>
+  if (view.phase === 'loading') return <TimelineSkeleton />
+  if (view.phase === 'error') return <LoadFailure what="the timeline" view={view} />
+  // An empty list that loaded is data too: a failed refresh shows over it
+  const stale = <PageStale views={[view]} className="mb-3" />
+  if (!data?.tasks.length) {
+    return (
+      <>
+        {stale}
+        <Notice>No executions to display</Notice>
+      </>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <>
+        {stale}
+        <Notice>No timing data available</Notice>
+      </>
+    )
+  }
 
   const parts = rows.flatMap((row) => row.parts)
   const start = Math.min(...parts.map((part) => part.from))
@@ -81,60 +103,66 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
   const states = legendStates([...rows.map((r) => r.task.state), ...(hasTries ? ['RETRY'] : [])])
 
   return (
-    <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
-      <div className="min-w-[720px] px-4 pt-3 pb-3.5">
-        <div className={clsx(COLUMNS, 'mb-1 h-5 text-xs text-muted')} aria-hidden="true">
-          <span>UTC</span>
-          <div className="relative" data-testid="timeline-axis">
-            {TICKS.map((tick) => (
-              <span
-                key={tick}
-                className={clsx(
-                  'absolute top-0 whitespace-nowrap tabular-nums',
-                  tick === 1 && '-translate-x-full',
-                  tick > 0 && tick < 1 && '-translate-x-1/2',
-                )}
-                style={{ left: `${tick * 100}%` }}
-              >
-                {utcLabel(start + span * tick, span)}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="relative">
-          <div aria-hidden="true" className={clsx(COLUMNS, 'pointer-events-none absolute inset-0')}>
-            <span />
-            <div className="relative">
+    <>
+      {stale}
+      <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
+        <div className="min-w-[720px] px-4 pt-3 pb-3.5">
+          <div className={clsx(COLUMNS, 'mb-1 h-5 text-xs text-muted')} aria-hidden="true">
+            <span>UTC</span>
+            <div className="relative" data-testid="timeline-axis">
               {TICKS.map((tick) => (
-                <div
+                <span
                   key={tick}
-                  data-testid="timeline-gridline"
-                  className="absolute inset-y-0 w-px bg-rule"
+                  className={clsx(
+                    'absolute top-0 whitespace-nowrap tabular-nums',
+                    tick === 1 && '-translate-x-full',
+                    tick > 0 && tick < 1 && '-translate-x-1/2',
+                  )}
                   style={{ left: `${tick * 100}%` }}
-                />
+                >
+                  {utcLabel(start + span * tick, span)}
+                </span>
               ))}
             </div>
           </div>
-          {rows.map((row) => (
-            <TimelineRow key={row.task.task_id} row={row} scale={scale} />
-          ))}
-        </div>
 
-        <ul className="m-0 mt-3 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 pt-3 text-xs text-muted shadow-[0_-1px_0_var(--rule)]">
-          {states.map((state) => (
-            <LegendItem
-              key={state}
-              word={stateLook(state).word}
-              swatch={state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`}
-            />
-          ))}
-          {parts.some((part) => part.kind === 'queued') && (
-            <LegendItem word="Waiting" swatch="bg-track" />
-          )}
-        </ul>
-      </div>
-    </section>
+          <div className="relative">
+            <div
+              aria-hidden="true"
+              className={clsx(COLUMNS, 'pointer-events-none absolute inset-0')}
+            >
+              <span />
+              <div className="relative">
+                {TICKS.map((tick) => (
+                  <div
+                    key={tick}
+                    data-testid="timeline-gridline"
+                    className="absolute inset-y-0 w-px bg-rule"
+                    style={{ left: `${tick * 100}%` }}
+                  />
+                ))}
+              </div>
+            </div>
+            {rows.map((row) => (
+              <TimelineRow key={row.task.task_id} row={row} scale={scale} />
+            ))}
+          </div>
+
+          <ul className="m-0 mt-3 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 pt-3 text-xs text-muted shadow-[0_-1px_0_var(--rule)]">
+            {states.map((state) => (
+              <LegendItem
+                key={state}
+                word={stateLook(state).word}
+                swatch={state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`}
+              />
+            ))}
+            {parts.some((part) => part.kind === 'queued') && (
+              <LegendItem word="Waiting" swatch="bg-track" />
+            )}
+          </ul>
+        </div>
+      </section>
+    </>
   )
 }
 
@@ -261,31 +289,18 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
   )
 }
 
-function Notice({ children, tone }: { children: ReactNode; tone?: 'error' }): ReactElement {
-  return (
-    <div
-      className={clsx(
-        'rounded-lg bg-surface px-4 py-10 text-center text-xs',
-        tone === 'error' ? 'font-semibold text-failure-t' : 'text-muted',
-      )}
-    >
-      {children}
-    </div>
-  )
-}
-
-/** The view's own shape while the runs load: five rows, no motion. */
+/** The view's own shape while the runs load: an axis row and five run rows. */
 function TimelineSkeleton(): ReactElement {
   return (
-    <div aria-hidden="true" className="rounded-lg bg-surface px-4 py-3.5">
-      <div className="mb-3 h-4 rounded-[3px] bg-raised" />
+    <SkeletonRegion label="timeline" className="rounded-lg bg-surface px-4 py-3.5">
+      <Skeleton className="mb-3 h-4" />
       {[0, 1, 2, 3, 4].map((i) => (
         <div key={i} className={clsx(COLUMNS, 'h-6 items-center')}>
-          <div className="h-3 rounded-[3px] bg-raised" />
-          <div className="h-3 rounded-[3px] bg-raised" />
-          <div className="h-3 rounded-[3px] bg-raised" />
+          <Skeleton className="h-3" />
+          <Skeleton className="h-3" />
+          <Skeleton className="h-3" />
         </div>
       ))}
-    </div>
+    </SkeletonRegion>
   )
 }

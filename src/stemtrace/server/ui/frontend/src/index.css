@@ -56,6 +56,33 @@ body {
   border-radius: 3px;
 }
 
+/* A heading that only takes focus from script (tabindex -1) is a landing point, not a control:
+   no ring. It sits after the rule above and is unlayered like it, so it wins. */
+:is(h1, h2, h3)[tabindex="-1"]:focus-visible {
+  outline: none;
+}
+
+/* The one link style: ink text, muted underline 2px off, ink underline under the pointer.
+   `.link-quiet` is the breadcrumb's second style: muted, underlined only under the pointer. */
+.link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 2px;
+}
+.link:hover {
+  text-decoration-color: var(--ink);
+}
+.link-quiet {
+  color: var(--muted);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+.link-quiet:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
 /* Selected navigation: ink fill in dark, raised tone in light (--sel-bg / --sel-fg). */
 .nav-item[aria-current="page"] {
   background: var(--sel-bg);

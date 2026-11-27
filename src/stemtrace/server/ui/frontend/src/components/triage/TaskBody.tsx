@@ -1,10 +1,15 @@
 import { Link } from '@tanstack/react-router'
 import type { ReactElement } from 'react'
+import { isNotFound } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { Icon } from '@/components/Icon'
+import { LoadFailure } from '@/components/Notice'
+import { PageStale } from '@/components/PageStale'
+import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { StatusChip } from '@/components/StatusChip'
 import { TaskName } from '@/components/TaskName'
 import { retryCount } from '@/components/task/retryCount'
+import { useViewState } from '@/hooks/useViewState'
 import { sortEventsChronologically } from '@/utils/events'
 import { formatDateTime, formatSpan, shortHost } from '@/utils/format'
 import { usePanel } from './PanelContext'
@@ -13,12 +18,27 @@ import { BUTTON_PRIMARY, BUTTON_QUIET, Facts, Section } from './PanelParts'
 /** A task in brief, with the two ways out of the panel: its page and its flow. */
 export function TaskBody({ id }: { id: string }): ReactElement {
   const panel = usePanel()
-  const { data, isError } = useTask(id)
-  if (isError)
+  const query = useTask(id)
+  const { data } = query
+  const state = useViewState(query, `tasks/${id}`, 'task')
+  if (state.phase === 'error') {
+    if (isNotFound(state.error)) {
+      return (
+        <p className="m-0 pt-4 text-xs text-muted">
+          This task is no longer stored. It may have left the retention window.
+        </p>
+      )
+    }
+    return <LoadFailure what="the task" view={state} />
+  }
+  if (!data)
     return (
-      <p className="m-0 pt-4 text-xs text-muted">This task is no longer in the retention window.</p>
+      <SkeletonRegion label="task" className="pt-4">
+        <Skeleton className="mb-2 h-4 w-48" />
+        <Skeleton className="mb-3 h-3 w-64 max-w-full" />
+        <Skeleton className="h-7 w-32" />
+      </SkeletonRegion>
     )
-  if (!data) return <div className="h-32" aria-hidden="true" />
 
   const { task, children, flow_root_id: flowRootId } = data
   // A flow of one task (its own root, no parent, no children) has nothing more to show
@@ -31,6 +51,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
 
   return (
     <>
+      <PageStale views={[state]} className="mt-3" />
       <Section>
         <TaskName name={task.name} />
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -60,7 +81,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
                 <button
                   type="button"
                   onClick={() => panel.push({ kind: 'worker', id: task.hostname ?? '' })}
-                  className="font-mono hover:underline"
+                  className="link font-mono"
                 >
                   {shortHost(task.hostname)}
                 </button>

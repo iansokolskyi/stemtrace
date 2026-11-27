@@ -1,9 +1,13 @@
 import type { ReactElement } from 'react'
 import type { ExecutionRow, FetchExecutionsParams, RunSort } from '@/api/client'
 import { usePanelRuns } from '@/api/overviewQueries'
+import { LoadFailure, MoreFailed } from '@/components/Notice'
 import { OUTCOME_STATES } from '@/components/overview/model'
+import { PageStale } from '@/components/PageStale'
 import { StatusChip } from '@/components/StatusChip'
+import { TableSkeleton } from '@/components/TableSkeleton'
 import { TaskName } from '@/components/TaskName'
+import { useViewState } from '@/hooks/useViewState'
 import { formatAgo, formatCount, formatSpan, shortHost } from '@/utils/format'
 import { useEntryView, usePanel } from './PanelContext'
 import { MAX_MORE } from './panelState'
@@ -95,13 +99,23 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
   // The API takes at most MAX_LIMIT rows per request
   const limit = Math.min(MAX_LIMIT, initial + more * PAGE)
   const capped = limit >= MAX_LIMIT
-  const { data, isError } = usePanelRuns(filters, limit, { enabled })
-  if (isError) return <p className="m-0 py-3 text-xs text-failure-t">Failed to load runs</p>
-  if (!data) return <div className="h-24" aria-hidden="true" />
-  if (data.tasks.length === 0)
-    return <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
+  const query = usePanelRuns(filters, limit, { enabled })
+  // While a longer list loads, `data` is the shorter one (placeholder): its failure is "load more"
+  const { data } = query
+  const state = useViewState(query, `panel/runs/${JSON.stringify(filters)}/${limit}`)
+  if (state.phase === 'error') return <LoadFailure what="runs" view={state} />
+  if (!data) return <TableSkeleton label="runs" rows={3} bare />
+  if (data.tasks.length === 0) {
+    return (
+      <>
+        <PageStale views={[state]} className="mb-2" />
+        <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
+      </>
+    )
+  }
   return (
     <>
+      <PageStale views={[state]} className="mb-2" />
       <div className="overflow-x-auto rounded-[3px]">
         <table aria-label="Runs" className="w-full border-collapse">
           <thead>
@@ -146,6 +160,9 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
           Show {Math.min(PAGE, data.total - data.tasks.length, MAX_LIMIT - data.tasks.length)} more
           of {formatCount(data.total)}
         </button>
+      )}
+      {state.loadMoreFailed && (
+        <MoreFailed error={state.error} retry={state.retry} busy={state.retrying} />
       )}
     </>
   )

@@ -170,7 +170,7 @@ test.describe('Flows list - mocked flows', () => {
     await page.route(/\/api\/graphs(\?|$)/, (route) => route.fulfill({ status: 500, body: '{}' }))
     await page.goto('/flows')
     // The query retries three times with backoff before it gives up
-    await expect(page.getByText('Failed to load flows', { exact: true })).toBeVisible({
+    await expect(page.getByText(/^Couldn't load flows\./)).toBeVisible({
       timeout: 15_000,
     })
   })
