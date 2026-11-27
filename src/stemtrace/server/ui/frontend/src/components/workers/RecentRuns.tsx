@@ -30,14 +30,14 @@ export function RecentRuns({ runs: held, view }: RecentRunsProps): ReactElement 
   return (
     <Panel
       title="Recent executions"
-      aside={runs.length > 0 && <span className="text-xs text-muted">latest {runs.length}</span>}
+      aside={runs.length > 0 && <span className="text-small text-muted">latest {runs.length}</span>}
     >
       {view.phase === 'loading' ? (
         <TableSkeleton label="recent executions" rows={3} bare />
       ) : view.phase === 'error' ? (
         <LoadFailure what="recent executions" view={view} />
       ) : runs.length === 0 || !columns ? (
-        <p className="m-0 px-4 pt-2 pb-5 text-xs text-muted">No executions from this worker.</p>
+        <p className="m-0 px-4 pt-2 pb-5 text-small text-muted">No executions from this worker.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[480px] border-collapse">

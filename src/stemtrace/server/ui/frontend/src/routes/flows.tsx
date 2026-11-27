@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useGraphsInfinite } from '@/api/queries'
 import { FlowRow } from '@/components/flows/FlowRow'
 import { LoadFailure, MoreFailed } from '@/components/Notice'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
@@ -38,15 +39,14 @@ function FlowsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
-          Flows
-        </h1>
-        <p className="mt-1 min-h-5 text-sm text-muted">
-          {total !== undefined &&
-            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} ${hasDates(dates) ? 'in this time window' : 'in the retention window'}`}
-        </p>
-      </div>
+      <PageHeader
+        title="Flows"
+        summary={
+          (total !== undefined &&
+            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} ${hasDates(dates) ? 'in this time window' : 'in the retention window'}`) ||
+          null
+        }
+      />
 
       <PageStale views={[view]} className="" />
 

@@ -13,7 +13,7 @@ interface Line {
 /** Mono key/value lines. The values are shown exactly as the API sent them (already scrubbed). */
 function Lines({ lines }: { lines: Line[] }): ReactElement {
   return (
-    <dl className="m-0 grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-3 gap-y-1 px-4 pt-2 pb-3.5 font-mono text-xs">
+    <dl className="m-0 grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-3 gap-y-1 px-4 pt-2 pb-3.5 font-mono text-small">
       {lines.map(({ id, key, value }) => (
         <div key={id} className="contents">
           <dt className="text-muted [overflow-wrap:anywhere]">{key}</dt>

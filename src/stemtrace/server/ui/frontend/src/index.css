@@ -41,6 +41,24 @@
   --shadow-side: var(--shadow-side);
 }
 
+/* The type scale: six steps and no others. Resetting the text namespace below drops Tailwind's
+   default size names; `npm run check` also rejects off-scale sizes. */
+@theme {
+  --text-*: initial;
+  --text-meta: 11px;
+  --text-meta--line-height: 1.45;
+  --text-small: 12px;
+  --text-small--line-height: 1.3333;
+  --text-body: 13px;
+  --text-body--line-height: 1.45;
+  --text-title: 15px;
+  --text-title--line-height: 1.35;
+  --text-page: 22px;
+  --text-page--line-height: 1.2;
+  --text-figure: 26px;
+  --text-figure--line-height: 1.15;
+}
+
 body {
   margin: 0;
   background: var(--bg);

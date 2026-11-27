@@ -25,14 +25,17 @@ export function LoadError({
   if (!showsError(view.error)) return null
   if (view.error instanceof UnauthorizedError) {
     return (
-      <p role="alert" className="m-0 px-4 py-3 text-xs text-ink">
+      <p role="alert" className="m-0 px-4 py-3 text-small text-ink">
         The server needs a valid API key.
       </p>
     )
   }
   const reason = reasonOf(view.error)
   return (
-    <p role="alert" className="m-0 flex flex-wrap items-center gap-x-2 px-4 py-3 text-xs text-ink">
+    <p
+      role="alert"
+      className="m-0 flex flex-wrap items-center gap-x-2 px-4 py-3 text-small text-ink"
+    >
       <span className="font-bold">Couldn&apos;t load {what}.</span>
       {reason && <span className="text-muted">{reason}</span>}
       <RetryButton retry={view.retry} busy={view.retrying} />

@@ -19,7 +19,7 @@ export function TaskName({ name, className }: TaskNameProps): ReactElement {
   return (
     <span
       title={name}
-      className={clsx('flex max-w-full min-w-0 font-mono text-xs leading-5', className)}
+      className={clsx('flex max-w-full min-w-0 font-mono text-small leading-5', className)}
     >
       {module && (
         <span data-task-module className="min-w-0 truncate text-muted">

@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { clsx } from 'clsx'
 import { useWorkers } from '@/api/queries'
 import { LoadFailure } from '@/components/Notice'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { TableSkeleton } from '@/components/TableSkeleton'
 import { WorkerStatus } from '@/components/workers/WorkerStatus'
@@ -27,14 +28,10 @@ function WorkersPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
-          Workers
-        </h1>
-        <p className="mt-1 min-h-5 text-sm text-muted">
-          {hosts.length > 0 && `${online} of ${hosts.length} online`}
-        </p>
-      </div>
+      <PageHeader
+        title="Workers"
+        summary={hosts.length > 0 && `${online} of ${hosts.length} online`}
+      />
 
       <PageStale views={[view]} className="" />
 
@@ -43,7 +40,7 @@ function WorkersPage() {
       ) : view.phase === 'error' ? (
         <LoadFailure what="workers" view={view} />
       ) : hosts.length === 0 ? (
-        <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
+        <div className="rounded-lg bg-surface px-4 py-10 text-center text-small text-muted">
           <p className="m-0">No workers registered</p>
           <p className="m-0 mt-1">
             Start a Celery worker with stemtrace initialized to see it here.

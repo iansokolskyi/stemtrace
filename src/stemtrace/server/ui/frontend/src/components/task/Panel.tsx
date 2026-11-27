@@ -13,7 +13,7 @@ export function Panel({ title, aside, children }: PanelProps): ReactElement {
   return (
     <section aria-labelledby={titleId} className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id={titleId} className="text-sm font-bold">
+        <h2 id={titleId} className="text-title font-bold">
           {title}
         </h2>
         {aside}

@@ -26,7 +26,7 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
   const setChosen = (next: (now: string[]) => string[]) =>
     setView((now) => ({ ...now, states: next(now.states ?? []) }))
   if (!scope)
-    return <p className="m-0 pt-4 text-xs text-muted">This link does not name any runs.</p>
+    return <p className="m-0 pt-4 text-small text-muted">This link does not name any runs.</p>
 
   const span =
     scope.from && scope.to
@@ -100,12 +100,12 @@ export function RunsBody({ id, data }: RunsBodyProps): ReactElement {
           </fieldset>
         )}
         {chartFailed && (
-          <p data-testid="chart-unavailable" className="mb-2 text-xs text-muted">
+          <p data-testid="chart-unavailable" className="mb-2 text-small text-muted">
             The chart is unavailable, so this list has no upper time limit.
           </p>
         )}
         {scope.sort && (
-          <p data-testid="runs-order" className="mb-2 text-xs text-muted">
+          <p data-testid="runs-order" className="mb-2 text-small text-muted">
             {scope.sort === 'runtime' ? 'Slowest runtime first' : 'Longest queue wait first'}. Runs
             the tile does not count come last.
           </p>
@@ -137,7 +137,7 @@ function Chip({
       type="button"
       aria-pressed={pressed}
       onClick={onClick}
-      className="inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-muted hover:bg-press hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink"
+      className="inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-small font-semibold text-muted hover:bg-press hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink"
     >
       {children}
     </button>

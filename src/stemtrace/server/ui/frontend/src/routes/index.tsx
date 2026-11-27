@@ -20,6 +20,7 @@ import { bucketsOf } from '@/components/overview/model'
 import { type Brush, RunsChart } from '@/components/overview/RunsChart'
 import { WhatsWrong } from '@/components/overview/WhatsWrong'
 import { WorkerStrip } from '@/components/overview/WorkerStrip'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { PanelProvider } from '@/components/triage/PanelContext'
 import type { PanelData } from '@/components/triage/PanelParts'
@@ -112,12 +113,7 @@ function OverviewPage() {
   return (
     <PanelProvider>
       <div>
-        <div className="mb-4">
-          <h1 tabIndex={-1} className="text-2xl font-bold text-ink outline-none">
-            Overview
-          </h1>
-          <p className="mt-1 min-h-5 text-sm text-muted">{subtitle}</p>
-        </div>
+        <PageHeader title="Overview" summary={subtitle} />
         <PageStale views={[...Object.values(views), ...anomalyViews]} />
         {views.overview.phase === 'error' && showsError(views.overview.error) && (
           <div data-testid="overview-error" className="mb-4 rounded-lg bg-surface">

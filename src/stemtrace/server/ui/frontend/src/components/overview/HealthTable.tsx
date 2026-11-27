@@ -19,8 +19,8 @@ import { Sparkline } from './Sparkline'
 const PROBLEM_RATE = 0.01
 
 const TH =
-  'h-9 whitespace-nowrap border-b border-rule bg-surface px-2.5 text-left text-xs font-semibold text-muted first:pl-4 last:pr-4'
-const TD = 'whitespace-nowrap px-2.5 py-1 text-xs first:pl-4 last:pr-4'
+  'h-9 whitespace-nowrap border-b border-rule bg-surface px-2.5 text-left text-small font-semibold text-muted first:pl-4 last:pr-4'
+const TD = 'whitespace-nowrap px-2.5 py-1 text-small first:pl-4 last:pr-4'
 const NUM = 'text-right tabular-nums'
 
 const ms = (value: number | null | undefined): string => (value == null ? '' : formatSpan(value))
@@ -76,17 +76,17 @@ export function HealthTable({
   return (
     <section aria-labelledby="h-health" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-health" className="text-sm font-bold">
+        <h2 id="h-health" className="text-title font-bold">
           Task health by group
         </h2>
-        <span className="min-h-4 text-xs text-muted">{windowWords ?? 'all runs held'}</span>
+        <span className="min-h-4 text-small text-muted">{windowWords ?? 'all runs held'}</span>
       </div>
       {view.phase === 'error' ? (
         <LoadError what="the task health" view={view} />
       ) : !stats ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading task health…</p>
+        <p className="m-0 px-4 pt-2 pb-4 text-small text-muted">Loading task health…</p>
       ) : groups.length === 0 ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">
+        <p className="m-0 px-4 pt-2 pb-4 text-small text-muted">
           No runs{windowWords ? ` in ${windowWords}` : ''}.
         </p>
       ) : (

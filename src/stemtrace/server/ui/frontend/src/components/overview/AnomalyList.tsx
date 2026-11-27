@@ -19,7 +19,7 @@ export function AnomalyList({ anomalies }: { anomalies: OverviewAnomalies }): Re
   const rows: Anomaly[] = [...(anomalies.fleet ? [anomalies.fleet] : []), ...anomalies.items]
   return (
     <div className="min-w-0" data-testid="overview-anomalies">
-      <h3 className="px-4 pt-2 pb-1.5 text-[13px] font-bold">Anomalies</h3>
+      <h3 className="px-4 pt-2 pb-1.5 text-small font-semibold text-muted">Anomalies</h3>
       <ul className="m-0 list-none p-0">
         {rows.slice(0, SHOWN).map((anomaly) => (
           <li
@@ -38,13 +38,13 @@ export function AnomalyList({ anomalies }: { anomalies: OverviewAnomalies }): Re
                 {anomaly.name ? (
                   <TaskName name={anomaly.name} />
                 ) : (
-                  <span className="text-xs font-semibold">Fleet</span>
+                  <span className="text-small font-semibold">Fleet</span>
                 )}
               </button>
-              <p className="mt-0.5 mb-0 text-xs text-muted [overflow-wrap:anywhere]">
+              <p className="mt-0.5 mb-0 text-small text-muted [overflow-wrap:anywhere]">
                 {explain(anomaly)}
               </p>
-              <p className="mt-0.5 mb-0 text-xs text-muted">since {sinceText(anomaly.since)}</p>
+              <p className="mt-0.5 mb-0 text-small text-muted">since {sinceText(anomaly.since)}</p>
             </div>
           </li>
         ))}
@@ -54,7 +54,7 @@ export function AnomalyList({ anomalies }: { anomalies: OverviewAnomalies }): Re
           <button
             type="button"
             {...openerProps(panel, { kind: 'anomaly', id: ALL_ANOMALIES_ID })}
-            className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press"
+            className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
           >
             Show all {rows.length}
           </button>

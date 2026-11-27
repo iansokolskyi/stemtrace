@@ -38,7 +38,7 @@ export function Tooltip({
     <div className={`relative group${className ? ` ${className}` : ''}`} style={style}>
       {children}
       <div
-        className={`absolute ${placementStyles[placement]} pointer-events-none invisible z-50 w-max max-w-64 rounded-[3px] bg-raised px-2.5 py-1.5 text-xs font-normal text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100`}
+        className={`absolute ${placementStyles[placement]} pointer-events-none invisible z-50 w-max max-w-64 rounded-[3px] bg-raised px-2.5 py-1.5 text-small font-normal text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100`}
       >
         {content}
       </div>

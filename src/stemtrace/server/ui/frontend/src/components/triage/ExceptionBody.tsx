@@ -59,7 +59,7 @@ export function ExceptionBody({ id, data }: { id: string; data: PanelData }): Re
       </Section>
       <Section title="Failing runs">
         {type === null ? (
-          <p className="m-0 text-xs text-muted">
+          <p className="m-0 text-small text-muted">
             These failures carry no exception class, so their runs cannot be listed here. Open a
             task above to see its runs.
           </p>

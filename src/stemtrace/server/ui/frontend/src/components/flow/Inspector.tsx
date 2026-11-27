@@ -11,7 +11,7 @@ import { formatSpan } from '@/utils/format'
 import { type FlowLayout, lastNameSegment, notRunText, type PlacedContainer } from './layoutFlow'
 
 const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center justify-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center justify-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
 
 /** At most this many kwargs are listed; the task page has them all. */
 const MAX_KWARGS = 4
@@ -61,7 +61,7 @@ export function Inspector({
 function Header({ title, state }: { title: string; state: string }): ReactElement {
   return (
     <div className="flex items-center gap-3 px-4 pt-3.5 pb-2">
-      <h2 className="m-0 text-sm font-bold">{title}</h2>
+      <h2 className="m-0 text-title font-bold">{title}</h2>
       <span className="grow" />
       <StatusChip state={state} />
     </div>
@@ -78,7 +78,7 @@ function Facts({ rows }: { rows: (Row | false | null | undefined | '')[] }): Rea
   const shown = rows.filter((row): row is Row => Boolean(row))
   if (shown.length === 0) return null
   return (
-    <dl className="m-0 grid grid-cols-[64px_minmax(0,1fr)] gap-x-3 gap-y-[7px] text-xs">
+    <dl className="m-0 grid grid-cols-[64px_minmax(0,1fr)] gap-x-3 gap-y-[7px] text-small">
       {shown.map(({ label, value, mono }) => (
         <div key={label} className="contents">
           <dt className="text-muted">{label}</dt>
@@ -156,14 +156,14 @@ function TaskInspector({
           ]}
         />
         {task.view.phase === 'error' && (
-          <p role="status" className="m-0 text-xs text-muted">
+          <p role="status" className="m-0 text-small text-muted">
             Couldn&apos;t load the task details.
           </p>
         )}
         {exception && (
           <div>
             <div className="text-muted">Exception</div>
-            <div className="font-mono text-xs text-failure-t [overflow-wrap:anywhere]">
+            <div className="font-mono text-small text-ink [overflow-wrap:anywhere]">
               {exception}
             </div>
           </div>
@@ -171,7 +171,7 @@ function TaskInspector({
         {kwargs.length > 0 && (
           <div>
             <div className="mb-1 text-muted">Kwargs</div>
-            <dl className="m-0 grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono text-xs">
+            <dl className="m-0 grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono text-small">
               {kwargs.map(([key, value]) => (
                 <div key={key} className="contents">
                   <dt className="text-muted [overflow-wrap:anywhere]">{key}</dt>
@@ -288,7 +288,7 @@ function CopyId({ id }: { id: string }): ReactElement {
   }
 
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 font-mono text-xs text-muted">
+    <span className="inline-flex max-w-full items-center gap-1.5 font-mono text-small text-muted">
       <span className="min-w-0 [overflow-wrap:anywhere]">{id}</span>
       <button
         type="button"

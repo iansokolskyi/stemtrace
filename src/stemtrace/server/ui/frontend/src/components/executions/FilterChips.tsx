@@ -223,7 +223,7 @@ export function FilterChips({
         <span
           key={chip.key}
           data-chip={chip.key}
-          className="inline-flex h-[26px] max-w-full items-center rounded-[3px] bg-raised text-xs"
+          className="inline-flex h-[26px] max-w-full items-center rounded-[3px] bg-raised text-small"
         >
           <button
             type="button"
@@ -259,7 +259,7 @@ export function FilterChips({
         aria-haspopup="dialog"
         aria-expanded={editing?.by === 'add'}
         onClick={(event) => openFrom(event.currentTarget, { by: 'add', field: null, exact: false })}
-        className="flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
+        className="flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised px-2.5 text-small font-semibold text-ink hover:bg-press"
       >
         <Icon name="plus" size={13} />
         Filter
@@ -268,7 +268,7 @@ export function FilterChips({
         <button
           type="button"
           onClick={() => onChange({}, { replace: false })}
-          className="h-[26px] rounded-[3px] px-2 text-xs text-muted hover:text-ink"
+          className="h-[26px] rounded-[3px] px-2 text-small text-muted hover:text-ink"
         >
           Clear all
         </button>

@@ -27,16 +27,18 @@ export function ExceptionBlock({
   return (
     <Panel
       title="Exception"
-      aside={exceptionType && <span className="text-xs text-failure-t">{exceptionType}</span>}
+      aside={
+        exceptionType && <span className="text-small font-semibold text-ink">{exceptionType}</span>
+      }
     >
       {last.exception && (
-        <p className="m-0 px-4 pt-0 pb-2.5 text-xs [overflow-wrap:anywhere]">{last.exception}</p>
+        <p className="m-0 px-4 pt-0 pb-2.5 text-small [overflow-wrap:anywhere]">{last.exception}</p>
       )}
       {last.traceback && (
         <div className={open ? undefined : 'pb-3.5'}>
           <TracebackToggle open={open} onToggle={() => setOpen(!open)} className="mx-4" />
           {open && (
-            <pre className="m-0 mt-3 max-w-full overflow-x-auto rounded-b-lg bg-ground px-4 py-3.5 font-mono text-xs leading-relaxed whitespace-pre">
+            <pre className="m-0 mt-3 max-w-full overflow-x-auto rounded-b-lg bg-ground px-4 py-3.5 font-mono text-small leading-relaxed whitespace-pre">
               {last.traceback}
             </pre>
           )}

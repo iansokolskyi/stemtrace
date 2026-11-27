@@ -69,7 +69,7 @@ export function TimingBar({
             />
           )}
         </div>
-        <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+        <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-small">
           {hasWait && <Figure term="Queue wait" value={formatSpan(wait)} />}
           {hasRuntime && <Figure term="Last run" value={formatSpan(runtime)} />}
           {ranMoreThanOnce && <Figure term="All runs" value={formatSpan(totalRuntimeMs)} />}

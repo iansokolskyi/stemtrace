@@ -26,13 +26,13 @@ export function WorkerStrip({
   return (
     <section aria-labelledby="h-workers" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-workers" className="text-sm font-bold">
+        <h2 id="h-workers" className="text-title font-bold">
           Workers
         </h2>
         <span className="grow" />
         <Link
           to="/workers"
-          className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press"
+          className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
         >
           All workers
         </Link>
@@ -40,9 +40,9 @@ export function WorkerStrip({
       {view.phase === 'error' ? (
         <LoadError what="the workers" view={view} />
       ) : hosts === undefined ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">Loading workers…</p>
+        <p className="m-0 px-4 pt-2 pb-4 text-small text-muted">Loading workers…</p>
       ) : hosts.length === 0 ? (
-        <p className="m-0 px-4 pt-2 pb-4 text-xs text-muted">No workers registered.</p>
+        <p className="m-0 px-4 pt-2 pb-4 text-small text-muted">No workers registered.</p>
       ) : (
         <div
           data-testid="worker-strip"
@@ -61,18 +61,18 @@ export function WorkerStrip({
                   offline ? 'bg-[color-mix(in_srgb,var(--failure)_8%,var(--raised))]' : 'bg-raised',
                 )}
               >
-                <span title={hostname} className="max-w-full truncate text-[13px] font-bold">
+                <span title={hostname} className="max-w-full truncate text-body font-bold">
                   {shortHost(hostname)}
                 </span>
                 <WorkerStatus status={leading.status} />
                 {!counted && (
-                  <span className={clsx('text-xs', offline ? 'text-ink' : 'text-muted')}>
+                  <span className={clsx('text-small', offline ? 'text-ink' : 'text-muted')}>
                     {registeredTasks(processes).length} registered tasks, seen{' '}
                     {formatAgo(leading.last_seen)}
                   </span>
                 )}
                 {line && (
-                  <span data-testid="pool-line" className="text-xs text-muted">
+                  <span data-testid="pool-line" className="text-small text-muted">
                     {line}
                   </span>
                 )}

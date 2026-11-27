@@ -26,7 +26,7 @@ function AllWorkers({ hosts }: { hosts: Host[] | undefined }): ReactElement {
     <>
       <Section>
         {hosts.length === 0 ? (
-          <p className="m-0 text-xs text-muted">No workers registered.</p>
+          <p className="m-0 text-small text-muted">No workers registered.</p>
         ) : (
           <ul className="m-0 list-none overflow-hidden rounded-[3px] p-0">
             {byTriage(hosts).map(({ hostname, leading }) => {
@@ -40,12 +40,12 @@ function AllWorkers({ hosts }: { hosts: Host[] | undefined }): ReactElement {
                     type="button"
                     title={hostname}
                     onClick={() => panel.push({ kind: 'worker', id: hostname })}
-                    className="min-w-0 flex-1 truncate text-left text-[13px] font-bold after:absolute after:inset-0"
+                    className="min-w-0 flex-1 truncate text-left text-body font-bold after:absolute after:inset-0"
                   >
                     {shortHost(hostname)}
                   </button>
                   {count && (
-                    <span data-testid="slot-count" className="font-mono text-xs text-muted">
+                    <span data-testid="slot-count" className="font-mono text-small text-muted">
                       {count}
                     </span>
                   )}
@@ -70,7 +70,7 @@ export function WorkerBody({ id, data }: { id: string; data: PanelData }): React
   if (id === ALL_WORKERS_ID) return <AllWorkers hosts={data.hosts} />
   const host = data.hosts?.find((h) => h.hostname === id)
   if (data.hosts && !host)
-    return <p className="m-0 pt-4 text-xs text-muted">This worker is not known to the server.</p>
+    return <p className="m-0 pt-4 text-small text-muted">This worker is not known to the server.</p>
   const worker = host?.leading
   return (
     <>
@@ -82,8 +82,10 @@ export function WorkerBody({ id, data }: { id: string; data: PanelData }): React
               <Icon name="x" size={16} className="[stroke-width:2.6]" />
             </span>
             <div>
-              <h4 className="m-0 text-sm font-bold">Offline since {formatAgo(worker.last_seen)}</h4>
-              <p className="m-0 text-[13px]">
+              <h4 className="m-0 text-body font-bold">
+                Offline since {formatAgo(worker.last_seen)}
+              </h4>
+              <p className="m-0 text-body">
                 Last seen {formatDateTime(worker.last_seen)}. Tasks that were running on it can show
                 as interrupted.
               </p>

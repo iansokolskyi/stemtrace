@@ -44,6 +44,6 @@ export function registeredTasks(processes: Worker[]): string[] {
 
 /** Table classes shared by the Workers list and the Worker page's panels. */
 export const TH =
-  'h-9 whitespace-nowrap border-b border-rule px-3 text-left text-xs font-semibold text-muted first:pl-4 last:pr-4'
-export const TD = 'h-9 whitespace-nowrap px-3 text-xs first:pl-4 last:pr-4'
+  'h-9 whitespace-nowrap border-b border-rule px-3 text-left text-small font-semibold text-muted first:pl-4 last:pr-4'
+export const TD = 'h-9 whitespace-nowrap px-3 text-small first:pl-4 last:pr-4'
 export const NUM = 'text-right tabular-nums'

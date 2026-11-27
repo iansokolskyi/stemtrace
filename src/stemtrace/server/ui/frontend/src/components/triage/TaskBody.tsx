@@ -24,7 +24,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
   if (state.phase === 'error') {
     if (isNotFound(state.error)) {
       return (
-        <p className="m-0 pt-4 text-xs text-muted">
+        <p className="m-0 pt-4 text-small text-muted">
           This task is no longer stored. It may have left the retention window.
         </p>
       )
@@ -56,7 +56,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
         <TaskName name={task.name} />
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <StatusChip state={task.state} />
-          <span className="font-mono text-xs text-muted [overflow-wrap:anywhere]">
+          <span className="font-mono text-small text-muted [overflow-wrap:anywhere]">
             {task.task_id}
           </span>
         </div>
@@ -99,9 +99,9 @@ export function TaskBody({ id }: { id: string }): ReactElement {
       {failure?.exception && (
         <Section title="Exception">
           {task.exception_type && (
-            <div className="font-mono text-xs font-bold text-failure-t">{task.exception_type}</div>
+            <div className="text-small font-semibold text-ink">{task.exception_type}</div>
           )}
-          <div className="font-mono text-xs [overflow-wrap:anywhere]">{failure.exception}</div>
+          <div className="font-mono text-small [overflow-wrap:anywhere]">{failure.exception}</div>
         </Section>
       )}
     </>

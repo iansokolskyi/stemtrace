@@ -42,7 +42,7 @@ export function RetryButton({
       type="button"
       aria-disabled={working || undefined}
       onClick={run}
-      className="h-6 rounded-[3px] bg-raised px-2.5 text-xs font-semibold hover:bg-press aria-disabled:cursor-progress aria-disabled:text-muted"
+      className="h-6 rounded-[3px] bg-raised px-2.5 text-small font-semibold hover:bg-press aria-disabled:cursor-progress aria-disabled:text-muted"
     >
       {working ? 'Retrying…' : 'Retry'}
     </button>

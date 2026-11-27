@@ -24,8 +24,8 @@ export function AnomalyCallout({ anomaly, placement }: AnomalyCalloutProps): Rea
         <Icon name="alert" size={18} className="[stroke-width:2.6]" />
       </div>
       <div className="min-w-0">
-        <h2 className="mb-0.5 text-sm font-bold">{kindHeading(anomaly)}</h2>
-        <p className="mb-2 text-[13px] [overflow-wrap:anywhere]">
+        <h2 className="mb-0.5 text-body font-bold">{kindHeading(anomaly)}</h2>
+        <p className="mb-2 text-body [overflow-wrap:anywhere]">
           {explain(anomaly)}{' '}
           <span className="text-muted">
             {fleet ? 'Oldest' : 'Since'} {sinceText(anomaly.since)}.

@@ -40,9 +40,9 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
       <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
         <SproutMark size={30} className="flex-none" />
         <div>
-          <b className="block text-base font-extrabold tracking-[-0.01em]">stemtrace</b>
+          <b className="block text-title font-extrabold tracking-[-0.01em]">stemtrace</b>
           {health?.broker && (
-            <small className="block text-[11px] leading-snug text-muted">
+            <small className="block text-meta leading-snug text-muted">
               Broker: {health.broker}
             </small>
           )}
@@ -90,7 +90,7 @@ export function Sidebar({ isDrawer, open, onNavigate, ref }: SidebarProps): Reac
           <LogoutButton />
         </div>
         {health?.version && (
-          <span className="text-[11px] leading-snug text-muted">Version {health.version}</span>
+          <span className="text-meta leading-snug text-muted">Version {health.version}</span>
         )}
       </div>
     </aside>

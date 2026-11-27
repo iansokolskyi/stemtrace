@@ -55,7 +55,7 @@ function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps): ReactEle
 
   return (
     <div data-testid="output-attempt" className="min-w-0">
-      <div className="flex items-center gap-3 text-xs">
+      <div className="flex items-center gap-3 text-small">
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center gap-3 rounded-[3px] py-0.5 text-left hover:bg-hover"
@@ -72,7 +72,7 @@ function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps): ReactEle
 
       {expanded && (
         <pre
-          className="mt-2 mb-0 max-h-96 max-w-full overflow-auto rounded-[3px] bg-ground px-3 py-2.5 font-mono text-xs leading-relaxed whitespace-pre"
+          className="mt-2 mb-0 max-h-96 max-w-full overflow-auto rounded-[3px] bg-ground px-3 py-2.5 font-mono text-small leading-relaxed whitespace-pre"
           data-testid="output-text"
         >
           {output.split('\n').map((line, index) => (

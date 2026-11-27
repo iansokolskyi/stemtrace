@@ -25,7 +25,7 @@ interface NoticeProps {
 export function Notice({ tone, action, children }: NoticeProps): ReactElement {
   if (tone !== 'error') {
     return (
-      <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
+      <div className="rounded-lg bg-surface px-4 py-10 text-center text-small text-muted">
         {children}
         {action && <div className="mt-2">{action}</div>}
       </div>
@@ -35,7 +35,7 @@ export function Notice({ tone, action, children }: NoticeProps): ReactElement {
     <div
       role="alert"
       data-testid="notice"
-      className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-lg bg-surface px-4 py-8 text-xs"
+      className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-lg bg-surface px-4 py-8 text-small"
     >
       <Icon name="alert" size={16} className="flex-none text-failure-t" />
       <span data-testid="notice-message" className="font-semibold text-failure-t">
@@ -59,7 +59,11 @@ export function MoreFailed({
   if (error instanceof UnauthorizedError) {
     if (getLoginPath() !== null) return null
     return (
-      <p role="alert" data-testid="more-failed" className="m-0 mt-3 text-center text-xs text-ink">
+      <p
+        role="alert"
+        data-testid="more-failed"
+        className="m-0 mt-3 text-center text-small text-ink"
+      >
         The server needs a valid API key.
       </p>
     )
@@ -69,7 +73,7 @@ export function MoreFailed({
     <p
       role="alert"
       data-testid="more-failed"
-      className="m-0 mt-3 flex flex-wrap items-center justify-center gap-x-2 text-xs text-failure-t"
+      className="m-0 mt-3 flex flex-wrap items-center justify-center gap-x-2 text-small text-failure-t"
     >
       <span className="font-semibold">Couldn&apos;t load more.{reason && ` ${reason}`}</span>
       <RetryButton retry={retry} busy={busy} />

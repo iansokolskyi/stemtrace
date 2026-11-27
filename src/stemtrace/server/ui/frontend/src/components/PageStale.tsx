@@ -21,11 +21,11 @@ export function PageStale({
     <div data-testid="stale-line" className={className}>
       {lines.map((line) =>
         line.kind === 'key' ? (
-          <p key="key" role="status" className="m-0 text-xs text-muted">
+          <p key="key" role="status" className="m-0 text-small text-muted">
             The server needs a valid API key.
           </p>
         ) : line.kind === 'gone' ? (
-          <p key={`gone-${line.what}`} role="status" className="m-0 text-xs text-muted">
+          <p key={`gone-${line.what}`} role="status" className="m-0 text-small text-muted">
             This {line.what} is no longer stored. Showing data from{' '}
             {clock(new Date(line.since).toISOString())} UTC.
           </p>
@@ -33,7 +33,7 @@ export function PageStale({
           <p
             key="stale"
             role="status"
-            className="m-0 flex flex-wrap items-center gap-x-2 text-xs text-muted"
+            className="m-0 flex flex-wrap items-center gap-x-2 text-small text-muted"
           >
             <span>
               Couldn&apos;t refresh. Showing data from {clock(new Date(line.since).toISOString())}{' '}

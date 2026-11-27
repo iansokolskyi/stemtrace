@@ -43,10 +43,10 @@ export function TileFace({
 }: TileFaceProps): ReactElement {
   return (
     <>
-      <span className="block text-xs font-semibold text-muted">{label}</span>
+      <span className="block text-small font-semibold text-muted">{label}</span>
       <span
         className={clsx(
-          'block text-[26px] leading-[1.15] font-extrabold tracking-[-0.02em]',
+          'block text-figure leading-[1.15] font-extrabold tracking-[-0.02em]',
           VALUE_TONE[grade],
         )}
       >
@@ -54,7 +54,7 @@ export function TileFace({
       </span>
       <span
         className={clsx(
-          'flex h-12 items-start gap-1.5 overflow-hidden text-xs',
+          'flex h-12 items-start gap-1.5 overflow-hidden text-small',
           grade === 'ok' ? 'text-muted' : 'font-bold text-ink',
         )}
       >
@@ -72,7 +72,7 @@ export function TileFace({
           {note}
         </span>
       </span>
-      <span className="flex min-h-4 min-w-0 items-center text-xs text-muted">
+      <span className="flex min-h-4 min-w-0 items-center text-small text-muted">
         <span title={sub} className="truncate">
           {sub}
         </span>

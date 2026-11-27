@@ -26,7 +26,7 @@ export const rangeOf = (within: string | undefined): Range =>
   within === '1h' || within === '6h' ? within : 'all'
 
 export const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
 export const BUTTON_QUIET = `${BUTTON} bg-raised text-ink hover:bg-press`
 export const BUTTON_PRIMARY = `${BUTTON} bg-ink text-on-ink hover:opacity-90`
 
@@ -40,7 +40,7 @@ export function Section({
 }): ReactElement {
   return (
     <div className="mt-4">
-      {title && <h3 className="mb-1.5 text-[13px] font-bold">{title}</h3>}
+      {title && <h3 className="mb-1.5 text-small font-semibold text-muted">{title}</h3>}
       {children}
     </div>
   )
@@ -49,7 +49,7 @@ export function Section({
 /** Label/value pairs; a pair without a value is left out. */
 export function Facts({ rows }: { rows: [string, ReactNode][] }): ReactElement {
   return (
-    <dl className="m-0 grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs">
+    <dl className="m-0 grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-small">
       {rows
         .filter(
           ([, value]) => value !== null && value !== undefined && value !== '' && value !== false,
@@ -74,8 +74,8 @@ export function Figures({
     <div className="grid grid-cols-4 gap-2">
       {items.map(({ label, value, loud }) => (
         <div key={label} className="min-w-0 rounded-[3px] bg-raised px-2.5 py-[7px]">
-          <small className="block text-xs text-muted">{label}</small>
-          <b className={clsx('text-[17px] font-extrabold', loud && 'text-failure-t')}>{value}</b>
+          <small className="block text-small text-muted">{label}</small>
+          <b className={clsx('text-title font-extrabold', loud && 'text-failure-t')}>{value}</b>
         </div>
       ))}
     </div>

@@ -28,7 +28,7 @@ export function NavItem({ to, label, icon, badge, onNavigate }: NavItemProps): R
       <span>{label}</span>
       {badge && (
         <span
-          className={`ml-auto whitespace-nowrap rounded-[3px] px-1.5 py-px text-[11px] font-bold ${BADGE[badge.tone]}`}
+          className={`ml-auto whitespace-nowrap rounded-[3px] px-1.5 py-px text-meta font-bold ${BADGE[badge.tone]}`}
         >
           {badge.text}
         </span>
