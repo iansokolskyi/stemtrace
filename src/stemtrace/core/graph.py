@@ -86,6 +86,18 @@ class NodeType(str, Enum):
     CHORD = "CHORD"
 
 
+class RunFacts(NamedTuple):
+    """A node's index-backed facts for its run record (see ``TaskNode.run_facts``)."""
+
+    state_event: TaskEvent | None
+    attempt_started: datetime | None
+    replaced_progress: datetime | None
+    hostname: str | None
+    queue: str | None
+    exception_type: str | None
+    first_seen: datetime | None
+
+
 class TaskNode(BaseModel):
     """Mutable node in the task graph. Tracks event history and child relationships.
 
@@ -113,6 +125,13 @@ class TaskNode(BaseModel):
     # Insert index (not serialized; rebuilt on first use, e.g. after
     # deserialization or when ``events`` was changed directly).
     _index: "_EventIndex | None" = PrivateAttr(default=None)
+    # Which creation this node is (see ``TaskGraph.birth_mark``); 0 until stamped.
+    _born: int = PrivateAttr(default=0)
+
+    @property
+    def born(self) -> int:
+        """The graph's creation count when this node was added; a re-created ID gets a new one."""
+        return self._born
 
     @property
     def first_seen(self) -> datetime | None:
@@ -157,7 +176,10 @@ class TaskNode(BaseModel):
         terminal event from the main process has ``retries=0``, so then it is
         the first attempt's STARTED, not necessarily the last run's.
         """
-        index = self._ensure_index()
+        return self._attempt_started(self._ensure_index())
+
+    @staticmethod
+    def _attempt_started(index: "_EventIndex") -> datetime | None:
         current = index.state_event
         return None if current is None else index.started_at.get(current.retries)
 
@@ -170,10 +192,33 @@ class TaskNode(BaseModel):
         was due to run. None when there is none. O(1): the index keeps the two
         latest by distinct parent.
         """
-        best, second = self._ensure_index().due
+        return self._replaced_progress(self._ensure_index())
+
+    def _replaced_progress(self, index: "_EventIndex") -> datetime | None:
+        best, second = index.due
         if best is not None and best[1] != self.reported_parent_id:
             return best[0]
         return None if second is None else second[0]
+
+    def run_facts(self) -> "RunFacts":
+        """What a run record reads from the insert index, in one O(1) lookup.
+
+        The index keeps these as events arrive, so a record doesn't rescan the
+        events: ``hostname``, ``queue`` and ``exception_type`` are the
+        furthest-along values (see ``attribution.latest``), ``first_seen`` the
+        earliest event time.
+        """
+        index = self._ensure_index()
+        hostname, queue, exception_type = index.latest
+        return RunFacts(
+            index.state_event,
+            self._attempt_started(index),
+            self._replaced_progress(index),
+            hostname and hostname[2],
+            queue and queue[2],
+            exception_type and exception_type[2],
+            index.first_ts,
+        )
 
     @property
     def exception_type(self) -> str | None:
@@ -287,6 +332,10 @@ class TaskNode(BaseModel):
         self.events.insert(position, event)
         index.by_key[key] = event
         index.observe(event)
+        rank = attribution.precedence(event)
+        index.fold_latest(rank, key, event)
+        if index.first_ts is None or event.timestamp < index.first_ts:
+            index.first_ts = event.timestamp
         index.last_position = position
         index.last_key = key
         parent = event.parent_id if event.parent_id != self.task_id else None
@@ -305,8 +354,7 @@ class TaskNode(BaseModel):
         if (
             current is None
             or index.state_key is None
-            or (attribution.precedence(event), key)
-            > (attribution.precedence(current), index.state_key)
+            or (rank, key) > (attribution.precedence(current), index.state_key)
         ):
             current = event
             index.state_event = event
@@ -417,6 +465,7 @@ class TaskNode(BaseModel):
 
 
 _Due = tuple[datetime, str]  # a due time and the parent that sent it
+_Best = tuple[tuple[int, int, int, datetime, int], attribution.EventKey, str]
 
 
 class _EventIndex:
@@ -427,9 +476,11 @@ class _EventIndex:
         "by_key",
         "due",
         "first_own",
+        "first_ts",
         "keys",
         "last_key",
         "last_position",
+        "latest",
         "names",
         "new_identity",
         "parent_key",
@@ -479,6 +530,43 @@ class _EventIndex:
             self.state_key, self.state_event = max(
                 pairs, key=lambda p: (attribution.precedence(p[1]), p[0])
             )
+        # (rank, key, value) of the furthest-along event with a hostname,
+        # queue and exception class: what ``attribution.latest`` returns.
+        self.latest: list[_Best | None] = [None, None, None]
+        self.first_ts: datetime | None = min(
+            (e.timestamp for e in events), default=None
+        )
+        for key, event in pairs:
+            self.fold_latest(attribution.precedence(event), key, event)
+
+    def fold_latest(
+        self,
+        rank: tuple[int, int, int, datetime, int],
+        key: attribution.EventKey,
+        event: TaskEvent,
+    ) -> None:
+        """Fold one event into the furthest-along hostname, queue and exception class.
+
+        A tie in rank goes to the earlier event key: the first in lifecycle
+        order, as ``max`` over the sorted events picks it.
+        """
+        # Unrolled: this runs on every ingested event.
+        latest = self.latest
+        value = event.hostname
+        if value is not None:
+            best = latest[0]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[0] = (rank, key, value)
+        value = event.queue
+        if value is not None:
+            best = latest[1]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[1] = (rank, key, value)
+        value = event.exception_type
+        if value is not None:
+            best = latest[2]
+            if best is None or rank > best[0] or (rank == best[0] and key < best[1]):
+                latest[2] = (rank, key, value)
 
     def observe(self, event: TaskEvent) -> None:
         """Fold one event into ``due`` and ``started_at``."""
@@ -875,9 +963,15 @@ class TaskGraph(BaseModel):
     # Root IDs in the order they became roots: a dict used as an ordered set,
     # so adding and removing a root is O(1). Exposed as ``root_ids``.
     _roots: dict[str, None] = PrivateAttr(default_factory=dict)
+    # Roots added and dropped since the last ``mark_roots()``, as a net change:
+    # a root that left and came back is in neither.
+    _roots_added: dict[str, None] = PrivateAttr(default_factory=dict)
+    _roots_removed: dict[str, None] = PrivateAttr(default_factory=dict)
     # Existing tasks whose name or reported parent changed since the last take_changed(): a
     # task.replace() reuse can re-pick a task's name on another task's event.
     _changed_ids: set[str] = PrivateAttr(default_factory=set)
+    # Nodes created so far (+1): a node born before a mark read earlier is the same node.
+    _births: int = PrivateAttr(default=1)
     # Celery group ID -> its members and counts.
     _groups: dict[str, _GroupTally] = PrivateAttr(default_factory=dict)
     # Parent ID -> tasks with any event naming it (replace() detection).
@@ -968,6 +1062,21 @@ class TaskGraph(BaseModel):
     def root_ids(self) -> list[str]:
         """IDs of the root nodes, in the order they became roots (a copy)."""
         return list(self._roots)
+
+    @property
+    def root_count(self) -> int:
+        """How many roots there are, in O(1)."""
+        return len(self._roots)
+
+    def mark_roots(self) -> frozenset[str]:
+        """Return the roots now and start counting changes from them (see ``root_delta``)."""
+        self._roots_added.clear()
+        self._roots_removed.clear()
+        return frozenset(self._roots)
+
+    def root_delta(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The roots added and the roots dropped since the last ``mark_roots()``, in O(changes)."""
+        return tuple(self._roots_added), tuple(self._roots_removed)
 
     def is_root(self, task_id: str) -> bool:
         """Whether ``task_id`` is one of ``root_ids`` (a constant-time check)."""
@@ -1357,6 +1466,15 @@ class TaskGraph(BaseModel):
 
     # -- placement ---------------------------------------------------------
 
+    @property
+    def birth_mark(self) -> int:
+        """Read now, then ``node.born < mark`` says the node existed at this read, O(1)."""
+        return self._births
+
+    def _stamp_birth(self, node: TaskNode) -> None:
+        node._born = self._births
+        self._births += 1
+
     def _insert_node(self, event: TaskEvent) -> TaskNode:
         """Create the node for a task's first event and link it."""
         node = TaskNode(
@@ -1369,6 +1487,7 @@ class TaskGraph(BaseModel):
         node._record_event(event)
         node._note_reported_parent(self._replacement_check(node))
         self.nodes[event.task_id] = node
+        self._stamp_birth(node)
         node.parent_id = self._safe_parent(node, self._desired_parent(node))
         self._link(node)
         self._adopt_waiting_children(node.task_id)
@@ -1571,6 +1690,8 @@ class TaskGraph(BaseModel):
         """
         if node.parent_id is None:
             self._roots[node.task_id] = None
+            if self._roots_removed.pop(node.task_id, False) is False:
+                self._roots_added[node.task_id] = None
             return
         parent = self.nodes[node.parent_id]
         # Only a CHORD can already list the node: as its callback.
@@ -1585,6 +1706,8 @@ class TaskGraph(BaseModel):
         """
         if node.parent_id is None:
             self._roots.pop(node.task_id, None)
+            if self._roots_added.pop(node.task_id, False) is False:
+                self._roots_removed[node.task_id] = None
             return
         parent = self.nodes.get(node.parent_id)
         if parent is None or parent.chord_id == node.task_id:
@@ -1832,6 +1955,7 @@ class TaskGraph(BaseModel):
             chord_callback_id=self._named_stamp(tally) if is_chord else None,
         )
         self.nodes[group_node.task_id] = group_node
+        self._stamp_birth(group_node)
         group_node.parent_id = self._safe_parent(
             group_node, self._desired_parent(group_node)
         )

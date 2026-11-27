@@ -263,9 +263,11 @@ Limitations:
 - Run eagerly (`task_always_eager`) from inside an `except` block, a task's bare
   `raise self.retry()` reports the caller's exception being handled, since it runs on the
   caller's stack.
-- `GET /api/tasks` filters on these fields by reading every event of every task, several times
-  the cost of a name filter: on a full store of 10,000 tasks (6 events each) a filtered request
-  took 40 to 130 ms against 10 to 30 ms for a name filter, on a loaded 2-vCPU host.
+- `GET /api/tasks` filters on these fields from a record the server keeps for each task as
+  events arrive, so a filter doesn't read the task's events. The server holds its store lock
+  only to copy the records and then the rows of the page. A row that changes while the list is
+  built shows its newest state, even if it no longer matches the filter. A row evicted in that
+  time is left out, and `total` still counts the matches when the filter ran.
 
 ## Queue wait and runtime
 

@@ -62,6 +62,7 @@ def test_run_record_follows_the_task_through_its_states() -> None:
         last_updated=T0,
         state_since=T0,
         attempt_started=T0,
+        first_seen=T0,
     )
     assert _records(store)["t1"] == RunRecord(
         task_id="t1",
@@ -72,6 +73,8 @@ def test_run_record_follows_the_task_through_its_states() -> None:
         runtime_ms=5000,
         state_since=T0 + timedelta(seconds=5),
         attempt_started=T0,
+        first_seen=T0,
+        latest_exception_type="myapp.PartnerError",
     )
 
 
