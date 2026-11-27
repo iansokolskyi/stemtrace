@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 LIMIT = 50
+GRAPH_LIMIT = 2
 SMALL, BIG = 3_000, 20_000
 
 
@@ -60,6 +61,26 @@ def small_store() -> GraphStore:
 @pytest.fixture(scope="module")
 def big_store() -> GraphStore:
     return _store(BIG)
+
+
+GRAPH_BIG = 60_000
+
+
+@pytest.fixture(scope="module")
+def many_roots_store() -> GraphStore:
+    """One event a root: the cheapest store with enough roots for a copy to show."""
+    store = GraphStore(max_nodes=GRAPH_BIG + 10_000)
+    for i in range(GRAPH_BIG):
+        store.add_event(
+            TaskEvent(
+                task_id=f"f{i}",
+                name="app.flow",
+                state=TaskState.SUCCESS,
+                timestamp=NOW - timedelta(seconds=i % 7200),
+            )
+        )
+    gc.collect()
+    return store
 
 
 class _CountingLock:
@@ -132,12 +153,18 @@ SCANS: dict[str, Callable[[GraphStore], object]] = {
     "sorted": lambda s: s.get_nodes(
         limit=LIMIT, hostname="worker3@host3", sort_key=lambda r: r.runtime_ms
     ),
+    # Graph pages are 2 roots: the hold is then the snapshot reads alone, so a
+    # copy of every root or node stands out against it.
     "root_flows_from": lambda s: s.get_root_nodes_with_children(
-        limit=LIMIT, from_date=_FROM
+        limit=GRAPH_LIMIT, from_date=_FROM
     ),
-    "root_flows_to": lambda s: s.get_root_nodes_with_children(limit=LIMIT, to_date=_TO),
-    "root_nodes_from": lambda s: s.get_root_nodes(limit=LIMIT, from_date=_FROM),
-    "root_flows_unfiltered": lambda s: s.get_root_nodes_with_children(limit=LIMIT),
+    "root_flows_to": lambda s: s.get_root_nodes_with_children(
+        limit=GRAPH_LIMIT, to_date=_TO
+    ),
+    "root_nodes_from": lambda s: s.get_root_nodes(limit=GRAPH_LIMIT, from_date=_FROM),
+    "root_flows_unfiltered": lambda s: s.get_root_nodes_with_children(
+        limit=GRAPH_LIMIT
+    ),
     "run_summaries": lambda s: s.get_task_run_summaries(),
     "unique_task_names": lambda s: s.get_unique_task_names(),
 }
@@ -219,18 +246,23 @@ GRAPH_SCANS = {
 
 @pytest.mark.parametrize("scan", SCANS)
 def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
-    scan: str, small_store: GraphStore, big_store: GraphStore
+    scan: str,
+    small_store: GraphStore,
+    big_store: GraphStore,
+    many_roots_store: GraphStore,
 ) -> None:
     """C-level work (a sort, a copy) is invisible to the trace count; time it."""
     run = SCANS[scan]
+    graph = scan in GRAPH_SCANS
+    large, large_runs = (many_roots_store, GRAPH_BIG) if graph else (big_store, BIG)
     run(small_store)
-    run(big_store)
+    run(large)
 
     small = _best_hold_s(small_store, run)
-    big = _best_hold_s(big_store, run)
+    big = _best_hold_s(large, run)
 
-    # 6.7x the runs: a reference copy grows, nothing else may.
-    slack = 0.0003 if scan in GRAPH_SCANS else 0.002
+    # 20x (graph) or 6.7x the runs: a reference copy grows, nothing else may.
+    slack = 0.0001 if graph else 0.002
     assert big <= 2 * small + slack, (
-        f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {BIG}"
+        f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {large_runs}"
     )
