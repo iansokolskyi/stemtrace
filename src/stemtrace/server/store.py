@@ -1424,6 +1424,7 @@ class GraphStore:
         """
 
         def build(live: list[TaskNode]) -> FlowListPage:
+            """Snapshot the roots and what their response reads; the lock is held."""
             nodes = self._graph.nodes
             roots = [_snapshot(n) for n in live]
             related = {root.task_id: root for root in roots}
