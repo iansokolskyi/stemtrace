@@ -186,33 +186,35 @@ class _TimedLock:
         self._lock.release()
 
 
-def _best_hold_s(
-    store: GraphStore, scan: Callable[[GraphStore], object], *, last_only: bool = False
-) -> float:
-    """The smallest lock hold of one ``scan`` call over several tries (C work included).
-
-    The total of its holds, or only the last one with ``last_only``.
-    """
+def _best_hold_s(store: GraphStore, scan: Callable[[GraphStore], object]) -> float:
+    """The smallest total lock hold of one ``scan`` call over several tries (C work included)."""
     real = store._lock
     timed = _TimedLock(real)
     store._lock = timed  # type: ignore[assignment]  # same protocol
     best = float("inf")
+    gc_was_on = gc.isenabled()
     gc.disable()  # a collection inside a hold would time the whole heap
     try:
         for _ in range(9):
             timed.holds.clear()
             scan(store)
-            best = min(best, timed.holds[-1] if last_only else sum(timed.holds))
+            best = min(best, sum(timed.holds))
     finally:
-        gc.enable()
+        if gc_was_on:
+            gc.enable()
         store._lock = real
     return best
 
 
-# A date-filtered graph list copies the whole root list and times in its first
-# hold: a named limitation (24-37 ms at 100,000 roots). Its last hold, the
-# page's snapshots, is O(limit) and is timed tightly.
-FIRST_HOLD_COPIES_ROOTS = {"root_flows_from", "root_flows_to", "root_nodes_from"}
+# Graph lists read a published snapshot of the flow order and times: their holds
+# copy nothing per root, so they get no slack. Task lists copy the run records
+# (a reference copy that grows with the store), so they get 2 ms.
+GRAPH_SCANS = {
+    "root_flows_unfiltered",
+    "root_flows_from",
+    "root_flows_to",
+    "root_nodes_from",
+}
 
 
 @pytest.mark.parametrize("scan", SCANS)
@@ -223,14 +225,12 @@ def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
     run = SCANS[scan]
     run(small_store)
     run(big_store)
-    last_only = scan in FIRST_HOLD_COPIES_ROOTS
 
-    small = _best_hold_s(small_store, run, last_only=last_only)
-    big = _best_hold_s(big_store, run, last_only=last_only)
+    small = _best_hold_s(small_store, run)
+    big = _best_hold_s(big_store, run)
 
-    # 6.7x the runs: a reference copy grows, nothing else may. The last hold
-    # of a date-filtered graph list copies nothing, so it gets no slack.
-    slack = 0.0003 if last_only else 0.002
+    # 6.7x the runs: a reference copy grows, nothing else may.
+    slack = 0.0003 if scan in GRAPH_SCANS else 0.002
     assert big <= 2 * small + slack, (
         f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {BIG}"
     )
