@@ -674,3 +674,18 @@ def test_graph_page_inside_the_gate_drops_a_root_that_got_a_parent() -> None:
         page = store.get_root_nodes_with_children(limit=10, **kwargs)
         assert [n.task_id for n in page.roots] == ["r2", "r0"], kwargs
         assert page.total == 2
+
+
+def test_root_delta_is_empty_for_a_root_that_left_and_came_back() -> None:
+    store = GraphStore()
+    store.add_event(_ev("solo", TaskState.STARTED, 0))
+    store.add_event(_ev("other", TaskState.STARTED, 1))
+    graph = store._graph
+    graph.mark_roots()
+
+    graph.remove_node("solo")
+    assert graph.root_delta() == ((), ("solo",))
+    store.add_event(_ev("solo", TaskState.STARTED, 20))
+
+    assert graph.root_delta() == ((), ())
+    assert graph.root_count == 2
