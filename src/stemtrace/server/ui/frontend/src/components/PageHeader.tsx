@@ -3,7 +3,7 @@ import type { ReactElement, ReactNode } from 'react'
 
 interface PageHeaderProps {
   title: ReactNode
-  /** Muted line beside the title; it wraps below the title when the row is full. */
+  /** Muted line beside the title on wide screens, under it on narrow ones. */
   summary?: ReactNode
   /** Between the title and the summary, such as a status chip. */
   status?: ReactNode
