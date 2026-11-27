@@ -822,6 +822,8 @@ test.describe('Show more in the triage panel', () => {
   test.skip(isRealMode, 'Mock-only tests')
 
   test('a failed longer list keeps the rows and says it could not load more', async ({ page }) => {
+    // The panel polls every 15 s, and each failed poll is retried for 7 s: the button is idle between
+    test.setTimeout(75_000)
     await page.routeWebSocket(/\/ws$/, () => {})
     const api = await setupMockApi(page)
     api.clearTasks()
@@ -850,9 +852,9 @@ test.describe('Show more in the triage panel', () => {
     )
     await expect(rows).toHaveCount(before)
     // The client's retries are over once the button reads Retry again
-    await expect(failed.getByRole('button', { name: 'Retry', exact: true })).toBeVisible(
-      AFTER_RETRIES,
-    )
+    await expect(failed.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
+      timeout: 40_000,
+    })
     // The rows are the shorter list's, so no time of its own to show
     await expect(panel.getByTestId('stale-line')).toHaveCount(0)
     await expect(panel.getByTestId('notice')).toHaveCount(0)
