@@ -4,9 +4,11 @@
 // Checked, one line at a time (the fixture in tests/fixtures/type-scale-mutants.json shows each):
 // Tailwind size classes; `fontSize` and `font-size` as JSX props, SVG attributes and object keys
 // (quoted or not); `font` and `font-size` values in CSS, style objects and canvas strings, in any
-// case, unit or keyword; and `--text-*` declarations and `var(--text-*)` uses.
-// Not covered: a declaration split over several lines, and computed keys such as
-// `{ ['fontSize']: 10 }` or `style.setProperty(...)`.
+// case, in px, rem, em, pt, %, vw/vh, keywords or calc/clamp/min/max; and `--text-*` declarations
+// and `var(--text-*)` uses.
+// Not covered: other units in the `font` shorthand (dvh, svh, cqi, Q, lh, rlh, cap), a
+// declaration split over several lines, and computed keys such as `{ ['fontSize']: 10 }` or
+// `style.setProperty(...)`.
 
 export const SCALE_PX = { meta: 11, small: 12, body: 13, title: 15, page: 22, figure: 26 }
 const SCALE_SIZES = new Set(Object.values(SCALE_PX))
