@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,7 @@ def _store(count: int) -> GraphStore:
     store = GraphStore(max_nodes=count + 10_000)
     for i in range(count):
         _add_run(store, i)
+    gc.collect()  # so no collection of the build's garbage lands in a timed hold
     return store
 
 
@@ -135,6 +137,7 @@ SCANS: dict[str, Callable[[GraphStore], object]] = {
     ),
     "root_flows_to": lambda s: s.get_root_nodes_with_children(limit=LIMIT, to_date=_TO),
     "root_nodes_from": lambda s: s.get_root_nodes(limit=LIMIT, from_date=_FROM),
+    "root_flows_unfiltered": lambda s: s.get_root_nodes_with_children(limit=LIMIT),
     "run_summaries": lambda s: s.get_task_run_summaries(),
     "unique_task_names": lambda s: s.get_unique_task_names(),
 }
@@ -156,17 +159,19 @@ def test_scan_holds_the_store_lock_for_work_that_does_not_grow_with_the_store(
     # 6x the runs may add a few events (a longer dict iteration is one C call),
     # never work per run.
     assert big <= small + 100, f"{scan}: held {small} events at {SMALL}, {big} at {BIG}"
+    # A graph page snapshots each root's children too, about 105 events a root
+    # (the task list's ~62 a row, plus the children), so 150 a row of headroom.
     assert big <= 150 * LIMIT, f"{scan}: held {big} events for a page of {LIMIT}"
 
 
 class _TimedLock:
-    """An RLock that sums the wall-clock time of every outermost hold."""
+    """An RLock that records the wall-clock time of every outermost hold."""
 
     def __init__(self, lock: Any) -> None:
         self._lock = lock
         self._depth = 0
         self._since = 0.0
-        self.held_s = 0.0
+        self.holds: list[float] = []
 
     def __enter__(self) -> None:
         self._lock.acquire()
@@ -176,33 +181,41 @@ class _TimedLock:
 
     def __exit__(self, *exc: object) -> None:
         if self._depth == 1:
-            self.held_s += time.perf_counter() - self._since
+            self.holds.append(time.perf_counter() - self._since)
         self._depth -= 1
         self._lock.release()
 
 
-def _best_hold_s(store: GraphStore, scan: Callable[[GraphStore], object]) -> float:
-    """The smallest total lock hold of one ``scan`` call over several tries (C work included)."""
+def _best_hold_s(
+    store: GraphStore, scan: Callable[[GraphStore], object], *, last_only: bool = False
+) -> float:
+    """The smallest lock hold of one ``scan`` call over several tries (C work included).
+
+    The total of its holds, or only the last one with ``last_only``.
+    """
     real = store._lock
     timed = _TimedLock(real)
     store._lock = timed  # type: ignore[assignment]  # same protocol
     best = float("inf")
+    gc.disable()  # a collection inside a hold would time the whole heap
     try:
-        for _ in range(7):
-            timed.held_s = 0.0
+        for _ in range(9):
+            timed.holds.clear()
             scan(store)
-            best = min(best, timed.held_s)
+            best = min(best, timed.holds[-1] if last_only else sum(timed.holds))
     finally:
+        gc.enable()
         store._lock = real
     return best
 
 
-# The graph date filters copy the whole root list and times under the lock: a
-# known limitation (about 37 ms at 100,000 roots), so only the trace-count test above runs them.
-WALL_CLOCK_EXCLUDED = {"root_flows_from", "root_flows_to", "root_nodes_from"}
+# A date-filtered graph list copies the whole root list and times in its first
+# hold: a named limitation (24-37 ms at 100,000 roots). Its last hold, the
+# page's snapshots, is O(limit) and is timed tightly.
+FIRST_HOLD_COPIES_ROOTS = {"root_flows_from", "root_flows_to", "root_nodes_from"}
 
 
-@pytest.mark.parametrize("scan", [s for s in SCANS if s not in WALL_CLOCK_EXCLUDED])
+@pytest.mark.parametrize("scan", SCANS)
 def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
     scan: str, small_store: GraphStore, big_store: GraphStore
 ) -> None:
@@ -210,11 +223,14 @@ def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
     run = SCANS[scan]
     run(small_store)
     run(big_store)
+    last_only = scan in FIRST_HOLD_COPIES_ROOTS
 
-    small = _best_hold_s(small_store, run)
-    big = _best_hold_s(big_store, run)
+    small = _best_hold_s(small_store, run, last_only=last_only)
+    big = _best_hold_s(big_store, run, last_only=last_only)
 
-    # 6.7x the runs: the reference copy grows, nothing else may.
-    assert big <= 2 * small + 0.002, (
+    # 6.7x the runs: a reference copy grows, nothing else may. The last hold
+    # of a date-filtered graph list copies nothing, so it gets no slack.
+    slack = 0.0003 if last_only else 0.002
+    assert big <= 2 * small + slack, (
         f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {BIG}"
     )
