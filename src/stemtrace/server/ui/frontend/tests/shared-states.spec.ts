@@ -1145,3 +1145,27 @@ test.describe('The flow inspector joins the page', () => {
     await expect(page.getByTestId('notice')).toHaveCount(0)
   })
 })
+
+test.describe('Retry inside the triage panel', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  test('when the box goes away, focus lands on the panel title, not the page heading', async ({
+    page,
+  }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page)
+    const scenario = spikeScenario()
+    api.addTasks(spikeTasks(scenario).tasks)
+    await mockOverview(page, scenario)
+    await page.route(/\/api\/tasks(\?|$)/, fail503)
+    await page.goto('/?panel=exception%3AValueError')
+    const panel = page.getByTestId('triage-panel')
+    const retry = panel.getByRole('button', { name: 'Retry', exact: true })
+    await expect(retry).toBeVisible(AFTER_RETRIES)
+
+    await page.unroute(/\/api\/tasks(\?|$)/, fail503)
+    await retry.click()
+    await expect(panel.getByTestId('notice')).toHaveCount(0)
+    await expect(panel.getByRole('heading', { level: 2 })).toBeFocused()
+  })
+})
