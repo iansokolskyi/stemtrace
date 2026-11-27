@@ -22,6 +22,7 @@ from stemtrace.server.store import (
     FLOW_TIMES_REFRESH_SECONDS,
     GraphStore,
     WorkerRegistry,
+    _merged_order,
     _newest_first_key,
     _root_of_each,
 )
@@ -373,10 +374,13 @@ def test_cached_list_equals_the_oracle_whenever_the_cache_is_fresh(chunk: int) -
             everyone, everyone_total = store.get_root_nodes(limit=1000)
             unseen_checks += _check_unseen_times(store, twin, known, (seed, position))
             cached = store._flow_cache
-            if cached is not None:  # the bisect inserts keep the order exact
-                assert cached.order == sorted(
-                    cached.times, key=_newest_first_key(cached.times)
-                ), (seed, position)
+            if cached is not None:  # the merge of the later roots keeps the order exact
+                assert list(
+                    _merged_order(cached.order, cached.extra_order, cached.times)
+                ) == sorted(cached.times, key=_newest_first_key(cached.times)), (
+                    seed,
+                    position,
+                )
             assert sorted(r.task_id for r in everyone) == sorted(
                 store._graph.root_ids
             ), (seed, position)

@@ -90,11 +90,18 @@ class RunRecord:
     # and when a ``replace()`` replacement was due (None if none was sent).
     attempt_started: datetime | None = None
     replaced_progress: datetime | None = None
+    # What the task list filters read, as the node's properties give them
+    # (``exception_type`` above is the FAILURE-only one for failure groups).
+    first_seen: datetime | None = None
+    hostname: str | None = None
+    queue: str | None = None
+    latest_exception_type: str | None = None
 
     @classmethod
     def from_node(cls, node: TaskNode) -> RunRecord | None:
         """Build the record of a TASK node; None for GROUP/CHORD or an empty node."""
-        current, last_updated = node.state_event, node.last_updated
+        facts = node.run_facts()
+        current, last_updated = facts.state_event, node.last_updated
         if node.node_type != NodeType.TASK or current is None or last_updated is None:
             return None
         return cls(
@@ -126,8 +133,12 @@ class RunRecord:
             cancelled=current.state == TaskState.RETRY
             and current.exception == CANCELLED_RETRY_REASON,
             reported_parent_id=node.reported_parent_id,
-            attempt_started=node.attempt_started,
-            replaced_progress=node.replaced_progress,
+            attempt_started=facts.attempt_started,
+            replaced_progress=facts.replaced_progress,
+            first_seen=facts.first_seen,
+            hostname=facts.hostname,
+            queue=facts.queue,
+            latest_exception_type=facts.exception_type,
         )
 
 

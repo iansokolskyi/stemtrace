@@ -64,10 +64,16 @@ class TestGraphStoreConsistency:
 
         nodes, total = store.get_nodes(state=TaskState.STARTED)
 
-        assert lock.interleavings >= 1
-        assert {n.state for n in nodes} == {TaskState.STARTED}
+        # task-0 finished before the rows were copied, so it is not a match.
+        # task-1 finished after: it matched, so it stays, with its new state.
+        assert lock.interleavings >= 2
+        assert {n.task_id: n.state for n in nodes} == {
+            "task-1": TaskState.SUCCESS,
+            "task-2": TaskState.STARTED,
+            "task-3": TaskState.STARTED,
+            "task-4": TaskState.STARTED,
+        }
         assert total == len(nodes)
-        assert "task-0" not in {n.task_id for n in nodes}
 
     def test_get_nodes_state_filter_consistent_under_concurrent_writer(
         self,
@@ -88,8 +94,12 @@ class TestGraphStoreConsistency:
         try:
             for _ in range(200):
                 nodes, total = store.get_nodes(state=TaskState.STARTED, limit=1000)
+                # A row is one snapshot: SUCCESS exactly when it has both events.
                 mismatches.extend(
-                    n.task_id for n in nodes if n.state != TaskState.STARTED
+                    n.task_id
+                    for n in nodes
+                    if n.state
+                    != (TaskState.SUCCESS if len(n.events) == 2 else TaskState.STARTED)
                 )
                 assert total == len(nodes)
         finally:
