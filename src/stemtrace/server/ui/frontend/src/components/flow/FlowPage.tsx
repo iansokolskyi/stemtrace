@@ -1,9 +1,12 @@
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { GraphNode } from '@/api/client'
+import { useTask } from '@/api/queries'
 import { flowSummary, flowTitle } from '@/components/flows/flowSummary'
 import { Icon } from '@/components/Icon'
+import { PageStale } from '@/components/PageStale'
 import { StatusChip } from '@/components/StatusChip'
 import { useSetCrumbTitle } from '@/hooks/useCrumbTitle'
+import { useViewState, type ViewState } from '@/hooks/useViewState'
 import { FlowDiagram } from './FlowDiagram'
 import { firstFailure, summarizeFlow } from './flowFacts'
 import { Gantt } from './Gantt'
@@ -36,6 +39,8 @@ const reducedMotion = (): boolean => {
 interface FlowPageProps {
   nodes: Record<string, GraphNode>
   rootId: string
+  /** The flow's own query: the page's stale line covers it and the inspector's task query. */
+  view: ViewState
 }
 
 /**
@@ -44,7 +49,7 @@ interface FlowPageProps {
  * has acted (zoomed, pressed Fit, chosen a node, expanded or collapsed, scrolled), a live update never moves the view;
  * until then a new node that is out of the box is scrolled into it.
  */
-export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
+export function FlowPage({ nodes, rootId, view }: FlowPageProps): ReactElement {
   const [chosen, setChosen] = useState<string | null>(null)
   const [zoom, setZoom] = useState<number | null>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
@@ -62,6 +67,12 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
   const selected = chosen && nodes[chosen] ? chosen : (failure?.task_id ?? rootId)
   const scale = zoom ?? 1
   const locked = acted
+  // The inspector's kwargs and exception come from the task itself; its query joins the page's
+  // views, so a failed refresh of it shows in the page's one stale line
+  const selectedNode = nodes[selected]
+  const isTask = selectedNode && (selectedNode.node_type ?? 'TASK') === 'TASK'
+  const taskQuery = useTask(isTask ? selected : '')
+  const taskView = useViewState(taskQuery, `tasks/${selected}`, 'task')
 
   // Open bars run to now: the clock ticks once a second while a bar is open and stops otherwise
   const [now, setNow] = useState(() => Date.now())
@@ -196,6 +207,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
 
   return (
     <div>
+      <PageStale views={[view, taskView]} />
       <header className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h1
           tabIndex={-1}
@@ -277,6 +289,7 @@ export function FlowPage({ nodes, rootId }: FlowPageProps): ReactElement {
           nodes={nodes}
           layout={layout}
           selectedId={selected}
+          task={{ data: taskQuery.data, view: taskView }}
           onToggleExpanded={toggleExpanded}
         />
       </div>

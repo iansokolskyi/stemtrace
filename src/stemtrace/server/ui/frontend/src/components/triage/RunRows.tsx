@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import type { ExecutionRow, FetchExecutionsParams, RunSort } from '@/api/client'
 import { usePanelRuns } from '@/api/overviewQueries'
-import { LoadFailure } from '@/components/Notice'
+import { LoadFailure, MoreFailed } from '@/components/Notice'
 import { OUTCOME_STATES } from '@/components/overview/model'
 import { PageStale } from '@/components/PageStale'
 import { StatusChip } from '@/components/StatusChip'
@@ -100,12 +100,19 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
   const limit = Math.min(MAX_LIMIT, initial + more * PAGE)
   const capped = limit >= MAX_LIMIT
   const query = usePanelRuns(filters, limit, { enabled })
+  // While a longer list loads, `data` is the shorter one (placeholder): its failure is "load more"
   const { data } = query
   const state = useViewState(query, `panel/runs/${JSON.stringify(filters)}/${limit}`)
   if (state.phase === 'error') return <LoadFailure what="runs" view={state} />
   if (!data) return <TableSkeleton label="runs" rows={3} bare />
-  if (data.tasks.length === 0)
-    return <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
+  if (data.tasks.length === 0) {
+    return (
+      <>
+        <PageStale views={[state]} className="mb-2" />
+        <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
+      </>
+    )
+  }
   return (
     <>
       <PageStale views={[state]} className="mb-2" />
@@ -153,6 +160,9 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
           Show {Math.min(PAGE, data.total - data.tasks.length, MAX_LIMIT - data.tasks.length)} more
           of {formatCount(data.total)}
         </button>
+      )}
+      {state.loadMoreFailed && (
+        <MoreFailed error={state.error} retry={state.retry} busy={state.retrying} />
       )}
     </>
   )

@@ -73,8 +73,24 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
 
   if (view.phase === 'loading') return <TimelineSkeleton />
   if (view.phase === 'error') return <LoadFailure what="the timeline" view={view} />
-  if (!data?.tasks.length) return <Notice>No executions to display</Notice>
-  if (rows.length === 0) return <Notice>No timing data available</Notice>
+  // An empty list that loaded is data too: a failed refresh shows over it
+  const stale = <PageStale views={[view]} className="mb-3" />
+  if (!data?.tasks.length) {
+    return (
+      <>
+        {stale}
+        <Notice>No executions to display</Notice>
+      </>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <>
+        {stale}
+        <Notice>No timing data available</Notice>
+      </>
+    )
+  }
 
   const parts = rows.flatMap((row) => row.parts)
   const start = Math.min(...parts.map((part) => part.from))
@@ -88,7 +104,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
 
   return (
     <>
-      <PageStale views={[view]} className="mb-3" />
+      {stale}
       <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
         <div className="min-w-[720px] px-4 pt-3 pb-3.5">
           <div className={clsx(COLUMNS, 'mb-1 h-5 text-xs text-muted')} aria-hidden="true">

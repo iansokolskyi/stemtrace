@@ -5,6 +5,7 @@ import { LoadFailure, MoreFailed } from '@/components/Notice'
 import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
+import { useNextPage } from '@/hooks/useNextPage'
 import { useViewState } from '@/hooks/useViewState'
 import { formatCount } from '@/utils/format'
 import { flowsSearch, hasDates } from './-search'
@@ -20,12 +21,14 @@ function FlowsPage() {
   const dates = { from_date, to_date }
 
   const query = useGraphsInfinite(dates)
-  const { data, hasNextPage, isFetchingNextPage, fetchNextPage, isFetchNextPageError } = query
-  const view = useViewState(query, `graphs/${JSON.stringify(dates)}`)
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = query
+  const listKey = JSON.stringify(dates)
+  const view = useViewState(query, `graphs/${listKey}`)
+  const next = useNextPage(query, listKey)
 
   // A failed next page is asked again by its Retry, not by scrolling
   const { lastElementRef } = useInfiniteScroll({
-    hasNextPage: hasNextPage && !isFetchNextPageError,
+    hasNextPage: hasNextPage && !next.failed,
     isFetchingNextPage,
     fetchNextPage,
   })
@@ -67,9 +70,7 @@ function FlowsPage() {
             ))}
           </section>
           {isFetchingNextPage && <p className="text-center text-muted">Loading more flows...</p>}
-          {isFetchNextPageError && (
-            <MoreFailed error={query.error} retry={fetchNextPage} busy={isFetchingNextPage} />
-          )}
+          {next.failed && <MoreFailed error={next.error} retry={next.retry} busy={next.busy} />}
         </>
       )}
     </div>

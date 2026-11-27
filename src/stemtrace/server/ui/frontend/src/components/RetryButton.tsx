@@ -20,6 +20,8 @@ export function RetryButton({
   const run = async (): Promise<void> => {
     if (working) return
     setClicked(true)
+    // Where focus goes if the button goes away with the error: the heading of what it sat in
+    const panel = buttonRef.current?.closest('[data-testid="triage-panel"]')
     try {
       await retry()
     } finally {
@@ -27,7 +29,9 @@ export function RetryButton({
       requestAnimationFrame(() => {
         if (buttonRef.current?.isConnected) buttonRef.current.focus()
         else if (document.activeElement === document.body) {
-          document.querySelector<HTMLElement>('h1')?.focus()
+          const heading =
+            panel?.querySelector<HTMLElement>('h2') ?? document.querySelector<HTMLElement>('h1')
+          heading?.focus()
         }
       })
     }

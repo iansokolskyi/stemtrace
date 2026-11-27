@@ -27,7 +27,7 @@ function TaskDetailPage() {
   const carried = useCarriedRange()
   const { taskId } = Route.useParams()
   const query = useTask(taskId)
-  const view = useViewState(query, `tasks/${taskId}`)
+  const view = useViewState(query, `tasks/${taskId}`, 'task')
   const { data } = query
 
   if (view.phase === 'loading') return <TaskDetailSkeleton />

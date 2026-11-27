@@ -24,6 +24,11 @@ export function PageStale({
           <p key="key" role="status" className="m-0 text-xs text-muted">
             The server needs a valid API key.
           </p>
+        ) : line.kind === 'gone' ? (
+          <p key={`gone-${line.what}`} role="status" className="m-0 text-xs text-muted">
+            This {line.what} is no longer stored. Showing data from{' '}
+            {clock(new Date(line.since).toISOString())} UTC.
+          </p>
         ) : (
           <p
             key="stale"

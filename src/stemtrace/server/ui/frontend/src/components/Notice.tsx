@@ -55,7 +55,15 @@ export function MoreFailed({
   error: unknown
   retry: () => unknown
   busy: boolean
-}): ReactElement {
+}): ReactElement | null {
+  if (error instanceof UnauthorizedError) {
+    if (getLoginPath() !== null) return null
+    return (
+      <p role="alert" data-testid="more-failed" className="m-0 mt-3 text-center text-xs text-ink">
+        The server needs a valid API key.
+      </p>
+    )
+  }
   const reason = reasonOf(error)
   return (
     <p

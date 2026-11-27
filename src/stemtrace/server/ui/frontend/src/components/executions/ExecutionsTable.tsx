@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { type ReactElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ExecutionRow, FetchExecutionsParams } from '@/api/client'
 import { useExecutions, useRegisteredTask } from '@/api/queries'
+import { useNextPage } from '@/hooks/useNextPage'
 import { useViewState } from '@/hooks/useViewState'
 import { hasDates, WINDOW_WORDS } from '@/routes/-search'
 import { formatCount } from '@/utils/format'
@@ -70,8 +71,10 @@ function useBoxMaxHeight(boxRef: React.RefObject<HTMLDivElement | null>): number
 
 function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactElement {
   const query = useExecutions(params)
-  const { data, hasNextPage, isFetchingNextPage, fetchNextPage, isFetchNextPageError } = query
-  const view = useViewState(query, `executions/${JSON.stringify(params)}`)
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = query
+  const listKey = JSON.stringify(params)
+  const view = useViewState(query, `executions/${listKey}`)
+  const next = useNextPage(query, listKey)
 
   const rows = useMemo(() => {
     const seen = new Set<string>()
@@ -96,7 +99,15 @@ function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactE
 
   if (view.phase === 'loading') return <TableSkeleton label="executions" rows={8} />
   if (view.phase === 'error') return <LoadFailure what="executions" view={view} />
-  if (!rows.length || !columns) return <EmptyTable params={params} onClear={onClear} />
+  // An empty list that loaded is data too: a failed refresh shows over it
+  if (!rows.length || !columns) {
+    return (
+      <>
+        <PageStale views={[view]} className="mb-3" />
+        <EmptyTable params={params} onClear={onClear} />
+      </>
+    )
+  }
 
   return (
     <>
@@ -107,13 +118,11 @@ function LoadedTable({ params, density, onClear }: ExecutionsTableProps): ReactE
         columns={columns}
         density={density}
         // A failed next page is asked again by its Retry, not by scrolling
-        hasNextPage={hasNextPage && !isFetchNextPageError}
+        hasNextPage={hasNextPage && !next.failed}
         isFetchingNextPage={isFetchingNextPage}
         fetchNextPage={fetchNextPage}
       />
-      {isFetchNextPageError && (
-        <MoreFailed error={query.error} retry={fetchNextPage} busy={isFetchingNextPage} />
-      )}
+      {next.failed && <MoreFailed error={next.error} retry={next.retry} busy={next.busy} />}
     </>
   )
 }

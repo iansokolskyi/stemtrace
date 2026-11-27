@@ -40,12 +40,15 @@ function WorkerPage() {
   if (view.phase === 'error') return <LoadFailure what="the worker" view={view} />
   if (processes.length === 0) {
     return (
-      <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
-        <p className="m-0">No worker named {hostname}</p>
-        <Link to="/workers" className="link mt-2 inline-block">
-          Back to workers
-        </Link>
-      </div>
+      <>
+        <PageStale views={[view]} />
+        <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
+          <p className="m-0">No worker named {hostname}</p>
+          <Link to="/workers" className="link mt-2 inline-block">
+            Back to workers
+          </Link>
+        </div>
+      </>
     )
   }
 

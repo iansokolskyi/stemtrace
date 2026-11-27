@@ -3,7 +3,6 @@ import { isNotFound } from '@/api/client'
 import { useGraph } from '@/api/queries'
 import { FlowPage } from '@/components/flow/FlowPage'
 import { LoadFailure, Notice } from '@/components/Notice'
-import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { useViewState } from '@/hooks/useViewState'
 
@@ -15,7 +14,7 @@ export const Route = createFileRoute('/flows_/$rootId')({
 function GraphDetailPage() {
   const { rootId } = Route.useParams()
   const query = useGraph(rootId)
-  const view = useViewState(query, `graphs/${rootId}`)
+  const view = useViewState(query, `graphs/${rootId}`, 'flow')
   const { data } = query
 
   if (view.phase === 'loading') return <FlowSkeleton />
@@ -36,12 +35,7 @@ function GraphDetailPage() {
     return <LoadFailure what="the flow" view={view} action={back} />
   }
 
-  return (
-    <>
-      <PageStale views={[view]} />
-      <FlowPage key={data.root_id} nodes={data.nodes} rootId={data.root_id} />
-    </>
-  )
+  return <FlowPage key={data.root_id} nodes={data.nodes} rootId={data.root_id} view={view} />
 }
 
 /** The page's own shape while the flow loads: a title bar, the diagram and the timeline. */

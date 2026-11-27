@@ -20,7 +20,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
   const panel = usePanel()
   const query = useTask(id)
   const { data } = query
-  const state = useViewState(query, `tasks/${id}`)
+  const state = useViewState(query, `tasks/${id}`, 'task')
   if (state.phase === 'error') {
     if (isNotFound(state.error)) {
       return (
