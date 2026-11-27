@@ -1250,7 +1250,9 @@ def _add_task_routes(
         ``tag`` one of its group's tags. ``within`` is a relative ``from_date``
         (now minus it); pass one or the other. ``from_date`` with
         ``updated_before`` lists the runs one bucket of ``/stats/timeseries``
-        counts: both compare the time of the run's last event.
+        counts: both compare the time of the run's last event. A returned row
+        shows the task's current values, which can differ from the filter if
+        the task changed while the list was built.
         """
         states = params.parse_states(state)
         start = params.start_from(within, from_date, params.utcnow())

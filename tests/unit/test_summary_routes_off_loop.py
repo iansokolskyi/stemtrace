@@ -26,7 +26,7 @@ from stemtrace.server.api.schemas import GraphListResponse, TaskListResponse
 from stemtrace.server.store import GraphStore, WorkerRegistry
 
 if TYPE_CHECKING:
-    from stemtrace.core.graph import TaskNode
+    from stemtrace.server.stats import RunRecord
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 MAX_NODES = 30_000
@@ -513,7 +513,7 @@ async def test_sorted_task_list_sorts_while_the_store_lock_is_free(
     held_during_sort: list[int] = []
     real_sort = store_module._slowest_first
 
-    def spy(ranked: list[store_module._Ranked]) -> list[TaskNode]:
+    def spy(ranked: list[store_module._Ranked]) -> list[RunRecord]:
         held_during_sort.append(counting._depth)
         return real_sort(ranked)
 
