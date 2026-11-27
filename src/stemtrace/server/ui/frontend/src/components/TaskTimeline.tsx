@@ -211,7 +211,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
           aria-hidden="true"
           className={clsx(
             `s-${tone}`,
-            'flex size-4 flex-none items-center justify-center rounded-[3px] bg-[var(--c)] text-[var(--on)]',
+            'flex size-4 flex-none items-center justify-center rounded-[3px] bg-[var(--m,var(--c))] text-[var(--m-on,var(--on))]',
           )}
         >
           <Icon name={look.icon} size={12} />

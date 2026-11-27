@@ -69,7 +69,11 @@ test.describe('Quiet success fills', () => {
     await openFlow(page)
     const quiet = await tokenColour(page, 'success-quiet')
     const failure = await tokenColour(page, 'failure')
-    await expect(page.locator('.gantt-row.s-success .gantt-mark').first()).toHaveCSS('fill', quiet)
+    // Small marks keep the full success colour (V2); the bar is the large area.
+    await expect(page.locator('.gantt-row.s-success .gantt-mark').first()).toHaveCSS(
+      'fill',
+      await tokenColour(page, 'success'),
+    )
     await expect(page.locator('.gantt-row.s-failure .gantt-mark').first()).toHaveCSS(
       'fill',
       failure,

@@ -21,6 +21,7 @@
   --color-sprout: var(--sprout);
   --color-success: var(--success);
   --color-success-quiet: var(--success-quiet);
+  --color-on-success-quiet: var(--on-success-quiet);
   --color-band: var(--band);
   --color-failure: var(--failure);
   --color-retry: var(--retry);
@@ -67,8 +68,6 @@ body {
   color: var(--ink);
   font: 13px / 1.45 var(--sans);
   font-variant-numeric: tabular-nums;
-  /* Inter: single-storey a (cv11) and open digits (ss01), as in the hierarchy mockup. */
-  font-feature-settings: "cv11", "ss01";
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
 }
@@ -194,10 +193,10 @@ body {
   fill: color-mix(in srgb, var(--ink) 16%, transparent);
 }
 .gantt-mark {
-  fill: var(--c);
+  fill: var(--m, var(--c));
 }
 .gantt-ico {
-  color: var(--on);
+  color: var(--m-on, var(--on));
 }
 .gantt-rl {
   stroke: var(--rule);
@@ -268,7 +267,10 @@ body {
 }
 .s-success {
   --c: var(--success-quiet);
-  --on: var(--on-success);
+  --on: var(--on-success-quiet);
+  /* Small marks and icons keep the full success colour; --c is for large areas. */
+  --m: var(--success);
+  --m-on: var(--on-success);
 }
 .s-failure {
   --c: var(--failure);
@@ -363,13 +365,13 @@ body {
   fill: var(--muted);
 }
 .fcont {
-  color: var(--on);
+  color: var(--m-on, var(--on));
 }
 .fcont .hit {
   fill: transparent;
 }
 .fcont .cmk {
-  fill: var(--c);
+  fill: var(--m, var(--c));
 }
 .fcont .ctitle {
   font: 500 12px var(--sans);

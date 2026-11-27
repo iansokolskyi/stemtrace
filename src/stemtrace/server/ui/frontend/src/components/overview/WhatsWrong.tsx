@@ -73,7 +73,7 @@ export function WhatsWrong({
           }
         >
           <div className="min-w-0">
-            <h3 className="px-4 pt-2 pb-1.5 text-small font-medium text-muted">
+            <h3 className="px-4 pt-2 pb-1.5 text-body font-medium text-ink">
               Failures by exception
             </h3>
             {view.phase === 'error' ? (
@@ -124,14 +124,14 @@ export function WhatsWrong({
                               })}
                               // The overlay covers the message line, so the hover text lives here.
                               title={message}
-                              className="font-medium text-ink after:absolute after:inset-0"
+                              className="text-body font-medium text-ink after:absolute after:inset-0"
                             >
                               {group.exception_type ?? 'No exception class'}
                             </button>
                             {message && (
                               <div
                                 data-testid="failure-message"
-                                className="max-w-[300px] truncate text-meta text-muted"
+                                className="max-w-[300px] truncate text-small text-muted"
                               >
                                 {message}
                               </div>

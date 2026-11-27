@@ -65,14 +65,23 @@ test.describe('Overview heading levels', () => {
     await expect(wrong).toHaveCSS('font-weight', '600')
 
     const sub = page.getByRole('heading', { name: 'Failures by exception', level: 3 })
-    await expect(sub).toHaveCSS('font-size', '12px')
+    await expect(sub).toHaveCSS('font-size', '13px')
     await expect(sub).toHaveCSS('font-weight', '500')
+    await expect(sub).toHaveCSS('color', await tokenColour(page, 'ink'))
 
     const table = page.getByRole('table', { name: 'Failures by exception' })
     const exception = table.getByRole('button').first()
     await expect(exception).toHaveCSS('font-family', /Inter Variable/)
+    await expect(exception).toHaveCSS('font-size', '13px')
     await expect(exception).toHaveCSS('font-weight', '500')
+    await expect(exception).toHaveCSS('color', await tokenColour(page, 'ink'))
     await expect(exception).not.toHaveCSS('font-family', /Mono/)
+
+    // Secondary line: 12 px / 400 muted.
+    const message = page.getByTestId('failure-message').first()
+    await expect(message).toHaveCSS('font-size', '12px')
+    await expect(message).toHaveCSS('font-weight', '400')
+    await expect(message).toHaveCSS('color', await tokenColour(page, 'muted'))
   })
 })
 
@@ -156,21 +165,27 @@ test.describe('Header variants', () => {
 })
 
 test.describe('Weight roles', () => {
-  test('no text on any page is heavier than 600, and the roles hold on the Overview', async ({
-    page,
-  }) => {
+  for (const path of PAGES) {
+    test(`no text on ${path} is heavier than 600`, async ({ page }) => {
+      await open(page, path)
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+      if (path === '/') await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+      const tooHeavy = await page.evaluate(() =>
+        // The router devtools (dev server only) are styled with goober `go<digits>` classes.
+        [...document.querySelectorAll('#root *')]
+          .filter((el) => !/\bgo\d+\b/.test(el.className?.toString() ?? ''))
+          .filter((el) => Number.parseInt(getComputedStyle(el).fontWeight, 10) > 600)
+          .map(
+            (el) => `${el.tagName} ${el.getAttribute('class')}: ${el.textContent?.slice(0, 30)}`,
+          ),
+      )
+      expect(tooHeavy).toEqual([])
+    })
+  }
+
+  test('the column header and body roles hold on the Overview', async ({ page }) => {
     await open(page, '/')
     await expect(page.getByRole('heading', { name: 'What’s wrong', level: 2 })).toBeVisible()
-    await expect(page.getByTestId('chart-bar')).toHaveCount(12)
-    const tooHeavy = await page.evaluate(() =>
-      // The router devtools (dev server only) are styled with goober `go<digits>` classes.
-      [...document.querySelectorAll('#root *')]
-        .filter((el) => !/\bgo\d+\b/.test(el.className?.toString() ?? ''))
-        .filter((el) => Number.parseInt(getComputedStyle(el).fontWeight, 10) > 600)
-        .map((el) => `${el.tagName} ${el.getAttribute('class')}: ${el.textContent?.slice(0, 30)}`),
-    )
-    expect(tooHeavy).toEqual([])
-
     // Column header: 12 px / 500 muted on the band (H2, H3).
     const header = page.getByRole('columnheader', { name: 'Exception' }).first()
     await expect(header).toHaveCSS('font-size', '12px')

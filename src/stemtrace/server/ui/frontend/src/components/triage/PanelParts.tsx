@@ -40,7 +40,7 @@ export function Section({
 }): ReactElement {
   return (
     <div className="mt-4">
-      {title && <h3 className="mb-1.5 text-small font-medium text-muted">{title}</h3>}
+      {title && <h3 className="mb-1.5 text-body font-medium text-ink">{title}</h3>}
       {children}
     </div>
   )
@@ -75,7 +75,7 @@ export function Figures({
       {items.map(({ label, value, loud }) => (
         <div key={label} className="min-w-0 rounded-[3px] bg-raised px-2.5 py-[7px]">
           <small className="block text-small text-muted">{label}</small>
-          <b className={clsx('text-title font-semibold', loud && 'text-failure-t')}>{value}</b>
+          <b className={clsx('text-title font-medium', loud && 'text-failure-t')}>{value}</b>
         </div>
       ))}
     </div>
