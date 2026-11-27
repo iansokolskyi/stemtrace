@@ -1689,10 +1689,9 @@ class TaskGraph(BaseModel):
         Only call it for a node that isn't listed yet (new or just unlinked).
         """
         if node.parent_id is None:
-            if node.task_id not in self._roots:
-                self._roots[node.task_id] = None
-                if self._roots_removed.pop(node.task_id, False) is False:
-                    self._roots_added[node.task_id] = None
+            self._roots[node.task_id] = None
+            if self._roots_removed.pop(node.task_id, False) is False:
+                self._roots_added[node.task_id] = None
             return
         parent = self.nodes[node.parent_id]
         # Only a CHORD can already list the node: as its callback.
@@ -1706,10 +1705,9 @@ class TaskGraph(BaseModel):
         A CHORD keeps its callback listed: that entry draws the chord's edge.
         """
         if node.parent_id is None:
-            if node.task_id in self._roots:
-                del self._roots[node.task_id]
-                if self._roots_added.pop(node.task_id, False) is False:
-                    self._roots_removed[node.task_id] = None
+            self._roots.pop(node.task_id, None)
+            if self._roots_added.pop(node.task_id, False) is False:
+                self._roots_removed[node.task_id] = None
             return
         parent = self.nodes.get(node.parent_id)
         if parent is None or parent.chord_id == node.task_id:
