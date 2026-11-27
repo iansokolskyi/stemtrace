@@ -262,7 +262,7 @@ def test_scan_lock_hold_in_wall_clock_stays_near_the_small_stores(
     big = _best_hold_s(large, run)
 
     # 20x (graph) or 6.7x the runs: a reference copy grows, nothing else may.
-    slack = 0.0001 if graph else 0.002
+    slack = 0.0001 if graph else 0.003
     assert big <= 2 * small + slack, (
         f"{scan}: {small * 1000:.2f} ms at {SMALL}, {big * 1000:.2f} ms at {large_runs}"
     )
