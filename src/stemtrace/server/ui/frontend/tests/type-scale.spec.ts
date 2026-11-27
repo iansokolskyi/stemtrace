@@ -2,8 +2,9 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
 import { setupMockApi } from './fixtures/mock-api'
+import { createFailedTask } from './fixtures/mock-data'
 import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
-import { openTask, successTask } from './fixtures/task-page'
+import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /**
  * The type scale and weight roles (restyle PR 3): every page title is one `PageHeader` at
@@ -84,6 +85,22 @@ test.describe('Header variants', () => {
     const module = await page.locator('[data-task-module]').boundingBox()
     const title = await page.getByRole('heading', { level: 1 }).boundingBox()
     expect((module?.y ?? 0) + (module?.height ?? 0)).toBeLessThanOrEqual(title?.y ?? 0)
+  })
+
+  test('Task page exception class is ink, sans, 600 (not failure red or mono)', async ({
+    page,
+  }) => {
+    await openTask(
+      page,
+      createFailedTask('billing.payments.capture', 'GatewayTimeout: no answer', 'Traceback'),
+    )
+    const exception = page.getByRole('region', { name: 'Exception' }).getByText('GatewayTimeout', {
+      exact: true,
+    })
+    await expect(exception).toHaveCSS('font-weight', '600')
+    await expect(exception).toHaveCSS('font-family', /Overpass Variable/)
+    await expect(exception).not.toHaveCSS('font-family', /Mono/)
+    await expect(exception).toHaveCSS('color', await tokenColour(page, 'ink'))
   })
 
   test('Flow page title is 22 px / 800 with its summary on the title row', async ({ page }) => {

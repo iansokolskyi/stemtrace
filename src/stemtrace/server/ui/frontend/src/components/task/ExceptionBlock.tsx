@@ -27,7 +27,9 @@ export function ExceptionBlock({
   return (
     <Panel
       title="Exception"
-      aside={exceptionType && <span className="text-small text-failure-t">{exceptionType}</span>}
+      aside={
+        exceptionType && <span className="text-small font-semibold text-ink">{exceptionType}</span>
+      }
     >
       {last.exception && (
         <p className="m-0 px-4 pt-0 pb-2.5 text-small [overflow-wrap:anywhere]">{last.exception}</p>

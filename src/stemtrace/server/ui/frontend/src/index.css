@@ -41,8 +41,8 @@
   --shadow-side: var(--shadow-side);
 }
 
-/* The type scale: six steps and no others. `--text-*: initial` drops Tailwind's defaults, so
-   Tailwind's default size names no longer exist; `npm run check` also rejects arbitrary pixel sizes. */
+/* The type scale: six steps and no others. Resetting the text namespace below drops Tailwind's
+   default size names; `npm run check` also rejects off-scale sizes. */
 @theme {
   --text-*: initial;
   --text-meta: 11px;

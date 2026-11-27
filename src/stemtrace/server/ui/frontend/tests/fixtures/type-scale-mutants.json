@@ -33,7 +33,27 @@
     ".a { font-size: calc(1px + 12px); }",
     ".a { font: 14px var(--sans); }",
     ".a { font: 700 0.9rem / 1.4 var(--sans); }",
-    ".a { font: small var(--sans); }"
+    ".a { font: small var(--sans); }",
+    "<b style={{ font: '10px sans-serif' }} />",
+    "<b style={{ font: \"14px var(--sans)\" }} />",
+    "const s = { 'fontSize': 10 }",
+    "const s = { \"fontSize\": \"10px\" }",
+    "@theme { --text-tiny: 10px; }",
+    "@theme { --text-meta: 10px; }",
+    "@theme { --text-page: 22rem; }",
+    "<b style={{ '--text-meta': '10px' }} />",
+    ".a { font: 700 calc(10px + 1px) var(--sans); }",
+    ".a { font: 700 clamp(10px, 1vw, 14px) var(--sans); }",
+    ".a { font: 700 min(10px, 1vw) var(--sans); }",
+    "<text font-size=\"10\" />",
+    "<text font-size=\"10px\" />",
+    "<text font-size={10} />",
+    ".a { FONT-SIZE: 14PX; }",
+    ".a { font-size: 14PX }",
+    ".a { FONT: 14PX var(--sans); }",
+    ".a { font: caption; }",
+    ".a { font: 700 status-bar; }",
+    "<b style={{ fontSize: '14PX' }} />"
   ],
   "pass": [
     "<b className=\"text-meta\" />",
@@ -59,6 +79,13 @@
     ".a { font: 700 12px var(--sans); }",
     ".a { font: inherit; }",
     ".a { line-height: 1.45; letter-spacing: -0.01em; }",
-    "@theme { --text-meta: 11px; --text-meta--line-height: 1.45; }"
+    "@theme { --text-meta: 11px; --text-meta--line-height: 1.45; }",
+    "@theme { --text-*: initial; --text-figure: 26px; }",
+    "<b style={{ font: '12px sans-serif' }} />",
+    "const s = { 'fontSize': 11, \"fontSize\": \"12px\" }",
+    "<text font-size=\"13\" />",
+    ".a { FONT-SIZE: 12PX; font: 13PX / 1.4 var(--sans); }",
+    ".a { font-size: var(--text-small); line-height: var(--text-small--line-height); }",
+    ".a { font: 700 var(--text-small) var(--sans); }"
   ]
 }
