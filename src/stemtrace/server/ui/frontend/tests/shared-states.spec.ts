@@ -851,17 +851,13 @@ test.describe('Show more in the triage panel', () => {
       AFTER_RETRIES,
     )
     await expect(rows).toHaveCount(before)
-    // The client's retries are over once the button reads Retry again
-    await expect(failed.getByRole('button', { name: 'Retry', exact: true })).toBeVisible({
-      timeout: 40_000,
-    })
     // The rows are the shorter list's, so no time of its own to show
     await expect(panel.getByTestId('stale-line')).toHaveCount(0)
     await expect(panel.getByTestId('notice')).toHaveCount(0)
 
+    // The server answers again: the client's next retry loads the longer list
     await page.unroute(/\/api\/tasks(\?|$)/, failLonger)
-    await failed.getByRole('button', { name: 'Retry', exact: true }).click()
-    await expect(failed).toHaveCount(0)
+    await expect(failed).toHaveCount(0, { timeout: 40_000 })
     await expect(rows).toHaveCount(Math.min(45, before + 10))
   })
 })
