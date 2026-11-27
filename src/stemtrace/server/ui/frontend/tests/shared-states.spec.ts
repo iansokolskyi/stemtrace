@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
+import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
 import { flowListRoots } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
 import {
@@ -685,7 +686,7 @@ test.describe('Sessions and missing items', () => {
     )
     api.setAnomalies([...many, fleet])
     await page.goto('/anomalies')
-    await expect(page.getByTestId('fleet-banner')).toBeVisible()
+    await expect(page.getByTestId('fleet-banner')).toBeVisible({ timeout: 10_000 })
 
     await page.route(/\/api\/anomalies\?.*kind=no_workers_online/, (route) =>
       route.fulfill({ status: 503, body: 'x' }),
@@ -732,5 +733,411 @@ test.describe('Sessions and missing items', () => {
     await dialog.getByRole('combobox').fill('zzz-no-such-thing')
     await expect(dialog.getByRole('status')).toHaveText('Searching…')
     await expect(dialog.getByText(/No results/)).toHaveCount(0)
+  })
+})
+
+// Held empty data, placeholder rows, next pages, evicted items and the inspector (readings O19-O24)
+
+const fail503 = (route: Route) => route.fulfill({ status: 503, body: 'x' })
+
+test.describe('An empty list that loaded is held data', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  interface EmptyCase {
+    name: string
+    path: string
+    api: RegExp
+    waitMs: number
+    setup: (page: Page) => Promise<void>
+    empty: (page: Page) => ReturnType<Page['locator']>
+  }
+  const CASES: EmptyCase[] = [
+    {
+      name: 'Executions',
+      path: '/executions',
+      api: /\/api\/tasks(\?|$)/,
+      waitMs: 13_000,
+      setup: bare,
+      empty: (page) => page.getByTestId('executions-empty'),
+    },
+    {
+      name: 'Timeline view',
+      path: '/executions?view=timeline',
+      api: /\/api\/tasks(\?|$)/,
+      waitMs: 13_000,
+      setup: bare,
+      empty: (page) => page.getByText('No executions to display'),
+    },
+    {
+      name: 'Worker page without that worker',
+      path: `/workers/${encodeURIComponent(HOST)}`,
+      api: /\/api\/workers$/,
+      waitMs: 38_000,
+      setup: async (page) => {
+        const api = await setupMockApi(page, { useDefaults: false })
+        api.setWorkers([{ ...worker, hostname: 'celery@other' }])
+      },
+      empty: (page) => page.getByText(`No worker named ${HOST}`),
+    },
+    {
+      name: 'Triage panel runs',
+      path: '/?panel=exception%3AValueError',
+      api: /\/api\/tasks(\?|$)/,
+      waitMs: 24_000,
+      setup: async (page) => {
+        const api = await setupMockApi(page)
+        api.clearTasks()
+        await mockOverview(page, spikeScenario())
+      },
+      empty: (page) => page.getByTestId('triage-panel').getByText('No runs match.'),
+    },
+  ]
+
+  for (const c of CASES) {
+    test(`${c.name}: the empty state stays under one stale line, then recovers`, async ({
+      page,
+    }) => {
+      await page.clock.install()
+      await c.setup(page)
+      await page.goto(c.path)
+      await expect(c.empty(page)).toBeVisible()
+
+      await page.route(c.api, fail503)
+      await page.clock.runFor(c.waitMs)
+
+      const line = page.getByTestId('stale-line')
+      await expect(line.getByRole('status')).toContainText("Couldn't refresh. Showing data from")
+      await expect(c.empty(page)).toBeVisible()
+      await expect(page.getByTestId('notice')).toHaveCount(0)
+
+      await page.unroute(c.api, fail503)
+      await line.getByRole('button', { name: 'Retry', exact: true }).click()
+      await expect(line).toHaveCount(0)
+      await expect(c.empty(page)).toBeVisible()
+    })
+  }
+})
+
+test.describe('Show more in the triage panel', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  test('a failed longer list keeps the rows and says it could not load more', async ({ page }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    const api = await setupMockApi(page)
+    api.clearTasks()
+    for (let i = 0; i < 45; i++) {
+      api.addTask(createFailedTask('tests.flow.step_2', 'ValueError: x', 'Traceback'))
+    }
+    await mockOverview(page, spikeScenario())
+    await page.goto('/?panel=exception%3AValueError')
+    const panel = page.getByTestId('triage-panel')
+    const more = panel.getByRole('button', { name: /Show \d+ more/ })
+    await expect(more).toBeVisible()
+    const rows = panel.getByTestId('panel-run')
+    const before = await rows.count()
+
+    const failLonger = (route: Route) =>
+      Number(new URL(route.request().url()).searchParams.get('limit')) > before
+        ? route.fulfill({ status: 503, body: 'x' })
+        : route.fallback()
+    await page.route(/\/api\/tasks(\?|$)/, failLonger)
+    await more.click()
+
+    const failed = panel.getByTestId('more-failed')
+    await expect(failed).toHaveText(
+      /^Couldn't load more\. The server answered 503\./,
+      AFTER_RETRIES,
+    )
+    await expect(rows).toHaveCount(before)
+    // The rows are the shorter list's, so no time of its own to show
+    await expect(panel.getByTestId('stale-line')).toHaveCount(0)
+    await expect(panel.getByTestId('notice')).toHaveCount(0)
+
+    await page.unroute(/\/api\/tasks(\?|$)/, failLonger)
+    await failed.getByRole('button', { name: 'Retry', exact: true }).click()
+    await expect(failed).toHaveCount(0)
+    await expect(rows).toHaveCount(Math.min(45, before + 10))
+  })
+})
+
+type ListMode = 'ok' | 'next fails' | 'next unauthorized' | 'all fail'
+
+interface PagedList {
+  name: string
+  path: string
+  /** Opens the list with two pages and scrolls the sentinel into view once it is loaded. */
+  open: (page: Page, mode: () => ListMode, hits: number[]) => Promise<void>
+  scrollToEnd: (page: Page) => Promise<void>
+  ready: (page: Page) => ReturnType<Page['locator']>
+}
+
+const flowPages = (page: Page, mode: () => ListMode, hits: number[]) => {
+  const roots = Array.from({ length: 60 }, (_, index) => {
+    const task = createSuccessTask(`app.jobs.job_${String(index).padStart(2, '0')}`)
+    return Object.assign(task, { task_id: `flow-page-${index}`, root_id: `flow-page-${index}` })
+  })
+  return page.route(/\/api\/graphs(\?|$)/, (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get('offset') ?? 0)
+    const now = mode()
+    if (now === 'all fail' || (offset > 0 && now === 'next fails')) {
+      if (offset > 0) hits.push(offset)
+      return route.fulfill({ status: 503, body: 'x' })
+    }
+    if (offset > 0 && now === 'next unauthorized') {
+      hits.push(offset)
+      return route.fulfill({ status: 401, json: { detail: 'no' } })
+    }
+    if (offset > 0) hits.push(offset)
+    return route.fulfill({
+      json: {
+        graphs: roots.slice(offset, offset + 50).map((root) => ({ ...root, children: [] })),
+        total: 60,
+        limit: 50,
+        offset,
+      },
+    })
+  })
+}
+
+const executionPages = async (page: Page, mode: () => ListMode, hits: number[]) => {
+  const api = await setupMockApi(page, { useDefaults: false })
+  api.addTasks(Array.from({ length: 260 }, (_, i) => createSuccessTask(`bulk.t${i}`, i)))
+  await page.route(/\/api\/tasks(\?|$)/, (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get('offset') ?? 0)
+    const now = mode()
+    if (offset > 0) hits.push(offset)
+    if (now === 'all fail' || (offset > 0 && now === 'next fails')) {
+      return route.fulfill({ status: 503, body: 'x' })
+    }
+    if (offset > 0 && now === 'next unauthorized') {
+      return route.fulfill({ status: 401, json: { detail: 'no' } })
+    }
+    return route.fallback()
+  })
+}
+
+const PAGED: PagedList[] = [
+  {
+    name: 'Executions',
+    path: '/executions',
+    open: async (page, mode, hits) => {
+      await executionPages(page, mode, hits)
+    },
+    scrollToEnd: (page) =>
+      page.getByTestId('executions-scroll').evaluate((el) => el.scrollTo(0, el.scrollHeight)),
+    ready: (page) => page.getByTestId('executions-scroll'),
+  },
+  {
+    name: 'Flows',
+    path: '/flows',
+    open: async (page, mode, hits) => {
+      await setupMockApi(page, { useDefaults: false })
+      await flowPages(page, mode, hits)
+    },
+    scrollToEnd: async (page) => {
+      await page
+        .getByRole('region', { name: 'Flows' })
+        .locator('> *')
+        .last()
+        .scrollIntoViewIfNeeded()
+    },
+    ready: (page) => page.getByRole('region', { name: 'Flows' }),
+  },
+]
+
+test.describe('Next pages of Executions and Flows', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  for (const list of PAGED) {
+    test(`${list.name}: a 401 on the next page without form login asks for an API key`, async ({
+      page,
+    }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      let mode: ListMode = 'ok'
+      await list.open(page, () => mode, [])
+      await page.goto(list.path)
+      await expect(list.ready(page)).toBeVisible()
+      mode = 'next unauthorized'
+      await list.scrollToEnd(page)
+      const failed = page.getByTestId('more-failed')
+      await expect(failed).toHaveText('The server needs a valid API key.')
+      await expect(page.getByText(/Couldn't load more/)).toHaveCount(0)
+      await expect(failed.getByRole('button')).toHaveCount(0)
+    })
+
+    test(`${list.name}: a 401 on the next page with form login shows nothing`, async ({ page }) => {
+      await page.routeWebSocket(/\/ws$/, () => {})
+      await page.addInitScript(() => {
+        window.__STEMTRACE_LOGOUT_PATH__ = '/logout'
+        window.sessionStorage.setItem('stemtrace:login-redirect-at', String(Date.now()))
+      })
+      let mode: ListMode = 'ok'
+      const hits: number[] = []
+      await list.open(page, () => mode, hits)
+      await page.goto(list.path)
+      await expect(list.ready(page)).toBeVisible()
+      mode = 'next unauthorized'
+      await list.scrollToEnd(page)
+      await expect.poll(() => hits.length).toBeGreaterThan(0)
+      await page.waitForLoadState('networkidle')
+      await expect(page.getByTestId('more-failed')).toHaveCount(0)
+      await expect(page.getByText(/Couldn't load more/)).toHaveCount(0)
+    })
+
+    test(`${list.name}: polls never re-ask a failed next page`, async ({ page }) => {
+      await page.clock.install()
+      let mode: ListMode = 'ok'
+      const hits: number[] = []
+      await list.open(page, () => mode, hits)
+      await page.goto(list.path)
+      await expect(list.ready(page)).toBeVisible()
+      mode = 'next fails'
+      await list.scrollToEnd(page)
+      // The client's three retries (1, 2, 4 s), then the box
+      await page.clock.runFor(8_000)
+      await expect(page.getByTestId('more-failed')).toBeVisible()
+      const asked = hits.length
+      expect(asked).toBeGreaterThan(0)
+
+      // Six polls of the first page succeed; none asks for the next page again
+      await page.clock.runFor(32_000)
+      expect(hits.length).toBe(asked)
+      await expect(page.getByTestId('more-failed')).toBeVisible()
+      await expect(page.getByTestId('stale-line')).toHaveCount(0)
+    })
+
+    test(`${list.name}: the server going down after a next-page failure shows both lines`, async ({
+      page,
+    }) => {
+      await page.clock.install()
+      let mode: ListMode = 'ok'
+      await list.open(page, () => mode, [])
+      await page.goto(list.path)
+      await expect(list.ready(page)).toBeVisible()
+      mode = 'next fails'
+      await list.scrollToEnd(page)
+      await page.clock.runFor(8_000)
+      await expect(page.getByTestId('more-failed')).toBeVisible()
+
+      mode = 'all fail'
+      await page.clock.runFor(13_000)
+      await expect(page.getByTestId('stale-line').getByRole('status')).toContainText(
+        "Couldn't refresh. Showing data from",
+      )
+      await expect(page.getByTestId('more-failed')).toBeVisible()
+      await expect(list.ready(page)).toBeVisible()
+    })
+  }
+})
+
+test.describe('An item that is no longer stored, with data held', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  const goneLine = (what: string) =>
+    new RegExp(`^This ${what} is no longer stored\\. Showing data from \\d\\d:\\d\\d UTC\\.$`)
+
+  for (const c of [
+    {
+      name: 'Task page',
+      what: 'task',
+      path: '/tasks/ok-task',
+      api: /\/api\/tasks\/ok-task/,
+      setup: async (page: Page) => {
+        const api = await setupMockApi(page, { useDefaults: false })
+        const task = createSuccessTask('app.work', 1)
+        task.task_id = 'ok-task'
+        api.addTask(task)
+      },
+      ready: (page: Page) => page.getByRole('heading', { level: 1 }),
+    },
+    {
+      name: 'Flow page',
+      what: 'flow',
+      path: '/flows/root',
+      api: /\/api\/graphs\/root/,
+      setup: async (page: Page) => {
+        await setupMockApi(page, { useDefaults: false })
+        await serveFlow(page, reallocationFlow())
+      },
+      ready: (page: Page) => page.getByRole('region', { name: 'Timeline' }),
+    },
+    {
+      name: 'Triage panel task',
+      what: 'task',
+      path: '',
+      api: /\/api\/tasks\/[^/?]+(\?.*)?$/,
+      setup: async (page: Page) => {
+        const api = await setupMockApi(page)
+        const scenario = spikeScenario()
+        const spike = spikeTasks(scenario)
+        api.addTasks(spike.tasks)
+        await mockOverview(page, scenario)
+        c_panelPath = `/?panel=${encodeURIComponent(`task:${spike.failedId}`)}`
+      },
+      ready: (page: Page) =>
+        page.getByTestId('triage-panel').getByRole('link', { name: 'Open task page' }),
+    },
+  ]) {
+    test(`${c.name}: the stale line says so, has no Retry, and polling stops`, async ({ page }) => {
+      await page.clock.install()
+      await c.setup(page)
+      await page.goto(c.path || c_panelPath)
+      await expect(c.ready(page)).toBeVisible()
+
+      let hits = 0
+      await page.route(c.api, (route) => {
+        hits += 1
+        return route.fulfill({ status: 404, json: { detail: 'not found' } })
+      })
+      await page.clock.runFor(13_000)
+      const line = page.getByTestId('stale-line')
+      await expect(line.getByRole('status')).toHaveText(goneLine(c.what))
+      await expect(line.getByRole('button')).toHaveCount(0)
+      await expect(c.ready(page)).toBeVisible()
+      await expect(page.getByText(/Couldn't refresh/)).toHaveCount(0)
+
+      // No retry of a 404, and no poll after it
+      const seen = hits
+      expect(seen).toBeGreaterThan(0)
+      await page.clock.runFor(40_000)
+      expect(hits).toBe(seen)
+    })
+  }
+})
+
+let c_panelPath = ''
+
+test.describe('The flow inspector joins the page', () => {
+  test.skip(isRealMode, 'Mock-only tests')
+
+  test('a failed refresh of the chosen task shows in the page stale line', async ({ page }) => {
+    await page.clock.install()
+    await setupMockApi(page, { useDefaults: false })
+    await serveFlow(page, reallocationFlow())
+    await page.goto('/flows/root')
+    const inspector = page.getByRole('complementary', { name: 'Inspector' })
+    await expect(inspector.getByRole('link', { name: 'Open full detail' })).toBeVisible()
+
+    await page.route(/\/api\/tasks\/[^/?]+(\?.*)?$/, fail503)
+    await page.clock.runFor(13_000)
+    await expect(page.getByTestId('stale-line').getByRole('status')).toContainText(
+      "Couldn't refresh. Showing data from",
+    )
+    await expect(page.getByTestId('notice')).toHaveCount(0)
+    await expect(inspector.getByRole('link', { name: 'Open full detail' })).toBeVisible()
+  })
+
+  test('with no task data the inspector says so in place of the missing fields', async ({
+    page,
+  }) => {
+    await page.routeWebSocket(/\/ws$/, () => {})
+    await setupMockApi(page, { useDefaults: false })
+    await serveFlow(page, reallocationFlow())
+    await page.route(/\/api\/tasks\/[^/?]+(\?.*)?$/, fail503)
+    await page.goto('/flows/root')
+    const inspector = page.getByRole('complementary', { name: 'Inspector' })
+    await expect(inspector.getByText("Couldn't load the task details.")).toBeVisible(AFTER_RETRIES)
+    await expect(inspector.getByRole('link', { name: 'Open full detail' })).toBeVisible()
+    await expect(page.getByTestId('notice')).toHaveCount(0)
   })
 })

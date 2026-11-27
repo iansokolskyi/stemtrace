@@ -822,8 +822,11 @@ function visualAnomalies() {
   const ago = (minutes: number) =>
     new Date(Date.parse('2026-10-17T12:00:00Z') - minutes * 60_000).toISOString()
   const stuckRun = createSuccessTask('media.tasks.transcode_upload')
+  // A fixed id: the task page shows it, so a random one would change the baseline
+  stuckRun.task_id = '5f1c0a3e-7b2d-4c19-9a40-3d8e6b1f0a01'
   Object.assign(stuckRun, { state: 'STARTED', hostname: 'celery@media-gpu-2', anomaly: 'stuck' })
   const lostRun = createSuccessTask('media.tasks.transcode_upload')
+  lostRun.task_id = '5f1c0a3e-7b2d-4c19-9a40-3d8e6b1f0a02'
   Object.assign(lostRun, {
     state: 'STARTED',
     hostname: 'celery@media-gpu-1',
