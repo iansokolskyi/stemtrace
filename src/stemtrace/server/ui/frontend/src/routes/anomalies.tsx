@@ -57,7 +57,8 @@ function AnomaliesPage(): ReactElement {
       <PageHeader
         title="Anomalies"
         summary={
-          data && fresh && `${total} active: tasks that are stuck, interrupted or unregistered`
+          (data && fresh && `${total} active: tasks that are stuck, interrupted or unregistered`) ||
+          null
         }
       />
 

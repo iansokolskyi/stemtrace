@@ -163,7 +163,7 @@ function TaskInspector({
         {exception && (
           <div>
             <div className="text-muted">Exception</div>
-            <div className="font-mono text-small text-failure-t [overflow-wrap:anywhere]">
+            <div className="font-mono text-small text-ink [overflow-wrap:anywhere]">
               {exception}
             </div>
           </div>

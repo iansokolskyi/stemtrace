@@ -42,8 +42,9 @@ function FlowsPage() {
       <PageHeader
         title="Flows"
         summary={
-          total !== undefined &&
-          `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} ${hasDates(dates) ? 'in this time window' : 'in the retention window'}`
+          (total !== undefined &&
+            `${formatCount(total)} ${total === 1 ? 'flow' : 'flows'} ${hasDates(dates) ? 'in this time window' : 'in the retention window'}`) ||
+          null
         }
       />
 

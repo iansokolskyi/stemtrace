@@ -58,8 +58,9 @@ function RegistryPage() {
       <PageHeader
         title="Registry"
         summary={
-          data &&
-          `${formatCount(tasks.length)} task ${tasks.length === 1 ? 'name' : 'names'} known to workers or seen on the broker`
+          (data &&
+            `${formatCount(tasks.length)} task ${tasks.length === 1 ? 'name' : 'names'} known to workers or seen on the broker`) ||
+          null
         }
       />
 

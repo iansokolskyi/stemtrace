@@ -53,7 +53,9 @@ export function PageHeader({
     <header data-testid={testId} className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
       {heading}
       {status}
-      {summary !== undefined && <p className="m-0 min-h-5 text-small text-muted">{summary}</p>}
+      {summary !== undefined && (
+        <p className="m-0 min-h-5 text-small text-muted max-sm:basis-full">{summary}</p>
+      )}
       {actions !== undefined && <span className="grow" />}
       {actions}
     </header>
