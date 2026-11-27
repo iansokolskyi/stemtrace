@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import heapq
 import operator
 import threading
 import time
@@ -249,7 +250,7 @@ def _path_up(graph: TaskGraph, node: TaskNode) -> tuple[list[str], str | None]:
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterable, Mapping
+    from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
     from stemtrace.core.events import TaskEvent
 
@@ -1183,12 +1184,31 @@ class TaskRunSummary(NamedTuple):
 
 
 class _FlowTimes(NamedTuple):
-    """The flow times of one computation, and the store change it saw."""
+    """The flow times of one computation, and the store change it saw.
+
+    ``order`` and ``roots`` are never changed after the computation, so a
+    scan reads them without the lock. Roots first seen later go to
+    ``extra_order`` (small, changed under the lock) and into ``times``,
+    which only grows (a scan only looks keys up).
+    """
 
     changes: int
     ready_at: float  # the next compute may start at this clock reading
     times: dict[str, tuple[datetime, datetime]]
     order: list[str]
+    roots: frozenset[str]  # the roots the computation timed
+    extra_order: list[str]
+
+
+def _merged_order(
+    order: Sequence[str],
+    extra: Sequence[str],
+    times: Mapping[str, tuple[datetime, datetime]],
+) -> Iterable[str]:
+    """The computed order with the later roots merged in (both sorted by ``_newest_first_key``)."""
+    if not extra:
+        return order
+    return heapq.merge(order, extra, key=_newest_first_key(times))
 
 
 _T = TypeVar("_T")
@@ -1471,26 +1491,27 @@ class GraphStore:
         """
         # A flow's time is over its whole graph, not the root's own events. The
         # times may be up to the gate old; which roots exist is always live.
+        # The hold reads the published snapshot and the few changes since it.
         with self._lock:
             flows = self._cached_flow_times_locked()
+            added, removed = self._graph.root_delta()
             times = flows.times
-            roots = self._graph.root_ids
-            if not all(map(times.__contains__, roots)):
-                for rid in sorted(set(roots).difference(times)):
-                    self._time_unseen_root_locked(flows, rid)
+            for rid in sorted(r for r in added if r not in times):
+                self._time_unseen_root_locked(flows, rid)
             if task_names is None and from_date is None and to_date is None:
                 page = self._unfiltered_page_locked(flows, offset, limit)
-                return build(page), len(roots)
+                return build(page), self._graph.root_count
             matching = (
                 None if task_names is None else self._roots_with_task_locked(task_names)
             )
-            # Copies: the filters below run without the lock, and
-            # ``_time_unseen_root_locked`` adds to the cache's own.
-            live = set(roots)
-            order = list(flows.order)
-            times = dict(times)
+            extra_order = list(flows.extra_order)
             mark = self._graph.birth_mark
-        root_ids = [rid for rid in order if rid in live]
+        gone, new = frozenset(removed), frozenset(added)
+        root_ids = [
+            rid
+            for rid in _merged_order(flows.order, extra_order, times)
+            if (rid in flows.roots and rid not in gone) or rid in new
+        ]
         if matching is not None:
             root_ids = [rid for rid in root_ids if rid in matching]
         if from_date is not None:
@@ -1500,8 +1521,8 @@ class GraphStore:
             to_dt = _ensure_end_of_day(to_date)
             root_ids = [rid for rid in root_ids if times[rid][0] <= to_dt]
         with self._lock:
-            # A root evicted, re-created under its ID or no longer a root left.
             nodes = self._graph.nodes
+            # A root evicted, re-created under its ID or no longer a root left.
             kept = [
                 node
                 for rid in root_ids[offset : offset + limit]
@@ -1521,7 +1542,7 @@ class GraphStore:
         nodes = self._graph.nodes
         page: list[TaskNode] = []
         skipped = 0
-        for rid in flows.order:
+        for rid in _merged_order(flows.order, flows.extra_order, flows.times):
             if not self._graph.is_root(rid) or rid not in nodes:
                 continue
             if skipped < offset:
@@ -1551,7 +1572,10 @@ class GraphStore:
         gap = max(self._flow_cache_interval_s, ended - started)
         # Newest latest time first; equal times by root ID.
         order = sorted(times, key=_newest_first_key(times))
-        self._flow_cache = cache = _FlowTimes(changes, ended + gap, times, order)
+        roots = self._graph.mark_roots()
+        self._flow_cache = cache = _FlowTimes(
+            changes, ended + gap, times, order, roots, []
+        )
         return cache
 
     def _time_unseen_root_locked(self, flows: _FlowTimes, root_id: str) -> None:
@@ -1594,8 +1618,8 @@ class GraphStore:
                     stack.append(child_id)
         times[root_id] = (first or _MIN_DATETIME, last or _MIN_DATETIME)
         key = _newest_first_key(times)
-        order = flows.order
-        order.insert(bisect.bisect_left(order, key(root_id), key=key), root_id)
+        extra = flows.extra_order
+        extra.insert(bisect.bisect_left(extra, key(root_id), key=key), root_id)
 
     def _flow_times_locked(self) -> dict[str, tuple[datetime, datetime]]:
         """Each root's flow: its (first, latest) time over every node under it.

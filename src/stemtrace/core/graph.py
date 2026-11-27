@@ -963,6 +963,10 @@ class TaskGraph(BaseModel):
     # Root IDs in the order they became roots: a dict used as an ordered set,
     # so adding and removing a root is O(1). Exposed as ``root_ids``.
     _roots: dict[str, None] = PrivateAttr(default_factory=dict)
+    # Roots added and dropped since the last ``mark_roots()``, as a net change:
+    # a root that left and came back is in neither.
+    _roots_added: dict[str, None] = PrivateAttr(default_factory=dict)
+    _roots_removed: dict[str, None] = PrivateAttr(default_factory=dict)
     # Existing tasks whose name or reported parent changed since the last take_changed(): a
     # task.replace() reuse can re-pick a task's name on another task's event.
     _changed_ids: set[str] = PrivateAttr(default_factory=set)
@@ -1058,6 +1062,21 @@ class TaskGraph(BaseModel):
     def root_ids(self) -> list[str]:
         """IDs of the root nodes, in the order they became roots (a copy)."""
         return list(self._roots)
+
+    @property
+    def root_count(self) -> int:
+        """How many roots there are, in O(1)."""
+        return len(self._roots)
+
+    def mark_roots(self) -> frozenset[str]:
+        """Return the roots now and start counting changes from them (see ``root_delta``)."""
+        self._roots_added.clear()
+        self._roots_removed.clear()
+        return frozenset(self._roots)
+
+    def root_delta(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The roots added and the roots dropped since the last ``mark_roots()``, in O(changes)."""
+        return tuple(self._roots_added), tuple(self._roots_removed)
 
     def is_root(self, task_id: str) -> bool:
         """Whether ``task_id`` is one of ``root_ids`` (a constant-time check)."""
@@ -1670,7 +1689,10 @@ class TaskGraph(BaseModel):
         Only call it for a node that isn't listed yet (new or just unlinked).
         """
         if node.parent_id is None:
-            self._roots[node.task_id] = None
+            if node.task_id not in self._roots:
+                self._roots[node.task_id] = None
+                if self._roots_removed.pop(node.task_id, False) is False:
+                    self._roots_added[node.task_id] = None
             return
         parent = self.nodes[node.parent_id]
         # Only a CHORD can already list the node: as its callback.
@@ -1684,7 +1706,10 @@ class TaskGraph(BaseModel):
         A CHORD keeps its callback listed: that entry draws the chord's edge.
         """
         if node.parent_id is None:
-            self._roots.pop(node.task_id, None)
+            if node.task_id in self._roots:
+                del self._roots[node.task_id]
+                if self._roots_added.pop(node.task_id, False) is False:
+                    self._roots_removed[node.task_id] = None
             return
         parent = self.nodes.get(node.parent_id)
         if parent is None or parent.chord_id == node.task_id:

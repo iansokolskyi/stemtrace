@@ -627,3 +627,50 @@ def test_unfiltered_graph_page_is_one_hold_so_a_parent_cannot_arrive_between() -
     assert lock.interleavings == 1  # one acquisition: no point between two holds
     assert len(page.roots) == 3
     assert page.total == len(store._graph.root_ids)
+
+
+# -- roots that came or went since the flow times were computed -------------------
+
+
+def test_root_delta_is_the_net_change_since_the_mark() -> None:
+    store = GraphStore()
+    _flows(store, 3)
+    graph = store._graph
+    assert graph.mark_roots() == frozenset({"r0", "r1", "r2"})
+
+    store.add_event(_ev("r3", TaskState.STARTED, 10))  # a new root
+    store.add_event(_ev("r1", TaskState.STARTED, 11, parent_id="r0", root_id="r0"))
+    store.add_event(_ev("r2", TaskState.STARTED, 12, parent_id="r0", root_id="r0"))
+
+    added, removed = graph.root_delta()
+    assert added == ("r3",)
+    assert set(removed) == {"r1", "r2"}
+    assert graph.root_count == len(graph.root_ids)
+
+
+def _warm(store: GraphStore) -> None:
+    store.get_root_nodes_with_children(limit=1)  # computes and publishes the times
+
+
+def test_graph_page_inside_the_gate_lists_a_new_root_in_its_time_order() -> None:
+    store = GraphStore(flow_cache_interval_s=3600)
+    _flows(store, 3)
+    _warm(store)
+    store.add_event(_ev("mid", TaskState.STARTED, 1))  # newer than r0, older than r2
+
+    for kwargs in ({}, {"from_date": T0 - timedelta(days=1)}):
+        page = store.get_root_nodes_with_children(limit=10, **kwargs)
+        assert [n.task_id for n in page.roots] == ["r2", "mid", "r1", "r0"], kwargs
+        assert page.total == 4
+
+
+def test_graph_page_inside_the_gate_drops_a_root_that_got_a_parent() -> None:
+    store = GraphStore(flow_cache_interval_s=3600)
+    _flows(store, 3)
+    _warm(store)
+    store.add_event(_ev("r1", TaskState.STARTED, 50, parent_id="r0", root_id="r0"))
+
+    for kwargs in ({}, {"from_date": T0 - timedelta(days=1)}):
+        page = store.get_root_nodes_with_children(limit=10, **kwargs)
+        assert [n.task_id for n in page.roots] == ["r2", "r0"], kwargs
+        assert page.total == 2
