@@ -7,6 +7,7 @@ import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
 import { explain, sinceText } from '@/components/anomalies/anomalies'
 import { Icon } from '@/components/Icon'
 import { LoadFailure } from '@/components/Notice'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskName } from '@/components/TaskName'
@@ -53,14 +54,12 @@ function AnomaliesPage(): ReactElement {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
-          Anomalies
-        </h1>
-        <p className="mt-1 min-h-5 text-sm text-muted">
-          {data && fresh && `${total} active: tasks that are stuck, interrupted or unregistered`}
-        </p>
-      </div>
+      <PageHeader
+        title="Anomalies"
+        summary={
+          data && fresh && `${total} active: tasks that are stuck, interrupted or unregistered`
+        }
+      />
 
       <PageStale views={views} className="" />
       {view.phase === 'error' && <LoadFailure what="anomalies" view={view} />}
@@ -83,7 +82,7 @@ function AnomaliesPage(): ReactElement {
       )}
 
       {data && data.total > data.anomalies.length && (
-        <p data-testid="anomalies-truncated" className="text-xs text-muted">
+        <p data-testid="anomalies-truncated" className="text-small text-muted">
           Showing {data.anomalies.length} of {data.total}
         </p>
       )}
@@ -118,12 +117,12 @@ function AnomalyItem({ anomaly }: { anomaly: Anomaly }): ReactElement {
         {anomaly.name && <TaskName name={anomaly.name} className="[overflow-wrap:anywhere]" />}
         <p
           data-testid="anomaly-explanation"
-          className="mt-0.5 mb-2 text-xs text-muted [overflow-wrap:anywhere]"
+          className="mt-0.5 mb-2 text-small text-muted [overflow-wrap:anywhere]"
         >
           {explain(anomaly)}
         </p>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-          <span className="text-xs text-muted">since {sinceText(anomaly.since)}</span>
+          <span className="text-small text-muted">since {sinceText(anomaly.since)}</span>
           <AnomalyActions anomaly={anomaly} from="list" />
         </div>
       </div>

@@ -24,7 +24,7 @@ export function DensityToggle({ value, onChange }: DensityToggleProps): ReactEle
           type="button"
           aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
-          className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+          className="h-[26px] rounded-[2px] px-[11px] text-small font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
         >
           {option.label}
         </button>

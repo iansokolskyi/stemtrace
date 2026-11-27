@@ -59,7 +59,7 @@ export function Breadcrumbs(): ReactElement {
             to="/executions"
             search={{ name_exact: taskName, ...carried }}
             title={taskName}
-            className={`${LINK} min-w-0 overflow-hidden text-ellipsis font-mono text-xs`}
+            className={`${LINK} min-w-0 overflow-hidden text-ellipsis font-mono text-small`}
           >
             {taskName}
           </Link>
@@ -100,7 +100,7 @@ export function Breadcrumbs(): ReactElement {
   return (
     <nav
       aria-label="Breadcrumb"
-      className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px]"
+      className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden whitespace-nowrap text-body"
     >
       {crumbs.map(({ key, node }, index) => (
         <Fragment key={key}>
@@ -118,7 +118,7 @@ function Last({ title, children }: { title: string; children: ReactNode }): Reac
     <span
       aria-current="page"
       title={title}
-      className="min-w-0 overflow-hidden text-ellipsis font-mono text-xs font-bold"
+      className="min-w-0 overflow-hidden text-ellipsis font-mono text-small font-bold"
     >
       {children}
     </span>

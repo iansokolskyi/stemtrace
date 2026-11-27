@@ -3,6 +3,7 @@ import type { GraphNode } from '@/api/client'
 import { useTask } from '@/api/queries'
 import { flowSummary, flowTitle } from '@/components/flows/flowSummary'
 import { Icon } from '@/components/Icon'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { StatusChip } from '@/components/StatusChip'
 import { useSetCrumbTitle } from '@/hooks/useCrumbTitle'
@@ -26,7 +27,7 @@ const ZOOM_MAX = 1.4
 const NOW_TICK_MS = 1000
 
 const BUTTON =
-  'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
+  'inline-flex h-[30px] items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap bg-raised text-ink hover:bg-press disabled:opacity-45 disabled:hover:bg-raised'
 
 const reducedMotion = (): boolean => {
   try {
@@ -208,68 +209,66 @@ export function FlowPage({ nodes, rootId, view }: FlowPageProps): ReactElement {
   return (
     <div>
       <PageStale views={[view, taskView]} />
-      <header className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1
-          tabIndex={-1}
-          className="m-0 min-w-0 text-2xl font-bold text-ink [overflow-wrap:anywhere]"
-        >
-          {flowTitle(root.name)}
-        </h1>
-        <StatusChip state={summary.state} />
-        <span className="text-muted">{flowSummary(summary)}</span>
-        <span className="grow" />
-        <button
-          type="button"
-          className={BUTTON}
-          disabled={!failure}
-          title={failure ? undefined : 'No failed task in this flow'}
-          onClick={() => {
-            if (!failure) return
-            setActed(true)
-            setChosen(failure.task_id)
-            centreOn(failure.task_id)
-          }}
-        >
-          <Icon name="jump" size={13} />
-          Jump to failure
-        </button>
-        <div
-          role="group"
-          aria-label="Zoom"
-          className="inline-flex gap-px overflow-hidden rounded-[3px]"
-        >
-          <button
-            type="button"
-            className={`${BUTTON} rounded-none px-2.5`}
-            aria-label="Zoom out"
-            disabled={zoom === null || zoom <= ZOOM_MIN}
-            onClick={() => zoomBy(-ZOOM_STEP)}
-          >
-            <Icon name="minus" size={12} />
-          </button>
-          <button
-            type="button"
-            className={`${BUTTON} min-w-[52px] justify-center rounded-none`}
-            aria-pressed={zoom === null}
-            title="Show the graph at its natural size"
-            onClick={() => {
-              setActed(true)
-              setZoom(null)
-            }}
-          >
-            {zoom === null ? 'Fit' : `${Math.round(zoom * 100)}%`}
-          </button>
-          <button
-            type="button"
-            className={`${BUTTON} rounded-none px-2.5`}
-            aria-label="Zoom in"
-            disabled={zoom !== null && zoom >= ZOOM_MAX}
-            onClick={() => zoomBy(ZOOM_STEP)}
-          >
-            <Icon name="plus" size={12} />
-          </button>
-        </div>
-      </header>
+      <PageHeader
+        title={flowTitle(root.name)}
+        status={<StatusChip state={summary.state} />}
+        summary={flowSummary(summary)}
+        actions={
+          <>
+            <button
+              type="button"
+              className={BUTTON}
+              disabled={!failure}
+              title={failure ? undefined : 'No failed task in this flow'}
+              onClick={() => {
+                if (!failure) return
+                setActed(true)
+                setChosen(failure.task_id)
+                centreOn(failure.task_id)
+              }}
+            >
+              <Icon name="jump" size={13} />
+              Jump to failure
+            </button>
+            <div
+              role="group"
+              aria-label="Zoom"
+              className="inline-flex gap-px overflow-hidden rounded-[3px]"
+            >
+              <button
+                type="button"
+                className={`${BUTTON} rounded-none px-2.5`}
+                aria-label="Zoom out"
+                disabled={zoom === null || zoom <= ZOOM_MIN}
+                onClick={() => zoomBy(-ZOOM_STEP)}
+              >
+                <Icon name="minus" size={12} />
+              </button>
+              <button
+                type="button"
+                className={`${BUTTON} min-w-[52px] justify-center rounded-none`}
+                aria-pressed={zoom === null}
+                title="Show the graph at its natural size"
+                onClick={() => {
+                  setActed(true)
+                  setZoom(null)
+                }}
+              >
+                {zoom === null ? 'Fit' : `${Math.round(zoom * 100)}%`}
+              </button>
+              <button
+                type="button"
+                className={`${BUTTON} rounded-none px-2.5`}
+                aria-label="Zoom in"
+                disabled={zoom !== null && zoom >= ZOOM_MAX}
+                onClick={() => zoomBy(ZOOM_STEP)}
+              >
+                <Icon name="plus" size={12} />
+              </button>
+            </div>
+          </>
+        }
+      />
 
       <div className="mb-4 grid min-w-0 items-start gap-4 min-[1280px]:grid-cols-[minmax(0,1fr)_260px] min-[1440px]:grid-cols-[minmax(0,1fr)_330px]">
         <FlowDiagram

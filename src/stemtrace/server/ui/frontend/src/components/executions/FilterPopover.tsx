@@ -58,9 +58,9 @@ interface FilterPopoverProps {
 }
 
 const control =
-  'h-[28px] w-full rounded-[3px] bg-raised px-2 text-xs text-ink placeholder:text-muted'
+  'h-[28px] w-full rounded-[3px] bg-raised px-2 text-small text-ink placeholder:text-muted'
 const itemButton =
-  'block w-full truncate rounded-[2px] px-2 py-1 text-left text-xs text-ink hover:bg-hover'
+  'block w-full truncate rounded-[2px] px-2 py-1 text-left text-small text-ink hover:bg-hover'
 
 /** The body of the filter popover: the field list, or the editor for one field. */
 export function FilterPopover(props: FilterPopoverProps): ReactElement {
@@ -75,7 +75,7 @@ export function FilterPopover(props: FilterPopoverProps): ReactElement {
 function FieldList({ onPickField }: FilterPopoverProps): ReactElement {
   return (
     <div className="flex flex-col gap-0.5">
-      <p className="m-0 px-2 pt-1.5 pb-1 text-xs font-bold text-muted">Filter by</p>
+      <p className="m-0 px-2 pt-1.5 pb-1 text-small font-bold text-muted">Filter by</p>
       {FIELDS.map((field) => (
         <button key={field} type="button" className={itemButton} onClick={() => onPickField(field)}>
           {FIELD_LABEL[field]}
@@ -97,7 +97,7 @@ function StateEditor({ filters, onCommit }: FilterPopoverProps): ReactElement {
       {STATE_ORDER.map((state) => (
         <label
           key={state}
-          className="flex cursor-pointer items-center gap-2 rounded-[2px] px-2 py-1 text-xs text-ink hover:bg-hover"
+          className="flex cursor-pointer items-center gap-2 rounded-[2px] px-2 py-1 text-small text-ink hover:bg-hover"
         >
           <input
             type="checkbox"
@@ -128,7 +128,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
         apply()
       }}
     >
-      <label htmlFor={id} className="text-xs text-muted">
+      <label htmlFor={id} className="text-small text-muted">
         {exact ? 'Task name' : 'Name contains'}
       </label>
       <input
@@ -139,7 +139,7 @@ function NameEditor({ filters, exact: startExact, onCommit }: FilterPopoverProps
         placeholder={exact ? 'app.module.task_name' : 'Part of a task name'}
         className={`${control} font-mono`}
       />
-      <label className="flex cursor-pointer items-center gap-2 text-xs text-ink">
+      <label className="flex cursor-pointer items-center gap-2 text-small text-ink">
         <input
           type="checkbox"
           checked={exact}
@@ -179,7 +179,7 @@ function TextEditor({
         apply(text)
       }}
     >
-      <label htmlFor={id} className="text-xs text-muted">
+      <label htmlFor={id} className="text-small text-muted">
         {FIELD_LABEL[field]}
       </label>
       <input
@@ -213,7 +213,7 @@ function ApplyButton({ disabled = false }: { disabled?: boolean }): ReactElement
     <button
       type="submit"
       disabled={disabled}
-      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-xs font-semibold text-on-ink disabled:cursor-not-allowed disabled:opacity-40"
+      className="h-[26px] self-start rounded-[3px] bg-ink px-3 text-small font-semibold text-on-ink disabled:cursor-not-allowed disabled:opacity-40"
     >
       Apply
     </button>
@@ -271,7 +271,7 @@ function TimeEditor({ filters, onCommit, onClose }: FilterPopoverProps): ReactEl
           <button
             key={preset.label}
             type="button"
-            className="h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
+            className="h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-semibold text-ink hover:bg-press"
             onClick={() => {
               const today = new Date()
               onCommit(
@@ -311,7 +311,7 @@ function DateInput({ label, entry, onEntry }: DateInputProps): ReactElement {
   }
   return (
     <>
-      <label htmlFor={id} className="text-xs text-muted">
+      <label htmlFor={id} className="text-small text-muted">
         {label}
       </label>
       <input

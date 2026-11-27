@@ -3,12 +3,13 @@ import { type ReactElement, useEffect, useState } from 'react'
 import type { TaskNode } from '@/api/client'
 import { AnomalyFlag } from '@/components/anomalies/AnomalyFlag'
 import { Icon } from '@/components/Icon'
+import { PageHeader } from '@/components/PageHeader'
 import { StatusChip } from '@/components/StatusChip'
 import { useCarriedRange } from '@/hooks/useCarriedRange'
 import { shortHost } from '@/utils/format'
 
 const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-xs font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
 const BUTTON_QUIET = `${BUTTON} bg-raised text-ink hover:bg-press`
 const BUTTON_PRIMARY = `${BUTTON} bg-ink text-on-ink hover:opacity-90`
 
@@ -34,19 +35,21 @@ export function TaskHeader({ task, flowRootId, childCount = 0 }: TaskHeaderProps
   const hasFlow = flowRootId && (flowRootId !== task.task_id || childCount > 0 || task.parent_id)
 
   return (
-    <header data-testid="task-header" className="mb-4 flex min-w-0 flex-col items-start gap-2">
-      {module && (
-        <div
-          data-task-module
-          title={task.name}
-          className="-mb-1.5 font-mono text-xs leading-snug text-muted [overflow-wrap:anywhere]"
-        >
-          {module}
-        </div>
-      )}
-      <h1 tabIndex={-1} className="text-xl font-bold leading-tight [overflow-wrap:anywhere]">
-        {title}
-      </h1>
+    <PageHeader
+      testId="task-header"
+      title={title}
+      eyebrow={
+        module ? (
+          <div
+            data-task-module
+            title={task.name}
+            className="-mb-1.5 font-mono text-small leading-snug text-muted [overflow-wrap:anywhere]"
+          >
+            {module}
+          </div>
+        ) : undefined
+      }
+    >
       <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1.5">
         <StatusChip state={task.state} />
         {task.anomaly && <AnomalyFlag kind={task.anomaly} />}
@@ -82,7 +85,7 @@ export function TaskHeader({ task, flowRootId, childCount = 0 }: TaskHeaderProps
           </Link>
         )}
       </div>
-    </header>
+    </PageHeader>
   )
 }
 
@@ -106,7 +109,7 @@ function TaskIdentifier({ taskId }: { taskId: string }): ReactElement {
   }
 
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 font-mono text-xs text-muted">
+    <span className="inline-flex max-w-full items-center gap-1.5 font-mono text-small text-muted">
       <span className="min-w-0 [overflow-wrap:anywhere]">{taskId}</span>
       <button
         type="button"

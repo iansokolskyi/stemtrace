@@ -11,7 +11,7 @@ export function LogoutButton() {
     <form method="post" action={logoutPath} className="m-0">
       <button
         type="submit"
-        className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press active:translate-y-px"
+        className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press active:translate-y-px"
       >
         Logout
       </button>

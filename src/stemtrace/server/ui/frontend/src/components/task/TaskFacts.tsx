@@ -47,7 +47,7 @@ export function TaskFacts({ task }: TaskFactsProps): ReactElement | null {
 
   return (
     <Panel title="Details">
-      <dl className="m-0 grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-[7px] px-4 pt-2 pb-3.5 text-xs sm:grid-cols-[96px_minmax(0,1fr)]">
+      <dl className="m-0 grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-[7px] px-4 pt-2 pb-3.5 text-small sm:grid-cols-[96px_minmax(0,1fr)]">
         {facts.map(({ label, value }) => (
           <div key={label} className="contents">
             <dt className="text-muted">{label}</dt>

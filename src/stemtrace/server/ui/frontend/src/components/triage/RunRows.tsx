@@ -19,7 +19,7 @@ const PAGE = 40
 const MAX_LIMIT = 500
 
 const TH =
-  'h-8 whitespace-nowrap border-b border-rule px-2.5 text-left text-xs font-semibold text-muted first:pl-2.5'
+  'h-8 whitespace-nowrap border-b border-rule px-2.5 text-left text-small font-semibold text-muted first:pl-2.5'
 
 /** The tile's name for each order, as the marker on a run it leaves out says it. */
 const TILE_NAME: Record<RunSort, string> = { runtime: 'p95 runtime', queue_wait: 'p95 queue wait' }
@@ -56,24 +56,24 @@ function RunRow({ run, sort }: { run: ExecutionRow; sort?: RunSort }): ReactElem
         >
           <TaskName name={run.name} />
         </button>
-        <div className="truncate text-[11.5px] text-muted">
+        <div className="truncate text-meta text-muted">
           <span className="font-mono">{run.task_id.slice(0, 8)}</span>
           {run.task_group ? ` in ${run.task_group}` : ''}
           {run.hostname ? ` on ${shortHost(run.hostname)}` : ''}
         </div>
         {sort && !isCounted(run, sort) && (
-          <div data-testid="panel-run-uncounted" className="text-[11.5px] text-muted italic">
+          <div data-testid="panel-run-uncounted" className="text-meta text-muted italic">
             Not counted in the {TILE_NAME[sort]} tile
           </div>
         )}
       </td>
-      <td className="px-2.5 py-1.5 text-right text-xs whitespace-nowrap tabular-nums">
+      <td className="px-2.5 py-1.5 text-right text-small whitespace-nowrap tabular-nums">
         {run.queue_wait_ms == null ? '' : formatSpan(run.queue_wait_ms)}
       </td>
-      <td className="px-2.5 py-1.5 text-right text-xs whitespace-nowrap tabular-nums">
+      <td className="px-2.5 py-1.5 text-right text-small whitespace-nowrap tabular-nums">
         {run.runtime_ms == null ? '' : formatSpan(run.runtime_ms)}
       </td>
-      <td className="px-2.5 py-1.5 text-right text-xs whitespace-nowrap text-muted tabular-nums">
+      <td className="px-2.5 py-1.5 text-right text-small whitespace-nowrap text-muted tabular-nums">
         {formatAgo(run.last_updated)}
       </td>
     </tr>
@@ -109,7 +109,7 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
     return (
       <>
         <PageStale views={[state]} className="mb-2" />
-        <p className="m-0 py-4 text-center text-xs text-muted">No runs match.</p>
+        <p className="m-0 py-4 text-center text-small text-muted">No runs match.</p>
       </>
     )
   }
@@ -145,7 +145,7 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
         </table>
       </div>
       {data.total > data.tasks.length && capped && (
-        <p className="m-0 mt-2 text-xs text-muted">
+        <p className="m-0 mt-2 text-small text-muted">
           Showing the first {formatCount(data.tasks.length)} of {formatCount(data.total)} runs.
         </p>
       )}
@@ -155,7 +155,7 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
           onClick={() =>
             setView((now) => ({ ...now, more: Math.min(MAX_MORE, (now.more ?? 0) + 1) }))
           }
-          className="mt-2 inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press"
+          className="mt-2 inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
         >
           Show {Math.min(PAGE, data.total - data.tasks.length, MAX_LIMIT - data.tasks.length)} more
           of {formatCount(data.total)}

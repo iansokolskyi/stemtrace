@@ -191,10 +191,10 @@ export function RunsChart({
   return (
     <section aria-labelledby="h-chart" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 px-4 pt-3.5 pb-2">
-        <h2 id="h-chart" className="text-sm font-bold">
+        <h2 id="h-chart" className="text-title font-bold">
           {title ? `Runs per ${title}` : 'Runs'}
         </h2>
-        <div className="flex gap-3.5 text-xs text-muted">
+        <div className="flex gap-3.5 text-small text-muted">
           <Legend swatch="bg-success" label="Success" />
           <Legend swatch="bg-failure" label="Failure" />
           <Legend swatch="retry-hatch" label="Retry" />
@@ -202,14 +202,14 @@ export function RunsChart({
         <span className="grow" />
         {state.phase !== 'data' ? null : brush ? (
           <>
-            <span className="inline-flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised pr-1 pl-2.5 text-xs">
+            <span className="inline-flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised pr-1 pl-2.5 text-small">
               <span className="text-muted">Filtered to</span>
               <b data-testid="brush-label">{brushLabel}</b>
               <button
                 type="button"
                 aria-label="Clear time filter"
                 onClick={() => onBrush(null)}
-                className="h-[18px] rounded-[2px] px-2 text-xs text-muted hover:bg-hover hover:text-ink"
+                className="h-[18px] rounded-[2px] px-2 text-small text-muted hover:bg-hover hover:text-ink"
               >
                 clear
               </button>
@@ -217,13 +217,13 @@ export function RunsChart({
             <button
               type="button"
               {...openerProps(panel, { kind: 'runs', id: encodeScope(brushScope(brush)) })}
-              className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold hover:bg-press data-[on]:bg-ink data-[on]:text-on-ink"
+              className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press data-[on]:bg-ink data-[on]:text-on-ink"
             >
               Open runs
             </button>
           </>
         ) : (
-          <span className="text-xs text-muted">
+          <span className="text-small text-muted">
             UTC.{' '}
             {view === 'table'
               ? 'Click a row to open its runs.'
@@ -241,7 +241,7 @@ export function RunsChart({
               type="button"
               aria-pressed={view === mode}
               onClick={() => setView(mode)}
-              className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+              className="h-[26px] rounded-[2px] px-[11px] text-small font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
             >
               {mode === 'chart' ? 'Chart' : 'Table'}
             </button>
@@ -257,11 +257,13 @@ export function RunsChart({
             </div>
           )
         ) : state.phase !== 'data' ? (
-          <p className="m-0 px-4 py-10 text-center text-xs text-muted">Loading runs…</p>
+          <p className="m-0 px-4 py-10 text-center text-small text-muted">Loading runs…</p>
         ) : view === 'table' ? (
           <ChartTable buckets={buckets} />
         ) : n === 0 ? (
-          <p className="m-0 px-4 py-10 text-center text-xs text-muted">No runs in this window.</p>
+          <p className="m-0 px-4 py-10 text-center text-small text-muted">
+            No runs in this window.
+          </p>
         ) : (
           <>
             {/* biome-ignore lint/a11y/useSemanticElements: an svg cannot be a fieldset; it is one group the arrow keys move through */}
@@ -375,7 +377,7 @@ export function RunsChart({
                     x={px}
                     y={y(total(buckets[i])) - 6}
                     textAnchor="middle"
-                    fontSize={11.5}
+                    fontSize={11}
                     fontWeight={700}
                     fill="var(--ink)"
                     pointerEvents="none"
@@ -450,7 +452,7 @@ export function RunsChart({
             {shown && (
               <div
                 role="tooltip"
-                className="pointer-events-none absolute top-3 z-5 min-w-40 rounded-lg bg-raised px-[11px] py-[9px] text-xs shadow-pop"
+                className="pointer-events-none absolute top-3 z-5 min-w-40 rounded-lg bg-raised px-[11px] py-[9px] text-small shadow-pop"
                 style={{ left: tipLeft }}
               >
                 <b className="mb-1 block font-bold">{spanLabel(shown.start, shown.end)} UTC</b>
@@ -503,7 +505,7 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
   const panel = usePanel()
   return (
     <div className="max-h-[300px] overflow-auto">
-      <table className="w-full border-collapse text-xs">
+      <table className="w-full border-collapse text-small">
         <caption className="sr-only">Runs per bucket</caption>
         <thead>
           <tr>
@@ -511,7 +513,7 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
               <th
                 key={h}
                 scope="col"
-                className={`sticky top-0 border-b border-rule bg-surface px-2.5 py-2 text-xs font-semibold text-muted ${i ? 'text-right' : 'text-left'}`}
+                className={`sticky top-0 border-b border-rule bg-surface px-2.5 py-2 text-small font-semibold text-muted ${i ? 'text-right' : 'text-left'}`}
               >
                 {h}
               </th>

@@ -24,8 +24,8 @@ interface WhatsWrongProps {
 }
 
 const TH =
-  'h-9 whitespace-nowrap border-b border-rule px-2.5 text-left text-xs font-semibold text-muted first:pl-4 last:pr-4'
-const TD = 'px-2.5 py-1 text-xs first:pl-4 last:pr-4'
+  'h-9 whitespace-nowrap border-b border-rule px-2.5 text-left text-small font-semibold text-muted first:pl-4 last:pr-4'
+const TD = 'px-2.5 py-1 text-small first:pl-4 last:pr-4'
 
 /**
  * Failures grouped by exception class and the anomalies now, each row opening in the triage
@@ -47,10 +47,10 @@ export function WhatsWrong({
   return (
     <section aria-labelledby="h-wrong" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-wrong" className="text-sm font-bold">
+        <h2 id="h-wrong" className="text-title font-bold">
           What’s wrong
         </h2>
-        <span className="min-h-4 text-xs text-muted">
+        <span className="min-h-4 text-small text-muted">
           {groups &&
             !stale &&
             `${count} failing exception${count === 1 ? '' : 's'}${scope}.${
@@ -61,7 +61,7 @@ export function WhatsWrong({
         </span>
       </div>
       {allClear ? (
-        <p className="m-0 flex items-center gap-2 px-4 pt-2 pb-4 text-xs text-muted">
+        <p className="m-0 flex items-center gap-2 px-4 pt-2 pb-4 text-small text-muted">
           <Icon name="check" size={16} />
           All clear: no failures or anomalies{scope}.
         </p>
@@ -74,13 +74,15 @@ export function WhatsWrong({
           }
         >
           <div className="min-w-0">
-            <h3 className="px-4 pt-2 pb-1.5 text-[13px] font-bold">Failures by exception</h3>
+            <h3 className="px-4 pt-2 pb-1.5 text-small font-semibold text-muted">
+              Failures by exception
+            </h3>
             {view.phase === 'error' ? (
               <LoadError what="the failures" view={view} />
             ) : groups === undefined ? (
-              <p className="m-0 px-4 py-3 text-xs text-muted">Loading failures…</p>
+              <p className="m-0 px-4 py-3 text-small text-muted">Loading failures…</p>
             ) : failuresNone ? (
-              <p className="m-0 flex items-center gap-2 px-4 py-3 text-xs text-muted">
+              <p className="m-0 flex items-center gap-2 px-4 py-3 text-small text-muted">
                 <Icon name="check" size={16} />
                 No failures{scope}.
               </p>
@@ -123,14 +125,14 @@ export function WhatsWrong({
                               })}
                               // The overlay covers the message line, so the hover text lives here.
                               title={message}
-                              className="font-mono font-bold text-failure-t after:absolute after:inset-0"
+                              className="font-semibold text-ink after:absolute after:inset-0"
                             >
                               {group.exception_type ?? 'No exception class'}
                             </button>
                             {message && (
                               <div
                                 data-testid="failure-message"
-                                className="max-w-[300px] truncate text-[11px] text-muted"
+                                className="max-w-[300px] truncate text-meta text-muted"
                               >
                                 {message}
                               </div>

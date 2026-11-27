@@ -153,7 +153,7 @@ function EmptyTable({
       </div>
       {/* Outside the min-width strip, so the text wraps inside the box instead of being
           centered in a strip wider than it */}
-      <div data-testid="executions-empty" className="px-4 py-8 text-center text-xs text-muted">
+      <div data-testid="executions-empty" className="px-4 py-8 text-center text-small text-muted">
         <p data-testid="executions-empty-text" className="m-0">
           {filtered ? 'No executions match these filters' : 'No executions'}
           {during && ` in ${during}`}.{neverRun && ' This task is registered but has never run.'}
@@ -163,7 +163,7 @@ function EmptyTable({
           <button
             type="button"
             onClick={onClear}
-            className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-xs font-semibold text-ink hover:bg-press"
+            className="mt-4 h-[26px] rounded-[3px] bg-raised px-2.5 text-small font-semibold text-ink hover:bg-press"
           >
             Clear filters
           </button>
@@ -176,7 +176,7 @@ function EmptyTable({
 function HeaderRow({ columns, template }: { columns: Column[]; template: string }): ReactElement {
   return (
     <div
-      className="sticky top-0 z-10 grid items-center border-b border-rule bg-surface text-xs font-semibold text-muted"
+      className="sticky top-0 z-10 grid items-center border-b border-rule bg-surface text-small font-semibold text-muted"
       style={{ gridTemplateColumns: template, height: 36 }}
     >
       {columns.map((column, index) => (
@@ -246,7 +246,7 @@ function TableBox({
 
   return (
     <div>
-      <div className="flex h-8 items-center justify-between text-xs text-muted">
+      <div className="flex h-8 items-center justify-between text-small text-muted">
         <span>
           Showing {formatCount(rows.length)} of {formatCount(total)} tasks
         </span>
@@ -255,7 +255,7 @@ function TableBox({
           <button
             type="button"
             onClick={showNew}
-            className="h-6 rounded-[3px] bg-ink px-2.5 text-xs font-semibold text-on-ink"
+            className="h-6 rounded-[3px] bg-ink px-2.5 text-small font-semibold text-on-ink"
           >
             {newCount} new
           </button>
@@ -283,7 +283,7 @@ function TableBox({
                   data-departed={departed || undefined}
                   title={departed ? 'No longer matches this view' : undefined}
                   className={clsx(
-                    'absolute left-0 grid w-full items-center border-b border-rule text-xs text-ink hover:bg-hover',
+                    'absolute left-0 grid w-full items-center border-b border-rule text-small text-ink hover:bg-hover',
                     departed && 'opacity-55',
                     row.anomaly && ANOMALY_ROW,
                   )}

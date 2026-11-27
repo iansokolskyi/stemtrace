@@ -4,6 +4,7 @@ import type { Worker } from '@/api/client'
 import { useGroups, useRecentExecutions, useWorkers } from '@/api/queries'
 import { Icon } from '@/components/Icon'
 import { LoadFailure } from '@/components/Notice'
+import { PageHeader } from '@/components/PageHeader'
 import { PageStale } from '@/components/PageStale'
 import { Skeleton, SkeletonRegion } from '@/components/Skeleton'
 import { TaskName } from '@/components/TaskName'
@@ -21,7 +22,7 @@ export const Route = createFileRoute('/workers_/$hostname')({
 })
 
 const BUTTON =
-  'inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-xs font-semibold whitespace-nowrap hover:bg-press'
+  'inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold whitespace-nowrap hover:bg-press'
 
 function WorkerPage() {
   const { hostname } = Route.useParams()
@@ -42,7 +43,7 @@ function WorkerPage() {
     return (
       <>
         <PageStale views={[view]} />
-        <div className="rounded-lg bg-surface px-4 py-10 text-center text-xs text-muted">
+        <div className="rounded-lg bg-surface px-4 py-10 text-center text-small text-muted">
           <p className="m-0">No worker named {hostname}</p>
           <Link to="/workers" className="link mt-2 inline-block">
             Back to workers
@@ -89,23 +90,20 @@ function WorkerHeader({ worker }: { worker: Worker }) {
   const offline = worker.status === 'offline'
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1
-          tabIndex={-1}
-          className="m-0 min-w-0 font-mono text-2xl font-bold [overflow-wrap:anywhere]"
-        >
-          {worker.hostname}
-        </h1>
-        <WorkerStatus status={worker.status} />
-        <span className="grow" />
-        <Link
-          to="/executions"
-          search={{ hostname: worker.hostname, ...carried }}
-          className={BUTTON}
-        >
-          All executions on this worker
-        </Link>
-      </div>
+      <PageHeader
+        mono
+        title={worker.hostname}
+        status={<WorkerStatus status={worker.status} />}
+        actions={
+          <Link
+            to="/executions"
+            search={{ hostname: worker.hostname, ...carried }}
+            className={BUTTON}
+          >
+            All executions on this worker
+          </Link>
+        }
+      />
       {offline && (
         <div
           role="note"
@@ -115,8 +113,8 @@ function WorkerHeader({ worker }: { worker: Worker }) {
             <Icon name="x" size={18} className="[stroke-width:2.6]" />
           </span>
           <div>
-            <h2 className="m-0 text-sm font-bold">Offline</h2>
-            <p className="m-0 text-[13px]">
+            <h2 className="m-0 text-body font-bold">Offline</h2>
+            <p className="m-0 text-body">
               Last seen {formatDateTime(worker.last_seen)} ({formatAgo(worker.last_seen)}).
             </p>
           </div>
@@ -138,13 +136,13 @@ function RegisteredTasks({ tasks }: { tasks: string[] }) {
     <Panel
       title="Registered tasks"
       aside={
-        <span className="text-xs text-muted">
+        <span className="text-small text-muted">
           {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}
         </span>
       }
     >
       {tasks.length === 0 ? (
-        <p className="m-0 px-4 pt-2 pb-5 text-xs text-muted">No registered tasks.</p>
+        <p className="m-0 px-4 pt-2 pb-5 text-small text-muted">No registered tasks.</p>
       ) : (
         <div className="max-h-[420px] overflow-auto">
           <table className="w-full min-w-[320px] border-collapse">
@@ -192,7 +190,7 @@ function Details({ worker }: { worker: Worker }) {
   ]
   return (
     <Panel title="Details">
-      <dl className="m-0 grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-[7px] px-4 pt-2 pb-3.5 text-xs sm:grid-cols-[96px_minmax(0,1fr)]">
+      <dl className="m-0 grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-[7px] px-4 pt-2 pb-3.5 text-small sm:grid-cols-[96px_minmax(0,1fr)]">
         {facts.map(([label, value, title]) => (
           <div key={label} className="contents">
             <dt className="text-muted">{label}</dt>

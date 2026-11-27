@@ -38,11 +38,11 @@ export function ExecutionTimeline({ events }: { events: TaskEvent[] }): ReactEle
             />
           ))}
         </div>
-        <div className="mt-1.5 flex justify-between text-xs text-muted">
+        <div className="mt-1.5 flex justify-between text-small text-muted">
           <span>{formatTime(iso(times[0]))}</span>
           <span>{formatTime(iso(times[times.length - 1]))}</span>
         </div>
-        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-small">
           {segments.map((segment, i) => (
             <div
               key={i}

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "biome lint .",
     "format": "biome format .",
-    "check": "biome check .",
+    "check": "biome check . && node scripts/check-type-scale.mjs",
     "fix": "biome check --write .",
     "generate": "tsr generate",
     "typecheck": "tsr generate && tsc --noEmit",

@@ -33,7 +33,7 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
     const rows = [...(data.anomalies.fleet ? [data.anomalies.fleet] : []), ...data.anomalies.items]
     if (rows.length === 0) {
       return (
-        <p className="m-0 flex items-center gap-2 pt-4 text-xs text-muted">
+        <p className="m-0 flex items-center gap-2 pt-4 text-small text-muted">
           <Icon name="check" size={16} />
           All clear.
         </p>
@@ -57,10 +57,10 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
                   {anomaly.name ? (
                     <TaskName name={anomaly.name} />
                   ) : (
-                    <span className="text-xs font-semibold">Fleet</span>
+                    <span className="text-small font-semibold">Fleet</span>
                   )}
                 </button>
-                <p className="m-0 text-xs text-muted [overflow-wrap:anywhere]">
+                <p className="m-0 text-small text-muted [overflow-wrap:anywhere]">
                   {explain(anomaly)}
                 </p>
               </div>
@@ -72,7 +72,7 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
   }
 
   const anomaly = findAnomaly(data, id)
-  if (!anomaly) return <p className="m-0 pt-4 text-xs text-muted">This anomaly has cleared.</p>
+  if (!anomaly) return <p className="m-0 pt-4 text-small text-muted">This anomaly has cleared.</p>
   return (
     <>
       <Section>
@@ -85,8 +85,8 @@ export function AnomalyBody({ id, data }: { id: string; data: PanelData }): Reac
             <Icon name="alert" size={18} className="[stroke-width:2.6]" />
           </div>
           <div className="min-w-0">
-            <h3 className="m-0 mb-0.5 text-sm font-bold">{kindHeading(anomaly)}</h3>
-            <p className="m-0 mb-2 text-[13px] [overflow-wrap:anywhere]">
+            <h3 className="m-0 mb-0.5 text-body font-bold">{kindHeading(anomaly)}</h3>
+            <p className="m-0 mb-2 text-body [overflow-wrap:anywhere]">
               {explain(anomaly)}{' '}
               <span className="text-muted">Since {sinceText(anomaly.since)}.</span>
             </p>

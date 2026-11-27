@@ -63,7 +63,7 @@ export function TopStrip({
       >
         <Icon name="search" size={14} />
         <span className="hidden min-[900px]:inline">Search tasks, flows, workers</span>
-        <kbd className="ml-auto hidden rounded-[2px] bg-ground px-[5px] py-px font-[inherit] text-[11px] text-muted min-[900px]:inline">
+        <kbd className="ml-auto hidden rounded-[2px] bg-ground px-[5px] py-px font-[inherit] text-meta text-muted min-[900px]:inline">
           {SHORTCUT}
         </kbd>
       </button>

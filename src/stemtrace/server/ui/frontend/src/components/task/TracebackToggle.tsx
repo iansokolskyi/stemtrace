@@ -16,7 +16,7 @@ export function TracebackToggle({ open, onToggle, className }: TracebackTogglePr
       aria-expanded={open}
       onClick={onToggle}
       className={clsx(
-        'inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-xs font-semibold hover:bg-press',
+        'inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-small font-semibold hover:bg-press',
         className,
       )}
     >

@@ -14,7 +14,10 @@ export function ChildTasks({ tasks }: { tasks: TaskNode[] }): ReactElement | nul
   const labels = shortestUniqueSuffixes(tasks.map((child) => child.name))
 
   return (
-    <Panel title="Child tasks" aside={<span className="text-xs text-muted">{tasks.length}</span>}>
+    <Panel
+      title="Child tasks"
+      aside={<span className="text-small text-muted">{tasks.length}</span>}
+    >
       <ul className="m-0 list-none px-2 pt-0 pb-2.5">
         {tasks.map((child) => (
           <li key={child.task_id}>
@@ -24,10 +27,10 @@ export function ChildTasks({ tasks }: { tasks: TaskNode[] }): ReactElement | nul
               className="flex min-w-0 items-center justify-between gap-3 rounded-[3px] px-2 py-1.5 hover:bg-hover"
             >
               <span className="flex min-w-0 items-baseline gap-2">
-                <span title={child.name} className="min-w-0 truncate font-mono text-xs">
+                <span title={child.name} className="min-w-0 truncate font-mono text-small">
                   {labels.get(child.name) ?? child.name}
                 </span>
-                <span className="flex-none font-mono text-xs text-muted">
+                <span className="flex-none font-mono text-small text-muted">
                   {child.task_id.slice(0, 8)}
                 </span>
               </span>

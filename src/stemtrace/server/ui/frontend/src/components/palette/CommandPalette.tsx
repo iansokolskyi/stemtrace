@@ -248,7 +248,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
             enterWaiting.current = null
             setSelectedKey(null)
           }}
-          className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-sm text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none!"
+          className="h-[46px] w-full rounded-none border-0 bg-raised px-4 text-body text-ink placeholder:text-muted focus-visible:rounded-none focus-visible:shadow-[inset_0_-3px_0_var(--ink)] focus-visible:outline-none!"
         />
         <div
           id={`${id}-list`}
@@ -264,7 +264,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
             <div key={group.kind} role="group" aria-labelledby={`${id}-group-${group.kind}`}>
               <div
                 id={`${id}-group-${group.kind}`}
-                className="px-2.5 pt-2 pb-1 text-xs font-bold text-muted"
+                className="px-2.5 pt-2 pb-1 text-small font-bold text-muted"
               >
                 {group.heading}
               </div>
@@ -290,13 +290,13 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
                 >
                   <span
                     className={clsx(
-                      'min-w-0 truncate text-[12.5px] font-semibold',
+                      'min-w-0 truncate text-small font-semibold',
                       item.kind === 'task' && 'font-mono',
                     )}
                   >
                     {item.label}
                   </span>
-                  <span className="ml-auto max-w-[45%] truncate text-xs whitespace-nowrap text-muted">
+                  <span className="ml-auto max-w-[45%] truncate text-small whitespace-nowrap text-muted">
                     {item.desc}
                   </span>
                 </div>
@@ -309,7 +309,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
             {emptyText}
           </div>
         )}
-        <div className="flex gap-3.5 px-4 py-2 text-xs text-muted" aria-hidden="true">
+        <div className="flex gap-3.5 px-4 py-2 text-small text-muted" aria-hidden="true">
           <span>↑↓ navigate</span>
           <span>↵ open</span>
           <span>esc close</span>

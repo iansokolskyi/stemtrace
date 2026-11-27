@@ -107,7 +107,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
       {stale}
       <section aria-label="Timeline" className="min-w-0 overflow-x-auto rounded-lg bg-surface">
         <div className="min-w-[720px] px-4 pt-3 pb-3.5">
-          <div className={clsx(COLUMNS, 'mb-1 h-5 text-xs text-muted')} aria-hidden="true">
+          <div className={clsx(COLUMNS, 'mb-1 h-5 text-small text-muted')} aria-hidden="true">
             <span>UTC</span>
             <div className="relative" data-testid="timeline-axis">
               {TICKS.map((tick) => (
@@ -148,7 +148,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
             ))}
           </div>
 
-          <ul className="m-0 mt-3 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 pt-3 text-xs text-muted shadow-[0_-1px_0_var(--rule)]">
+          <ul className="m-0 mt-3 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 pt-3 text-small text-muted shadow-[0_-1px_0_var(--rule)]">
             {states.map((state) => (
               <LegendItem
                 key={state}
@@ -203,7 +203,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
       <Link
         to="/tasks/$taskId"
         params={{ taskId: task.task_id }}
-        className="flex min-w-0 items-center gap-2 text-xs text-ink hover:underline"
+        className="flex min-w-0 items-center gap-2 text-small text-ink hover:underline"
         title={task.name}
         aria-label={`${task.name}, ${look.word}`}
       >
@@ -274,7 +274,10 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
         })}
       </div>
 
-      <div data-testid="timeline-duration" className="text-right text-xs text-muted tabular-nums">
+      <div
+        data-testid="timeline-duration"
+        className="text-right text-small text-muted tabular-nums"
+      >
         {openPart
           ? hasElapsed
             ? formatSpan(elapsed)

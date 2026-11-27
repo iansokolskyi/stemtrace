@@ -6,14 +6,14 @@ import { usePanel } from './PanelContext'
 import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
 import { encodeScope } from './runsScope'
 
-const TH = 'h-8 border-b border-rule px-2.5 text-left text-xs font-semibold text-muted'
+const TH = 'h-8 border-b border-rule px-2.5 text-left text-small font-semibold text-muted'
 
 /** One task group over the window: its figures and its tasks, worst failure rate first. */
 export function GroupBody({ id, data }: { id: string; data: PanelData }): ReactElement {
   const panel = usePanel()
   const group = data.stats?.groups?.find((g) => g.name === id)
   if (data.stats && !group)
-    return <p className="m-0 pt-4 text-xs text-muted">This group has no runs in the window.</p>
+    return <p className="m-0 pt-4 text-small text-muted">This group has no runs in the window.</p>
   const tasks = (data.stats?.tasks ?? [])
     .filter((t) => t.task_group === id && t.runs > 0)
     .sort((a, b) => (b.failure_rate ?? 0) - (a.failure_rate ?? 0) || b.runs - a.runs)
@@ -75,15 +75,15 @@ export function GroupBody({ id, data }: { id: string; data: PanelData }): ReactE
                       <TaskName name={task.name} />
                     </button>
                   </td>
-                  <td className="px-2.5 py-1.5 text-right text-xs tabular-nums">
+                  <td className="px-2.5 py-1.5 text-right text-small tabular-nums">
                     {formatCount(task.runs)}
                   </td>
                   <td
-                    className={`px-2.5 py-1.5 text-right text-xs tabular-nums ${(task.failure_rate ?? 0) > 0.01 ? 'font-bold text-failure-t' : ''}`}
+                    className={`px-2.5 py-1.5 text-right text-small tabular-nums ${(task.failure_rate ?? 0) > 0.01 ? 'font-bold text-failure-t' : ''}`}
                   >
                     {task.failure_rate == null ? '' : formatPercent(task.failure_rate)}
                   </td>
-                  <td className="px-2.5 py-1.5 text-right text-xs tabular-nums">
+                  <td className="px-2.5 py-1.5 text-right text-small tabular-nums">
                     {task.p95_ms == null ? '' : formatSpan(task.p95_ms)}
                   </td>
                 </tr>

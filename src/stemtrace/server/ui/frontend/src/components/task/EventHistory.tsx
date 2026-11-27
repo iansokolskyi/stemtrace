@@ -53,7 +53,7 @@ function EventRow({ event, loud }: { event: TaskEvent; loud: boolean }): ReactEl
   return (
     <li data-testid="event-row" className="grid grid-cols-[92px_minmax(0,1fr)] gap-x-2.5 py-1.5">
       <StatusChip state={event.state} label={event.state} quiet={!loud} />
-      <div className="min-w-0 text-xs">
+      <div className="min-w-0 text-small">
         <span className="text-muted">{formatTime(event.timestamp)}</span>
         {event.retries > 0 && <span className="ml-2.5 text-muted">retry #{event.retries}</span>}
         {reason && <div className="mt-0.5 text-muted [overflow-wrap:anywhere]">{reason}</div>}

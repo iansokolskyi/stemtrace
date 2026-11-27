@@ -6,6 +6,7 @@ import { DensityToggle } from '@/components/executions/DensityToggle'
 import { ExecutionsTable } from '@/components/executions/ExecutionsTable'
 import { FilterChips } from '@/components/executions/FilterChips'
 import { suggestionsFrom } from '@/components/executions/suggestions'
+import { PageHeader } from '@/components/PageHeader'
 import { TaskTimeline } from '@/components/TaskTimeline'
 import { carryRange, useCarriedRange } from '@/hooks/useCarriedRange'
 import { useDensity } from '@/hooks/useDensity'
@@ -91,7 +92,7 @@ function TasksPage() {
           type="button"
           aria-pressed={viewMode === mode}
           onClick={() => handleViewModeChange(mode)}
-          className="h-[26px] rounded-[2px] px-[11px] text-xs font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+          className="h-[26px] rounded-[2px] px-[11px] text-small font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
         >
           {mode === 'list' ? 'List' : 'Timeline'}
         </button>
@@ -101,14 +102,10 @@ function TasksPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 tabIndex={-1} className="text-2xl font-bold text-ink">
-          Executions
-        </h1>
-        <p className="mt-1 min-h-5 text-sm text-muted">
-          {total !== undefined && runsSummary(total, params.within)}
-        </p>
-      </div>
+      <PageHeader
+        title="Executions"
+        summary={total !== undefined && runsSummary(total, params.within)}
+      />
 
       <FilterChips
         filters={filters}
