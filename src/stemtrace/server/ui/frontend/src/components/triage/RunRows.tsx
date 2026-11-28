@@ -18,8 +18,7 @@ const PAGE = 40
 /** The most rows one request may ask for (`limit` of `GET /api/tasks`). */
 const MAX_LIMIT = 500
 
-const TH =
-  'h-8 whitespace-nowrap border-b border-rule px-2.5 text-left text-small font-semibold text-muted first:pl-2.5'
+const TH = 'th-band h-8 whitespace-nowrap px-2.5 text-left first:pl-2.5'
 
 /** The tile's name for each order, as the marker on a run it leaves out says it. */
 const TILE_NAME: Record<RunSort, string> = { runtime: 'p95 runtime', queue_wait: 'p95 queue wait' }
@@ -155,7 +154,7 @@ export function RunRows({ filters, initial = PAGE, enabled = true }: RunRowsProp
           onClick={() =>
             setView((now) => ({ ...now, more: Math.min(MAX_MORE, (now.more ?? 0) + 1) }))
           }
-          className="mt-2 inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press"
+          className="mt-2 inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press"
         >
           Show {Math.min(PAGE, data.total - data.tasks.length, MAX_LIMIT - data.tasks.length)} more
           of {formatCount(data.total)}

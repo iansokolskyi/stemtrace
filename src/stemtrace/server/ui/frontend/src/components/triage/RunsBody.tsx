@@ -137,7 +137,7 @@ function Chip({
       type="button"
       aria-pressed={pressed}
       onClick={onClick}
-      className="inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-small font-semibold text-muted hover:bg-press hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink"
+      className="inline-flex h-[26px] items-center rounded-[3px] bg-raised px-2.5 text-small font-medium text-muted hover:bg-press hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink"
     >
       {children}
     </button>

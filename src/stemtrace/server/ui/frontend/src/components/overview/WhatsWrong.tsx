@@ -23,8 +23,7 @@ interface WhatsWrongProps {
   anomalies: OverviewAnomalies | undefined
 }
 
-const TH =
-  'h-9 whitespace-nowrap border-b border-rule px-2.5 text-left text-small font-semibold text-muted first:pl-4 last:pr-4'
+const TH = 'th-band h-9 whitespace-nowrap px-2.5 text-left first:pl-4 last:pr-4'
 const TD = 'px-2.5 py-1 text-small first:pl-4 last:pr-4'
 
 /**
@@ -47,7 +46,7 @@ export function WhatsWrong({
   return (
     <section aria-labelledby="h-wrong" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id="h-wrong" className="text-title font-bold">
+        <h2 id="h-wrong" className="text-title font-semibold">
           What’s wrong
         </h2>
         <span className="min-h-4 text-small text-muted">
@@ -74,9 +73,15 @@ export function WhatsWrong({
           }
         >
           <div className="min-w-0">
-            <h3 className="px-4 pt-2 pb-1.5 text-small font-semibold text-muted">
-              Failures by exception
-            </h3>
+            <div className="flex items-baseline gap-2 px-4 pt-2 pb-1.5">
+              <h3 className="m-0 text-body font-medium text-ink">Failures by exception</h3>
+              {/* A sibling of the heading, so its accessible name stays the words; hidden at 0. */}
+              {groups !== undefined && !stale && count > 0 && (
+                <span data-testid="failures-count" className="text-small text-muted">
+                  {count}
+                </span>
+              )}
+            </div>
             {view.phase === 'error' ? (
               <LoadError what="the failures" view={view} />
             ) : groups === undefined ? (
@@ -125,14 +130,14 @@ export function WhatsWrong({
                               })}
                               // The overlay covers the message line, so the hover text lives here.
                               title={message}
-                              className="font-semibold text-ink after:absolute after:inset-0"
+                              className="text-body font-medium text-ink after:absolute after:inset-0"
                             >
                               {group.exception_type ?? 'No exception class'}
                             </button>
                             {message && (
                               <div
                                 data-testid="failure-message"
-                                className="max-w-[300px] truncate text-meta text-muted"
+                                className="max-w-[300px] truncate text-small text-muted"
                               >
                                 {message}
                               </div>
@@ -146,7 +151,7 @@ export function WhatsWrong({
                               </span>
                             )}
                           </td>
-                          <td className={`${TD} text-right font-bold tabular-nums`}>
+                          <td className={`${TD} text-right font-medium tabular-nums`}>
                             {formatCount(group.count)}
                           </td>
                           <td className={`${TD} whitespace-nowrap text-muted`}>

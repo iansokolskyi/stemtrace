@@ -21,14 +21,14 @@ const BADGE = {
 export function NavItem({ to, label, icon, badge, onNavigate }: NavItemProps): ReactElement {
   const carried = useCarriedRange()
   const className =
-    'nav-item flex items-center gap-2.5 rounded-[3px] px-2.5 py-[7px] font-semibold text-muted hover:bg-hover hover:text-ink'
+    'nav-item flex items-center gap-2.5 rounded-[3px] px-2.5 py-[7px] font-medium text-muted hover:bg-hover hover:text-ink'
   const content = (
     <>
       <Icon name={icon} size={16} />
       <span>{label}</span>
       {badge && (
         <span
-          className={`ml-auto whitespace-nowrap rounded-[3px] px-1.5 py-px text-meta font-bold ${BADGE[badge.tone]}`}
+          className={`ml-auto whitespace-nowrap rounded-[3px] px-1.5 py-px text-meta font-medium ${BADGE[badge.tone]}`}
         >
           {badge.text}
         </span>

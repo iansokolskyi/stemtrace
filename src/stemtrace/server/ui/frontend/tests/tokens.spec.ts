@@ -58,6 +58,53 @@ export function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05)
 }
 
+type Matrix = number[][]
+
+/** Machado et al. 2009, severity 1.0, applied to linear RGB. */
+const PROTANOPIA: Matrix = [
+  [0.152286, 1.052583, -0.204868],
+  [0.114503, 0.786281, 0.099216],
+  [-0.003882, -0.048116, 1.051998],
+]
+const DEUTERANOPIA: Matrix = [
+  [0.367322, 0.860646, -0.227968],
+  [0.280085, 0.672501, 0.047413],
+  [-0.01182, 0.04294, 0.968881],
+]
+
+function linear(hex: string): number[] {
+  return [1, 3, 5].map((i) => {
+    const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+}
+
+function lab([r, g, b]: number[]): number[] {
+  const f = (v: number): number => (v > 0.008856 ? v ** (1 / 3) : 7.787 * v + 16 / 116)
+  const x = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047)
+  const y = f(0.2126 * r + 0.7152 * g + 0.0722 * b)
+  const z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883)
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)]
+}
+
+/** CIE76 colour difference between two #rrggbb colours as a colour-blind viewer sees them. */
+export function deltaE(a: string, b: string, matrix: Matrix): number {
+  const see = (hex: string): number[] => {
+    const rgb = linear(hex)
+    return matrix.map((row) =>
+      Math.min(
+        1,
+        Math.max(
+          0,
+          row.reduce((sum, m, i) => sum + m * rgb[i], 0),
+        ),
+      ),
+    )
+  }
+  const [la, lb] = [lab(see(a)), lab(see(b))]
+  return Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2])
+}
+
 const STATES = ['success', 'failure', 'retry', 'running', 'pending', 'anomaly']
 
 for (const mode of ['light', 'dark'] as const) {
@@ -76,6 +123,41 @@ for (const mode of ['light', 'dark'] as const) {
       expect(contrast(t[`on-${s}`], t[s]), `on-${s} on ${s}`).toBeGreaterThanOrEqual(4.5)
     }
     expect(contrast(t['on-ink'], t.ink), 'on-ink on ink').toBeGreaterThanOrEqual(4.5)
+  })
+
+  test(`success and failure fills keep 3:1 on the surfaces they sit on (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    // WCAG 1.4.11: bars and blocks are solid fills, so the fill itself is the graphical object.
+    for (const s of ['success', 'failure']) {
+      expect(contrast(t[s], t.surface), `${s} on surface`).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  test(`success and failure stay apart for colour-blind viewers (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    // Measured 18.7 (protanopia) and 21.7 (deuteranopia). Bars also separate the two with a gap
+    // and label failed buckets, so colour is not the only cue.
+    for (const [name, matrix] of [
+      ['protanopia', PROTANOPIA],
+      ['deuteranopia', DEUTERANOPIA],
+    ] as const) {
+      expect(
+        deltaE(t.success, t.failure, matrix),
+        `${name} dE76 between success and failure`,
+      ).toBeGreaterThanOrEqual(15)
+    }
+  })
+
+  test(`the header band is a tint of the surface that keeps column headers readable (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    expect(t.band).not.toBe(t.surface)
+    expect(contrast(t.muted, t.band), 'muted on band').toBeGreaterThanOrEqual(4.5)
+  })
+
+  test(`success and failure keep one hue in both themes (${mode})`, () => {
+    const t = parseTokens(CSS, mode)
+    expect(t.success).toBe('#30a46c')
+    expect(t.failure).toBe('#e5484d')
   })
 }
 

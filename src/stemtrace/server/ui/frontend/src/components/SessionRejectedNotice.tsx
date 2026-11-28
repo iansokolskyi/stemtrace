@@ -10,7 +10,7 @@ export function SessionRejectedNotice() {
 
   return (
     <div role="alert" className="rounded-lg bg-surface px-4 py-10 text-center">
-      <p className="m-0 text-body font-semibold text-failure-t">
+      <p className="m-0 text-body font-medium text-failure-t">
         Your session was rejected because it was signed by a different server process (another
         worker or replica).
       </p>

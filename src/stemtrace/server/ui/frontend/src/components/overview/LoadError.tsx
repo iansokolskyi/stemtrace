@@ -36,7 +36,7 @@ export function LoadError({
       role="alert"
       className="m-0 flex flex-wrap items-center gap-x-2 px-4 py-3 text-small text-ink"
     >
-      <span className="font-bold">Couldn&apos;t load {what}.</span>
+      <span className="font-medium">Couldn&apos;t load {what}.</span>
       {reason && <span className="text-muted">{reason}</span>}
       <RetryButton retry={view.retry} busy={view.retrying} />
     </p>

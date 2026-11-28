@@ -11,7 +11,7 @@ import { formatSpan } from '@/utils/format'
 import { type FlowLayout, lastNameSegment, notRunText, type PlacedContainer } from './layoutFlow'
 
 const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center justify-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center justify-center gap-1.5 rounded-[3px] px-3 text-small font-medium whitespace-nowrap'
 
 /** At most this many kwargs are listed; the task page has them all. */
 const MAX_KWARGS = 4
@@ -61,7 +61,7 @@ export function Inspector({
 function Header({ title, state }: { title: string; state: string }): ReactElement {
   return (
     <div className="flex items-center gap-3 px-4 pt-3.5 pb-2">
-      <h2 className="m-0 text-title font-bold">{title}</h2>
+      <h2 className="m-0 text-title font-semibold">{title}</h2>
       <span className="grow" />
       <StatusChip state={state} />
     </div>

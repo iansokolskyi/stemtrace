@@ -158,7 +158,7 @@ test.describe('Output levels', () => {
     for (const [index, colour] of colours.entries()) {
       await expect(tokens.nth(index)).toHaveCSS('color', colour)
     }
-    await expect(tokens.nth(1)).toHaveCSS('font-weight', '700')
+    await expect(tokens.nth(1)).toHaveCSS('font-weight', '500')
     // The rest of the line keeps the output colour
     await expect(text).toHaveCSS('color', await tokenColour(page, 'ink'))
   })

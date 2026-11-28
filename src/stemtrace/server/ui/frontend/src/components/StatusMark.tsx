@@ -30,7 +30,7 @@ export function StatusMark({
       data-variant={loud ? 'loud' : 'quiet'}
       className={clsx(
         'inline-flex h-5 items-center gap-1.5 whitespace-nowrap text-small leading-5',
-        loud ? 'font-bold text-ink' : 'font-normal text-muted',
+        loud ? 'font-medium text-ink' : 'font-normal text-muted',
       )}
     >
       <span

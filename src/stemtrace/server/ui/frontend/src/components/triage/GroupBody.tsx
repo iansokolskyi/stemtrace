@@ -6,7 +6,7 @@ import { usePanel } from './PanelContext'
 import { BUTTON_QUIET, Figures, type PanelData, rangeOf, Section } from './PanelParts'
 import { encodeScope } from './runsScope'
 
-const TH = 'h-8 border-b border-rule px-2.5 text-left text-small font-semibold text-muted'
+const TH = 'th-band h-8 px-2.5 text-left'
 
 /** One task group over the window: its figures and its tasks, worst failure rate first. */
 export function GroupBody({ id, data }: { id: string; data: PanelData }): ReactElement {
@@ -79,7 +79,7 @@ export function GroupBody({ id, data }: { id: string; data: PanelData }): ReactE
                     {formatCount(task.runs)}
                   </td>
                   <td
-                    className={`px-2.5 py-1.5 text-right text-small tabular-nums ${(task.failure_rate ?? 0) > 0.01 ? 'font-bold text-failure-t' : ''}`}
+                    className={`px-2.5 py-1.5 text-right text-small tabular-nums ${(task.failure_rate ?? 0) > 0.01 ? 'font-medium text-failure-t' : ''}`}
                   >
                     {task.failure_rate == null ? '' : formatPercent(task.failure_rate)}
                   </td>

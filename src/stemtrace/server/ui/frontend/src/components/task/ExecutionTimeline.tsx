@@ -64,7 +64,7 @@ export function ExecutionTimeline({ events }: { events: TaskEvent[] }): ReactEle
                 )}
               />
               <span className="text-muted">{segment.state}</span>
-              <span className="font-bold">{formatSpan(segment.duration)}</span>
+              <span className="font-medium">{formatSpan(segment.duration)}</span>
             </div>
           ))}
         </div>

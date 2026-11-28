@@ -1,14 +1,14 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
-
 import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
+import { flowListRoots } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
-import { createFailedTask } from './fixtures/mock-data'
+import { createAnomaly, createFailedTask, type MockWorker } from './fixtures/mock-data'
 import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
 import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /**
  * The type scale and weight roles (restyle PR 3): every page title is one `PageHeader` at
- * 22 px / 800, section heads are 15 px / 700 and sub-headings are muted 12 px / 600. Mock mode
+ * 22 px / 600, section heads are 15 px / 600 and sub-headings are muted 12 px / 500. Mock mode
  * only: the Overview numbers come from `fixtures/overview.ts`.
  */
 
@@ -28,7 +28,7 @@ async function open(page: Page, path: string): Promise<void> {
 async function expectTitleStyle(page: Page): Promise<void> {
   const title = page.getByRole('heading', { level: 1 })
   await expect(title).toHaveCSS('font-size', '22px')
-  await expect(title).toHaveCSS('font-weight', '800')
+  await expect(title).toHaveCSS('font-weight', '600')
   await expect(title).toHaveCSS('letter-spacing', '-0.33px')
 }
 
@@ -42,7 +42,7 @@ async function expectSummaryOnTitleRow(page: Page, summary: Locator): Promise<vo
 }
 
 for (const path of PAGES) {
-  test(`page title on ${path} is 22 px, weight 800, tracked -0.015em`, async ({ page }) => {
+  test(`page title on ${path} is 22 px, weight 600, tracked -0.015em`, async ({ page }) => {
     await open(page, path)
     await expectTitleStyle(page)
   })
@@ -62,22 +62,31 @@ test.describe('Overview heading levels', () => {
     await open(page, '/')
     const wrong = page.getByRole('heading', { name: 'What’s wrong', level: 2 })
     await expect(wrong).toHaveCSS('font-size', '15px')
-    await expect(wrong).toHaveCSS('font-weight', '700')
+    await expect(wrong).toHaveCSS('font-weight', '600')
 
     const sub = page.getByRole('heading', { name: 'Failures by exception', level: 3 })
-    await expect(sub).toHaveCSS('font-size', '12px')
-    await expect(sub).toHaveCSS('font-weight', '600')
+    await expect(sub).toHaveCSS('font-size', '13px')
+    await expect(sub).toHaveCSS('font-weight', '500')
+    await expect(sub).toHaveCSS('color', await tokenColour(page, 'ink'))
 
     const table = page.getByRole('table', { name: 'Failures by exception' })
     const exception = table.getByRole('button').first()
-    await expect(exception).toHaveCSS('font-family', /Overpass Variable/)
-    await expect(exception).toHaveCSS('font-weight', '600')
+    await expect(exception).toHaveCSS('font-family', /Inter Variable/)
+    await expect(exception).toHaveCSS('font-size', '13px')
+    await expect(exception).toHaveCSS('font-weight', '500')
+    await expect(exception).toHaveCSS('color', await tokenColour(page, 'ink'))
     await expect(exception).not.toHaveCSS('font-family', /Mono/)
+
+    // Secondary line: 12 px / 400 muted.
+    const message = page.getByTestId('failure-message').first()
+    await expect(message).toHaveCSS('font-size', '12px')
+    await expect(message).toHaveCSS('font-weight', '400')
+    await expect(message).toHaveCSS('color', await tokenColour(page, 'muted'))
   })
 })
 
 test.describe('Header variants', () => {
-  test('Task page title (stacked header) is 22 px / 800 and sits under the module line', async ({
+  test('Task page title (stacked header) is 22 px / 600 and sits under the module line', async ({
     page,
   }) => {
     await openTask(page, successTask())
@@ -87,7 +96,7 @@ test.describe('Header variants', () => {
     expect((module?.y ?? 0) + (module?.height ?? 0)).toBeLessThanOrEqual(title?.y ?? 0)
   })
 
-  test('Task page exception class is ink, sans, 600 (not failure red or mono)', async ({
+  test('Task page exception class is ink, sans, 500 (not failure red or mono)', async ({
     page,
   }) => {
     await openTask(
@@ -97,13 +106,13 @@ test.describe('Header variants', () => {
     const exception = page.getByRole('region', { name: 'Exception' }).getByText('GatewayTimeout', {
       exact: true,
     })
-    await expect(exception).toHaveCSS('font-weight', '600')
-    await expect(exception).toHaveCSS('font-family', /Overpass Variable/)
+    await expect(exception).toHaveCSS('font-weight', '500')
+    await expect(exception).toHaveCSS('font-family', /Inter Variable/)
     await expect(exception).not.toHaveCSS('font-family', /Mono/)
     await expect(exception).toHaveCSS('color', await tokenColour(page, 'ink'))
   })
 
-  test('Flow page title is 22 px / 800 with its summary on the title row', async ({ page }) => {
+  test('Flow page title is 22 px / 600 with its summary on the title row', async ({ page }) => {
     const graph = reallocationFlow()
     await setupMockApi(page, { useDefaults: false })
     await serveFlow(page, graph, {})
@@ -116,7 +125,7 @@ test.describe('Header variants', () => {
     )
   })
 
-  test('Worker page title is 22 px / 800 and set in mono', async ({ page }) => {
+  test('Worker page title is 22 px / 600 and set in mono', async ({ page }) => {
     const api = await setupMockApi(page, { useDefaults: false })
     api.setWorkers([
       {
@@ -152,5 +161,93 @@ test.describe('Header variants', () => {
     await expect(header.locator('p')).toContainText('task name')
     const after = (await header.boundingBox())?.height ?? 0
     expect(after).toBe(before)
+  })
+})
+
+test.describe('Weight roles', () => {
+  const minutesAgo = (minutes: number): string =>
+    new Date(Date.now() - minutes * 60_000).toISOString()
+  const mockWorker = (hostname: string, status: 'online' | 'offline'): MockWorker => ({
+    hostname,
+    pid: 100,
+    registered_tasks: ['tasks.add'],
+    status,
+    registered_at: minutesAgo(120),
+    last_seen: minutesAgo(status === 'online' ? 1 : 90),
+  })
+
+  /** Seed the page's own data, so the scan sees rows, banners and lists, not a loading shell. */
+  async function openWithContent(page: Page, path: string): Promise<void> {
+    const api = await setupMockApi(page)
+    api.clearTasks()
+    const scenario = spikeScenario()
+    if (path === '/flows') api.addTasks(flowListRoots())
+    else api.addTasks(spikeTasks(scenario).tasks)
+    if (path === '/workers') {
+      api.setWorkers([mockWorker('celery@alpha', 'online'), mockWorker('celery@beta', 'offline')])
+    }
+    if (path === '/anomalies') {
+      api.setAnomalies([
+        createAnomaly('no_workers_online', { since: minutesAgo(90), task_count: 14 }),
+        createAnomaly('unregistered', { name: 'billing.tasks.sync_invoices_v2', task_count: 6 }),
+      ])
+    }
+    await mockOverview(page, scenario)
+    await page.goto(path)
+  }
+
+  const CONTENT: Record<string, (page: Page) => Locator[]> = {
+    '/': (page) => [
+      page.getByTestId('chart-bar').nth(11),
+      page.getByTestId('failure-message').first(),
+    ],
+    '/executions': (page) => [page.getByTestId('executions-scroll').getByText('step_1').first()],
+    '/workers': (page) => [page.getByRole('link', { name: 'celery@alpha' })],
+    '/anomalies': (page) => [
+      page.getByTestId('fleet-banner'),
+      page.getByTestId('anomaly-item').first(),
+    ],
+    '/registry': (page) => [
+      page.getByRole('table', { name: 'Registry' }).getByText('tasks.add').first(),
+    ],
+    '/flows': (page) => [page.getByTestId('flow-row').first()],
+  }
+
+  for (const path of PAGES) {
+    test(`no text on ${path} is heavier than 600, once its content is drawn`, async ({ page }) => {
+      await openWithContent(page, path)
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+      for (const content of CONTENT[path](page)) await expect(content).toBeVisible()
+      const tooHeavy = await page.evaluate(() =>
+        // The router devtools (dev server only) are styled with goober `go<digits>` classes.
+        [...document.querySelectorAll('#root *')]
+          .filter((el) => !/\bgo\d+\b/.test(el.className?.toString() ?? ''))
+          .filter((el) => Number.parseInt(getComputedStyle(el).fontWeight, 10) > 600)
+          .map(
+            (el) => `${el.tagName} ${el.getAttribute('class')}: ${el.textContent?.slice(0, 30)}`,
+          ),
+      )
+      expect(tooHeavy).toEqual([])
+    })
+  }
+
+  test('the column header and body roles hold on the Overview', async ({ page }) => {
+    await open(page, '/')
+    await expect(page.getByRole('heading', { name: 'What’s wrong', level: 2 })).toBeVisible()
+    // Column header: 12 px / 500 muted on the band (H2, H3).
+    const header = page.getByRole('columnheader', { name: 'Exception' }).first()
+    await expect(header).toHaveCSS('font-size', '12px')
+    await expect(header).toHaveCSS('font-weight', '500')
+    await expect(header).toHaveCSS('background-color', await tokenColour(page, 'band'))
+    await expect(header).toHaveCSS('color', await tokenColour(page, 'muted'))
+    // Body text is 400.
+    await expect(page.locator('body')).toHaveCSS('font-weight', '400')
+  })
+
+  test('a KPI figure is 26 px / 500', async ({ page }) => {
+    await open(page, '/')
+    const figure = page.locator('.text-figure').first()
+    await expect(figure).toHaveCSS('font-size', '26px')
+    await expect(figure).toHaveCSS('font-weight', '500')
   })
 })

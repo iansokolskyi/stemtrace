@@ -16,10 +16,10 @@ export function LiveStatus(): ReactElement {
     <Tooltip content={detail} placement="top-start">
       <span
         data-testid="live-status"
-        className={`flex cursor-help items-center gap-1.5 text-small font-bold ${TONE[tone].text}`}
+        className={`flex cursor-help items-center gap-1.5 text-small font-medium ${TONE[tone].text}`}
       >
         <Icon name={TONE[tone].icon} size={12} />
-        <b>{label}</b>{' '}
+        <b className="font-medium">{label}</b>{' '}
         {label === 'Live' && <span className="font-normal text-muted">streaming events</span>}
       </span>
     </Tooltip>

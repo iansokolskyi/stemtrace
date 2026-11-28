@@ -88,10 +88,10 @@ function OutputAttempt({ event, defaultExpanded }: OutputAttemptProps): ReactEle
 const LEVEL = /^(INFO|WARN|WARNING|ERROR|CRITICAL)(?=\s)/
 const LEVEL_TONE: Record<string, string> = {
   INFO: 'text-muted',
-  WARN: 'font-bold text-retry-t',
-  WARNING: 'font-bold text-retry-t',
-  ERROR: 'font-bold text-failure-t',
-  CRITICAL: 'font-bold text-failure-t',
+  WARN: 'font-medium text-retry-t',
+  WARNING: 'font-medium text-retry-t',
+  ERROR: 'font-medium text-failure-t',
+  CRITICAL: 'font-medium text-failure-t',
 }
 
 /** One output line; a leading log level (`INFO`, `WARNING`, `ERROR`...) gets its tone, the rest is plain. */

@@ -264,7 +264,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
             <div key={group.kind} role="group" aria-labelledby={`${id}-group-${group.kind}`}>
               <div
                 id={`${id}-group-${group.kind}`}
-                className="px-2.5 pt-2 pb-1 text-small font-bold text-muted"
+                className="px-2.5 pt-2 pb-1 text-small font-medium text-muted"
               >
                 {group.heading}
               </div>
@@ -290,7 +290,7 @@ function PaletteDialog({ onClose }: { onClose: () => void }): ReactElement {
                 >
                   <span
                     className={clsx(
-                      'min-w-0 truncate text-small font-semibold',
+                      'min-w-0 truncate text-small font-medium',
                       item.kind === 'task' && 'font-mono',
                     )}
                   >

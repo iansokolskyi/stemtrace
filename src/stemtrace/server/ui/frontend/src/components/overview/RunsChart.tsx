@@ -191,7 +191,7 @@ export function RunsChart({
   return (
     <section aria-labelledby="h-chart" className="mb-4 min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 px-4 pt-3.5 pb-2">
-        <h2 id="h-chart" className="text-title font-bold">
+        <h2 id="h-chart" className="text-title font-semibold">
           {title ? `Runs per ${title}` : 'Runs'}
         </h2>
         <div className="flex gap-3.5 text-small text-muted">
@@ -204,7 +204,9 @@ export function RunsChart({
           <>
             <span className="inline-flex h-[26px] items-center gap-1.5 rounded-[3px] bg-raised pr-1 pl-2.5 text-small">
               <span className="text-muted">Filtered to</span>
-              <b data-testid="brush-label">{brushLabel}</b>
+              <b data-testid="brush-label" className="font-medium">
+                {brushLabel}
+              </b>
               <button
                 type="button"
                 aria-label="Clear time filter"
@@ -217,7 +219,7 @@ export function RunsChart({
             <button
               type="button"
               {...openerProps(panel, { kind: 'runs', id: encodeScope(brushScope(brush)) })}
-              className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press data-[on]:bg-ink data-[on]:text-on-ink"
+              className="inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press data-[on]:bg-ink data-[on]:text-on-ink"
             >
               Open runs
             </button>
@@ -241,7 +243,7 @@ export function RunsChart({
               type="button"
               aria-pressed={view === mode}
               onClick={() => setView(mode)}
-              className="h-[26px] rounded-[2px] px-[11px] text-small font-semibold text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
+              className="h-[26px] rounded-[2px] px-[11px] text-small font-medium text-muted hover:bg-hover hover:text-ink aria-pressed:bg-ink aria-pressed:text-on-ink aria-pressed:hover:bg-ink aria-pressed:hover:text-on-ink"
             >
               {mode === 'chart' ? 'Chart' : 'Table'}
             </button>
@@ -378,7 +380,7 @@ export function RunsChart({
                     y={y(total(buckets[i])) - 6}
                     textAnchor="middle"
                     fontSize={11}
-                    fontWeight={700}
+                    fontWeight={500}
                     fill="var(--ink)"
                     pointerEvents="none"
                     style={{ paintOrder: 'stroke', stroke: 'var(--surface)', strokeWidth: 3 }}
@@ -455,13 +457,13 @@ export function RunsChart({
                 className="pointer-events-none absolute top-3 z-5 min-w-40 rounded-lg bg-raised px-[11px] py-[9px] text-small shadow-pop"
                 style={{ left: tipLeft }}
               >
-                <b className="mb-1 block font-bold">{spanLabel(shown.start, shown.end)} UTC</b>
+                <b className="mb-1 block font-medium">{spanLabel(shown.start, shown.end)} UTC</b>
                 <TipRow label="Success" value={shown.success} swatch="bg-success" />
                 <TipRow label="Failure" value={shown.failure} swatch="bg-failure" />
                 <TipRow label="Retry" value={shown.retry} swatch="retry-hatch" />
                 <div className="flex items-center gap-1.5">
                   <span className="text-muted">Failure rate</span>
-                  <span className="ml-auto font-semibold">
+                  <span className="ml-auto font-medium">
                     {formatPercent(shown.outcomes ? shown.failure / shown.outcomes : 0)}
                   </span>
                 </div>
@@ -496,7 +498,7 @@ function TipRow({
     <div className="flex items-center gap-1.5">
       <i className={`inline-block size-2.5 rounded-[2px] ${swatch}`} />
       <span>{label}</span>
-      <span className="ml-auto font-semibold">{formatCount(value)}</span>
+      <span className="ml-auto font-medium">{formatCount(value)}</span>
     </div>
   )
 }
@@ -513,7 +515,7 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
               <th
                 key={h}
                 scope="col"
-                className={`sticky top-0 border-b border-rule bg-surface px-2.5 py-2 text-small font-semibold text-muted ${i ? 'text-right' : 'text-left'}`}
+                className={`th-band sticky top-0 px-2.5 py-2 ${i ? 'text-right' : 'text-left'}`}
               >
                 {h}
               </th>
@@ -527,14 +529,14 @@ function ChartTable({ buckets }: { buckets: Bucket[] }): ReactElement {
                 <button
                   type="button"
                   {...openerProps(panel, { kind: 'runs', id: encodeScope(barScope(b)) })}
-                  className="link font-semibold"
+                  className="link font-medium"
                 >
                   {spanLabel(b.start, b.end)}
                 </button>
               </td>
               <td className="px-2.5 py-1 text-right tabular-nums">{formatCount(b.success)}</td>
               <td
-                className={`px-2.5 py-1 text-right tabular-nums ${b.failure ? 'font-bold text-failure-t' : ''}`}
+                className={`px-2.5 py-1 text-right tabular-nums ${b.failure ? 'font-medium text-failure-t' : ''}`}
               >
                 {formatCount(b.failure)}
               </td>

@@ -26,7 +26,7 @@ export function FlowRow({ graph, rowRef }: FlowRowProps) {
       {/* The summary's worst state; the root's own can say Success for a flow whose chord failed */}
       <StatusChip state={graph.flow?.state ?? graph.state} />
       <span className="min-w-0">
-        <b className="block truncate text-body">{flowRowTitle(graph)}</b>
+        <b className="block truncate text-body font-medium">{flowRowTitle(graph)}</b>
         {summary && <span className="block text-muted">{summary}</span>}
         <span className="flex min-w-0 items-baseline gap-1.5 text-muted">
           root

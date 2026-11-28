@@ -38,7 +38,7 @@ test.describe('Arguments', () => {
     await expect(cellOf(list, 'customer')).toHaveText('"c-1"')
     await expect(cellOf(list, 'amount')).toHaveText('12.5')
     await expect(cellOf(list, 'password')).toHaveText('"••••••••"')
-    await expect(cellOf(list, 'amount')).toHaveCSS('font-family', /Overpass Mono Variable/)
+    await expect(cellOf(list, 'amount')).toHaveCSS('font-family', /JetBrains Mono Variable/)
   })
 
   test('a kwarg named args is its own line next to the positional args', async ({ page }) => {

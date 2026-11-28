@@ -11,7 +11,7 @@ export function ThemeToggle(): ReactElement {
       type="button"
       onClick={() => setTheme(next)}
       aria-label={`Switch to ${next} theme`}
-      className="inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-[3px] bg-raised px-3 text-small font-semibold hover:bg-press active:translate-y-px"
+      className="inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-[3px] bg-raised px-3 text-small font-medium hover:bg-press active:translate-y-px"
     >
       <Icon name={next === 'dark' ? 'moon' : 'sun'} />
       {next === 'dark' ? 'Dark' : 'Light'}

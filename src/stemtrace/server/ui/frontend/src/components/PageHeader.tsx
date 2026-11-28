@@ -33,7 +33,7 @@ export function PageHeader({
     <h1
       tabIndex={-1}
       className={clsx(
-        'm-0 min-w-0 text-page font-extrabold tracking-[-0.015em] text-ink [overflow-wrap:anywhere]',
+        'm-0 min-w-0 text-page font-semibold tracking-[-0.015em] text-ink [overflow-wrap:anywhere]',
         mono && 'font-mono',
       )}
     >

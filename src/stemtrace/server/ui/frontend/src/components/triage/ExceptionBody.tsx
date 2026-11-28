@@ -24,7 +24,9 @@ export function ExceptionBody({ id, data }: { id: string; data: PanelData }): Re
             ['Message', message && <span className="font-mono">{message}</span>],
             [
               'Failures',
-              group && <b className="font-mono text-failure-t">{formatCount(group.count)}</b>,
+              group && (
+                <b className="font-mono font-medium text-failure-t">{formatCount(group.count)}</b>
+              ),
             ],
             [
               'First seen',

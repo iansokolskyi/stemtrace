@@ -22,7 +22,7 @@ export const Route = createFileRoute('/workers_/$hostname')({
 })
 
 const BUTTON =
-  'inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-semibold whitespace-nowrap hover:bg-press'
+  'inline-flex h-[30px] items-center rounded-[3px] bg-raised px-3 text-small font-medium whitespace-nowrap hover:bg-press'
 
 function WorkerPage() {
   const { hostname } = Route.useParams()
@@ -113,7 +113,7 @@ function WorkerHeader({ worker }: { worker: Worker }) {
             <Icon name="x" size={18} className="[stroke-width:2.6]" />
           </span>
           <div>
-            <h2 className="m-0 text-body font-bold">Offline</h2>
+            <h2 className="m-0 text-body font-medium">Offline</h2>
             <p className="m-0 text-body">
               Last seen {formatDateTime(worker.last_seen)} ({formatAgo(worker.last_seen)}).
             </p>
@@ -148,11 +148,11 @@ function RegisteredTasks({ tasks }: { tasks: string[] }) {
           <table className="w-full min-w-[320px] border-collapse">
             <thead>
               <tr>
-                <th scope="col" className={`${TH} sticky top-0 bg-surface`}>
+                <th scope="col" className={`${TH} sticky top-0`}>
                   Task
                 </th>
                 {showGroup && (
-                  <th scope="col" className={`${TH} sticky top-0 bg-surface`}>
+                  <th scope="col" className={`${TH} sticky top-0`}>
                     Group
                   </th>
                 )}

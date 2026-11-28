@@ -99,7 +99,7 @@ export function TaskBody({ id }: { id: string }): ReactElement {
       {failure?.exception && (
         <Section title="Exception">
           {task.exception_type && (
-            <div className="text-small font-semibold text-ink">{task.exception_type}</div>
+            <div className="text-small font-medium text-ink">{task.exception_type}</div>
           )}
           <div className="font-mono text-small [overflow-wrap:anywhere]">{failure.exception}</div>
         </Section>

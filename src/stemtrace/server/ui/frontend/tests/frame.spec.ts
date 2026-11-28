@@ -286,7 +286,7 @@ test.describe('Sidebar', () => {
     }
   })
 
-  test('no Google Fonts request and Overpass is loaded', async ({ page }) => {
+  test('no Google Fonts request and Inter is loaded', async ({ page }) => {
     const fontCdn: string[] = []
     page.on('request', (r) => {
       if (/fonts\.(googleapis|gstatic)\.com/.test(r.url())) fontCdn.push(r.url())
@@ -297,8 +297,8 @@ test.describe('Sidebar', () => {
     const loaded = await page.evaluate(async () => {
       await document.fonts.ready
       return (
-        document.fonts.check('13px "Overpass Variable"') &&
-        [...document.fonts].some((f) => f.family.includes('Overpass') && f.status === 'loaded')
+        document.fonts.check('13px "Inter Variable"') &&
+        [...document.fonts].some((f) => f.family.includes('Inter') && f.status === 'loaded')
       )
     })
     expect(loaded).toBe(true)

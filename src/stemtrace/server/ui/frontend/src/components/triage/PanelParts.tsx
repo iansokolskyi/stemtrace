@@ -26,7 +26,7 @@ export const rangeOf = (within: string | undefined): Range =>
   within === '1h' || within === '6h' ? within : 'all'
 
 export const BUTTON =
-  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-semibold whitespace-nowrap'
+  'inline-flex h-[30px] max-w-full items-center gap-1.5 rounded-[3px] px-3 text-small font-medium whitespace-nowrap'
 export const BUTTON_QUIET = `${BUTTON} bg-raised text-ink hover:bg-press`
 export const BUTTON_PRIMARY = `${BUTTON} bg-ink text-on-ink hover:opacity-90`
 
@@ -40,7 +40,7 @@ export function Section({
 }): ReactElement {
   return (
     <div className="mt-4">
-      {title && <h3 className="mb-1.5 text-small font-semibold text-muted">{title}</h3>}
+      {title && <h3 className="mb-1.5 text-body font-medium text-ink">{title}</h3>}
       {children}
     </div>
   )
@@ -75,7 +75,7 @@ export function Figures({
       {items.map(({ label, value, loud }) => (
         <div key={label} className="min-w-0 rounded-[3px] bg-raised px-2.5 py-[7px]">
           <small className="block text-small text-muted">{label}</small>
-          <b className={clsx('text-title font-extrabold', loud && 'text-failure-t')}>{value}</b>
+          <b className={clsx('text-title font-medium', loud && 'text-failure-t')}>{value}</b>
         </div>
       ))}
     </div>

@@ -178,7 +178,7 @@ function RegistryPage() {
                       className={clsx(
                         TD,
                         NUM,
-                        rate !== null && rate > HIGH_FAILURE_RATE && 'font-bold text-failure-t',
+                        rate !== null && rate > HIGH_FAILURE_RATE && 'font-medium text-failure-t',
                       )}
                     >
                       {rate === null ? '' : formatPercent(rate)}

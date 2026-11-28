@@ -20,6 +20,7 @@
   --color-scrim: var(--scrim);
   --color-sprout: var(--sprout);
   --color-success: var(--success);
+  --color-band: var(--band);
   --color-failure: var(--failure);
   --color-retry: var(--retry);
   --color-running: var(--running);
@@ -65,6 +66,7 @@ body {
   color: var(--ink);
   font: 13px / 1.45 var(--sans);
   font-variant-numeric: tabular-nums;
+  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -122,6 +124,17 @@ body {
   background-image: repeating-linear-gradient(45deg, var(--retry) 0 3px, var(--surface) 3px 5px);
 }
 
+/* The one table header (H3): a tinted band between two rules, 12/500 muted. Padding and height
+   stay with each table. */
+.th-band {
+  background: var(--band);
+  border-block: 1px solid var(--rule);
+  font-size: 12px;
+  line-height: 1.3333;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 /* Flow timeline (components/flow/Gantt.tsx): rows lit by state through --c / --on like the
    diagram's blocks; text 12 px sans with tabular figures. */
 .gantt-box {
@@ -152,7 +165,7 @@ body {
   fill: var(--muted);
 }
 .gantt text.gantt-cp {
-  font-weight: 700;
+  font-weight: 500;
 }
 .gantt text.gantt-id {
   font-family: var(--mono);
@@ -284,11 +297,11 @@ body {
   fill: var(--muted);
 }
 .flow-btn text .t1 {
-  font-weight: 700;
+  font-weight: 500;
   fill: var(--ink);
 }
 .flow-btn text.t1 {
-  font-weight: 700;
+  font-weight: 500;
   fill: var(--ink);
 }
 .fn,
@@ -325,11 +338,11 @@ body {
   fill: var(--on);
 }
 .fn text.t1 {
-  font-weight: 700;
+  font-weight: 500;
 }
 .fn text.rt {
   text-anchor: end;
-  font-weight: 600;
+  font-weight: 400;
 }
 .fn text.mono {
   font-family: var(--mono);
@@ -356,14 +369,14 @@ body {
   fill: var(--c);
 }
 .fcont .ctitle {
-  font: 700 12px var(--sans);
+  font: 500 12px var(--sans);
   fill: var(--ink);
 }
 .fcont .ctitle.c2 {
-  font-weight: 600;
+  font-weight: 400;
   fill: var(--muted);
 }
 .fcont .ctitle .bad {
   fill: var(--failure-t);
-  font-weight: 700;
+  font-weight: 500;
 }

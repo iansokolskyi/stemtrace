@@ -68,4 +68,4 @@ export function sinceText(since: string): string {
 
 /** Shared look of the anomaly links, the same as the task page's quiet buttons. */
 export const ACTION =
-  'inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-[3px] bg-raised px-3 text-small font-semibold whitespace-nowrap text-ink hover:bg-press'
+  'inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-[3px] bg-raised px-3 text-small font-medium whitespace-nowrap text-ink hover:bg-press'

@@ -117,7 +117,7 @@ export function Gantt({
   return (
     <section aria-labelledby={headingId} className="min-w-0 rounded-lg bg-surface">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 pt-3.5 pb-2">
-        <h2 id={headingId} className="m-0 text-title font-bold text-ink">
+        <h2 id={headingId} className="m-0 text-title font-semibold text-ink">
           Timeline
         </h2>
         <span className="text-small text-muted">

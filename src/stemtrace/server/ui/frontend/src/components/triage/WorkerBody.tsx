@@ -40,7 +40,7 @@ function AllWorkers({ hosts }: { hosts: Host[] | undefined }): ReactElement {
                     type="button"
                     title={hostname}
                     onClick={() => panel.push({ kind: 'worker', id: hostname })}
-                    className="min-w-0 flex-1 truncate text-left text-body font-bold after:absolute after:inset-0"
+                    className="min-w-0 flex-1 truncate text-left text-body font-medium after:absolute after:inset-0"
                   >
                     {shortHost(hostname)}
                   </button>
@@ -82,7 +82,7 @@ export function WorkerBody({ id, data }: { id: string; data: PanelData }): React
               <Icon name="x" size={16} className="[stroke-width:2.6]" />
             </span>
             <div>
-              <h4 className="m-0 text-body font-bold">
+              <h4 className="m-0 text-body font-medium">
                 Offline since {formatAgo(worker.last_seen)}
               </h4>
               <p className="m-0 text-body">
