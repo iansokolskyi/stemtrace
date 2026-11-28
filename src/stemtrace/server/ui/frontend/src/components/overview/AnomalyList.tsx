@@ -19,7 +19,14 @@ export function AnomalyList({ anomalies }: { anomalies: OverviewAnomalies }): Re
   const rows: Anomaly[] = [...(anomalies.fleet ? [anomalies.fleet] : []), ...anomalies.items]
   return (
     <div className="min-w-0" data-testid="overview-anomalies">
-      <h3 className="px-4 pt-2 pb-1.5 text-body font-medium text-ink">Anomalies</h3>
+      <div className="flex items-baseline gap-2 px-4 pt-2 pb-1.5">
+        <h3 className="m-0 text-body font-medium text-ink">Anomalies</h3>
+        {rows.length > 0 && (
+          <span data-testid="anomalies-count" className="text-small text-muted">
+            {rows.length}
+          </span>
+        )}
+      </div>
       <ul className="m-0 list-none p-0">
         {rows.slice(0, SHOWN).map((anomaly) => (
           <li

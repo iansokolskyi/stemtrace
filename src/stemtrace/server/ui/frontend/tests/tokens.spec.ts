@@ -123,20 +123,14 @@ for (const mode of ['light', 'dark'] as const) {
       expect(contrast(t[`on-${s}`], t[s]), `on-${s} on ${s}`).toBeGreaterThanOrEqual(4.5)
     }
     expect(contrast(t['on-ink'], t.ink), 'on-ink on ink').toBeGreaterThanOrEqual(4.5)
-    expect(
-      contrast(t['on-success-quiet'], t['success-quiet']),
-      'on-success-quiet on success-quiet',
-    ).toBeGreaterThanOrEqual(4.5)
+    // Text on a quiet fill is ink (V1a).
+    expect(contrast(t.ink, t['success-quiet']), 'ink on success-quiet').toBeGreaterThanOrEqual(4.5)
   })
 
-  test(`the quiet success fill is a visible graphical object on the surface (${mode})`, () => {
+  test(`the full-strength edge carries the 3:1 of a quiet success bar (${mode})`, () => {
     const t = parseTokens(CSS, mode)
-    // WCAG 1.4.11: a bar or block needs 3:1 against what it sits on.
-    for (const bg of ['surface', 'raised']) {
-      expect(contrast(t['success-quiet'], t[bg]), `success-quiet on ${bg}`).toBeGreaterThanOrEqual(
-        3,
-      )
-    }
+    // WCAG 1.4.11: the fill is a tint, so the 1.5px edge in --success is the graphical object.
+    expect(contrast(t.success, t.surface), 'success edge on surface').toBeGreaterThanOrEqual(3)
     expect(contrast(t.failure, t.surface), 'failure on surface').toBeGreaterThanOrEqual(3)
   })
 

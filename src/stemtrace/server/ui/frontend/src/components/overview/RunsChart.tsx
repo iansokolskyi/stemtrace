@@ -195,7 +195,10 @@ export function RunsChart({
           {title ? `Runs per ${title}` : 'Runs'}
         </h2>
         <div className="flex gap-3.5 text-small text-muted">
-          <Legend swatch="bg-success-quiet" label="Success" />
+          <Legend
+            swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success)]"
+            label="Success"
+          />
           <Legend swatch="bg-failure" label="Failure" />
           <Legend swatch="retry-hatch" label="Retry" />
         </div>
@@ -363,7 +366,21 @@ export function RunsChart({
                       acc += count
                       const h = Math.max(0.5, y0 - y1 - (drawn ? 2 : 0))
                       drawn = true
-                      return <rect key={fill} x={x} y={y1} width={w} height={h} fill={fill} />
+                      return (
+                        <g key={fill}>
+                          <rect x={x} y={y1} width={w} height={h} fill={fill} />
+                          {fill === 'var(--success-quiet)' && (
+                            // The 3:1 edge of the quiet fill (WCAG 1.4.11): a full-strength top line.
+                            <rect
+                              x={x}
+                              y={y1}
+                              width={w}
+                              height={Math.min(h, 1.5)}
+                              fill="var(--success)"
+                            />
+                          )}
+                        </g>
+                      )
                     })}
                   </g>
                 )
@@ -458,7 +475,11 @@ export function RunsChart({
                 style={{ left: tipLeft }}
               >
                 <b className="mb-1 block font-medium">{spanLabel(shown.start, shown.end)} UTC</b>
-                <TipRow label="Success" value={shown.success} swatch="bg-success-quiet" />
+                <TipRow
+                  label="Success"
+                  value={shown.success}
+                  swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success)]"
+                />
                 <TipRow label="Failure" value={shown.failure} swatch="bg-failure" />
                 <TipRow label="Retry" value={shown.retry} swatch="retry-hatch" />
                 <div className="flex items-center gap-1.5">

@@ -21,7 +21,6 @@
   --color-sprout: var(--sprout);
   --color-success: var(--success);
   --color-success-quiet: var(--success-quiet);
-  --color-on-success-quiet: var(--on-success-quiet);
   --color-band: var(--band);
   --color-failure: var(--failure);
   --color-retry: var(--retry);
@@ -216,6 +215,8 @@ body {
 }
 .gantt-run {
   fill: var(--c);
+  stroke: var(--m, none);
+  stroke-width: 1.5;
 }
 .gantt-crit {
   stroke: var(--ink);
@@ -267,8 +268,9 @@ body {
 }
 .s-success {
   --c: var(--success-quiet);
-  --on: var(--on-success-quiet);
-  /* Small marks and icons keep the full success colour; --c is for large areas. */
+  --on: var(--ink);
+  /* --c is the quiet tint for large areas; its edge and the small marks use --m, the full
+     success colour (the 3:1 non-text contrast, WCAG 1.4.11). */
   --m: var(--success);
   --m-on: var(--on-success);
 }
@@ -319,6 +321,8 @@ body {
 }
 .fn .blk {
   fill: var(--c);
+  stroke: var(--m, none);
+  stroke-width: 1.5;
 }
 .fn:hover .blk {
   filter: brightness(1.12);

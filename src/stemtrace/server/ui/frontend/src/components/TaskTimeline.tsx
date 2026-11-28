@@ -153,7 +153,11 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
               <LegendItem
                 key={state}
                 word={stateLook(state).word}
-                swatch={state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`}
+                swatch={
+                  state === 'RETRY'
+                    ? 'retry-hatch'
+                    : `s-${toneOf(state)} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--m,transparent)]`
+                }
               />
             ))}
             {parts.some((part) => part.kind === 'queued') && (
@@ -258,7 +262,9 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
                     part.kind === 'queued' && 'bg-track',
                     part.kind === 'tries' && 'retry-hatch',
                     part.kind === 'run' &&
-                      (task.state === 'RETRY' ? 'retry-hatch' : `s-${tone} bg-[var(--c)]`),
+                      (task.state === 'RETRY'
+                        ? 'retry-hatch'
+                        : `s-${tone} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--m,transparent)]`),
                   )}
                 />
               </Tooltip>

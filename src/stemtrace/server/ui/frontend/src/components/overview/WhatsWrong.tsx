@@ -73,9 +73,15 @@ export function WhatsWrong({
           }
         >
           <div className="min-w-0">
-            <h3 className="px-4 pt-2 pb-1.5 text-body font-medium text-ink">
-              Failures by exception
-            </h3>
+            <div className="flex items-baseline gap-2 px-4 pt-2 pb-1.5">
+              <h3 className="m-0 text-body font-medium text-ink">Failures by exception</h3>
+              {/* A sibling of the heading, so its accessible name stays the words; hidden at 0. */}
+              {view.phase !== 'error' && groups !== undefined && groups.length > 0 && (
+                <span data-testid="failures-count" className="text-small text-muted">
+                  {groups.length}
+                </span>
+              )}
+            </div>
             {view.phase === 'error' ? (
               <LoadError what="the failures" view={view} />
             ) : groups === undefined ? (
