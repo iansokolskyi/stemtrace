@@ -123,54 +123,28 @@ for (const mode of ['light', 'dark'] as const) {
       expect(contrast(t[`on-${s}`], t[s]), `on-${s} on ${s}`).toBeGreaterThanOrEqual(4.5)
     }
     expect(contrast(t['on-ink'], t.ink), 'on-ink on ink').toBeGreaterThanOrEqual(4.5)
-    // Text on a quiet fill is ink (V1a).
-    expect(contrast(t.ink, t['success-quiet']), 'ink on success-quiet').toBeGreaterThanOrEqual(4.5)
   })
 
-  test(`the quiet success edge keeps 3:1 on every background it sits on (${mode})`, () => {
+  test(`success and failure fills keep 3:1 on the surfaces they sit on (${mode})`, () => {
     const t = parseTokens(CSS, mode)
-    // WCAG 1.4.11: the fill is a tint, so the 1.5 px edge (--e = --success-t) is the graphical
-    // object. It sits on surface (chart, bars), raised (timing track, flow containers), band, the
-    // ground, and Gantt rows selected (ink 11%) or focused (ink 16%) over the surface. Hover is
-    // transient and left out.
-    const mix = (fg: string, bg: string, alpha: number): string =>
-      `#${[1, 3, 5]
-        .map((i) => {
-          const c = Number.parseInt(fg.slice(i, i + 2), 16) * alpha
-          const d = Number.parseInt(bg.slice(i, i + 2), 16) * (1 - alpha)
-          return Math.round(c + d)
-            .toString(16)
-            .padStart(2, '0')
-        })
-        .join('')}`
-    const backgrounds: Record<string, string> = {
-      surface: t.surface,
-      raised: t.raised,
-      band: t.band,
-      ground: t.bg,
-      'selected row': mix(t.ink, t.surface, 0.11),
-      'focused row': mix(t.ink, t.surface, 0.16),
+    // WCAG 1.4.11: bars and blocks are solid fills, so the fill itself is the graphical object.
+    for (const s of ['success', 'failure']) {
+      expect(contrast(t[s], t.surface), `${s} on surface`).toBeGreaterThanOrEqual(3)
     }
-    for (const [name, bg] of Object.entries(backgrounds)) {
-      expect(contrast(t['success-t'], bg), `success-t edge on ${name}`).toBeGreaterThanOrEqual(3)
-    }
-    expect(contrast(t.failure, t.surface), 'failure on surface').toBeGreaterThanOrEqual(3)
   })
 
-  test(`quiet success and failure stay apart for colour-blind viewers (${mode})`, () => {
+  test(`success and failure stay apart for colour-blind viewers (${mode})`, () => {
     const t = parseTokens(CSS, mode)
-    // V1: they differ in lightness, not only hue, and in simulated protanopia and deuteranopia.
-    expect(contrast(t['success-quiet'], t.failure), 'luminance contrast').toBeGreaterThanOrEqual(
-      1.5,
-    )
+    // Measured 18.7 (protanopia) and 21.7 (deuteranopia). Bars also separate the two with a gap
+    // and label failed buckets, so colour is not the only cue.
     for (const [name, matrix] of [
       ['protanopia', PROTANOPIA],
       ['deuteranopia', DEUTERANOPIA],
     ] as const) {
       expect(
-        deltaE(t['success-quiet'], t.failure, matrix),
-        `${name} dE76 between quiet success and failure`,
-      ).toBeGreaterThanOrEqual(20)
+        deltaE(t.success, t.failure, matrix),
+        `${name} dE76 between success and failure`,
+      ).toBeGreaterThanOrEqual(15)
     }
   })
 

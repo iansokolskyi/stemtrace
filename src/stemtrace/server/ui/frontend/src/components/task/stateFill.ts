@@ -6,7 +6,7 @@
 export function stateFill(state: string): string {
   switch (state) {
     case 'SUCCESS':
-      return 'bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success-t)]'
+      return 'bg-success'
     case 'FAILURE':
       return 'bg-failure'
     case 'RETRY':

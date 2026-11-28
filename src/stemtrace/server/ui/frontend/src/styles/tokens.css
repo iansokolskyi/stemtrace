@@ -1,7 +1,6 @@
 /* Signal box tokens (approved prototype, .context/features/ui-redesign.md). One neutral grey
    family, no chromatic accent: selection and primary actions are an inverted ink fill. Colour is
-   reserved for state. --success/--failure/--retry are the chart fills (--success-quiet is a
-   tint of it for bars and blocks, edged in --success, so a healthy system isn't a slab of green); --X-t is
+   reserved for state. --success/--failure/--retry are the chart fills; --X-t is
    the text-safe tint of each (>= 4.5:1 on ground, surface and raised); --on-X is text on a fill.
    Light on :root; dark in BOTH the OS media query and [data-theme="dark"] (the stored override).
    tests/tokens.spec.ts checks the contrast and that the two dark blocks stay identical. */
@@ -25,7 +24,6 @@
   --shadow: 0 14px 36px rgba(26, 28, 30, 0.24);
   --shadow-side: -14px 0 36px -12px rgba(26, 28, 30, 0.3);
   --success: #30a46c;
-  --success-quiet: #c4e8d3;
   --failure: #e5484d;
   --retry: #d9a514;
   --running: #2f6fdb;
@@ -72,7 +70,6 @@
     --shadow: 0 14px 36px rgba(6, 8, 10, 0.62);
     --shadow-side: -14px 0 36px -12px rgba(6, 8, 10, 0.6);
     --success: #30a46c;
-    --success-quiet: #1a3f2b;
     --failure: #e5484d;
     --retry: #845b00;
     --running: #3f86e6;
@@ -113,7 +110,6 @@
   --shadow: 0 14px 36px rgba(6, 8, 10, 0.62);
   --shadow-side: -14px 0 36px -12px rgba(6, 8, 10, 0.6);
   --success: #30a46c;
-  --success-quiet: #1a3f2b;
   --failure: #e5484d;
   --retry: #845b00;
   --running: #3f86e6;

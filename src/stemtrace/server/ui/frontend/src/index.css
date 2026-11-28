@@ -20,7 +20,6 @@
   --color-scrim: var(--scrim);
   --color-sprout: var(--sprout);
   --color-success: var(--success);
-  --color-success-quiet: var(--success-quiet);
   --color-band: var(--band);
   --color-failure: var(--failure);
   --color-retry: var(--retry);
@@ -192,10 +191,10 @@ body {
   fill: color-mix(in srgb, var(--ink) 16%, transparent);
 }
 .gantt-mark {
-  fill: var(--m, var(--c));
+  fill: var(--c);
 }
 .gantt-ico {
-  color: var(--m-on, var(--on));
+  color: var(--on);
 }
 .gantt-rl {
   stroke: var(--rule);
@@ -215,8 +214,6 @@ body {
 }
 .gantt-run {
   fill: var(--c);
-  stroke: var(--e, none);
-  stroke-width: 1.5;
 }
 .gantt-crit {
   stroke: var(--ink);
@@ -267,13 +264,8 @@ body {
   fill: var(--raised);
 }
 .s-success {
-  --c: var(--success-quiet);
-  --on: var(--ink);
-  /* --c is the quiet tint for large areas; --e is its edge, the text-safe tint of success so
-     it keeps 3:1 on surface, raised, band and selected rows (WCAG 1.4.11). --m is for small marks. */
-  --m: var(--success);
-  --e: var(--success-t);
-  --m-on: var(--on-success);
+  --c: var(--success);
+  --on: var(--on-success);
 }
 .s-failure {
   --c: var(--failure);
@@ -322,8 +314,6 @@ body {
 }
 .fn .blk {
   fill: var(--c);
-  stroke: var(--e, none);
-  stroke-width: 1.5;
 }
 .fn:hover .blk {
   filter: brightness(1.12);
@@ -370,13 +360,13 @@ body {
   fill: var(--muted);
 }
 .fcont {
-  color: var(--m-on, var(--on));
+  color: var(--on);
 }
 .fcont .hit {
   fill: transparent;
 }
 .fcont .cmk {
-  fill: var(--m, var(--c));
+  fill: var(--c);
 }
 .fcont .ctitle {
   font: 500 12px var(--sans);

@@ -7,8 +7,8 @@ import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
 import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
 /**
- * The visual system (restyle PR 4): success bars and blocks use the quiet fill while failure
- * keeps full strength, and every table header sits on the tinted band. Mock mode only.
+ * The visual system (restyle PR 4): success and failure bars and blocks are solid fills with no
+ * edge, as in the approved mockup, and every table header sits on the tinted band. Mock mode only.
  */
 
 test.skip(process.env.E2E_MODE === 'real', 'Mock-only test')
@@ -33,75 +33,55 @@ async function openFlow(page: Page): Promise<void> {
   await flowNode(page, 'root').waitFor({ state: 'attached' })
 }
 
-test.describe('Quiet success fills', () => {
-  test('runs chart: success bars are quiet, failure bars and legend keep their colours', async ({
-    page,
-  }) => {
+test.describe('Solid state fills', () => {
+  test('runs chart: success and failure bars are solid, with no edge', async ({ page }) => {
     await openOverview(page)
-    const quiet = await tokenColour(page, 'success-quiet')
+    const success = await tokenColour(page, 'success')
     const failure = await tokenColour(page, 'failure')
     const fills = await page
       .getByTestId('chart-bar')
       .locator('rect')
       .evaluateAll((rects) => rects.map((r) => getComputedStyle(r).fill))
-    expect(fills).toContain(quiet)
+    expect(fills).toContain(success)
     expect(fills).toContain(failure)
-    // Each success segment has a edge in the text-safe success tint, 1.5 px tall (V1a).
-    const success = await tokenColour(page, 'success-t')
-    const edge = page.getByTestId('chart-bar').first().locator('rect').nth(1)
-    await expect(edge).toHaveCSS('fill', success)
-    expect((await edge.boundingBox())?.height).toBeCloseTo(1.5, 1)
+    // One rect per segment: a quiet bar (40 runs, all success) has no extra edge rect.
+    await expect(page.getByTestId('chart-bar').first().locator('rect')).toHaveCount(1)
   })
 
-  test('flow diagram: a successful block is quiet, a failed block is full failure', async ({
+  test('flow diagram: a successful block is solid success, a failed block solid failure', async ({
     page,
   }) => {
     await openFlow(page)
-    await expect(flowNode(page, 'root').locator('.blk')).toHaveCSS(
-      'fill',
-      await tokenColour(page, 'success-quiet'),
-    )
+    const root = flowNode(page, 'root').locator('.blk')
+    await expect(root).toHaveCSS('fill', await tokenColour(page, 'success'))
+    await expect(root).toHaveCSS('stroke', 'none')
     await expect(flowNode(page, 'p2').locator('.blk')).toHaveCSS(
       'fill',
       await tokenColour(page, 'failure'),
     )
-    // The quiet block has a full-strength 1.5 px outline; the failed block has none (V1a).
-    const root = flowNode(page, 'root').locator('.blk')
-    await expect(root).toHaveCSS('stroke', await tokenColour(page, 'success-t'))
-    await expect(root).toHaveCSS('stroke-width', '1.5px')
-    await expect(flowNode(page, 'p2').locator('.blk')).toHaveCSS('stroke', 'none')
   })
 
-  test('flow timeline: success marks are quiet, failure marks are full failure', async ({
-    page,
-  }) => {
+  test('flow timeline: success bars and marks are solid success', async ({ page }) => {
     await openFlow(page)
-    const quiet = await tokenColour(page, 'success-quiet')
-    const failure = await tokenColour(page, 'failure')
-    // Small marks keep the full success colour (V2); the bar is the large area.
+    const success = await tokenColour(page, 'success')
     await expect(page.locator('.gantt-row.s-success .gantt-mark').first()).toHaveCSS(
       'fill',
-      await tokenColour(page, 'success'),
-    )
-    await expect(page.locator('.gantt-row.s-failure .gantt-mark').first()).toHaveCSS(
-      'fill',
-      failure,
+      success,
     )
     const run = page.locator('.gantt-row.s-success .gantt-run:not(.gantt-crit)').first()
-    await expect(run).toHaveCSS('fill', quiet)
-    await expect(run).toHaveCSS('stroke', await tokenColour(page, 'success-t'))
+    await expect(run).toHaveCSS('fill', success)
+    await expect(run).toHaveCSS('stroke', 'none')
+    await expect(page.locator('.gantt-row.s-failure .gantt-mark').first()).toHaveCSS(
+      'fill',
+      await tokenColour(page, 'failure'),
+    )
   })
 
-  test('task timing bar: a successful run is quiet, a failed run is full failure', async ({
-    page,
-  }) => {
+  test('task timing bar: a successful run is solid success with no edge', async ({ page }) => {
     await openTask(page, successTask({ queue_wait_ms: 1000, runtime_ms: 2000 }))
     const bar = page.getByRole('region', { name: 'Timing' }).getByTestId('timing-runtime')
-    await expect(bar).toHaveCSS('background-color', await tokenColour(page, 'success-quiet'))
-    // Edge: an inset 1.5 px shadow in the full success colour.
-    const shadow = await bar.evaluate((el) => getComputedStyle(el).boxShadow)
-    expect(shadow).toContain(await tokenColour(page, 'success-t'))
-    expect(shadow).toContain('1.5px')
+    await expect(bar).toHaveCSS('background-color', await tokenColour(page, 'success'))
+    await expect(bar).toHaveCSS('box-shadow', 'none')
   })
 
   test('task timing bar: a failed run is full failure', async ({ page }) => {

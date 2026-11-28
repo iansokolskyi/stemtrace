@@ -153,11 +153,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
               <LegendItem
                 key={state}
                 word={stateLook(state).word}
-                swatch={
-                  state === 'RETRY'
-                    ? 'retry-hatch'
-                    : `s-${toneOf(state)} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--e,transparent)]`
-                }
+                swatch={state === 'RETRY' ? 'retry-hatch' : `s-${toneOf(state)} bg-[var(--c)]`}
               />
             ))}
             {parts.some((part) => part.kind === 'queued') && (
@@ -215,7 +211,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
           aria-hidden="true"
           className={clsx(
             `s-${tone}`,
-            'flex size-4 flex-none items-center justify-center rounded-[3px] bg-[var(--m,var(--c))] text-[var(--m-on,var(--on))]',
+            'flex size-4 flex-none items-center justify-center rounded-[3px] bg-[var(--c)] text-[var(--on)]',
           )}
         >
           <Icon name={look.icon} size={12} />
@@ -262,9 +258,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
                     part.kind === 'queued' && 'bg-track',
                     part.kind === 'tries' && 'retry-hatch',
                     part.kind === 'run' &&
-                      (task.state === 'RETRY'
-                        ? 'retry-hatch'
-                        : `s-${tone} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--e,transparent)]`),
+                      (task.state === 'RETRY' ? 'retry-hatch' : `s-${tone} bg-[var(--c)]`),
                   )}
                 />
               </Tooltip>

@@ -171,7 +171,7 @@ test.describe('ExecutionTimeline', () => {
     await expect(segments.nth(1)).toContainText('2.0s')
     await expect(segments.nth(2).locator('[data-segment-swatch]')).toHaveCSS(
       'background-color',
-      await tokenColour(page, 'success-quiet'),
+      await tokenColour(page, 'success'),
     )
     await expect(segments.nth(1).locator('[data-segment-swatch]')).toHaveCSS(
       'background-color',

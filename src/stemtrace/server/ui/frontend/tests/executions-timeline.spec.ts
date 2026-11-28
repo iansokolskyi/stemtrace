@@ -410,7 +410,7 @@ for (const theme of ['light', 'dark'] as const) {
         rowOf(page, name).locator('[data-part="run"] [data-fill]').first()
       await expect(fill('shop.orders.reconcile')).toHaveCSS(
         'background-color',
-        await token(page, 'success-quiet'),
+        await token(page, 'success'),
       )
       await expect(fill('shop.mail.send_receipt')).toHaveCSS(
         'background-color',

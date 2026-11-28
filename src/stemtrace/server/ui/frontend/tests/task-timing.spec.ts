@@ -104,7 +104,7 @@ test.describe('TimingBar', () => {
     await openTask(page, successTask({ runtime_ms: 1000 }))
     await expect(timing(page).getByTestId('timing-runtime')).toHaveCSS(
       'background-color',
-      await tokenColour(page, 'success-quiet'),
+      await tokenColour(page, 'success'),
     )
   })
 
