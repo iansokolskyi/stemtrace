@@ -87,7 +87,7 @@ test.describe('Quiet success fills', () => {
       'fill',
       failure,
     )
-    const run = page.locator('.gantt-row.s-success .gantt-run').first()
+    const run = page.locator('.gantt-row.s-success .gantt-run:not(.gantt-crit)').first()
     await expect(run).toHaveCSS('fill', quiet)
     await expect(run).toHaveCSS('stroke', await tokenColour(page, 'success'))
   })
