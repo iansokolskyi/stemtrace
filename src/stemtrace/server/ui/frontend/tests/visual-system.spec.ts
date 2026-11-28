@@ -46,8 +46,8 @@ test.describe('Quiet success fills', () => {
       .evaluateAll((rects) => rects.map((r) => getComputedStyle(r).fill))
     expect(fills).toContain(quiet)
     expect(fills).toContain(failure)
-    // Each success segment has a full-strength top edge, 1.5 px tall (V1a).
-    const success = await tokenColour(page, 'success')
+    // Each success segment has a edge in the text-safe success tint, 1.5 px tall (V1a).
+    const success = await tokenColour(page, 'success-t')
     const edge = page.getByTestId('chart-bar').first().locator('rect').nth(1)
     await expect(edge).toHaveCSS('fill', success)
     expect((await edge.boundingBox())?.height).toBeCloseTo(1.5, 1)
@@ -67,7 +67,7 @@ test.describe('Quiet success fills', () => {
     )
     // The quiet block has a full-strength 1.5 px outline; the failed block has none (V1a).
     const root = flowNode(page, 'root').locator('.blk')
-    await expect(root).toHaveCSS('stroke', await tokenColour(page, 'success'))
+    await expect(root).toHaveCSS('stroke', await tokenColour(page, 'success-t'))
     await expect(root).toHaveCSS('stroke-width', '1.5px')
     await expect(flowNode(page, 'p2').locator('.blk')).toHaveCSS('stroke', 'none')
   })
@@ -89,7 +89,7 @@ test.describe('Quiet success fills', () => {
     )
     const run = page.locator('.gantt-row.s-success .gantt-run:not(.gantt-crit)').first()
     await expect(run).toHaveCSS('fill', quiet)
-    await expect(run).toHaveCSS('stroke', await tokenColour(page, 'success'))
+    await expect(run).toHaveCSS('stroke', await tokenColour(page, 'success-t'))
   })
 
   test('task timing bar: a successful run is quiet, a failed run is full failure', async ({
@@ -100,7 +100,7 @@ test.describe('Quiet success fills', () => {
     await expect(bar).toHaveCSS('background-color', await tokenColour(page, 'success-quiet'))
     // Edge: an inset 1.5 px shadow in the full success colour.
     const shadow = await bar.evaluate((el) => getComputedStyle(el).boxShadow)
-    expect(shadow).toContain(await tokenColour(page, 'success'))
+    expect(shadow).toContain(await tokenColour(page, 'success-t'))
     expect(shadow).toContain('1.5px')
   })
 

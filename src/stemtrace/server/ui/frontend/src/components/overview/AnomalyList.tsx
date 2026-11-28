@@ -21,9 +21,9 @@ export function AnomalyList({ anomalies }: { anomalies: OverviewAnomalies }): Re
     <div className="min-w-0" data-testid="overview-anomalies">
       <div className="flex items-baseline gap-2 px-4 pt-2 pb-1.5">
         <h3 className="m-0 text-body font-medium text-ink">Anomalies</h3>
-        {rows.length > 0 && (
+        {anomalies.total > 0 && (
           <span data-testid="anomalies-count" className="text-small text-muted">
-            {rows.length}
+            {anomalies.total}
           </span>
         )}
       </div>

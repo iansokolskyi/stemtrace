@@ -1,8 +1,8 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
-
 import { reallocationFlow, serveFlow } from './fixtures/flow-graphs'
+import { flowListRoots } from './fixtures/flows-list'
 import { setupMockApi } from './fixtures/mock-api'
-import { createFailedTask } from './fixtures/mock-data'
+import { createAnomaly, createFailedTask, type MockWorker } from './fixtures/mock-data'
 import { mockOverview, spikeScenario, spikeTasks } from './fixtures/overview'
 import { openTask, successTask, tokenColour } from './fixtures/task-page'
 
@@ -165,11 +165,59 @@ test.describe('Header variants', () => {
 })
 
 test.describe('Weight roles', () => {
+  const minutesAgo = (minutes: number): string =>
+    new Date(Date.now() - minutes * 60_000).toISOString()
+  const mockWorker = (hostname: string, status: 'online' | 'offline'): MockWorker => ({
+    hostname,
+    pid: 100,
+    registered_tasks: ['tasks.add'],
+    status,
+    registered_at: minutesAgo(120),
+    last_seen: minutesAgo(status === 'online' ? 1 : 90),
+  })
+
+  /** Seed the page's own data, so the scan sees rows, banners and lists, not a loading shell. */
+  async function openWithContent(page: Page, path: string): Promise<void> {
+    const api = await setupMockApi(page)
+    api.clearTasks()
+    const scenario = spikeScenario()
+    if (path === '/flows') api.addTasks(flowListRoots())
+    else api.addTasks(spikeTasks(scenario).tasks)
+    if (path === '/workers') {
+      api.setWorkers([mockWorker('celery@alpha', 'online'), mockWorker('celery@beta', 'offline')])
+    }
+    if (path === '/anomalies') {
+      api.setAnomalies([
+        createAnomaly('no_workers_online', { since: minutesAgo(90), task_count: 14 }),
+        createAnomaly('unregistered', { name: 'billing.tasks.sync_invoices_v2', task_count: 6 }),
+      ])
+    }
+    await mockOverview(page, scenario)
+    await page.goto(path)
+  }
+
+  const CONTENT: Record<string, (page: Page) => Locator[]> = {
+    '/': (page) => [
+      page.getByTestId('chart-bar').nth(11),
+      page.getByTestId('failure-message').first(),
+    ],
+    '/executions': (page) => [page.getByTestId('executions-scroll').getByText('step_1').first()],
+    '/workers': (page) => [page.getByRole('link', { name: 'celery@alpha' })],
+    '/anomalies': (page) => [
+      page.getByTestId('fleet-banner'),
+      page.getByTestId('anomaly-item').first(),
+    ],
+    '/registry': (page) => [
+      page.getByRole('table', { name: 'Registry' }).getByText('tasks.add').first(),
+    ],
+    '/flows': (page) => [page.getByTestId('flow-row').first()],
+  }
+
   for (const path of PAGES) {
-    test(`no text on ${path} is heavier than 600`, async ({ page }) => {
-      await open(page, path)
+    test(`no text on ${path} is heavier than 600, once its content is drawn`, async ({ page }) => {
+      await openWithContent(page, path)
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-      if (path === '/') await expect(page.getByTestId('chart-bar')).toHaveCount(12)
+      for (const content of CONTENT[path](page)) await expect(content).toBeVisible()
       const tooHeavy = await page.evaluate(() =>
         // The router devtools (dev server only) are styled with goober `go<digits>` classes.
         [...document.querySelectorAll('#root *')]

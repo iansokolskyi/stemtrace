@@ -127,10 +127,33 @@ for (const mode of ['light', 'dark'] as const) {
     expect(contrast(t.ink, t['success-quiet']), 'ink on success-quiet').toBeGreaterThanOrEqual(4.5)
   })
 
-  test(`the full-strength edge carries the 3:1 of a quiet success bar (${mode})`, () => {
+  test(`the quiet success edge keeps 3:1 on every background it sits on (${mode})`, () => {
     const t = parseTokens(CSS, mode)
-    // WCAG 1.4.11: the fill is a tint, so the 1.5px edge in --success is the graphical object.
-    expect(contrast(t.success, t.surface), 'success edge on surface').toBeGreaterThanOrEqual(3)
+    // WCAG 1.4.11: the fill is a tint, so the 1.5 px edge (--e = --success-t) is the graphical
+    // object. It sits on surface (chart, bars), raised (timing track, flow containers), band, the
+    // ground, and Gantt rows selected (ink 11%) or focused (ink 16%) over the surface. Hover is
+    // transient and left out.
+    const mix = (fg: string, bg: string, alpha: number): string =>
+      `#${[1, 3, 5]
+        .map((i) => {
+          const c = Number.parseInt(fg.slice(i, i + 2), 16) * alpha
+          const d = Number.parseInt(bg.slice(i, i + 2), 16) * (1 - alpha)
+          return Math.round(c + d)
+            .toString(16)
+            .padStart(2, '0')
+        })
+        .join('')}`
+    const backgrounds: Record<string, string> = {
+      surface: t.surface,
+      raised: t.raised,
+      band: t.band,
+      ground: t.bg,
+      'selected row': mix(t.ink, t.surface, 0.11),
+      'focused row': mix(t.ink, t.surface, 0.16),
+    }
+    for (const [name, bg] of Object.entries(backgrounds)) {
+      expect(contrast(t['success-t'], bg), `success-t edge on ${name}`).toBeGreaterThanOrEqual(3)
+    }
     expect(contrast(t.failure, t.surface), 'failure on surface').toBeGreaterThanOrEqual(3)
   })
 

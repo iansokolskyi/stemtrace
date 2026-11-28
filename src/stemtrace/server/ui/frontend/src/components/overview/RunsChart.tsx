@@ -196,7 +196,7 @@ export function RunsChart({
         </h2>
         <div className="flex gap-3.5 text-small text-muted">
           <Legend
-            swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success)]"
+            swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success-t)]"
             label="Success"
           />
           <Legend swatch="bg-failure" label="Failure" />
@@ -376,7 +376,7 @@ export function RunsChart({
                               y={y1}
                               width={w}
                               height={Math.min(h, 1.5)}
-                              fill="var(--success)"
+                              fill="var(--success-t)"
                             />
                           )}
                         </g>
@@ -478,7 +478,7 @@ export function RunsChart({
                 <TipRow
                   label="Success"
                   value={shown.success}
-                  swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success)]"
+                  swatch="bg-success-quiet shadow-[inset_0_0_0_1.5px_var(--success-t)]"
                 />
                 <TipRow label="Failure" value={shown.failure} swatch="bg-failure" />
                 <TipRow label="Retry" value={shown.retry} swatch="retry-hatch" />

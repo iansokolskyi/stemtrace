@@ -156,7 +156,7 @@ export function TaskTimeline({ filters }: TaskTimelineProps): ReactElement {
                 swatch={
                   state === 'RETRY'
                     ? 'retry-hatch'
-                    : `s-${toneOf(state)} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--m,transparent)]`
+                    : `s-${toneOf(state)} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--e,transparent)]`
                 }
               />
             ))}
@@ -264,7 +264,7 @@ function TimelineRow({ row, scale }: TimelineRowProps): ReactElement {
                     part.kind === 'run' &&
                       (task.state === 'RETRY'
                         ? 'retry-hatch'
-                        : `s-${tone} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--m,transparent)]`),
+                        : `s-${tone} bg-[var(--c)] shadow-[inset_0_0_0_1.5px_var(--e,transparent)]`),
                   )}
                 />
               </Tooltip>
